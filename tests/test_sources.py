@@ -7,6 +7,7 @@ from brain_sync.sources import (
     detect_source_type,
     extract_confluence_page_id,
     extract_google_doc_id,
+    slugify,
 )
 
 
@@ -50,3 +51,24 @@ class TestExtractGoogleDocId:
     def test_invalid_url_raises(self):
         with pytest.raises(URLParseError):
             extract_google_doc_id("https://docs.google.com/spreadsheets/d/abc")
+
+
+class TestSlugify:
+    def test_basic_title(self):
+        assert slugify("ERD L3 AAA - Traveler Profile Service TPS") == "erd-l3-aaa-traveler-profile-service-tps"
+
+    def test_special_chars_removed(self):
+        assert slugify("Hello, World! (v2)") == "hello-world-v2"
+
+    def test_collapses_whitespace(self):
+        assert slugify("  lots   of   spaces  ") == "lots-of-spaces"
+
+    def test_empty_string(self):
+        assert slugify("") == "untitled"
+
+    def test_only_special_chars(self):
+        assert slugify("!!!") == "untitled"
+
+    def test_unicode(self):
+        result = slugify("Café Design Doc")
+        assert "caf" in result

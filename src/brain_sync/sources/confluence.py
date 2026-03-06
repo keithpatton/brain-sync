@@ -52,6 +52,33 @@ async def confluence_metadata(page_id: str) -> str | None:
         return None
 
 
+async def confluence_title(page_id: str) -> str | None:
+    """Fetch page title via confluence-cli info command.
+
+    Returns title string, or None if unavailable.
+    """
+    try:
+        cmd = _confluence_cmd()
+        proc = await asyncio.create_subprocess_exec(
+            cmd, "info", page_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=SUBPROCESS_TIMEOUT
+        )
+        if proc.returncode != 0:
+            return None
+        # info output typically has "Title: <title>" on first line
+        for line in stdout.decode("utf-8").splitlines():
+            if line.startswith("Title:"):
+                return line.split(":", 1)[1].strip()
+        return None
+    except Exception as e:
+        log.debug("Confluence title fetch failed: %s", e)
+        return None
+
+
 async def confluence_fetch(page_id: str) -> str:
     """Fetch page HTML content via confluence-cli.
 

@@ -19,6 +19,7 @@ from brain_sync.state import (
     SourceState,
     SyncState,
     load_state,
+    prune_db,
     prune_state,
     save_state,
     source_key,
@@ -74,6 +75,7 @@ def _ensure_source_states(
 
     # Prune state for sources no longer in any manifest
     prune_state(state, set(source_map.keys()))
+    prune_db(root, set(source_map.keys()))
 
     return source_map
 

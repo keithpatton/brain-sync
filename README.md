@@ -51,6 +51,9 @@ sources:
 
   - url: https://docs.google.com/document/d/abc123
     file: design-doc.md
+
+  - url: https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/789/Another+Page
+    file: auto  # auto-derives filename from page title
 ```
 
 ### Run
@@ -71,7 +74,7 @@ brain-sync --root /path/to/target/folder --log-level DEBUG
 |---|---|---|
 | `sources` | Yes | List of sources to sync |
 | `sources[*].url` | Yes | URL of the external document |
-| `sources[*].file` | Yes | Output filename (bare name, no path separators) |
+| `sources[*].file` | Yes | Output filename (bare name, no path separators), or `auto` to derive from document title |
 | `touch_dirty_relative_path` | No | Path to dirty marker, relative to manifest folder. Defaults to `.dirty` in the manifest folder. |
 
 ## How it works
@@ -99,7 +102,7 @@ When content changes, the interval resets to 1 hour.
 
 ## State
 
-Sync state is persisted to `.sync-state.json` in the root folder, tracking per source:
+Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the root folder, tracking per source:
 - Last checked/changed timestamps
 - Content hash (SHA-256)
 - Current polling interval

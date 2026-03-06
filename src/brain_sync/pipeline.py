@@ -13,12 +13,34 @@ from brain_sync.sources import (
     detect_source_type,
     extract_confluence_page_id,
     extract_google_doc_id,
+    slugify,
 )
-from brain_sync.sources.confluence import confluence_comments, confluence_fetch, confluence_metadata
+from brain_sync.sources.confluence import (
+    confluence_comments,
+    confluence_fetch,
+    confluence_metadata,
+    confluence_title,
+)
 from brain_sync.sources.googledocs import googledocs_fetch
 from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
+
+
+async def _resolve_auto_filename(url: str, source_type: SourceType) -> str:
+    """Derive a filename from the source URL/title."""
+    if source_type == SourceType.CONFLUENCE:
+        page_id = extract_confluence_page_id(url)
+        title = await confluence_title(page_id)
+        if title:
+            return slugify(title) + ".md"
+        return f"confluence-{page_id}.md"
+
+    if source_type == SourceType.GOOGLE_DOCS:
+        doc_id = extract_google_doc_id(url)
+        return f"gdoc-{doc_id[:12]}.md"
+
+    return "untitled.md"
 
 
 async def process_source(
@@ -30,7 +52,14 @@ async def process_source(
     """Process a single source. Returns True if content changed."""
     source_type = detect_source_type(entry.url)
     now = datetime.now(timezone.utc).isoformat()
-    target = manifest.path.parent / entry.file
+
+    # Resolve output filename
+    filename = entry.file
+    if filename == "auto":
+        filename = await _resolve_auto_filename(entry.url, source_type)
+        source_state.target_file = filename
+
+    target = manifest.path.parent / filename
 
     if source_type == SourceType.CONFLUENCE:
         page_id = extract_confluence_page_id(entry.url)
@@ -70,8 +99,8 @@ async def process_source(
         source_state.last_changed_utc = now
         dirty_path = resolve_dirty_path(manifest)
         touch_dirty(dirty_path)
-        log.info("Updated %s (content changed)", entry.file)
+        log.info("Updated %s (content changed)", filename)
     else:
-        log.debug("Checked %s (no change)", entry.file)
+        log.debug("Checked %s (no change)", filename)
 
     return changed

@@ -57,11 +57,12 @@ def load_manifest(path: Path) -> Manifest:
             raise ManifestError(f"sources[{i}].url is required in {path}")
         if not isinstance(file, str) or not file.strip():
             raise ManifestError(f"sources[{i}].file is required in {path}")
-        if "/" in file or "\\" in file:
+        file = file.strip()
+        if file != "auto" and ("/" in file or "\\" in file):
             raise ManifestError(
-                f"sources[{i}].file must be a bare filename, got '{file}' in {path}"
+                f"sources[{i}].file must be a bare filename or 'auto', got '{file}' in {path}"
             )
-        sources.append(SourceEntry(url=url.strip(), file=file.strip()))
+        sources.append(SourceEntry(url=url.strip(), file=file))
 
     dirty_path = data.get("touch_dirty_relative_path")
     if dirty_path is not None and not isinstance(dirty_path, str):

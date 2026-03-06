@@ -31,6 +31,9 @@ htmlcov/
 
 # Brain-sync runtime state
 .sync-state.json
+.sync-state.sqlite
+.sync-state.sqlite-wal
+.sync-state.sqlite-shm
 
 # Environment / secrets
 .env

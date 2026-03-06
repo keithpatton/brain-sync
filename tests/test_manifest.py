@@ -63,6 +63,15 @@ sources:
         with pytest.raises(ManifestError, match="bare filename"):
             load_manifest(p)
 
+    def test_auto_file_allowed(self, tmp_path):
+        p = _write_manifest(tmp_path / "sync-manifest.yaml", """
+sources:
+  - url: https://example.atlassian.net/wiki/spaces/X/pages/1/Test
+    file: auto
+""")
+        m = load_manifest(p)
+        assert m.sources[0].file == "auto"
+
     def test_empty_sources_raises(self, tmp_path):
         p = _write_manifest(tmp_path / "sync-manifest.yaml", """
 sources: []
