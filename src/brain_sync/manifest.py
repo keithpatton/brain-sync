@@ -59,8 +59,10 @@ def load_manifest(path: Path) -> Manifest:
         file = entry.get("file")
         if not isinstance(url, str) or not url.strip():
             raise ManifestError(f"sources[{i}].url is required in {path}")
+        if file is None:
+            file = "auto"
         if not isinstance(file, str) or not file.strip():
-            raise ManifestError(f"sources[{i}].file is required in {path}")
+            raise ManifestError(f"sources[{i}].file must be a string in {path}")
         file = file.strip()
         if file != "auto" and ("/" in file or "\\" in file):
             raise ManifestError(

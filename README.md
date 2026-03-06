@@ -8,8 +8,10 @@ Cross-platform daemon that watches folders for `sync-manifest.yaml` files and sy
 - Fetches content from declared sources (Confluence pages, Google Docs)
 - Converts HTML to markdown and writes output files next to the manifest
 - Touches a `.dirty` marker when content changes
-- Maintains adaptive refresh with backoff (1h → 4h → 12h → 7d)
-- Persists sync state to `.sync-state.json`
+- Maintains adaptive refresh with backoff (30m → 1h → 4h → 12h → 24h)
+- Persists sync state to `.sync-state.sqlite`
+- Discovers and syncs contextual documents (linked pages, child pages, attachments)
+- Automatically reconnects moved files via canonical filename prefix matching
 
 The daemon is fully generic — it has no knowledge of any specific repository structure. Its only job is: find manifests, fetch sources, write files.
 
@@ -36,6 +38,8 @@ confluence init --domain "yourcompany.atlassian.net" \
 
 Create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
 
+The confluence-cli config (`~/.confluence-cli/config.json`) is also used for the REST API client. Environment variables `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` work as a fallback.
+
 **Google Docs** — requires `gcloud` with appropriate OAuth scopes (setup docs TBD).
 
 ### Create a manifest
@@ -46,14 +50,18 @@ In any folder under your target root, create `sync-manifest.yaml`:
 touch_dirty_relative_path: ../.dirty
 
 sources:
+  # Minimal — just a URL. Filename auto-derived from page title (e.g. c123456-page-title.md)
   - url: https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title
-    file: page-title.md
 
+  # Explicit filename override (use sparingly — auto is preferred)
   - url: https://docs.google.com/document/d/abc123
     file: design-doc.md
 
-  - url: https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/789/Another+Page
-    file: auto  # auto-derives filename from page title
+  # Full context discovery — linked pages, children, and attachments
+  - url: https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/789/Architecture
+    include_links: true
+    include_children: true
+    include_attachments: true
 ```
 
 ### Run
@@ -70,43 +78,81 @@ brain-sync --root /path/to/target/folder --log-level DEBUG
 
 ## Manifest schema
 
-| Field | Required | Description |
-|---|---|---|
-| `sources` | Yes | List of sources to sync |
-| `sources[*].url` | Yes | URL of the external document |
-| `sources[*].file` | Yes | Output filename (bare name, no path separators), or `auto` to derive from document title |
-| `touch_dirty_relative_path` | No | Path to dirty marker, relative to manifest folder. Defaults to `.dirty` in the manifest folder. |
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `sources` | Yes | | List of sources to sync |
+| `sources[*].url` | Yes | | URL of the external document |
+| `sources[*].file` | No | `auto` | Output filename (bare name, no path separators). `auto` derives a stable ID-anchored filename from the document (e.g. `c123456-page-title.md`) |
+| `sources[*].include_links` | No | `false` | Discover and sync pages linked from this source |
+| `sources[*].include_children` | No | `false` | Discover and sync child pages |
+| `sources[*].include_attachments` | No | `false` | Discover and sync attachments |
+| `sources[*].link_depth` | No | `1` | How many levels of links to follow (0 or 1) |
+| `touch_dirty_relative_path` | No | `.dirty` | Path to dirty marker, relative to manifest folder |
 
 ## How it works
 
 1. **Watcher** detects new/changed/removed `sync-manifest.yaml` files (via `watchdog` + periodic rescan)
-2. **Scheduler** maintains a priority queue with adaptive backoff per source
-3. **Pipeline** for each source: detect type → metadata check → fetch → convert to markdown → atomic write → touch dirty if changed
+2. **Scheduler** maintains a priority queue with adaptive backoff per source, ±20% jitter, persisted across restarts
+3. **Pipeline** for each source: detect type → version check (REST API) → fetch → convert to markdown → context discovery → link rewriting → atomic write → touch dirty if changed
 
 ### Refresh model
 
 | Unchanged duration | Check interval |
 |---|---|
-| < 7 days | 1 hour |
-| 7–14 days | 4 hours |
-| 14–21 days | 12 hours |
-| > 21 days | 7 days |
+| Recently changed | 30 minutes |
+| 1+ week | 1 hour |
+| 2+ weeks | 4 hours |
+| 3+ weeks | 12 hours |
+| 3+ months | 24 hours |
 
-When content changes, the interval resets to 1 hour.
+When content changes, the interval resets to 30 minutes.
 
 ### Confluence features
 
-- Page content fetched and converted to markdown
-- Inline comments appended under a `## Comments` section
-- Metadata version check to skip unnecessary full fetches
+- Page content fetched via REST API (fast version check before full fetch)
+- Inline comments appended under a `## Comments` section (via confluence-cli)
+- Context discovery: linked pages, child pages, attachments stored in `_sync-context/`
+- Context index generated at `_sync-context/_index.md`
+- Confluence URLs in primary markdown rewritten to local relative paths
+- YAML frontmatter on context files for self-description
+
+### Filename convention
+
+All synced files use ID-anchored filenames so identity is stable even when titles change:
+
+| Source | Pattern | Example |
+|---|---|---|
+| Confluence | `c{page_id}-{slug}.md` | `c123456-traveller-profile-service-erd.md` |
+| Google Docs | `g{doc_id}-{slug}.md` | `g1A2B3C-product-prd.md` |
+| Attachments | `a{attachment_id}-{filename}` | `a456789-architecture-diagram.png` |
+
+### Path rediscovery
+
+If a synced file is moved or its parent folder is reorganised, the daemon automatically reconnects it by searching for the canonical filename prefix (e.g. `c123456-`) under the manifest directory. No manual intervention required.
+
+### Output structure
+
+```
+project/
+  sync-manifest.yaml
+  c123456-erd.md                        # primary source
+  _sync-context/
+    _index.md                           # auto-generated context graph
+    linked/
+      c789012-design-overview.md
+    children/
+      c456789-sub-page.md
+    attachments/
+      a456789-diagram.png
+```
 
 ## State
 
-Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the root folder, tracking per source:
-- Last checked/changed timestamps
-- Content hash (SHA-256)
-- Current polling interval
-- Metadata fingerprint (page version)
+Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the root folder, tracking:
+
+- **sources** — per-source scheduling, content hash, metadata fingerprint, polling interval
+- **documents** — canonical ID, URL, title, content hash for all synced documents
+- **relationships** — parent→child links between primary sources and context documents
 
 If the state file is lost or corrupt, the daemon starts fresh (one redundant fetch cycle).
 
@@ -119,12 +165,11 @@ pytest
 
 ### Tests
 
-- **Unit tests** for manifest parsing, state persistence, file operations, scheduler, URL parsing, HTML conversion
-- **Integration tests** with mocked subprocess calls covering the full sync flow: manifest → fetch → write → dirty → state
+156 tests covering: manifest parsing, state persistence (SQLite round-trips, schema migration), file operations (including path rediscovery), scheduler (jitter, adaptive tiers, persistence), URL parsing (all Confluence formats), HTML conversion, context discovery, reconciliation, link rewriting, context index generation, REST client (with mocked responses including 429 retry), and integration tests.
 
 ## Supported sources
 
 | Source | Status | Auth |
 |---|---|---|
-| Confluence | Working | confluence-cli (API token) |
+| Confluence | Working | REST API (basic auth via confluence-cli config or env vars) |
 | Google Docs | Scaffolded | gcloud OAuth (pending setup) |

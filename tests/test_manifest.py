@@ -46,13 +46,13 @@ sources:
         with pytest.raises(ManifestError, match="url is required"):
             load_manifest(p)
 
-    def test_missing_file_raises(self, tmp_path):
+    def test_missing_file_defaults_to_auto(self, tmp_path):
         p = _write_manifest(tmp_path / "sync-manifest.yaml", """
 sources:
-  - url: https://example.com
+  - url: https://example.atlassian.net/wiki/spaces/X/pages/1/Test
 """)
-        with pytest.raises(ManifestError, match="file is required"):
-            load_manifest(p)
+        m = load_manifest(p)
+        assert m.sources[0].file == "auto"
 
     def test_file_with_path_separator_raises(self, tmp_path):
         p = _write_manifest(tmp_path / "sync-manifest.yaml", """
