@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brain-sync"
+version = "0.1.0"
+description = "Cross-platform daemon that syncs external documents into local folders"
+requires-python = ">=3.11"
+dependencies = [
+    "watchdog>=4.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "markdownify>=0.13",
+]
+
+[project.scripts]
+brain-sync = "brain_sync.__main__:main"
