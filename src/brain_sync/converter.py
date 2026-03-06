@@ -6,11 +6,12 @@ from markdownify import markdownify as md
 
 
 def html_to_markdown(html: str) -> str:
+    # Remove script/style tags and their content before conversion
+    cleaned = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
     result = md(
-        html,
+        cleaned,
         heading_style="ATX",
         bullets="-",
-        strip=["script", "style"],
     )
     lines = result.split("\n")
     lines = [line.rstrip() for line in lines]

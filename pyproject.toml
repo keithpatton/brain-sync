@@ -14,5 +14,15 @@ dependencies = [
     "markdownify>=0.13",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+]
+
 [project.scripts]
 brain-sync = "brain_sync.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
