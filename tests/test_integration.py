@@ -29,7 +29,7 @@ from brain_sync.state import (
     SourceState,
     load_state,
     save_state,
-    source_key,
+    source_key_for_entry,
 )
 
 FAKE_PAGE_ID = "12345"
@@ -99,11 +99,10 @@ class TestFullSyncFlow:
         entry = manifest.sources[0]
 
         state = SyncState()
-        key = source_key(str(manifest.path), entry.url)
+        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
-            manifest_path=str(manifest.path),
+            canonical_id=key,
             source_url=entry.url,
-            target_file=entry.file,
             source_type="confluence",
         )
 
@@ -144,11 +143,10 @@ class TestFullSyncFlow:
         entry = manifest.sources[0]
 
         state = SyncState()
-        key = source_key(str(manifest.path), entry.url)
+        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
-            manifest_path=str(manifest.path),
+            canonical_id=key,
             source_url=entry.url,
-            target_file=entry.file,
             source_type="confluence",
         )
 
@@ -189,11 +187,10 @@ class TestFullSyncFlow:
         entry = manifest.sources[0]
 
         state = SyncState()
-        key = source_key(str(manifest.path), entry.url)
+        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
-            manifest_path=str(manifest.path),
+            canonical_id=key,
             source_url=entry.url,
-            target_file=entry.file,
             source_type="confluence",
         )
 
@@ -249,11 +246,12 @@ class TestManifestDiscoveryAndScheduling:
         scheduler = Scheduler()
         for manifest in manifests.values():
             for entry in manifest.sources:
-                key = source_key(str(manifest.path), entry.url)
+                key = source_key_for_entry(entry.url)
                 scheduler.schedule_immediate(key)
 
         due = scheduler.pop_due()
-        assert len(due) == 2
+        # Both manifests reference the same URL, so only 1 canonical key
+        assert len(due) == 1
 
     def test_removed_manifest_source_can_be_pruned(self, tmp_path):
         root = tmp_path / "root"
@@ -263,27 +261,28 @@ class TestManifestDiscoveryAndScheduling:
         state = SyncState()
         for manifest in manifests.values():
             for entry in manifest.sources:
-                key = source_key(str(manifest.path), entry.url)
+                key = source_key_for_entry(entry.url)
                 state.sources[key] = SourceState(
-                    manifest_path=str(manifest.path),
+                    canonical_id=key,
                     source_url=entry.url,
-                    target_file=entry.file,
                     source_type="confluence",
                 )
 
         # Add a stale entry that no longer exists in any manifest
-        state.sources["stale::key"] = SourceState(
-            manifest_path="gone", source_url="gone", target_file="gone.md", source_type="confluence"
+        state.sources["stale:key"] = SourceState(
+            canonical_id="stale:key",
+            source_url="gone",
+            source_type="confluence",
         )
 
         from brain_sync.state import prune_state
         active = {
-            source_key(str(m.path), e.url)
+            source_key_for_entry(e.url)
             for m in manifests.values()
             for e in m.sources
         }
         prune_state(state, active)
-        assert "stale::key" not in state.sources
+        assert "stale:key" not in state.sources
 
 
 class TestStatePersistenceRoundTrip:
@@ -297,11 +296,10 @@ class TestStatePersistenceRoundTrip:
         entry = manifest.sources[0]
 
         state = SyncState()
-        key = source_key(str(manifest.path), entry.url)
+        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
-            manifest_path=str(manifest.path),
+            canonical_id=key,
             source_url=entry.url,
-            target_file=entry.file,
             source_type="confluence",
         )
 

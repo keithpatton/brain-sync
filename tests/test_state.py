@@ -1,25 +1,43 @@
 from brain_sync.state import (
     DocumentState,
+    OutputBinding,
     Relationship,
     SourceState,
     SyncState,
     count_relationships_for_doc,
+    load_all_bindings,
+    load_bindings_for_source,
     load_document,
     load_relationships_for_primary,
     load_state,
+    prune_bindings,
     prune_db,
     prune_state,
     remove_document_if_orphaned,
     remove_relationship,
+    save_bindings,
     save_document,
     save_relationship,
     save_state,
     source_key,
+    source_key_for_entry,
     update_relationship_path,
 )
 
 
-class TestSourceKey:
+class TestSourceKeyForEntry:
+    def test_confluence_url(self):
+        url = "https://test.atlassian.net/wiki/spaces/X/pages/12345/TestPage"
+        result = source_key_for_entry(url)
+        assert result == "confluence:12345"
+
+    def test_google_doc_url(self):
+        url = "https://docs.google.com/document/d/abc123/edit"
+        result = source_key_for_entry(url)
+        assert result == "gdoc:abc123"
+
+
+class TestLegacySourceKey:
     def test_format(self):
         assert source_key("/a/manifest.yaml", "https://example.com") == "/a/manifest.yaml::https://example.com"
 
@@ -27,10 +45,9 @@ class TestSourceKey:
 class TestStatePersistence:
     def test_save_and_load_round_trip(self, tmp_path):
         state = SyncState()
-        state.sources["k1"] = SourceState(
-            manifest_path="/a/m.yaml",
+        state.sources["confluence:123"] = SourceState(
+            canonical_id="confluence:123",
             source_url="https://example.com",
-            target_file="out.md",
             source_type="confluence",
             last_checked_utc="2026-01-01T00:00:00+00:00",
             last_changed_utc="2026-01-01T00:00:00+00:00",
@@ -40,8 +57,8 @@ class TestStatePersistence:
         )
         save_state(tmp_path, state)
         loaded = load_state(tmp_path)
-        assert "k1" in loaded.sources
-        s = loaded.sources["k1"]
+        assert "confluence:123" in loaded.sources
+        s = loaded.sources["confluence:123"]
         assert s.source_url == "https://example.com"
         assert s.content_hash == "abc123"
         assert s.metadata_fingerprint == "42"
@@ -50,28 +67,34 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 2
+        assert state.version == 3
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
-        state.sources["a"] = SourceState(
-            manifest_path="m", source_url="u1", target_file="f1", source_type="confluence"
+        state.sources["confluence:1"] = SourceState(
+            canonical_id="confluence:1",
+            source_url="u1",
+            source_type="confluence",
         )
         save_state(tmp_path, state)
 
-        state.sources["b"] = SourceState(
-            manifest_path="m", source_url="u2", target_file="f2", source_type="confluence"
+        state.sources["confluence:2"] = SourceState(
+            canonical_id="confluence:2",
+            source_url="u2",
+            source_type="confluence",
         )
         save_state(tmp_path, state)
 
         loaded = load_state(tmp_path)
-        assert "a" in loaded.sources
-        assert "b" in loaded.sources
+        assert "confluence:1" in loaded.sources
+        assert "confluence:2" in loaded.sources
 
     def test_sqlite_file_created(self, tmp_path):
         state = SyncState()
-        state.sources["k1"] = SourceState(
-            manifest_path="m", source_url="u", target_file="f", source_type="confluence"
+        state.sources["confluence:1"] = SourceState(
+            canonical_id="confluence:1",
+            source_url="u",
+            source_type="confluence",
         )
         save_state(tmp_path, state)
         assert (tmp_path / ".sync-state.sqlite").exists()
@@ -80,15 +103,19 @@ class TestStatePersistence:
 class TestPruneState:
     def test_removes_stale_keys(self):
         state = SyncState()
-        state.sources["keep"] = SourceState(
-            manifest_path="m", source_url="u1", target_file="f1", source_type="confluence"
+        state.sources["confluence:1"] = SourceState(
+            canonical_id="confluence:1",
+            source_url="u1",
+            source_type="confluence",
         )
-        state.sources["remove"] = SourceState(
-            manifest_path="m", source_url="u2", target_file="f2", source_type="confluence"
+        state.sources["confluence:2"] = SourceState(
+            canonical_id="confluence:2",
+            source_url="u2",
+            source_type="confluence",
         )
-        prune_state(state, active_keys={"keep"})
-        assert "keep" in state.sources
-        assert "remove" not in state.sources
+        prune_state(state, active_keys={"confluence:1"})
+        assert "confluence:1" in state.sources
+        assert "confluence:2" not in state.sources
 
 
 class TestSchemaV2Migration:
@@ -106,15 +133,16 @@ class TestSchemaV2Migration:
 
     def test_next_check_utc_persisted(self, tmp_path):
         state = SyncState()
-        state.sources["k1"] = SourceState(
-            manifest_path="m", source_url="u", target_file="f",
+        state.sources["confluence:1"] = SourceState(
+            canonical_id="confluence:1",
+            source_url="u",
             source_type="confluence",
             next_check_utc="2026-03-08T00:00:00+00:00",
             interval_seconds=3600,
         )
         save_state(tmp_path, state)
         loaded = load_state(tmp_path)
-        s = loaded.sources["k1"]
+        s = loaded.sources["confluence:1"]
         assert s.next_check_utc == "2026-03-08T00:00:00+00:00"
         assert s.interval_seconds == 3600
 
@@ -142,7 +170,7 @@ class TestDocumentCrud:
             title="Old Title",
         )
         save_document(tmp_path, doc)
-        doc.title = "New Title"  # DocumentState is not frozen
+        doc.title = "New Title"
         save_document(tmp_path, doc)
         loaded = load_document(tmp_path, "confluence:456")
         assert loaded.title == "New Title"
@@ -242,16 +270,257 @@ class TestUpdateRelationshipPath:
 class TestPruneDb:
     def test_removes_stale_rows(self, tmp_path):
         state = SyncState()
-        state.sources["keep"] = SourceState(
-            manifest_path="m", source_url="u1", target_file="f1", source_type="confluence"
+        state.sources["confluence:1"] = SourceState(
+            canonical_id="confluence:1",
+            source_url="u1",
+            source_type="confluence",
         )
-        state.sources["remove"] = SourceState(
-            manifest_path="m", source_url="u2", target_file="f2", source_type="confluence"
+        state.sources["confluence:2"] = SourceState(
+            canonical_id="confluence:2",
+            source_url="u2",
+            source_type="confluence",
         )
         save_state(tmp_path, state)
 
-        prune_db(tmp_path, active_keys={"keep"})
+        prune_db(tmp_path, active_keys={"confluence:1"})
 
         loaded = load_state(tmp_path)
-        assert "keep" in loaded.sources
-        assert "remove" not in loaded.sources
+        assert "confluence:1" in loaded.sources
+        assert "confluence:2" not in loaded.sources
+
+
+class TestBindingsCrud:
+    def test_save_and_load_bindings(self, tmp_path):
+        save_state(tmp_path, SyncState())  # ensure DB
+        bindings = [
+            OutputBinding(
+                canonical_id="confluence:100",
+                manifest_path="/a/sync-manifest.yaml",
+                target_file="page.md",
+                include_links=True,
+            ),
+            OutputBinding(
+                canonical_id="confluence:100",
+                manifest_path="/b/sync-manifest.yaml",
+                target_file="page.md",
+            ),
+        ]
+        save_bindings(tmp_path, bindings)
+
+        loaded = load_bindings_for_source(tmp_path, "confluence:100")
+        assert len(loaded) == 2
+        assert loaded[0].include_links is True
+        assert loaded[1].include_links is False
+
+    def test_load_all_bindings(self, tmp_path):
+        save_state(tmp_path, SyncState())
+        bindings = [
+            OutputBinding(canonical_id="confluence:100", manifest_path="/a/m.yaml", target_file="a.md"),
+            OutputBinding(canonical_id="confluence:200", manifest_path="/b/m.yaml", target_file="b.md"),
+        ]
+        save_bindings(tmp_path, bindings)
+
+        all_b = load_all_bindings(tmp_path)
+        assert "confluence:100" in all_b
+        assert "confluence:200" in all_b
+        assert len(all_b["confluence:100"]) == 1
+        assert len(all_b["confluence:200"]) == 1
+
+    def test_prune_bindings(self, tmp_path):
+        save_state(tmp_path, SyncState())
+        bindings = [
+            OutputBinding(canonical_id="confluence:100", manifest_path="/a/m.yaml", target_file="a.md"),
+            OutputBinding(canonical_id="confluence:200", manifest_path="/b/m.yaml", target_file="b.md"),
+        ]
+        save_bindings(tmp_path, bindings)
+
+        prune_bindings(tmp_path, active_canonical_ids={"confluence:100"})
+
+        loaded = load_all_bindings(tmp_path)
+        assert "confluence:100" in loaded
+        assert "confluence:200" not in loaded
+
+    def test_save_replaces_all(self, tmp_path):
+        save_state(tmp_path, SyncState())
+        save_bindings(tmp_path, [
+            OutputBinding(canonical_id="confluence:100", manifest_path="/a/m.yaml", target_file="a.md"),
+        ])
+        # Save new set — old bindings should be gone
+        save_bindings(tmp_path, [
+            OutputBinding(canonical_id="confluence:200", manifest_path="/b/m.yaml", target_file="b.md"),
+        ])
+
+        all_b = load_all_bindings(tmp_path)
+        assert "confluence:100" not in all_b
+        assert "confluence:200" in all_b
+
+
+class TestSchemaV3Migration:
+    def test_v2_to_v3_migration(self, tmp_path):
+        """Simulate a v2 DB and verify migration to v3."""
+        import sqlite3
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        # Create v1 schema
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                source_key TEXT PRIMARY KEY,
+                manifest_path TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                target_file TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 3600,
+                content_hash TEXT,
+                metadata_fingerprint TEXT
+            );
+        """)
+        # Upgrade to v2
+        conn.executescript("""
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+        """)
+        conn.execute("ALTER TABLE sources ADD COLUMN next_check_utc TEXT")
+        conn.execute("ALTER TABLE sources ADD COLUMN interval_seconds INTEGER")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '2')")
+
+        # Insert v2 data
+        conn.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "/proj/sync-manifest.yaml::https://test.atlassian.net/wiki/spaces/X/pages/12345/Page",
+                "/proj/sync-manifest.yaml",
+                "https://test.atlassian.net/wiki/spaces/X/pages/12345/Page",
+                "page.md",
+                "confluence",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                1800,
+                "hash123",
+                "5",
+                "2026-01-01T01:00:00+00:00",
+                3600,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        # Now load_state triggers migration
+        state = load_state(tmp_path)
+
+        assert "confluence:12345" in state.sources
+        ss = state.sources["confluence:12345"]
+        assert ss.source_url == "https://test.atlassian.net/wiki/spaces/X/pages/12345/Page"
+        assert ss.content_hash == "hash123"
+        assert ss.metadata_fingerprint == "5"
+
+        # Bindings should have been created
+        bindings = load_bindings_for_source(tmp_path, "confluence:12345")
+        assert len(bindings) == 1
+        assert bindings[0].manifest_path == "/proj/sync-manifest.yaml"
+        assert bindings[0].target_file == "page.md"
+
+    def test_v2_to_v3_deduplication(self, tmp_path):
+        """Two v2 rows for the same page resolve to one source row."""
+        import sqlite3
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                source_key TEXT PRIMARY KEY,
+                manifest_path TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                target_file TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 3600,
+                content_hash TEXT,
+                metadata_fingerprint TEXT
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+        """)
+        conn.execute("ALTER TABLE sources ADD COLUMN next_check_utc TEXT")
+        conn.execute("ALTER TABLE sources ADD COLUMN interval_seconds INTEGER")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '2')")
+
+        url = "https://test.atlassian.net/wiki/spaces/X/pages/99999/Page"
+
+        # Row A — older, has hash
+        conn.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "/a/sync-manifest.yaml::" + url,
+                "/a/sync-manifest.yaml", url, "a.md", "confluence",
+                "2026-01-01T00:00:00+00:00", None, 1800, "hashA", None, None, None,
+            ),
+        )
+        # Row B — newer, no hash
+        conn.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "/b/sync-manifest.yaml::" + url,
+                "/b/sync-manifest.yaml", url, "b.md", "confluence",
+                "2026-02-01T00:00:00+00:00", None, 1800, None, None, None, None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        state = load_state(tmp_path)
+        # Should have exactly one source row
+        assert len(state.sources) == 1
+        assert "confluence:99999" in state.sources
+
+        # Both bindings should exist
+        bindings = load_bindings_for_source(tmp_path, "confluence:99999")
+        assert len(bindings) == 2
+        manifest_paths = {b.manifest_path for b in bindings}
+        assert "/a/sync-manifest.yaml" in manifest_paths
+        assert "/b/sync-manifest.yaml" in manifest_paths

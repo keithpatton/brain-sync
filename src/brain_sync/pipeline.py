@@ -79,7 +79,6 @@ async def process_source(
     filename = entry.file
     if filename == "auto":
         filename = await _resolve_auto_filename(entry.url, source_type, auth, http_client)
-        source_state.target_file = filename
 
     target = manifest.path.parent / filename
 

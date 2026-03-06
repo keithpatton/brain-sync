@@ -116,6 +116,41 @@ When content changes, the interval resets to 30 minutes.
 - Confluence URLs in primary markdown rewritten to local relative paths
 - YAML frontmatter on context files for self-description
 
+### Context discovery
+
+When a source declares `include_links`, `include_children`, or `include_attachments`, the daemon discovers and syncs related documents alongside the primary source. Context files are stored in `_sync-context/` subdirectories next to the manifest.
+
+| Flag | What it discovers | Storage folder |
+|---|---|---|
+| `include_links: true` | Pages linked from the primary document's HTML body | `_sync-context/linked/` |
+| `include_children: true` | Direct child pages in the Confluence page tree | `_sync-context/children/` |
+| `include_attachments: true` | Files attached to the primary page (images, PDFs, etc.) | `_sync-context/attachments/` |
+
+The `link_depth` field controls how many levels of links are followed from the primary source. Set to `1` (default) to discover pages directly linked from the primary. Set to `0` to disable link discovery even when `include_links` is true. Values greater than 1 are rejected to prevent runaway crawling.
+
+Context documents are **incrementally maintained**:
+
+- **Added** — newly discovered documents are fetched and written on first encounter
+- **Updated** — existing context documents are version-checked each cycle and only re-fetched when the source has changed
+- **Removed** — documents no longer discoverable from the primary are cleaned up automatically
+- **Shared** — if two primary sources both link to the same page, the context file is kept as long as at least one primary still references it
+
+Each context markdown file includes YAML frontmatter with its canonical ID, source URL, relationship type, and parent reference, making files self-describing even without the database.
+
+An auto-generated index at `_sync-context/_index.md` provides a navigable map of all context documents grouped by relationship type.
+
+Confluence URLs appearing in the primary markdown are automatically rewritten to relative paths pointing at the local context files (e.g. `https://...atlassian.net/.../pages/789/...` becomes `./_sync-context/linked/c789-design-overview.md`). Links to pages outside the discovered set are left intact.
+
+### Folder moves and reorganisation
+
+The sync engine identifies documents by **canonical ID** (e.g. `confluence:123456`), not by file path. If you move a `sync-manifest.yaml` and its surrounding folder to a different location under the root, or reorganise files within the manifest directory, the daemon will automatically reconnect:
+
+- On each sync cycle, the daemon checks whether stored file paths still exist
+- If a file has moved, it searches the manifest directory for the canonical filename prefix (e.g. `c123456-`) and reconnects the match
+- The internal database is updated with the new path — no manual intervention required
+
+This means you can freely reorganise your folder structure without breaking sync state.
+
 ### Filename convention
 
 All synced files use ID-anchored filenames so identity is stable even when titles change:
