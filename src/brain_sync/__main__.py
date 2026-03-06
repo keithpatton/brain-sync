@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -51,6 +52,7 @@ def _ensure_source_states(
     manifests: dict[Path, Manifest],
     state: SyncState,
     scheduler: Scheduler,
+    root: Path,
 ) -> dict[str, tuple[Manifest, int]]:
     """Ensure every source in every manifest has state and is scheduled."""
     source_map = _build_source_map(manifests)
@@ -70,8 +72,10 @@ def _ensure_source_states(
             )
             scheduler.schedule_immediate(key)
         elif key not in scheduler._scheduled_keys:
-            interval = compute_interval(state.sources[key].last_changed_utc)
-            scheduler.schedule(key, delay_secs=0)
+            ss = state.sources[key]
+            scheduler.schedule_from_persisted(
+                key, ss.next_check_utc, ss.interval_seconds,
+            )
 
     # Prune state for sources no longer in any manifest
     prune_state(state, set(source_map.keys()))
@@ -90,7 +94,7 @@ async def run(root: Path) -> None:
     # Initial scan
     manifests = discover_manifests(root)
     log.info("Found %d manifest(s) on startup", len(manifests))
-    source_map = _ensure_source_states(manifests, state, scheduler)
+    source_map = _ensure_source_states(manifests, state, scheduler, root)
     save_state(root, state)
 
     watcher.start()
@@ -114,14 +118,14 @@ async def run(root: Path) -> None:
                         else:
                             manifests.pop(path, None)
                             log.info("Manifest removed: %s", path)
-                    source_map = _ensure_source_states(manifests, state, scheduler)
+                    source_map = _ensure_source_states(manifests, state, scheduler, root)
                     save_state(root, state)
 
                 # 2. Periodic full rescan
                 now = time.monotonic()
                 if now - last_rescan >= RESCAN_INTERVAL:
                     manifests = discover_manifests(root)
-                    source_map = _ensure_source_states(manifests, state, scheduler)
+                    source_map = _ensure_source_states(manifests, state, scheduler, root)
                     save_state(root, state)
                     last_rescan = now
 
@@ -138,7 +142,7 @@ async def run(root: Path) -> None:
 
                     try:
                         changed = await process_source(
-                            manifest, entry, ss, http_client
+                            manifest, entry, ss, http_client, root=root
                         )
                         interval = compute_interval(ss.last_changed_utc)
                         ss.current_interval_secs = interval
@@ -151,6 +155,8 @@ async def run(root: Path) -> None:
                         interval = ss.current_interval_secs
 
                     scheduler.reschedule(key, interval)
+                    ss.interval_seconds = interval
+                    ss.next_check_utc = datetime.now(timezone.utc).isoformat()
                     save_state(root, state)
 
                 # 4. Sleep until next event

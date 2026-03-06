@@ -54,3 +54,34 @@ def resolve_dirty_path(manifest: Manifest) -> Path:
 def touch_dirty(dirty_path: Path) -> None:
     dirty_path.parent.mkdir(parents=True, exist_ok=True)
     dirty_path.touch()
+
+
+def _canonical_prefix(canonical_id: str) -> str:
+    """Convert a canonical_id to the filename prefix used for rediscovery."""
+    if canonical_id.startswith("confluence-attachment:"):
+        return f"a{canonical_id.split(':', 1)[1]}-"
+    if canonical_id.startswith("confluence:"):
+        return f"c{canonical_id.split(':', 1)[1]}-"
+    if canonical_id.startswith("gdoc:"):
+        return f"g{canonical_id.split(':', 1)[1]}-"
+    return canonical_id.split(":", 1)[1] + "-"
+
+
+def rediscover_local_path(root: Path, canonical_id: str) -> Path | None:
+    """Search root recursively for a file matching the canonical_id prefix.
+
+    Returns the first matching path relative to root, or None.
+    Only called when the stored local_path no longer exists.
+    """
+    prefix = _canonical_prefix(canonical_id)
+    resolved_root = root.resolve()
+    for path in resolved_root.rglob(f"{prefix}*"):
+        if path.is_file():
+            return path
+    # Also try without trailing content (e.g. "c123456.md" for titleless docs)
+    bare_prefix = prefix.rstrip("-")
+    if bare_prefix != prefix:
+        for path in resolved_root.rglob(f"{bare_prefix}.*"):
+            if path.is_file():
+                return path
+    return None

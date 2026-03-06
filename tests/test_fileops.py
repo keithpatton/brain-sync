@@ -2,6 +2,7 @@ from pathlib import Path
 
 from brain_sync.fileops import (
     content_hash,
+    rediscover_local_path,
     resolve_dirty_path,
     touch_dirty,
     write_if_changed,
@@ -82,3 +83,54 @@ class TestTouchDirty:
         touch_dirty(dirty)
         mtime2 = dirty.stat().st_mtime
         assert mtime2 > mtime1
+
+
+class TestRediscoverLocalPath:
+    def test_finds_confluence_page(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        f = tmp_path / "sub" / "c123456-my-page.md"
+        f.write_text("content")
+        result = rediscover_local_path(tmp_path, "confluence:123456")
+        assert result is not None
+        assert result.name == "c123456-my-page.md"
+
+    def test_finds_attachment(self, tmp_path):
+        (tmp_path / "attachments").mkdir()
+        f = tmp_path / "attachments" / "a789-diagram.png"
+        f.write_bytes(b"png")
+        result = rediscover_local_path(tmp_path, "confluence-attachment:789")
+        assert result is not None
+        assert result.name == "a789-diagram.png"
+
+    def test_finds_google_doc(self, tmp_path):
+        f = tmp_path / "gABC123-my-doc.md"
+        f.write_text("content")
+        result = rediscover_local_path(tmp_path, "gdoc:ABC123")
+        assert result is not None
+        assert result.name == "gABC123-my-doc.md"
+
+    def test_returns_none_when_not_found(self, tmp_path):
+        result = rediscover_local_path(tmp_path, "confluence:999999")
+        assert result is None
+
+    def test_finds_titleless_file(self, tmp_path):
+        f = tmp_path / "c456.md"
+        f.write_text("content")
+        result = rediscover_local_path(tmp_path, "confluence:456")
+        assert result is not None
+        assert result.name == "c456.md"
+
+    def test_finds_in_nested_dir(self, tmp_path):
+        nested = tmp_path / "deep" / "nested" / "dir"
+        nested.mkdir(parents=True)
+        f = nested / "c100-moved-here.md"
+        f.write_text("content")
+        result = rediscover_local_path(tmp_path, "confluence:100")
+        assert result is not None
+        assert result.name == "c100-moved-here.md"
+
+    def test_ignores_directories(self, tmp_path):
+        d = tmp_path / "c100-not-a-file"
+        d.mkdir()
+        result = rediscover_local_path(tmp_path, "confluence:100")
+        assert result is None

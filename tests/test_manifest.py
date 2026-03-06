@@ -96,6 +96,48 @@ sources:
         assert len(m.sources) == 1
 
 
+class TestManifestContextFields:
+    def test_defaults_off(self, tmp_path):
+        p = _write_manifest(tmp_path / "sync-manifest.yaml", """
+sources:
+  - url: https://example.atlassian.net/wiki/spaces/X/pages/1/Test
+    file: test.md
+""")
+        m = load_manifest(p)
+        s = m.sources[0]
+        assert s.include_links is False
+        assert s.include_children is False
+        assert s.include_attachments is False
+        assert s.link_depth == 1
+
+    def test_context_fields_parsed(self, tmp_path):
+        p = _write_manifest(tmp_path / "sync-manifest.yaml", """
+sources:
+  - url: https://example.atlassian.net/wiki/spaces/X/pages/1/Test
+    file: test.md
+    include_links: true
+    include_children: true
+    include_attachments: true
+    link_depth: 0
+""")
+        m = load_manifest(p)
+        s = m.sources[0]
+        assert s.include_links is True
+        assert s.include_children is True
+        assert s.include_attachments is True
+        assert s.link_depth == 0
+
+    def test_invalid_link_depth_raises(self, tmp_path):
+        p = _write_manifest(tmp_path / "sync-manifest.yaml", """
+sources:
+  - url: https://example.atlassian.net/wiki/spaces/X/pages/1/Test
+    file: test.md
+    link_depth: 2
+""")
+        with pytest.raises(ManifestError, match="link_depth must be 0 or 1"):
+            load_manifest(p)
+
+
 class TestDiscoverManifests:
     def test_finds_nested_manifests(self, tmp_path):
         _write_manifest(tmp_path / "a" / "sync-manifest.yaml", """

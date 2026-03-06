@@ -1,7 +1,8 @@
 import time
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
-from brain_sync.scheduler import BASE_INTERVAL, Scheduler, compute_interval
+from brain_sync.scheduler import BASE_INTERVAL, Scheduler, _jittered, compute_interval
 
 
 class TestComputeInterval:
@@ -14,15 +15,19 @@ class TestComputeInterval:
 
     def test_unchanged_8_days(self):
         ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
-        assert compute_interval(ts) == 4 * 3600  # 4 hours
+        assert compute_interval(ts) == 3600  # 1 hour
 
     def test_unchanged_15_days(self):
         ts = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
-        assert compute_interval(ts) == 12 * 3600  # 12 hours
+        assert compute_interval(ts) == 4 * 3600  # 4 hours
 
     def test_unchanged_22_days(self):
         ts = (datetime.now(timezone.utc) - timedelta(days=22)).isoformat()
-        assert compute_interval(ts) == 7 * 24 * 3600  # 7 days
+        assert compute_interval(ts) == 12 * 3600  # 12 hours
+
+    def test_unchanged_91_days(self):
+        ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+        assert compute_interval(ts) == 24 * 3600  # 24 hours
 
 
 class TestScheduler:
@@ -78,3 +83,64 @@ class TestScheduler:
         s.schedule("a", delay_secs=0)  # should be ignored
         due = s.pop_due()
         assert due.count("a") == 1
+
+
+class TestJitter:
+    def test_jitter_within_bounds(self):
+        for _ in range(100):
+            result = _jittered(1000)
+            assert 800 <= result <= 1200
+
+    def test_jitter_spread(self):
+        """Verify jitter actually varies (not constant)."""
+        results = {_jittered(1000) for _ in range(50)}
+        assert len(results) > 1
+
+    def test_reschedule_uses_jitter(self):
+        s = Scheduler()
+        s.schedule("a", delay_secs=0)
+        s.pop_due()
+        s.reschedule("a", interval_secs=1000)
+        ndi = s.next_due_in()
+        assert ndi is not None
+        assert 799 < ndi <= 1200
+
+
+class TestScheduleFromPersisted:
+    def test_none_schedules_immediately(self):
+        s = Scheduler()
+        s.schedule_from_persisted("a", None, None)
+        due = s.pop_due()
+        assert "a" in due
+
+    def test_past_schedules_immediately(self):
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        s = Scheduler()
+        s.schedule_from_persisted("a", past, 3600)
+        due = s.pop_due()
+        assert "a" in due
+
+    def test_future_schedules_with_delay(self):
+        future = (datetime.now(timezone.utc) + timedelta(seconds=100)).isoformat()
+        s = Scheduler()
+        s.schedule_from_persisted("a", future, 3600)
+        due = s.pop_due()
+        assert "a" not in due
+        ndi = s.next_due_in()
+        assert ndi is not None
+        assert 98 < ndi <= 101
+
+    def test_far_future_clamped(self):
+        far = (datetime.now(timezone.utc) + timedelta(days=60)).isoformat()
+        s = Scheduler()
+        s.schedule_from_persisted("a", far, 3600)
+        ndi = s.next_due_in()
+        assert ndi is not None
+        # Should be clamped to interval_seconds (3600), not 60 days
+        assert ndi <= 3601
+
+    def test_invalid_timestamp_schedules_immediately(self):
+        s = Scheduler()
+        s.schedule_from_persisted("a", "not-a-date", None)
+        due = s.pop_due()
+        assert "a" in due

@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import heapq
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-BASE_INTERVAL = 3600          # 1 hour
+BASE_INTERVAL = 1800          # 30 minutes
 MAX_ERROR_BACKOFF = 86400     # 24 hours
+MAX_FUTURE_CLAMP = 30 * 24 * 3600  # 30 days
 
 # (unchanged_days_threshold, interval_seconds)
 BACKOFF_TIERS = [
-    (21, 7 * 24 * 3600),   # 7 days
-    (14, 12 * 3600),        # 12 hours
-    (7, 4 * 3600),          # 4 hours
-    (0, BASE_INTERVAL),     # 1 hour
+    (90, 24 * 3600),    # 3+ months stable → 24 hours
+    (21, 12 * 3600),    # 3+ weeks stable  → 12 hours
+    (14, 4 * 3600),     # 2+ weeks stable  → 4 hours
+    (7, 3600),          # 1+ week stable   → 1 hour
+    (0, BASE_INTERVAL), # recently changed  → 30 minutes
 ]
 
 
@@ -29,6 +32,12 @@ def compute_interval(last_changed_utc: str | None) -> int:
             return interval
 
     return BASE_INTERVAL
+
+
+def _jittered(interval_secs: int) -> float:
+    """Apply ±20% random jitter to spread out polling."""
+    jitter = interval_secs * 0.2
+    return interval_secs + random.uniform(-jitter, jitter)
 
 
 @dataclass(order=True)
@@ -56,6 +65,35 @@ class Scheduler:
         self._scheduled_keys.discard(source_key)
         self.schedule(source_key, delay_secs=0)
 
+    def schedule_from_persisted(
+        self, source_key: str, next_check_utc: str | None, interval_seconds: int | None
+    ) -> None:
+        """Schedule a source using persisted timing from DB."""
+        if source_key in self._scheduled_keys:
+            return
+        if next_check_utc is None:
+            self.schedule(source_key, delay_secs=0)
+            return
+
+        try:
+            next_dt = datetime.fromisoformat(next_check_utc)
+        except (ValueError, TypeError):
+            self.schedule(source_key, delay_secs=0)
+            return
+
+        now = datetime.now(timezone.utc)
+        delta = (next_dt - now).total_seconds()
+
+        # Clamp: if too far in the future, use interval instead
+        if delta > MAX_FUTURE_CLAMP:
+            delta = float(interval_seconds) if interval_seconds else 0
+
+        # If in the past, schedule immediately
+        if delta < 0:
+            delta = 0
+
+        self.schedule(source_key, delay_secs=delta)
+
     def pop_due(self) -> list[str]:
         now = time.monotonic()
         due: list[str] = []
@@ -68,7 +106,7 @@ class Scheduler:
 
     def reschedule(self, source_key: str, interval_secs: int) -> None:
         self._scheduled_keys.discard(source_key)
-        self.schedule(source_key, delay_secs=interval_secs)
+        self.schedule(source_key, delay_secs=_jittered(interval_secs))
 
     def remove(self, source_key: str) -> None:
         self._scheduled_keys.discard(source_key)

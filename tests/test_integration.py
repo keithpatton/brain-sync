@@ -326,4 +326,4 @@ class TestStatePersistenceRoundTrip:
 
         # Interval should be base (recently changed)
         interval = compute_interval(ss.last_changed_utc)
-        assert interval == 3600
+        assert interval == 1800
