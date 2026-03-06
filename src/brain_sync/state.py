@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -29,6 +29,65 @@ CREATE TABLE IF NOT EXISTS sources (
     metadata_fingerprint TEXT
 );
 """
+
+# --- DDL used for fresh DB creation (current schema) ---
+
+_SOURCES_DDL = """
+CREATE TABLE IF NOT EXISTS sources (
+    canonical_id TEXT PRIMARY KEY,
+    source_url TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    last_checked_utc TEXT,
+    last_changed_utc TEXT,
+    current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+    content_hash TEXT,
+    metadata_fingerprint TEXT,
+    next_check_utc TEXT,
+    interval_seconds INTEGER
+);
+"""
+
+_DOCUMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS documents (
+    canonical_id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    url TEXT NOT NULL UNIQUE,
+    title TEXT,
+    last_checked_utc TEXT,
+    last_changed_utc TEXT,
+    content_hash TEXT,
+    metadata_fingerprint TEXT,
+    mime_type TEXT
+);
+"""
+
+_RELATIONSHIPS_DDL = """
+CREATE TABLE IF NOT EXISTS relationships (
+    parent_canonical_id TEXT NOT NULL,
+    canonical_id TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    first_seen_utc TEXT,
+    last_seen_utc TEXT,
+    PRIMARY KEY (parent_canonical_id, canonical_id)
+);
+"""
+
+_BINDINGS_DDL = """
+CREATE TABLE IF NOT EXISTS source_bindings (
+    canonical_id TEXT NOT NULL,
+    manifest_path TEXT NOT NULL,
+    target_file TEXT NOT NULL,
+    include_links INTEGER NOT NULL DEFAULT 0,
+    include_children INTEGER NOT NULL DEFAULT 0,
+    include_attachments INTEGER NOT NULL DEFAULT 0,
+    link_depth INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (canonical_id, manifest_path)
+);
+"""
+
+# --- DDL used only during migrations from older schemas ---
 
 _SCHEMA_V2_ADDITIONS = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -55,7 +114,7 @@ CREATE TABLE IF NOT EXISTS relationships (
 );
 """
 
-_SCHEMA_V3_SOURCES = """
+_MIGRATION_V3_SOURCES = """
 CREATE TABLE IF NOT EXISTS sources_v3 (
     canonical_id TEXT PRIMARY KEY,
     source_url TEXT NOT NULL,
@@ -70,7 +129,7 @@ CREATE TABLE IF NOT EXISTS sources_v3 (
 );
 """
 
-_SCHEMA_V3_BINDINGS = """
+_MIGRATION_V3_BINDINGS = """
 CREATE TABLE IF NOT EXISTS source_bindings (
     canonical_id TEXT NOT NULL,
     manifest_path TEXT NOT NULL,
@@ -186,11 +245,10 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
 
     if from_version < 3:
         # Create new sources table with canonical_id PK
-        conn.executescript(_SCHEMA_V3_SOURCES)
-        conn.executescript(_SCHEMA_V3_BINDINGS)
+        conn.executescript(_MIGRATION_V3_SOURCES)
+        conn.executescript(_MIGRATION_V3_BINDINGS)
 
         # Migrate data from old sources table
-        # Collect all rows, grouped by computed canonical_id
         rows = conn.execute(
             "SELECT source_key, manifest_path, source_url, target_file, source_type, "
             "last_checked_utc, last_changed_utc, current_interval_secs, "
@@ -211,14 +269,6 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
             # 1. Prefer most recent last_checked_utc (descending)
             # 2. If tied, prefer non-null content_hash
             # 3. If still tied, prefer smallest manifest_path (ascending)
-            def _winner_key(r: tuple) -> tuple:
-                return (
-                    r[5] or "",           # latest last_checked_utc (max)
-                    r[8] is not None,     # has content_hash (True > False)
-                    -(ord(r[1][0]) if r[1] else 0),  # dummy for tiebreak
-                )
-
-            # Sort ascending by (last_checked, has_hash), then pick candidates
             best = max(group, key=lambda r: (r[5] or "", r[8] is not None))
             candidates = [
                 r for r in group
@@ -262,6 +312,41 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute("ALTER TABLE sources_v3 RENAME TO sources")
 
         conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema from v%d to v3", from_version)
+        from_version = 3
+
+    if from_version < 4:
+        # v3 → v4: Add FK CASCADE on relationships, UNIQUE(url) on documents
+
+        # Add UNIQUE constraint on documents.url
+        # Deduplicate first (shouldn't happen, but be safe)
+        conn.execute("""
+            DELETE FROM documents WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM documents GROUP BY url
+            )
+        """)
+        # Recreate documents with UNIQUE(url)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS documents_v4 (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO documents_v4 SELECT * FROM documents")
+        conn.execute("DROP TABLE IF EXISTS documents")
+        conn.execute("ALTER TABLE documents_v4 RENAME TO documents")
+
+        conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
@@ -275,6 +360,7 @@ def _connect(root: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
 
     # Check if DB is fresh (no tables yet)
     tables = {
@@ -284,29 +370,17 @@ def _connect(root: Path) -> sqlite3.Connection:
     }
 
     if not tables or "meta" not in tables:
-        # Fresh DB — create v3 schema directly
+        # Fresh DB — create current schema directly
         conn.execute("""
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )
         """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sources (
-                canonical_id TEXT PRIMARY KEY,
-                source_url TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                last_checked_utc TEXT,
-                last_changed_utc TEXT,
-                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
-                content_hash TEXT,
-                metadata_fingerprint TEXT,
-                next_check_utc TEXT,
-                interval_seconds INTEGER
-            )
-        """)
-        conn.executescript(_SCHEMA_V2_ADDITIONS)
-        conn.executescript(_SCHEMA_V3_BINDINGS)
+        conn.executescript(_SOURCES_DDL)
+        conn.executescript(_DOCUMENTS_DDL)
+        conn.executescript(_RELATIONSHIPS_DDL)
+        conn.executescript(_BINDINGS_DDL)
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -414,10 +488,14 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
 
 
 # --- Binding operations ---
+# Bindings are rebuilt from live manifests on every _ensure_source_states call.
+# save_bindings does DELETE ALL + re-insert in a single transaction, so stale
+# bindings from moved/renamed folders are impossible — every scan produces a
+# fresh, consistent set derived from the current filesystem state.
 
 
 def save_bindings(root: Path, bindings: list[OutputBinding]) -> None:
-    """Replace all source_bindings with the given list."""
+    """Replace all source_bindings with the given list (atomic rebuild)."""
     conn = _connect(root)
     try:
         conn.execute("DELETE FROM source_bindings")
@@ -674,7 +752,11 @@ def count_relationships_for_doc(root: Path, canonical_id: str) -> int:
 
 
 def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
-    """Remove a document only if no relationships reference it. Returns True if removed."""
+    """Remove a document only if no relationships reference it. Returns True if removed.
+
+    With FK CASCADE on relationships.canonical_id, deleting a document also
+    removes any relationships that reference it as the child side.
+    """
     if count_relationships_for_doc(root, canonical_id) > 0:
         return False
     conn = _connect(root)

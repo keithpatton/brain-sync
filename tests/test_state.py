@@ -67,7 +67,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 3
+        assert state.version == 4
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -524,3 +524,114 @@ class TestSchemaV3Migration:
         manifest_paths = {b.manifest_path for b in bindings}
         assert "/a/sync-manifest.yaml" in manifest_paths
         assert "/b/sync-manifest.yaml" in manifest_paths
+
+
+class TestSchemaV4Migration:
+    def test_v3_to_v4_adds_unique_url(self, tmp_path):
+        """v3 DB migrates to v4: documents get UNIQUE(url)."""
+        import sqlite3
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        # Create v3 schema directly
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                canonical_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                next_check_utc TEXT,
+                interval_seconds INTEGER
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+            CREATE TABLE source_bindings (
+                canonical_id TEXT NOT NULL,
+                manifest_path TEXT NOT NULL,
+                target_file TEXT NOT NULL,
+                include_links INTEGER NOT NULL DEFAULT 0,
+                include_children INTEGER NOT NULL DEFAULT 0,
+                include_attachments INTEGER NOT NULL DEFAULT 0,
+                link_depth INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (canonical_id, manifest_path)
+            );
+        """)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '3')")
+
+        # Insert test data
+        conn.execute(
+            "INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("confluence:100", "confluence",
+             "https://x.atlassian.net/wiki/spaces/S/pages/100", "Page", None, None, None, None, None),
+        )
+        conn.execute(
+            "INSERT INTO relationships VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("confluence:1", "confluence:100", "link", "linked/c100.md", "confluence", None, None),
+        )
+        conn.commit()
+        conn.close()
+
+        # load_state triggers v3→v4 migration
+        state = load_state(tmp_path)
+
+        # Verify schema version is 4
+        conn = sqlite3.connect(str(db_path))
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        assert version == "4"
+
+        # Data preserved
+        rels = load_relationships_for_primary(tmp_path, "confluence:1")
+        assert len(rels) == 1
+        assert rels[0].canonical_id == "confluence:100"
+
+        doc = load_document(tmp_path, "confluence:100")
+        assert doc is not None
+        assert doc.title == "Page"
+
+        conn.close()
+
+    def test_documents_url_unique_enforced(self, tmp_path):
+        """After v4, inserting duplicate URL into documents raises."""
+        save_state(tmp_path, SyncState())  # creates v4 DB
+
+        doc1 = DocumentState(
+            canonical_id="confluence:100",
+            source_type="confluence",
+            url="https://x.atlassian.net/wiki/spaces/S/pages/100",
+        )
+        save_document(tmp_path, doc1)
+
+        # Different canonical_id, same URL — should fail
+        doc2 = DocumentState(
+            canonical_id="confluence:200",
+            source_type="confluence",
+            url="https://x.atlassian.net/wiki/spaces/S/pages/100",
+        )
+        import pytest
+        with pytest.raises(Exception):
+            save_document(tmp_path, doc2)
