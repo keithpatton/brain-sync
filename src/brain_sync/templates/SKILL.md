@@ -76,22 +76,68 @@ context, or ask.
 - **Read** everything: knowledge/, insights/
 - **Do not write** to insights/ — insights are regenerated asynchronously
   by brain-sync when knowledge changes
-- **May run** brain-sync CLI commands when the user asks to manage sync sources
+- **May manage** sync sources when the user asks
 
-### Managing sync sources
+### Managing sync sources — Python API (preferred)
 
-To add a sync source: `brain-sync add <url> --path <knowledge-relative-path>`
-To list sources: `brain-sync list`
-To remove: `brain-sync remove <canonical-id-or-url>`
-To move: `brain-sync move <canonical-id> --to <new-path>`
+When possible, use the importable Python API instead of CLI subprocess
+calls. This avoids permission prompts and root discovery issues.
 
-### Sub-command: sync
+```python
+from brain_sync.commands import (
+    add_source, remove_source, list_sources, move_source,
+)
+from brain_sync.regen import regen_path, regen_all
+```
 
-If $ARGUMENTS starts with "sync", this is a request to set up syncing for a URL.
-Expected form: `sync <url> to <relative-knowledge-path>`
+All functions auto-discover the brain root from `~/.brain-sync/config.json`
+when called without an explicit `root` argument.
 
-Run `brain-sync add <url> --path <relative-knowledge-path>` via Bash to register
-the source. Report the result and confirm brain-sync will pick it up on next run.
+| Function | Usage |
+|---|---|
+| `add_source(url=url, target_path=path)` | Register a URL for syncing |
+| `remove_source(source=id_or_url)` | Unregister a source |
+| `list_sources()` | List registered sources |
+| `move_source(source=id, to_path=path)` | Move a source |
+| `regen_path(root, path)` | Regenerate insights for a path |
+| `regen_all(root)` | Regenerate all insights |
+
+### CLI fallback
+
+Use CLI commands only when Python import is unavailable. The `--root`
+flag is optional — if omitted, the brain root is read from config.
+
+| Command | Usage |
+|---|---|
+| `brain-sync add <url> --path <path>` | Register a URL for syncing |
+| `brain-sync remove <id-or-url>` | Unregister a source |
+| `brain-sync list` | List registered sources |
+| `brain-sync move <id> --to <path>` | Move a source |
+| `brain-sync regen [<path>]` | Manually trigger insight regen |
+
+Optional flags for `add`: `--include-links`, `--include-children`,
+`--include-attachments`
+
+### Commands you should NOT invoke
+
+Do not run these unless the user explicitly asks:
+
+- `brain-sync init` — creates a new brain
+- `brain-sync run` — starts the long-running daemon
+- `brain-sync update-skill` — reinstalls skill templates
+
+### Interpreting sync requests
+
+When the user asks to "sync", "add", or "track" a URL, use:
+
+```python
+from brain_sync.commands import add_source
+result = add_source(url="<url>", target_path="<knowledge-path>")
+```
+
+Infer `target_path` from the URL content type (e.g. a Confluence page
+about "Architecture" → `target_path="architecture"`). Ask the user to
+confirm the path if uncertain.
 
 ## Step 4: Orient and confirm
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 import sys
 import time
 from datetime import datetime, timezone
@@ -146,6 +145,17 @@ async def run(root: Path) -> None:
 
 def main() -> None:
     from brain_sync.cli import build_parser
+    from brain_sync.cli.handlers import (
+        handle_add,
+        handle_init,
+        handle_list,
+        handle_move,
+        handle_regen,
+        handle_remove,
+        handle_run,
+        handle_status,
+        handle_update_skill,
+    )
 
     parser = build_parser()
     args = parser.parse_args()
@@ -156,100 +166,21 @@ def main() -> None:
 
     setup_logging(args.log_level)
 
-    if args.command == "init":
-        from brain_sync.cli.init import run_init
-        run_init(args.root, dry_run=args.dry_run)
+    handlers = {
+        "init": handle_init,
+        "run": handle_run,
+        "add": handle_add,
+        "remove": handle_remove,
+        "list": handle_list,
+        "move": handle_move,
+        "status": handle_status,
+        "regen": handle_regen,
+        "update-skill": handle_update_skill,
+    }
 
-    elif args.command == "run":
-        root = args.root.resolve()
-        if not root.is_dir():
-            print(f"Error: --root '{root}' is not a directory", file=sys.stderr)
-            sys.exit(1)
-
-        loop = asyncio.new_event_loop()
-
-        def _shutdown(sig: int, frame: object) -> None:
-            log.info("Received signal %s, shutting down...", sig)
-            for task in asyncio.all_tasks(loop):
-                task.cancel()
-
-        signal.signal(signal.SIGINT, _shutdown)
-        if sys.platform != "win32":
-            signal.signal(signal.SIGTERM, _shutdown)
-
-        try:
-            loop.run_until_complete(run(root))
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
-        finally:
-            loop.close()
-
-    elif args.command == "add":
-        from brain_sync.cli.sources import run_add
-        run_add(
-            args.root.resolve(), args.url, args.target_path,
-            include_links=args.include_links,
-            include_children=args.include_children,
-            include_attachments=args.include_attachments,
-        )
-
-    elif args.command == "remove":
-        from brain_sync.cli.sources import run_remove
-        run_remove(args.root.resolve(), args.source, delete_files=args.delete_files)
-
-    elif args.command == "list":
-        from brain_sync.cli.sources import run_list
-        run_list(args.root.resolve(), filter_path=args.filter_path, show_status=args.status)
-
-    elif args.command == "move":
-        from brain_sync.cli.sources import run_move
-        run_move(args.root.resolve(), args.source, args.to_path)
-
-    elif args.command == "status":
-        print("Status not yet implemented")
-
-    elif args.command == "regen":
-        root = args.root.resolve()
-        knowledge_path = args.knowledge_path or ""
-
-        if knowledge_path:
-            from brain_sync.regen import regen_path as _regen_path
-
-            knowledge_dir = root / "knowledge" / knowledge_path
-            if not knowledge_dir.is_dir():
-                print(f"Error: knowledge path '{knowledge_path}' does not exist", file=sys.stderr)
-                sys.exit(1)
-
-            print(f"Regenerating insights for: {knowledge_path}")
-            loop = asyncio.new_event_loop()
-            try:
-                count = loop.run_until_complete(_regen_path(root, knowledge_path))
-                print(f"Done. {count} summary/summaries regenerated.")
-            except Exception as e:
-                print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
-            finally:
-                loop.close()
-        else:
-            from brain_sync.regen import regen_all as _regen_all
-
-            print("Regenerating insights for all knowledge paths...")
-            loop = asyncio.new_event_loop()
-            try:
-                count = loop.run_until_complete(_regen_all(root))
-                print(f"Done. {count} summary/summaries regenerated.")
-            except Exception as e:
-                print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
-            finally:
-                loop.close()
-
-    elif args.command == "update-skill":
-        from brain_sync.cli.init import _copy_template, SKILL_INSTALL_DIR
-        _copy_template("SKILL.md", SKILL_INSTALL_DIR / "SKILL.md")
-        _copy_template("INSTRUCTIONS.md", SKILL_INSTALL_DIR / "INSTRUCTIONS.md")
-        print("Skill updated (SKILL.md + INSTRUCTIONS.md)")
-
+    handler = handlers.get(args.command)
+    if handler:
+        handler(args)
     else:
         parser.print_help()
         sys.exit(1)

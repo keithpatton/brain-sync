@@ -1,35 +1,37 @@
+"""Brain initialisation and skill installation commands."""
 from __future__ import annotations
 
 import json
 import logging
 import shutil
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
+
+from brain_sync.commands.context import CONFIG_DIR, CONFIG_FILE
 
 log = logging.getLogger(__name__)
 
 SKILL_INSTALL_DIR = Path.home() / ".claude" / "skills" / "brain-sync"
-CONFIG_DIR = Path.home() / ".brain-sync"
-CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def _template_path(name: str) -> Path:
     """Get the path to a template file bundled with the package."""
     ref = resources.files("brain_sync.templates").joinpath(name)
-    # resources.files returns a Traversable; for reading we need the real path
     with resources.as_file(ref) as p:
         return Path(p)
 
 
-def _copy_template(name: str, dest: Path, dry_run: bool = False) -> None:
-    """Copy a template file to dest, creating parent dirs as needed."""
+def _copy_template(name: str, dest: Path, dry_run: bool = False) -> bool:
+    """Copy a template file to dest. Returns True if copied."""
     if dry_run:
         log.info("[dry-run] Would copy template %s -> %s", name, dest)
-        return
+        return False
     src = _template_path(name)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(src), str(dest))
     log.info("Installed %s", dest)
+    return True
 
 
 def _ensure_dir(path: Path, dry_run: bool = False) -> bool:
@@ -68,40 +70,48 @@ def _register_brain_root(root: Path, dry_run: bool = False) -> None:
         log.info("Registered brain root in %s", CONFIG_FILE)
 
 
-def run_init(root: Path, dry_run: bool = False) -> None:
+@dataclass
+class InitResult:
+    root: Path
+    was_existing: bool
+    dirs_created: list[str] = field(default_factory=list)
+
+
+def init_brain(root: Path, *, dry_run: bool = False) -> InitResult:
     """Initialise a brain at the given root directory."""
     root = root.resolve()
-    is_existing = root.exists()
+    was_existing = root.exists()
 
-    if not is_existing:
+    if not was_existing:
         _ensure_dir(root, dry_run)
 
-    print(f"{'[dry-run] ' if dry_run else ''}Initialising brain at: {root}")
-    if is_existing:
-        print("  Existing directory detected, will add missing structure")
+    dirs_created: list[str] = []
+    for rel in ["knowledge", "knowledge/_core", "insights", "insights/_core"]:
+        if _ensure_dir(root / rel, dry_run):
+            dirs_created.append(rel)
 
-    # Create required directories
-    _ensure_dir(root / "knowledge", dry_run)
-    _ensure_dir(root / "knowledge" / "_core", dry_run)
-    _ensure_dir(root / "insights", dry_run)
-    _ensure_dir(root / "insights" / "_core", dry_run)
-
-    # Install skill (SKILL.md + INSTRUCTIONS.md into skill dir)
     _copy_template("SKILL.md", SKILL_INSTALL_DIR / "SKILL.md", dry_run)
     _copy_template("INSTRUCTIONS.md", SKILL_INSTALL_DIR / "INSTRUCTIONS.md", dry_run)
 
-    # Initialise SQLite (importing here to avoid circular deps)
     if not dry_run:
         from brain_sync.state import _connect
         conn = _connect(root)
         conn.close()
         log.info("SQLite state database ready at %s", root / ".sync-state.sqlite")
 
-    # Register in config
     _register_brain_root(root, dry_run)
 
-    print(f"{'[dry-run] ' if dry_run else ''}Brain initialised successfully")
-    print(f"  knowledge/       - Add your content here")
-    print(f"  knowledge/_core/ - Always-loaded reference material")
-    print(f"  insights/        - Auto-generated summaries and journal")
-    print(f"  Skill installed to {SKILL_INSTALL_DIR}")
+    return InitResult(root=root, was_existing=was_existing, dirs_created=dirs_created)
+
+
+def update_skill() -> list[Path]:
+    """Re-install SKILL.md and INSTRUCTIONS.md from templates.
+
+    Returns list of updated file paths.
+    """
+    updated: list[Path] = []
+    for name in ["SKILL.md", "INSTRUCTIONS.md"]:
+        dest = SKILL_INSTALL_DIR / name
+        _copy_template(name, dest)
+        updated.append(dest)
+    return updated
