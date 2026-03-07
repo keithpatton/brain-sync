@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS insight_state (
     regen_status TEXT NOT NULL DEFAULT 'idle',
     retry_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER,
-    output_tokens INTEGER
+    output_tokens INTEGER,
+    num_turns INTEGER,
+    model TEXT
 );
 """
 
@@ -198,6 +200,8 @@ class InsightState:
     retry_count: int = 0
     input_tokens: int | None = None
     output_tokens: int | None = None
+    num_turns: int | None = None
+    model: str | None = None
 
 
 @dataclass
@@ -441,11 +445,40 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             conn.execute("ALTER TABLE insight_state ADD COLUMN output_tokens INTEGER")
 
         conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '6')",
+        )
+        conn.commit()
+        from_version = 6
+
+    if from_version < 7:
+        # v6 → v7: Add num_turns and model to insight_state
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
+        }
+        if "num_turns" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN num_turns INTEGER")
+        if "model" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN model TEXT")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '7')",
+        )
+        conn.commit()
+        from_version = 7
+
+    if from_version < 8:
+        # v7 → v8: Drop cost_usd column
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
+        }
+        if "cost_usd" in existing_cols:
+            conn.execute("ALTER TABLE insight_state DROP COLUMN cost_usd")
+        conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
-        log.info("Migrated DB schema from v%d to v%d", from_version, SCHEMA_VERSION)
+
+    log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
 
 def _connect(root: Path) -> sqlite3.Connection:
@@ -822,7 +855,7 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
         row = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, retry_count, "
-            "input_tokens, output_tokens "
+            "input_tokens, output_tokens, num_turns, model "
             "FROM insight_state WHERE knowledge_path = ?",
             (knowledge_path,),
         ).fetchone()
@@ -838,6 +871,8 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
             retry_count=row[6],
             input_tokens=row[7],
             output_tokens=row[8],
+            num_turns=row[9],
+            model=row[10],
         )
     finally:
         conn.close()
@@ -851,8 +886,8 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
             "INSERT INTO insight_state "
             "(knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, retry_count, "
-            "input_tokens, output_tokens) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "input_tokens, output_tokens, num_turns, model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(knowledge_path) DO UPDATE SET "
             "content_hash=excluded.content_hash, "
             "summary_hash=excluded.summary_hash, "
@@ -861,7 +896,9 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
             "regen_status=excluded.regen_status, "
             "retry_count=excluded.retry_count, "
             "input_tokens=excluded.input_tokens, "
-            "output_tokens=excluded.output_tokens",
+            "output_tokens=excluded.output_tokens, "
+            "num_turns=excluded.num_turns, "
+            "model=excluded.model",
             (
                 istate.knowledge_path,
                 istate.content_hash,
@@ -872,6 +909,8 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
                 istate.retry_count,
                 istate.input_tokens,
                 istate.output_tokens,
+                istate.num_turns,
+                istate.model,
             ),
         )
         conn.commit()
@@ -886,7 +925,7 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
         rows = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, retry_count, "
-            "input_tokens, output_tokens "
+            "input_tokens, output_tokens, num_turns, model "
             "FROM insight_state"
         ).fetchall()
         return [
@@ -900,6 +939,8 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
                 retry_count=r[6],
                 input_tokens=r[7],
                 output_tokens=r[8],
+                num_turns=r[9],
+                model=r[10],
             )
             for r in rows
         ]

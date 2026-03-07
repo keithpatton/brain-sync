@@ -109,6 +109,7 @@ class ClaudeResult:
     output: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    num_turns: int | None = None
 
 
 def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
@@ -142,8 +143,12 @@ async def invoke_claude(
     max_turns: int = 50,
 ) -> ClaudeResult:
     """Invoke Claude CLI in non-interactive mode."""
+    import os
+    import tempfile
+
     cmd = [
         "claude", "--print",
+        "--output-format", "json",
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
         "--allowedTools", "Read,Write,Glob",
@@ -152,48 +157,78 @@ async def invoke_claude(
         cmd.extend(["--model", model])
     if effort:
         cmd.extend(["--effort", effort])
-    cmd.extend(["-p", prompt])
 
-    import os
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
+    # Write prompt to temp file to avoid Windows command-line length limits
+    # (WinError 206). Claude CLI reads the file via its Read tool.
+    fd, prompt_path = tempfile.mkstemp(suffix=".md", prefix="brain-sync-prompt-")
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        log.warning("Claude CLI timed out after %ds", timeout)
-        return ClaudeResult(success=False, output="")
+        os.write(fd, prompt.encode("utf-8"))
+        os.close(fd)
+        cmd.extend(["-p", f"Read and follow the instructions in {prompt_path}"])
 
-    stderr_text = stderr.decode("utf-8", errors="replace").strip()
-    stdout_text = stdout.decode("utf-8", errors="replace")
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
-    # Log stderr (contains usage stats from Claude CLI)
-    if stderr_text:
-        for line in stderr_text.splitlines():
-            log.info("Claude CLI: %s", line)
-
-    input_tokens, output_tokens = _parse_token_counts(stderr_text)
-
-    if proc.returncode != 0:
-        log.warning("Claude CLI failed (rc=%d): %s", proc.returncode, stderr_text[:500])
-        return ClaudeResult(
-            success=False, output="",
-            input_tokens=input_tokens, output_tokens=output_tokens,
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            log.warning("Claude CLI timed out after %ds", timeout)
+            return ClaudeResult(success=False, output="")
 
-    log.debug("Claude CLI output (%d chars): %s", len(stdout_text), stdout_text[:200])
-    return ClaudeResult(
-        success=True, output=stdout_text,
-        input_tokens=input_tokens, output_tokens=output_tokens,
-    )
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        stdout_text = stdout.decode("utf-8", errors="replace")
+
+        if stderr_text:
+            for line in stderr_text.splitlines():
+                log.info("Claude CLI: %s", line)
+
+        if proc.returncode != 0:
+            log.warning("Claude CLI failed (rc=%d): %s", proc.returncode, stderr_text[:500])
+            return ClaudeResult(success=False, output="")
+
+        # Parse JSON output for token counts
+        input_tokens = None
+        output_tokens = None
+        num_turns = None
+        result_text = stdout_text
+        try:
+            data = json.loads(stdout_text)
+            result_text = data.get("result", stdout_text)
+            usage = data.get("usage", {})
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            duration_ms = data.get("duration_ms")
+            num_turns = data.get("num_turns")
+            log.info("Claude CLI: tokens=%s/%s turns=%s duration=%ss",
+                     input_tokens, output_tokens,
+                     num_turns,
+                     f"{duration_ms / 1000:.1f}" if duration_ms else "?")
+            if data.get("is_error") or data.get("subtype", "").startswith("error"):
+                log.warning("Claude CLI error subtype: %s", data.get("subtype"))
+                return ClaudeResult(
+                    success=False, output=result_text,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    num_turns=num_turns,
+                )
+        except (json.JSONDecodeError, TypeError):
+            log.debug("Claude CLI output was not JSON, falling back to stderr parsing")
+            input_tokens, output_tokens = _parse_token_counts(stderr_text)
+
+        return ClaudeResult(
+            success=True, output=result_text,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            num_turns=num_turns,
+        )
+    finally:
+        os.unlink(prompt_path)
 
 
 def _build_prompt(
@@ -400,10 +435,11 @@ async def regen_path(
             last_regen_utc=istate.last_regen_utc if istate else None,
             regen_status="running",
             retry_count=istate.retry_count if istate else 0,
+            model=config.model,
         ))
 
         # Invoke Claude
-        log.info("Regenerating insights for: %s", current_path or "(root)")
+        log.info("Generating insights: %s", current_path or "(root)")
         result = await invoke_claude(
             prompt, cwd=root, timeout=config.timeout, model=config.model,
             effort=config.effort, max_turns=config.max_turns,
@@ -421,6 +457,8 @@ async def regen_path(
                 retry_count=(istate.retry_count if istate else 0) + 1,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
+                num_turns=result.num_turns,
+                model=config.model,
             ))
             log.warning("Claude CLI failed for %s", current_path or "(root)")
             break
@@ -440,6 +478,8 @@ async def regen_path(
                 retry_count=(istate.retry_count if istate else 0) + 1,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
+                num_turns=result.num_turns,
+                model=config.model,
             ))
             break
 
@@ -460,6 +500,8 @@ async def regen_path(
                 retry_count=0,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
+                num_turns=result.num_turns,
+                model=config.model,
             ))
             # Summary unchanged → stop walking up
             break
@@ -476,6 +518,8 @@ async def regen_path(
             retry_count=0,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
+            num_turns=result.num_turns,
+            model=config.model,
         ))
         regen_count += 1
         log.info("Regenerated summary for %s (in=%s, out=%s tokens)",
@@ -541,7 +585,7 @@ async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
     log.info("Found %d knowledge paths to regenerate", len(content_paths))
     total = 0
     for path in content_paths:
-        log.info("Regenerating: %s", path)
+        log.info("Assessing insights generation: %s", path)
         count = await regen_path(root, path, config=config)
         total += count
 
