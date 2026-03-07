@@ -2,18 +2,16 @@
 
 Exercises:
 1. Start with empty root
-2. Add a sync-manifest.yaml
+2. Register a source via SourceState
 3. Pipeline fetches content (mocked subprocess)
-4. Markdown file written next to manifest
-5. .dirty touched at declared relative path
-6. State persisted with correct fields
-7. Second run with unchanged content skips write
-8. Second run with changed content triggers dirty touch
+4. Markdown file written to knowledge/<target_path>/
+5. State updated with correct fields
+6. Second run with unchanged content skips write
+7. Second run with changed content triggers state reset
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -85,25 +83,24 @@ def _mock_subprocess(html: str, comments: str | None = FAKE_COMMENTS):
 
 
 class TestFullSyncFlow:
-    """Integration test: manifest discovery → fetch → write → dirty → state."""
+    """Integration test: source registration -> fetch -> write -> state."""
 
     @pytest.fixture
     def root(self, tmp_path):
         return tmp_path / "sync-root"
 
-    def test_first_sync_creates_output_and_dirty(self, root):
-        """Add manifest, run pipeline, verify file + dirty + state."""
+    def test_first_sync_creates_output(self, root):
+        """Register source, run pipeline, verify file + state."""
         root.mkdir()
-        manifest_path = _write_manifest(root)
-        manifest = load_manifest(manifest_path)
-        entry = manifest.sources[0]
+        target_path = "project"
 
+        key = source_key_for_entry(FAKE_URL)
         state = SyncState()
-        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
             canonical_id=key,
-            source_url=entry.url,
+            source_url=FAKE_URL,
             source_type="confluence",
+            target_path=target_path,
         )
 
         with patch(
@@ -111,22 +108,20 @@ class TestFullSyncFlow:
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
             changed = asyncio.run(
-                process_source(manifest, entry, state.sources[key], httpx.AsyncClient())
+                process_source(state.sources[key], httpx.AsyncClient(), root)
             )
 
-        # File written next to manifest
-        output = manifest.path.parent / "test-page.md"
-        assert output.exists()
-        content = output.read_text(encoding="utf-8")
+        # File written to knowledge/<target_path>/
+        knowledge_dir = root / "knowledge" / target_path
+        assert knowledge_dir.exists()
+        md_files = list(knowledge_dir.glob("*.md"))
+        assert len(md_files) == 1
+        content = md_files[0].read_text(encoding="utf-8")
         assert "# Test Page" in content
         assert "Version one content." in content
         assert "## Comments" in content
         assert "Great work!" in content
         assert changed is True
-
-        # .dirty touched at relative path
-        dirty = (manifest.path.parent / "../.dirty").resolve()
-        assert dirty.exists()
 
         # State updated
         ss = state.sources[key]
@@ -136,18 +131,17 @@ class TestFullSyncFlow:
         assert ss.source_type == "confluence"
 
     def test_unchanged_content_skips_write(self, root):
-        """Second run with same content: no file rewrite, no dirty touch update."""
+        """Second run with same content: no file rewrite."""
         root.mkdir()
-        manifest_path = _write_manifest(root)
-        manifest = load_manifest(manifest_path)
-        entry = manifest.sources[0]
+        target_path = "project"
 
+        key = source_key_for_entry(FAKE_URL)
         state = SyncState()
-        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
             canonical_id=key,
-            source_url=entry.url,
+            source_url=FAKE_URL,
             source_type="confluence",
+            target_path=target_path,
         )
 
         mock_fn = _mock_subprocess(FAKE_HTML_V1)
@@ -158,11 +152,9 @@ class TestFullSyncFlow:
             side_effect=mock_fn,
         ):
             asyncio.run(
-                process_source(manifest, entry, state.sources[key], httpx.AsyncClient())
+                process_source(state.sources[key], httpx.AsyncClient(), root)
             )
 
-        dirty = (manifest.path.parent / "../.dirty").resolve()
-        first_dirty_mtime = dirty.stat().st_mtime
         first_changed_utc = state.sources[key].last_changed_utc
         time.sleep(0.05)
 
@@ -172,26 +164,25 @@ class TestFullSyncFlow:
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
             changed = asyncio.run(
-                process_source(manifest, entry, state.sources[key], httpx.AsyncClient())
+                process_source(state.sources[key], httpx.AsyncClient(), root)
             )
 
         assert changed is False
         # last_changed_utc should NOT have been updated
         assert state.sources[key].last_changed_utc == first_changed_utc
 
-    def test_changed_content_triggers_dirty_and_state_reset(self, root):
-        """Content change: file rewritten, dirty touched, state updated."""
+    def test_changed_content_triggers_state_reset(self, root):
+        """Content change: file rewritten, state updated."""
         root.mkdir()
-        manifest_path = _write_manifest(root)
-        manifest = load_manifest(manifest_path)
-        entry = manifest.sources[0]
+        target_path = "project"
 
+        key = source_key_for_entry(FAKE_URL)
         state = SyncState()
-        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
             canonical_id=key,
-            source_url=entry.url,
+            source_url=FAKE_URL,
             source_type="confluence",
+            target_path=target_path,
         )
 
         # First run with V1
@@ -200,12 +191,10 @@ class TestFullSyncFlow:
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
             asyncio.run(
-                process_source(manifest, entry, state.sources[key], httpx.AsyncClient())
+                process_source(state.sources[key], httpx.AsyncClient(), root)
             )
 
         first_hash = state.sources[key].content_hash
-        dirty = (manifest.path.parent / "../.dirty").resolve()
-        first_dirty_mtime = dirty.stat().st_mtime
         time.sleep(0.05)
 
         # Second run with V2
@@ -214,21 +203,20 @@ class TestFullSyncFlow:
             side_effect=_mock_subprocess(FAKE_HTML_V2),
         ):
             changed = asyncio.run(
-                process_source(manifest, entry, state.sources[key], httpx.AsyncClient())
+                process_source(state.sources[key], httpx.AsyncClient(), root)
             )
 
         assert changed is True
 
         # File content updated
-        output = manifest.path.parent / "test-page.md"
-        content = output.read_text(encoding="utf-8")
+        knowledge_dir = root / "knowledge" / target_path
+        md_files = list(knowledge_dir.glob("*.md"))
+        assert len(md_files) == 1
+        content = md_files[0].read_text(encoding="utf-8")
         assert "Version two content" in content
 
         # Hash changed
         assert state.sources[key].content_hash != first_hash
-
-        # Dirty file mtime updated
-        assert dirty.stat().st_mtime > first_dirty_mtime
 
 
 class TestManifestDiscoveryAndScheduling:
@@ -291,16 +279,15 @@ class TestStatePersistenceRoundTrip:
     def test_state_survives_restart(self, tmp_path):
         root = tmp_path / "root"
         root.mkdir()
-        manifest_path = _write_manifest(root)
-        manifest = load_manifest(manifest_path)
-        entry = manifest.sources[0]
+        target_path = "project"
 
+        key = source_key_for_entry(FAKE_URL)
         state = SyncState()
-        key = source_key_for_entry(entry.url)
         state.sources[key] = SourceState(
             canonical_id=key,
-            source_url=entry.url,
+            source_url=FAKE_URL,
             source_type="confluence",
+            target_path=target_path,
         )
 
         with patch(
@@ -308,7 +295,7 @@ class TestStatePersistenceRoundTrip:
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
             asyncio.run(
-                process_source(manifest, entry, state.sources[key], httpx.AsyncClient())
+                process_source(state.sources[key], httpx.AsyncClient(), root)
             )
 
         # Save state

@@ -5,8 +5,6 @@ import os
 import tempfile
 from pathlib import Path
 
-from brain_sync.manifest import Manifest
-
 
 def content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -42,18 +40,6 @@ def write_if_changed(target: Path, markdown: str) -> bool:
 
     atomic_write_bytes(target, encoded)
     return True
-
-
-def resolve_dirty_path(manifest: Manifest) -> Path:
-    manifest_dir = manifest.path.parent
-    if manifest.touch_dirty_relative_path is not None:
-        return (manifest_dir / manifest.touch_dirty_relative_path).resolve()
-    return manifest_dir / ".dirty"
-
-
-def touch_dirty(dirty_path: Path) -> None:
-    dirty_path.parent.mkdir(parents=True, exist_ok=True)
-    dirty_path.touch()
 
 
 def _canonical_prefix(canonical_id: str) -> str:

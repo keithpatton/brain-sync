@@ -13,8 +13,7 @@ from brain_sync.confluence_rest import (
     get_confluence_auth,
 )
 from brain_sync.converter import html_to_markdown
-from brain_sync.fileops import content_hash, resolve_dirty_path, touch_dirty, write_if_changed
-from brain_sync.manifest import Manifest, SourceEntry
+from brain_sync.fileops import content_hash, write_if_changed
 from brain_sync.sources import (
     SourceType,
     canonical_filename,
@@ -59,44 +58,52 @@ async def _resolve_auto_filename(
     return "untitled.md"
 
 
-def _has_context_flags(entry: SourceEntry) -> bool:
-    return entry.include_links or entry.include_children or entry.include_attachments
+def _has_context_flags(ss: SourceState) -> bool:
+    return ss.include_links or ss.include_children or ss.include_attachments
 
 
 async def process_source(
-    manifest: Manifest,
-    entry: SourceEntry,
     source_state: SourceState,
     http_client: httpx.AsyncClient,
     root: Path | None = None,
 ) -> bool:
     """Process a single source. Returns True if content changed."""
-    source_type = detect_source_type(entry.url)
+    source_type = detect_source_type(source_state.source_url)
     now = datetime.now(timezone.utc).isoformat()
     auth = get_confluence_auth()
 
-    # Resolve output filename
-    filename = entry.file
-    if filename == "auto":
-        filename = await _resolve_auto_filename(entry.url, source_type, auth, http_client)
+    # Determine target directory
+    if root is not None and source_state.target_path:
+        target_dir = root / "knowledge" / source_state.target_path
+    elif root is not None:
+        target_dir = root / "knowledge"
+    else:
+        target_dir = Path(".")
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    target = manifest.path.parent / filename
+    # Resolve output filename
+    filename = await _resolve_auto_filename(
+        source_state.source_url, source_type, auth, http_client,
+    )
+    target = target_dir / filename
 
     if source_type == SourceType.CONFLUENCE:
-        page_id = extract_confluence_page_id(entry.url)
+        page_id = extract_confluence_page_id(source_state.source_url)
 
-        # Cheap version check via REST API (preferred) or CLI fallback
+        # Cheap version check via REST API
         version: str | None = None
         if auth:
             v = await fetch_page_version(page_id, auth, http_client)
             if v is not None:
                 version = str(v)
-        if version is not None and version == source_state.metadata_fingerprint:
+        context_dir = target_dir / "_sync-context"
+        context_missing = _has_context_flags(source_state) and not context_dir.exists()
+        if version is not None and version == source_state.metadata_fingerprint and target.exists() and not context_missing:
             log.debug("Confluence page %s unchanged (version %s)", page_id, version)
             source_state.last_checked_utc = now
             return False
 
-        # Full fetch via REST API (preferred) or CLI fallback
+        # Full fetch via REST API or CLI fallback
         html: str | None = None
         title: str | None = None
         if auth:
@@ -115,55 +122,45 @@ async def process_source(
         if version is not None:
             source_state.metadata_fingerprint = version
 
-        # Context discovery & sync (only when primary content changed)
-        if _has_context_flags(entry) and root is not None:
-            primary_cid = canonical_id(source_type, entry.url)
+        # Context discovery & sync
+        if _has_context_flags(source_state) and root is not None:
+            primary_cid = canonical_id(source_type, source_state.source_url)
             if auth:
                 try:
                     from brain_sync.context import process_context
                     await process_context(
-                        manifest_dir=manifest.path.parent,
-                        entry_url=entry.url,
+                        manifest_dir=target_dir,
+                        entry_url=source_state.source_url,
                         primary_html=html,
                         primary_canonical_id=primary_cid,
                         auth=auth,
                         client=http_client,
                         root=root,
-                        include_links=entry.include_links,
-                        include_children=entry.include_children,
-                        include_attachments=entry.include_attachments,
+                        include_links=source_state.include_links,
+                        include_children=source_state.include_children,
+                        include_attachments=source_state.include_attachments,
                     )
                 except Exception as e:
-                    log.warning("Context processing failed for %s: %s", entry.url, e)
+                    log.warning("Context processing failed for %s: %s", source_state.source_url, e)
             else:
-                log.warning("Context flags enabled but no REST auth available, skipping context for %s", entry.url)
+                log.warning("Context flags enabled but no REST auth, skipping context for %s", source_state.source_url)
 
-            # Link rewriting (only if context relationships exist)
-            if root is not None:
-                try:
-                    rels = load_relationships_for_primary(root, primary_cid)
-                    if rels:
-                        from brain_sync.link_rewriter import rewrite_links
-                        cid_to_path = {
-                            r.canonical_id: f"./{r.local_path}" for r in rels
-                        }
-                        # Will be applied to markdown after conversion below
-                except Exception as e:
-                    log.debug("Link map build failed: %s", e)
-                    rels = []
-            else:
+            # Link rewriting
+            try:
+                rels = load_relationships_for_primary(root, primary_cid)
+            except Exception as e:
+                log.debug("Link map build failed: %s", e)
                 rels = []
         else:
             rels = []
-            primary_cid = None
 
     elif source_type == SourceType.GOOGLE_DOCS:
-        doc_id = extract_google_doc_id(entry.url)
+        doc_id = extract_google_doc_id(source_state.source_url)
         html = await googledocs_fetch(doc_id, http_client)
         comments_md = None
         rels = []
     else:
-        log.warning("Unsupported source type for %s", entry.url)
+        log.warning("Unsupported source type for %s", source_state.source_url)
         return False
 
     markdown = html_to_markdown(html)
@@ -186,8 +183,6 @@ async def process_source(
 
     if changed:
         source_state.last_changed_utc = now
-        dirty_path = resolve_dirty_path(manifest)
-        touch_dirty(dirty_path)
         log.info("Updated %s (content changed)", filename)
     else:
         log.debug("Checked %s (no change)", filename)

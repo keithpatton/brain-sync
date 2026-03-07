@@ -1,21 +1,16 @@
 from brain_sync.state import (
     DocumentState,
-    OutputBinding,
     Relationship,
     SourceState,
     SyncState,
     count_relationships_for_doc,
-    load_all_bindings,
-    load_bindings_for_source,
     load_document,
     load_relationships_for_primary,
     load_state,
-    prune_bindings,
     prune_db,
     prune_state,
     remove_document_if_orphaned,
     remove_relationship,
-    save_bindings,
     save_document,
     save_relationship,
     save_state,
@@ -67,7 +62,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 4
+        assert state.version == 6
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -289,72 +284,6 @@ class TestPruneDb:
         assert "confluence:2" not in loaded.sources
 
 
-class TestBindingsCrud:
-    def test_save_and_load_bindings(self, tmp_path):
-        save_state(tmp_path, SyncState())  # ensure DB
-        bindings = [
-            OutputBinding(
-                canonical_id="confluence:100",
-                manifest_path="/a/sync-manifest.yaml",
-                target_file="page.md",
-                include_links=True,
-            ),
-            OutputBinding(
-                canonical_id="confluence:100",
-                manifest_path="/b/sync-manifest.yaml",
-                target_file="page.md",
-            ),
-        ]
-        save_bindings(tmp_path, bindings)
-
-        loaded = load_bindings_for_source(tmp_path, "confluence:100")
-        assert len(loaded) == 2
-        assert loaded[0].include_links is True
-        assert loaded[1].include_links is False
-
-    def test_load_all_bindings(self, tmp_path):
-        save_state(tmp_path, SyncState())
-        bindings = [
-            OutputBinding(canonical_id="confluence:100", manifest_path="/a/m.yaml", target_file="a.md"),
-            OutputBinding(canonical_id="confluence:200", manifest_path="/b/m.yaml", target_file="b.md"),
-        ]
-        save_bindings(tmp_path, bindings)
-
-        all_b = load_all_bindings(tmp_path)
-        assert "confluence:100" in all_b
-        assert "confluence:200" in all_b
-        assert len(all_b["confluence:100"]) == 1
-        assert len(all_b["confluence:200"]) == 1
-
-    def test_prune_bindings(self, tmp_path):
-        save_state(tmp_path, SyncState())
-        bindings = [
-            OutputBinding(canonical_id="confluence:100", manifest_path="/a/m.yaml", target_file="a.md"),
-            OutputBinding(canonical_id="confluence:200", manifest_path="/b/m.yaml", target_file="b.md"),
-        ]
-        save_bindings(tmp_path, bindings)
-
-        prune_bindings(tmp_path, active_canonical_ids={"confluence:100"})
-
-        loaded = load_all_bindings(tmp_path)
-        assert "confluence:100" in loaded
-        assert "confluence:200" not in loaded
-
-    def test_save_replaces_all(self, tmp_path):
-        save_state(tmp_path, SyncState())
-        save_bindings(tmp_path, [
-            OutputBinding(canonical_id="confluence:100", manifest_path="/a/m.yaml", target_file="a.md"),
-        ])
-        # Save new set — old bindings should be gone
-        save_bindings(tmp_path, [
-            OutputBinding(canonical_id="confluence:200", manifest_path="/b/m.yaml", target_file="b.md"),
-        ])
-
-        all_b = load_all_bindings(tmp_path)
-        assert "confluence:100" not in all_b
-        assert "confluence:200" in all_b
-
-
 class TestSchemaV3Migration:
     def test_v2_to_v3_migration(self, tmp_path):
         """Simulate a v2 DB and verify migration to v3."""
@@ -437,12 +366,6 @@ class TestSchemaV3Migration:
         assert ss.content_hash == "hash123"
         assert ss.metadata_fingerprint == "5"
 
-        # Bindings should have been created
-        bindings = load_bindings_for_source(tmp_path, "confluence:12345")
-        assert len(bindings) == 1
-        assert bindings[0].manifest_path == "/proj/sync-manifest.yaml"
-        assert bindings[0].target_file == "page.md"
-
     def test_v2_to_v3_deduplication(self, tmp_path):
         """Two v2 rows for the same page resolve to one source row."""
         import sqlite3
@@ -518,13 +441,6 @@ class TestSchemaV3Migration:
         assert len(state.sources) == 1
         assert "confluence:99999" in state.sources
 
-        # Both bindings should exist
-        bindings = load_bindings_for_source(tmp_path, "confluence:99999")
-        assert len(bindings) == 2
-        manifest_paths = {b.manifest_path for b in bindings}
-        assert "/a/sync-manifest.yaml" in manifest_paths
-        assert "/b/sync-manifest.yaml" in manifest_paths
-
 
 class TestSchemaV4Migration:
     def test_v3_to_v4_adds_unique_url(self, tmp_path):
@@ -596,13 +512,13 @@ class TestSchemaV4Migration:
         conn.commit()
         conn.close()
 
-        # load_state triggers v3→v4 migration
+        # load_state triggers v3→v4→v5 migration
         state = load_state(tmp_path)
 
-        # Verify schema version is 4
+        # Verify schema version is 6 (v3→v4→v5→v6 migration chain)
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "4"
+        assert version == "6"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")

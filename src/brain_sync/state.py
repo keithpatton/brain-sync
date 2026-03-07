@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -43,7 +43,25 @@ CREATE TABLE IF NOT EXISTS sources (
     content_hash TEXT,
     metadata_fingerprint TEXT,
     next_check_utc TEXT,
-    interval_seconds INTEGER
+    interval_seconds INTEGER,
+    target_path TEXT NOT NULL DEFAULT '',
+    include_links INTEGER NOT NULL DEFAULT 0,
+    include_children INTEGER NOT NULL DEFAULT 0,
+    include_attachments INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+_INSIGHT_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS insight_state (
+    knowledge_path TEXT PRIMARY KEY,
+    content_hash TEXT,
+    summary_hash TEXT,
+    regen_started_utc TEXT,
+    last_regen_utc TEXT,
+    regen_status TEXT NOT NULL DEFAULT 'idle',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER,
+    output_tokens INTEGER
 );
 """
 
@@ -74,18 +92,7 @@ CREATE TABLE IF NOT EXISTS relationships (
 );
 """
 
-_BINDINGS_DDL = """
-CREATE TABLE IF NOT EXISTS source_bindings (
-    canonical_id TEXT NOT NULL,
-    manifest_path TEXT NOT NULL,
-    target_file TEXT NOT NULL,
-    include_links INTEGER NOT NULL DEFAULT 0,
-    include_children INTEGER NOT NULL DEFAULT 0,
-    include_attachments INTEGER NOT NULL DEFAULT 0,
-    link_depth INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (canonical_id, manifest_path)
-);
-"""
+## source_bindings removed in v5 — each source has one target_path in sources table
 
 # --- DDL used only during migrations from older schemas ---
 
@@ -155,17 +162,10 @@ class SourceState:
     metadata_fingerprint: str | None = None
     next_check_utc: str | None = None
     interval_seconds: int | None = None
-
-
-@dataclass
-class OutputBinding:
-    canonical_id: str
-    manifest_path: str
-    target_file: str
+    target_path: str = ""
     include_links: bool = False
     include_children: bool = False
     include_attachments: bool = False
-    link_depth: int = 1
 
 
 @dataclass
@@ -185,6 +185,19 @@ class DocumentState:
     content_hash: str | None = None
     metadata_fingerprint: str | None = None
     mime_type: str | None = None
+
+
+@dataclass
+class InsightState:
+    knowledge_path: str
+    content_hash: str | None = None
+    summary_hash: str | None = None
+    regen_started_utc: str | None = None
+    last_regen_utc: str | None = None
+    regen_status: str = "idle"
+    retry_count: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass
@@ -224,7 +237,7 @@ def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
         return f"unknown:{source_url}"
 
 
-def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
+def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = None) -> None:
     """Run migrations from from_version to SCHEMA_VERSION."""
     if from_version < 2:
         conn.executescript(_SCHEMA_V2_ADDITIONS)
@@ -347,6 +360,87 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute("ALTER TABLE documents_v4 RENAME TO documents")
 
         conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema from v%d to v4", from_version)
+        from_version = 4
+
+    if from_version < 5:
+        # v4 → v5: Add target_path + context flags to sources, add insight_state,
+        # drop source_bindings
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()
+        }
+        if "target_path" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN target_path TEXT NOT NULL DEFAULT ''")
+        if "include_links" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN include_links INTEGER NOT NULL DEFAULT 0")
+        if "include_children" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN include_children INTEGER NOT NULL DEFAULT 0")
+        if "include_attachments" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN include_attachments INTEGER NOT NULL DEFAULT 0")
+
+        # Migrate bindings data into sources if bindings table exists
+        tables = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "source_bindings" in tables:
+            # For each source, pick the first binding's flags and derive target_path
+            rows = conn.execute(
+                "SELECT canonical_id, manifest_path, target_file, "
+                "include_links, include_children, include_attachments "
+                "FROM source_bindings"
+            ).fetchall()
+            seen: set[str] = set()
+            for r in rows:
+                cid = r[0]
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                # Derive target_path from manifest_path's parent directory
+                manifest_path = Path(r[1])
+                try:
+                    if root is not None:
+                        target_path = str(manifest_path.parent.relative_to(root))
+                        target_path = target_path.replace("\\", "/")
+                    else:
+                        target_path = ""
+                except ValueError:
+                    target_path = ""
+                conn.execute(
+                    "UPDATE sources SET target_path = ?, include_links = ?, "
+                    "include_children = ?, include_attachments = ? "
+                    "WHERE canonical_id = ?",
+                    (target_path, r[3], r[4], r[5], cid),
+                )
+            conn.execute("DROP TABLE IF EXISTS source_bindings")
+
+        # Create insight_state table
+        conn.executescript(_INSIGHT_STATE_DDL)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema from v%d to v5", from_version)
+        from_version = 5
+
+    if from_version < 6:
+        # v5 → v6: Add regen timing and token tracking to insight_state
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
+        }
+        if "regen_started_utc" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN regen_started_utc TEXT")
+        if "input_tokens" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN input_tokens INTEGER")
+        if "output_tokens" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN output_tokens INTEGER")
+
+        conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
@@ -380,7 +474,7 @@ def _connect(root: Path) -> sqlite3.Connection:
         conn.executescript(_SOURCES_DDL)
         conn.executescript(_DOCUMENTS_DDL)
         conn.executescript(_RELATIONSHIPS_DDL)
-        conn.executescript(_BINDINGS_DDL)
+        conn.executescript(_INSIGHT_STATE_DDL)
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -393,7 +487,7 @@ def _connect(root: Path) -> sqlite3.Connection:
         ).fetchone()
         current_version = int(row[0]) if row else 1
         if current_version < SCHEMA_VERSION:
-            _migrate(conn, current_version)
+            _migrate(conn, current_version, root=root)
 
     return conn
 
@@ -410,7 +504,8 @@ def load_state(root: Path) -> SyncState:
         rows = conn.execute(
             "SELECT canonical_id, source_url, source_type, "
             "last_checked_utc, last_changed_utc, current_interval_secs, "
-            "content_hash, metadata_fingerprint, next_check_utc, interval_seconds "
+            "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
+            "target_path, include_links, include_children, include_attachments "
             "FROM sources"
         ).fetchall()
         for row in rows:
@@ -425,6 +520,10 @@ def load_state(root: Path) -> SyncState:
                 metadata_fingerprint=row[7],
                 next_check_utc=row[8],
                 interval_seconds=row[9],
+                target_path=row[10] or "",
+                include_links=bool(row[11]),
+                include_children=bool(row[12]),
+                include_attachments=bool(row[13]),
             )
     except Exception as e:
         log.warning("Error reading sync state, starting fresh: %s", e)
@@ -436,19 +535,24 @@ def load_state(root: Path) -> SyncState:
 
 
 def save_state(root: Path, state: SyncState) -> None:
+    """Save sync progress for all sources.
+
+    Uses UPDATE for existing rows to preserve CLI-managed config fields
+    (target_path, include_links, include_children, include_attachments).
+    Only inserts if the source doesn't exist yet.
+    """
     conn = _connect(root)
     try:
         for key, ss in state.sources.items():
-            conn.execute(
-                "INSERT OR REPLACE INTO sources "
-                "(canonical_id, source_url, source_type, "
-                "last_checked_utc, last_changed_utc, current_interval_secs, "
-                "content_hash, metadata_fingerprint, next_check_utc, interval_seconds) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            # Try UPDATE first — only touch sync-progress fields
+            cur = conn.execute(
+                "UPDATE sources SET "
+                "last_checked_utc = ?, last_changed_utc = ?, "
+                "current_interval_secs = ?, content_hash = ?, "
+                "metadata_fingerprint = ?, next_check_utc = ?, "
+                "interval_seconds = ? "
+                "WHERE canonical_id = ?",
                 (
-                    key,
-                    ss.source_url,
-                    ss.source_type,
                     ss.last_checked_utc,
                     ss.last_changed_utc,
                     ss.current_interval_secs,
@@ -456,8 +560,48 @@ def save_state(root: Path, state: SyncState) -> None:
                     ss.metadata_fingerprint,
                     ss.next_check_utc,
                     ss.interval_seconds,
+                    key,
                 ),
             )
+            if cur.rowcount == 0:
+                # New source — full insert
+                conn.execute(
+                    "INSERT INTO sources "
+                    "(canonical_id, source_url, source_type, "
+                    "last_checked_utc, last_changed_utc, current_interval_secs, "
+                    "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
+                    "target_path, include_links, include_children, include_attachments) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        key,
+                        ss.source_url,
+                        ss.source_type,
+                        ss.last_checked_utc,
+                        ss.last_changed_utc,
+                        ss.current_interval_secs,
+                        ss.content_hash,
+                        ss.metadata_fingerprint,
+                        ss.next_check_utc,
+                        ss.interval_seconds,
+                        ss.target_path,
+                        int(ss.include_links),
+                        int(ss.include_children),
+                        int(ss.include_attachments),
+                    ),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:
+    """Update a source's target_path directly in the DB."""
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "UPDATE sources SET target_path = ? WHERE canonical_id = ?",
+            (new_target_path, canonical_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -481,108 +625,6 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
         for key in stale:
             conn.execute("DELETE FROM sources WHERE canonical_id = ?", (key,))
             log.info("Pruned DB row for removed source: %s", key)
-        if stale:
-            conn.commit()
-    finally:
-        conn.close()
-
-
-# --- Binding operations ---
-# Bindings are rebuilt from live manifests on every _ensure_source_states call.
-# save_bindings does DELETE ALL + re-insert in a single transaction, so stale
-# bindings from moved/renamed folders are impossible — every scan produces a
-# fresh, consistent set derived from the current filesystem state.
-
-
-def save_bindings(root: Path, bindings: list[OutputBinding]) -> None:
-    """Replace all source_bindings with the given list (atomic rebuild)."""
-    conn = _connect(root)
-    try:
-        conn.execute("DELETE FROM source_bindings")
-        for b in bindings:
-            conn.execute(
-                "INSERT INTO source_bindings "
-                "(canonical_id, manifest_path, target_file, "
-                "include_links, include_children, include_attachments, link_depth) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    b.canonical_id,
-                    b.manifest_path,
-                    b.target_file,
-                    int(b.include_links),
-                    int(b.include_children),
-                    int(b.include_attachments),
-                    b.link_depth,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def load_bindings_for_source(root: Path, canonical_id: str) -> list[OutputBinding]:
-    conn = _connect(root)
-    try:
-        rows = conn.execute(
-            "SELECT canonical_id, manifest_path, target_file, "
-            "include_links, include_children, include_attachments, link_depth "
-            "FROM source_bindings WHERE canonical_id = ?",
-            (canonical_id,),
-        ).fetchall()
-        return [
-            OutputBinding(
-                canonical_id=r[0],
-                manifest_path=r[1],
-                target_file=r[2],
-                include_links=bool(r[3]),
-                include_children=bool(r[4]),
-                include_attachments=bool(r[5]),
-                link_depth=r[6],
-            )
-            for r in rows
-        ]
-    finally:
-        conn.close()
-
-
-def load_all_bindings(root: Path) -> dict[str, list[OutputBinding]]:
-    """Load all bindings, grouped by canonical_id."""
-    conn = _connect(root)
-    try:
-        rows = conn.execute(
-            "SELECT canonical_id, manifest_path, target_file, "
-            "include_links, include_children, include_attachments, link_depth "
-            "FROM source_bindings"
-        ).fetchall()
-        result: dict[str, list[OutputBinding]] = {}
-        for r in rows:
-            b = OutputBinding(
-                canonical_id=r[0],
-                manifest_path=r[1],
-                target_file=r[2],
-                include_links=bool(r[3]),
-                include_children=bool(r[4]),
-                include_attachments=bool(r[5]),
-                link_depth=r[6],
-            )
-            result.setdefault(r[0], []).append(b)
-        return result
-    finally:
-        conn.close()
-
-
-def prune_bindings(root: Path, active_canonical_ids: set[str]) -> None:
-    """Remove binding rows for canonical_ids no longer active."""
-    conn = _connect(root)
-    try:
-        existing = {
-            row[0] for row in conn.execute(
-                "SELECT DISTINCT canonical_id FROM source_bindings"
-            ).fetchall()
-        }
-        stale = existing - active_canonical_ids
-        for cid in stale:
-            conn.execute("DELETE FROM source_bindings WHERE canonical_id = ?", (cid,))
         if stale:
             conn.commit()
     finally:
@@ -766,5 +808,113 @@ def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
         )
         conn.commit()
         return True
+    finally:
+        conn.close()
+
+
+# --- Insight state operations ---
+
+
+def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
+    """Load insight state for a knowledge path."""
+    conn = _connect(root)
+    try:
+        row = conn.execute(
+            "SELECT knowledge_path, content_hash, summary_hash, "
+            "regen_started_utc, last_regen_utc, regen_status, retry_count, "
+            "input_tokens, output_tokens "
+            "FROM insight_state WHERE knowledge_path = ?",
+            (knowledge_path,),
+        ).fetchone()
+        if row is None:
+            return None
+        return InsightState(
+            knowledge_path=row[0],
+            content_hash=row[1],
+            summary_hash=row[2],
+            regen_started_utc=row[3],
+            last_regen_utc=row[4],
+            regen_status=row[5],
+            retry_count=row[6],
+            input_tokens=row[7],
+            output_tokens=row[8],
+        )
+    finally:
+        conn.close()
+
+
+def save_insight_state(root: Path, istate: InsightState) -> None:
+    """UPSERT insight state for a knowledge path."""
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "INSERT INTO insight_state "
+            "(knowledge_path, content_hash, summary_hash, "
+            "regen_started_utc, last_regen_utc, regen_status, retry_count, "
+            "input_tokens, output_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(knowledge_path) DO UPDATE SET "
+            "content_hash=excluded.content_hash, "
+            "summary_hash=excluded.summary_hash, "
+            "regen_started_utc=excluded.regen_started_utc, "
+            "last_regen_utc=excluded.last_regen_utc, "
+            "regen_status=excluded.regen_status, "
+            "retry_count=excluded.retry_count, "
+            "input_tokens=excluded.input_tokens, "
+            "output_tokens=excluded.output_tokens",
+            (
+                istate.knowledge_path,
+                istate.content_hash,
+                istate.summary_hash,
+                istate.regen_started_utc,
+                istate.last_regen_utc,
+                istate.regen_status,
+                istate.retry_count,
+                istate.input_tokens,
+                istate.output_tokens,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_all_insight_states(root: Path) -> list[InsightState]:
+    """Load all insight states."""
+    conn = _connect(root)
+    try:
+        rows = conn.execute(
+            "SELECT knowledge_path, content_hash, summary_hash, "
+            "regen_started_utc, last_regen_utc, regen_status, retry_count, "
+            "input_tokens, output_tokens "
+            "FROM insight_state"
+        ).fetchall()
+        return [
+            InsightState(
+                knowledge_path=r[0],
+                content_hash=r[1],
+                summary_hash=r[2],
+                regen_started_utc=r[3],
+                last_regen_utc=r[4],
+                regen_status=r[5],
+                retry_count=r[6],
+                input_tokens=r[7],
+                output_tokens=r[8],
+            )
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
+    """Update a knowledge_path in insight_state (for folder renames)."""
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "UPDATE insight_state SET knowledge_path = ? WHERE knowledge_path = ?",
+            (new_path, old_path),
+        )
+        conn.commit()
     finally:
         conn.close()
