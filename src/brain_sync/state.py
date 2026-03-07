@@ -907,6 +907,19 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
         conn.close()
 
 
+def delete_insight_state(root: Path, knowledge_path: str) -> None:
+    """Delete an insight_state entry."""
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "DELETE FROM insight_state WHERE knowledge_path = ?",
+            (knowledge_path,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
     """Update a knowledge_path in insight_state (for folder renames)."""
     conn = _connect(root)

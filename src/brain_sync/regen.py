@@ -1,8 +1,7 @@
 """Insight regeneration engine.
 
 Deterministic incremental recomputation loop (Make/Bazel model):
-- Leaf summaries read raw knowledge (*.md files)
-- Parent summaries read child summaries only
+- Every folder is treated identically: summary = readable files + child summaries
 - Loop walks up ancestors, stops when summary hash is unchanged
 - Similarity guard prevents trivial LLM rewording (>0.97 → discard)
 """
@@ -13,6 +12,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -21,6 +21,7 @@ from pathlib import Path
 
 from brain_sync.state import (
     InsightState,
+    delete_insight_state,
     load_insight_state,
     save_insight_state,
 )
@@ -41,6 +42,14 @@ log = logging.getLogger(__name__)
 SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
 CONFIG_FILE = Path.home() / ".brain-sync" / "config.json"
+
+# File types that Claude CLI can meaningfully read
+READABLE_EXTENSIONS = {".md", ".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg"}
+
+
+def _is_readable_file(p: Path) -> bool:
+    """Check if a file has a readable extension and is not hidden."""
+    return p.is_file() and p.suffix.lower() in READABLE_EXTENSIONS and not p.name.startswith(("_", "."))
 
 
 @dataclass
@@ -72,16 +81,14 @@ class RegenConfig:
 
 
 def folder_content_hash(folder: Path) -> str:
-    """Compute sha256 of all *.md files in a folder (excluding _sync-context/).
+    """Compute sha256 of all readable files in a folder.
 
+    Only files matching READABLE_EXTENSIONS are included.
     Files are sorted by name for determinism. Returns hex digest.
     """
     h = hashlib.sha256()
-    md_files = sorted(
-        p for p in folder.iterdir()
-        if p.is_file() and p.suffix == ".md"
-    )
-    for p in md_files:
+    files = sorted(p for p in folder.iterdir() if _is_readable_file(p))
+    for p in files:
         h.update(p.name.encode("utf-8"))
         h.update(p.read_bytes())
     return h.hexdigest()
@@ -188,18 +195,45 @@ async def invoke_claude(
     )
 
 
-def _build_leaf_prompt(knowledge_path: str, knowledge_dir: Path, insights_dir: Path) -> str:
-    """Build the prompt for regenerating a leaf-level insight summary."""
-    md_files = sorted(
-        p for p in knowledge_dir.iterdir()
-        if p.is_file() and p.suffix == ".md"
-    )
-    file_list = "\n".join(f"- {p.name}" for p in md_files)
+def _build_prompt(
+    knowledge_path: str,
+    knowledge_dir: Path,
+    child_summaries: dict[str, str],
+    insights_dir: Path,
+) -> str:
+    """Build the prompt for regenerating an insight summary.
+
+    Unified prompt — includes direct files and/or child summaries as available.
+    """
+    # Direct files section
+    files_text = ""
+    files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
+    if files:
+        file_list = "\n".join(f"- {p.name}" for p in files)
+        files_text = f"""
+The knowledge folder contains these files:
+{file_list}
+
+Read all the files in: {knowledge_dir}
+"""
+
+    # Child summaries section
+    children_text = ""
+    if child_summaries:
+        parts = []
+        for name, content in sorted(child_summaries.items()):
+            parts.append(f"\n### {name}\n{content}")
+        children_text = f"""
+This area has the following sub-areas with their own summaries:
+{"".join(parts)}
+"""
 
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
     if summary_path.exists():
         existing_summary = summary_path.read_text(encoding="utf-8")
+
+    display_path = knowledge_path or "(root)"
 
     return f"""{_INSIGHT_INSTRUCTIONS}
 
@@ -209,68 +243,56 @@ def _build_leaf_prompt(knowledge_path: str, knowledge_dir: Path, insights_dir: P
 
 ---
 
-You are performing a LEAF regeneration for knowledge area: {knowledge_path}
-
-The knowledge folder contains these markdown files:
-{file_list}
-
-Read all the markdown files in: {knowledge_dir}
-
+You are regenerating the insight summary for knowledge area: {display_path}
+{files_text}{children_text}
 {"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
 
 Write the summary to: {insights_dir / "summary.md"}"""
 
 
-def _build_parent_prompt(knowledge_path: str, child_summaries: dict[str, str], insights_dir: Path) -> str:
-    """Build the prompt for regenerating a parent-level insight summary."""
-    children_text = ""
-    for name, content in sorted(child_summaries.items()):
-        children_text += f"\n### {name}\n{content}\n"
-
-    existing_summary = ""
-    summary_path = insights_dir / "summary.md"
-    if summary_path.exists():
-        existing_summary = summary_path.read_text(encoding="utf-8")
-
-    return f"""{_INSIGHT_INSTRUCTIONS}
-
----
-
-{_INSTRUCTIONS}
-
----
-
-You are performing a PARENT regeneration for knowledge area: {knowledge_path}
-
-This area has the following sub-areas with their own summaries:
-{children_text}
-
-{"The current parent summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing parent summary yet."}
-
-Write the parent summary to: {insights_dir / "summary.md"}"""
-
-
-def _knowledge_has_content(knowledge_dir: Path) -> bool:
-    """Check if a knowledge directory has any .md files (excluding _sync-context)."""
-    if not knowledge_dir.is_dir():
-        return False
-    for p in knowledge_dir.iterdir():
-        if p.is_file() and p.suffix == ".md":
-            return True
-        if p.is_dir() and p.name != "_sync-context":
-            # Has subdirectories with potential content
-            return True
-    return False
-
-
 def _get_child_dirs(knowledge_dir: Path) -> list[Path]:
-    """Get child directories that have content, excluding _sync-context."""
+    """Get child directories, excluding _ and . prefixed dirs."""
     if not knowledge_dir.is_dir():
         return []
     return sorted(
         p for p in knowledge_dir.iterdir()
-        if p.is_dir() and p.name != "_sync-context"
+        if p.is_dir() and not p.name.startswith(("_", "."))
     )
+
+
+def _collect_child_summaries(
+    root: Path, current_path: str, child_dirs: list[Path],
+) -> dict[str, str]:
+    """Read existing child summaries from insights/."""
+    child_summaries: dict[str, str] = {}
+    for child in child_dirs:
+        child_rel = current_path + "/" + child.name if current_path else child.name
+        child_summary_path = root / "insights" / child_rel / "summary.md"
+        if child_summary_path.exists():
+            child_summaries[child.name] = child_summary_path.read_text(encoding="utf-8")
+    return child_summaries
+
+
+def _compute_hash(
+    child_dirs: list[Path],
+    child_summaries: dict[str, str],
+    knowledge_dir: Path,
+    has_direct_files: bool,
+) -> str:
+    """Compute unified content hash for a folder.
+
+    All inputs sorted for deterministic output across runs and platforms.
+    """
+    h = hashlib.sha256()
+    for child in sorted(child_dirs, key=lambda d: d.name):
+        h.update(b"dir:")
+        h.update(child.name.encode("utf-8"))
+    for name, content in sorted(child_summaries.items()):
+        h.update(name.encode("utf-8"))
+        h.update(content.encode("utf-8"))
+    if has_direct_files:
+        h.update(folder_content_hash(knowledge_dir).encode("utf-8"))
+    return h.hexdigest()
 
 
 async def regen_path(
@@ -282,9 +304,9 @@ async def regen_path(
 ) -> int:
     """Run the deterministic incremental regen loop for a knowledge path.
 
-    Starts at the leaf (knowledge_rel_path), regenerates its summary,
-    then walks up ancestors regenerating parent summaries until a summary
-    is unchanged (content hash match or similarity guard).
+    Starts at the given path, regenerates its summary, then walks up
+    ancestors regenerating parent summaries until a summary is unchanged
+    (content hash match or similarity guard).
 
     Returns the number of summaries regenerated.
     """
@@ -296,67 +318,57 @@ async def regen_path(
     current_path = knowledge_rel_path
 
     for _ in range(max_depth):
-        if not current_path:
-            break
+        knowledge_dir = root / "knowledge" / current_path if current_path else root / "knowledge"
+        insights_dir = root / "insights" / current_path if current_path else root / "insights"
 
-        knowledge_dir = root / "knowledge" / current_path
-        insights_dir = root / "insights" / current_path
-
+        # Guard: if knowledge dir doesn't exist, clean up stale insights and walk up
         if not knowledge_dir.is_dir():
             log.debug("Knowledge dir does not exist: %s", knowledge_dir)
-            break
+            if insights_dir.is_dir():
+                shutil.rmtree(insights_dir)
+                log.info("Cleaned up stale insights for %s", current_path)
+            delete_insight_state(root, current_path)
+            if not current_path:
+                break
+            parts = current_path.rsplit("/", 1)
+            current_path = parts[0] if len(parts) > 1 else ""
+            continue
+
+        # Collect inputs
+        child_dirs = _get_child_dirs(knowledge_dir)
+        has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
+
+        # Cleanup: no readable files and no child dirs → remove stale insights
+        if not has_direct_files and not child_dirs:
+            log.debug("No readable files or child dirs in %s, cleaning up", current_path or "(root)")
+            if insights_dir.is_dir():
+                shutil.rmtree(insights_dir)
+                log.info("Cleaned up stale insights for %s", current_path or "(root)")
+            delete_insight_state(root, current_path)
+            if not current_path:
+                break
+            parts = current_path.rsplit("/", 1)
+            current_path = parts[0] if len(parts) > 1 else ""
+            continue
 
         # Load current insight state
         istate = load_insight_state(root, current_path)
 
-        # Determine if this is a leaf or parent
-        child_dirs = _get_child_dirs(knowledge_dir)
-        has_direct_md = any(
-            p.is_file() and p.suffix == ".md"
-            for p in knowledge_dir.iterdir()
-            if p.name != "_sync-context"
-        )
+        # Collect child summaries and compute unified hash
+        child_summaries = _collect_child_summaries(root, current_path, child_dirs)
 
-        if child_dirs:
-            # Parent: read child summaries
-            child_summaries: dict[str, str] = {}
-            for child in child_dirs:
-                child_rel = current_path + "/" + child.name if current_path else child.name
-                child_summary_path = root / "insights" / child_rel / "summary.md"
-                if child_summary_path.exists():
-                    child_summaries[child.name] = child_summary_path.read_text(encoding="utf-8")
+        if not child_summaries and not has_direct_files:
+            log.debug("No child summaries or direct content for %s, skipping", current_path or "(root)")
+            break
 
-            if not child_summaries and not has_direct_md:
-                log.debug("No child summaries or direct content for %s, skipping", current_path)
-                break
+        new_hash = _compute_hash(child_dirs, child_summaries, knowledge_dir, has_direct_files)
 
-            # Compute content hash from child summaries + any direct md files
-            h = hashlib.sha256()
-            for name, content in sorted(child_summaries.items()):
-                h.update(name.encode("utf-8"))
-                h.update(content.encode("utf-8"))
-            if has_direct_md:
-                h.update(folder_content_hash(knowledge_dir).encode("utf-8"))
-            new_hash = h.hexdigest()
+        if istate and istate.content_hash == new_hash:
+            log.debug("Content hash unchanged for %s, stopping", current_path or "(root)")
+            break
 
-            if istate and istate.content_hash == new_hash:
-                log.debug("Content hash unchanged for %s, stopping", current_path)
-                break
-
-            prompt = _build_parent_prompt(current_path, child_summaries, insights_dir)
-        else:
-            # Leaf: read raw knowledge
-            if not has_direct_md:
-                log.debug("No md files in leaf %s, skipping", current_path)
-                break
-
-            new_hash = folder_content_hash(knowledge_dir)
-
-            if istate and istate.content_hash == new_hash:
-                log.debug("Content hash unchanged for %s, stopping", current_path)
-                break
-
-            prompt = _build_leaf_prompt(current_path, knowledge_dir, insights_dir)
+        # Build prompt
+        prompt = _build_prompt(current_path, knowledge_dir, child_summaries, insights_dir)
 
         # Read old summary for similarity check
         summary_path = insights_dir / "summary.md"
@@ -377,7 +389,7 @@ async def regen_path(
         ))
 
         # Invoke Claude
-        log.info("Regenerating insights for: %s", current_path)
+        log.info("Regenerating insights for: %s", current_path or "(root)")
         result = await invoke_claude(
             prompt, cwd=root, timeout=config.timeout, model=config.model,
             effort=config.effort, max_turns=config.max_turns,
@@ -396,14 +408,14 @@ async def regen_path(
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
             ))
-            log.warning("Claude CLI failed for %s", current_path)
+            log.warning("Claude CLI failed for %s", current_path or "(root)")
             break
 
         # Check if summary was actually written by Claude
         if summary_path.exists():
             new_summary = summary_path.read_text(encoding="utf-8")
         else:
-            log.warning("Claude did not write summary for %s. Output: %s", current_path, result.output[:500])
+            log.warning("Claude did not write summary for %s. Output: %s", current_path or "(root)", result.output[:500])
             save_insight_state(root, InsightState(
                 knowledge_path=current_path,
                 content_hash=istate.content_hash if istate else None,
@@ -420,7 +432,7 @@ async def regen_path(
         # Similarity guard
         if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
             log.info("Summary for %s is >%.0f%% similar, discarding rewrite",
-                     current_path, similarity_threshold * 100)
+                     current_path or "(root)", similarity_threshold * 100)
             # Restore old summary
             summary_path.write_text(old_summary, encoding="utf-8")
             summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
@@ -453,123 +465,65 @@ async def regen_path(
         ))
         regen_count += 1
         log.info("Regenerated summary for %s (in=%s, out=%s tokens)",
-                 current_path, result.input_tokens, result.output_tokens)
+                 current_path or "(root)", result.input_tokens, result.output_tokens)
 
-        # Walk up to parent
-        parts = current_path.rsplit("/", 1)
-        if len(parts) == 1:
-            # Already at top level, try root
-            current_path = ""
-        else:
-            current_path = parts[0]
-
-        # If we've reached the root knowledge level, stop
-        if current_path == "":
-            # Regenerate root-level summary if there are child dirs
-            root_knowledge = root / "knowledge"
-            root_insights = root / "insights"
-            root_child_dirs = _get_child_dirs(root_knowledge)
-            if root_child_dirs:
-                root_child_summaries: dict[str, str] = {}
-                for child in root_child_dirs:
-                    child_summary_path = root_insights / child.name / "summary.md"
-                    if child_summary_path.exists():
-                        root_child_summaries[child.name] = child_summary_path.read_text(encoding="utf-8")
-
-                if root_child_summaries:
-                    # Check hash
-                    rh = hashlib.sha256()
-                    for name, content in sorted(root_child_summaries.items()):
-                        rh.update(name.encode("utf-8"))
-                        rh.update(content.encode("utf-8"))
-                    root_hash = rh.hexdigest()
-
-                    root_istate = load_insight_state(root, "")
-                    if root_istate and root_istate.content_hash == root_hash:
-                        break
-
-                    # Regenerate root summary
-                    root_prompt = _build_parent_prompt("(root)", root_child_summaries, root_insights)
-                    root_summary_path = root_insights / "summary.md"
-                    old_root_summary = ""
-                    if root_summary_path.exists():
-                        old_root_summary = root_summary_path.read_text(encoding="utf-8")
-
-                    root_started = datetime.now(timezone.utc).isoformat()
-                    save_insight_state(root, InsightState(
-                        knowledge_path="",
-                        content_hash=root_hash,
-                        regen_started_utc=root_started,
-                        regen_status="running",
-                    ))
-
-                    root_result = await invoke_claude(
-                        root_prompt, cwd=root, timeout=config.timeout,
-                        model=config.model, effort=config.effort, max_turns=config.max_turns,
-                    )
-                    if root_result.success and root_summary_path.exists():
-                        new_root_summary = root_summary_path.read_text(encoding="utf-8")
-                        if old_root_summary and text_similarity(old_root_summary, new_root_summary) > similarity_threshold:
-                            root_summary_path.write_text(old_root_summary, encoding="utf-8")
-                        else:
-                            regen_count += 1
-
-                    save_insight_state(root, InsightState(
-                        knowledge_path="",
-                        content_hash=root_hash,
-                        summary_hash=hashlib.sha256(
-                            (root_summary_path.read_text(encoding="utf-8") if root_summary_path.exists() else "").encode()
-                        ).hexdigest(),
-                        regen_started_utc=root_started,
-                        last_regen_utc=datetime.now(timezone.utc).isoformat(),
-                        regen_status="idle",
-                        input_tokens=root_result.input_tokens,
-                        output_tokens=root_result.output_tokens,
-                    ))
+        # Walk up to parent (or break if at root)
+        if not current_path:
             break
+        parts = current_path.rsplit("/", 1)
+        current_path = parts[0] if len(parts) > 1 else ""
 
     return regen_count
 
 
-def _find_leaf_paths(knowledge_root: Path, prefix: str = "") -> list[str]:
-    """Find all leaf knowledge paths (folders with .md files but no child content dirs)."""
-    leaves: list[str] = []
-    if not knowledge_root.is_dir():
-        return leaves
+def _find_all_content_paths(knowledge_root: Path) -> list[str]:
+    """Find all knowledge paths bottom-up (deepest first).
 
-    for child in sorted(knowledge_root.iterdir()):
-        if not child.is_dir() or child.name.startswith(("_", ".")):
-            continue
-        child_rel = prefix + "/" + child.name if prefix else child.name
-        grandchildren = _get_child_dirs(child)
-        has_md = any(p.is_file() and p.suffix == ".md" for p in child.iterdir())
+    Walks the tree, collects all folders that have readable files or
+    child content dirs, sorted deepest-first so that regen_all processes
+    leaves before parents.
+    """
+    paths: list[str] = []
 
-        if grandchildren:
-            # Recurse into children
-            leaves.extend(_find_leaf_paths(child, child_rel))
-        elif has_md:
-            leaves.append(child_rel)
+    def _walk(directory: Path, prefix: str) -> None:
+        if not directory.is_dir():
+            return
+        for child in sorted(directory.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            child_rel = prefix + "/" + child.name if prefix else child.name
+            # Recurse first (depth-first → deepest paths added first)
+            _walk(child, child_rel)
+            # Include this folder if it has readable files or content child dirs
+            has_files = any(_is_readable_file(p) for p in child.iterdir())
+            has_children = any(
+                p.is_dir() and not p.name.startswith(("_", "."))
+                for p in child.iterdir()
+            )
+            if has_files or has_children:
+                paths.append(child_rel)
 
-    return leaves
+    _walk(knowledge_root, "")
+    return paths
 
 
 async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
-    """Regenerate insights for all leaf knowledge paths."""
+    """Regenerate insights for all knowledge paths (bottom-up)."""
     if config is None:
         config = RegenConfig.load()
 
     knowledge_root = root / "knowledge"
-    leaves = _find_leaf_paths(knowledge_root)
+    content_paths = _find_all_content_paths(knowledge_root)
 
-    if not leaves:
-        log.info("No leaf knowledge paths found")
+    if not content_paths:
+        log.info("No knowledge paths found")
         return 0
 
-    log.info("Found %d leaf knowledge paths to regenerate", len(leaves))
+    log.info("Found %d knowledge paths to regenerate", len(content_paths))
     total = 0
-    for leaf in leaves:
-        log.info("Regenerating: %s", leaf)
-        count = await regen_path(root, leaf, config=config)
+    for path in content_paths:
+        log.info("Regenerating: %s", path)
+        count = await regen_path(root, path, config=config)
         total += count
 
     return total
