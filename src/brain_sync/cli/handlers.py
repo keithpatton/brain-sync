@@ -214,7 +214,7 @@ def handle_regen(args) -> None:
         loop = asyncio.new_event_loop()
         try:
             count = loop.run_until_complete(regen_path(root, knowledge_path))
-            print(f"Done. {count} summary/summaries regenerated.")
+            print(f"Done. {count} insight file{'s' if count != 1 else ''} regenerated.")
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -227,7 +227,7 @@ def handle_regen(args) -> None:
         loop = asyncio.new_event_loop()
         try:
             count = loop.run_until_complete(regen_all(root))
-            print(f"Done. {count} summary/summaries regenerated.")
+            print(f"Done. {count} insight file{'s' if count != 1 else ''} regenerated.")
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

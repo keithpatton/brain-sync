@@ -23,6 +23,7 @@ from brain_sync.state import (
     InsightState,
     delete_insight_state,
     load_insight_state,
+    reset_running_insight_states,
     save_insight_state,
 )
 
@@ -73,7 +74,7 @@ class RegenConfig:
                 model=regen.get("model", "claude-opus-4-6"),
                 effort=regen.get("effort", "medium"),
                 timeout=regen.get("timeout", CLAUDE_TIMEOUT),
-                max_turns=regen.get("max_turns", 10),
+                max_turns=regen.get("max_turns", 50),
                 similarity_threshold=regen.get("similarity_threshold", SIMILARITY_THRESHOLD),
             )
         except (json.JSONDecodeError, OSError):
@@ -205,17 +206,30 @@ def _build_prompt(
 
     Unified prompt — includes direct files and/or child summaries as available.
     """
-    # Direct files section
+    # Direct files section — inline text files, tell Claude to Read binary ones
     files_text = ""
     files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
     if files:
-        file_list = "\n".join(f"- {p.name}" for p in files)
-        files_text = f"""
-The knowledge folder contains these files:
-{file_list}
+        TEXT_EXTENSIONS = {".md", ".txt"}
+        inlined_parts: list[str] = []
+        binary_files: list[Path] = []
+        for f in files:
+            if f.suffix.lower() in TEXT_EXTENSIONS:
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    inlined_parts.append(f"### {f.name}\n```\n{content}\n```")
+                except (OSError, UnicodeDecodeError):
+                    binary_files.append(f)
+            else:
+                binary_files.append(f)
 
-Read all the files in: {knowledge_dir}
-"""
+        parts = []
+        if inlined_parts:
+            parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
+        if binary_files:
+            file_list = "\n".join(f"- {p.name}" for p in binary_files)
+            parts.append(f"Read these files (binary/non-text) from {knowledge_dir}:\n{file_list}")
+        files_text = "\n\n".join(parts) + "\n" if parts else ""
 
     # Child summaries section
     children_text = ""
@@ -376,11 +390,11 @@ async def regen_path(
         if summary_path.exists():
             old_summary = summary_path.read_text(encoding="utf-8")
 
-        # Mark as running
+        # Mark as running — keep old hash so crashes/failures don't block retries
         started = datetime.now(timezone.utc).isoformat()
         save_insight_state(root, InsightState(
             knowledge_path=current_path,
-            content_hash=new_hash,
+            content_hash=istate.content_hash if istate else None,
             summary_hash=istate.summary_hash if istate else None,
             regen_started_utc=started,
             last_regen_utc=istate.last_regen_utc if istate else None,
@@ -511,6 +525,11 @@ async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
     """Regenerate insights for all knowledge paths (bottom-up)."""
     if config is None:
         config = RegenConfig.load()
+
+    # Reset orphaned 'running' states from crashed/killed runs
+    reset_count = reset_running_insight_states(root)
+    if reset_count:
+        log.info("Reset %d orphaned 'running' insight states to 'idle'", reset_count)
 
     knowledge_root = root / "knowledge"
     content_paths = _find_all_content_paths(knowledge_root)

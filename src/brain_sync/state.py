@@ -920,6 +920,19 @@ def delete_insight_state(root: Path, knowledge_path: str) -> None:
         conn.close()
 
 
+def reset_running_insight_states(root: Path) -> int:
+    """Reset any 'running' insight states to 'idle' (orphaned from a crash)."""
+    conn = _connect(root)
+    try:
+        cur = conn.execute(
+            "UPDATE insight_state SET regen_status = 'idle' WHERE regen_status = 'running'"
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
     """Update a knowledge_path in insight_state (for folder renames)."""
     conn = _connect(root)
