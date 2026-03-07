@@ -56,7 +56,7 @@ def _is_readable_file(p: Path) -> bool:
 @dataclass
 class RegenConfig:
     """Configuration for the insights agent."""
-    model: str = "claude-opus-4-6"
+    model: str = "claude-sonnet-4-6"
     effort: str = "medium"  # low, medium, high — controls thinking budget
     timeout: int = CLAUDE_TIMEOUT
     max_turns: int = 50
@@ -71,7 +71,7 @@ class RegenConfig:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             regen = data.get("regen", {})
             return cls(
-                model=regen.get("model", "claude-opus-4-6"),
+                model=regen.get("model", "claude-sonnet-4-6"),
                 effort=regen.get("effort", "medium"),
                 timeout=regen.get("timeout", CLAUDE_TIMEOUT),
                 max_turns=regen.get("max_turns", 50),
