@@ -1,21 +1,8 @@
 # brain-sync
 
-Cross-platform daemon that watches folders for `sync-manifest.yaml` files and syncs declared external sources into local markdown files.
+A brain engine that syncs external knowledge sources, watches for changes, and maintains AI-generated insight summaries. Point it at a root folder and it handles: folder structure setup, source syncing, file watching, and autonomous insight regeneration via Claude.
 
-## What it does
-
-- Scans a target root folder for `sync-manifest.yaml` files
-- Fetches content from declared sources (Confluence pages, Google Docs)
-- Converts HTML to markdown and writes output files next to the manifest
-- Touches a `.dirty` marker when content changes
-- Maintains adaptive refresh with backoff (30m → 1h → 4h → 12h → 24h)
-- Persists sync state to `.sync-state.sqlite`
-- Discovers and syncs contextual documents (linked pages, child pages, attachments)
-- Automatically reconnects moved files via canonical filename prefix matching
-
-The daemon is fully generic — it has no knowledge of any specific repository structure. Its only job is: find manifests, fetch sources, write files.
-
-## Quick start
+## Getting started
 
 ### Install
 
@@ -25,77 +12,99 @@ pip install -e .
 
 ### Prerequisites
 
-**Confluence** — install and configure [confluence-cli](https://github.com/pchuri/confluence-cli):
+**Confluence** — create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then configure credentials via either:
+
+- `~/.confluence-cli/config.json` (from [confluence-cli](https://github.com/pchuri/confluence-cli))
+- Environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`
+
+**Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+
+### Initialise a brain
 
 ```bash
-npm install -g confluence-cli
-confluence init --domain "yourcompany.atlassian.net" \
-  --api-path "/wiki/rest/api" \
-  --auth-type "basic" \
-  --email "you@company.com" \
-  --token "YOUR_API_TOKEN"
+brain-sync init ~/my-brain
 ```
 
-Create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+This creates the folder structure, initialises the SQLite state database, and installs the Claude Code skill to `~/.claude/skills/brain-sync/`.
 
-The confluence-cli config (`~/.confluence-cli/config.json`) is also used for the REST API client. Environment variables `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` work as a fallback.
+Safe to run on an existing folder — only adds missing structure.
 
-**Google Docs** — requires `gcloud` with appropriate OAuth scopes (setup docs TBD).
-
-### Create a manifest
-
-In any folder under your target root, create `sync-manifest.yaml`:
-
-```yaml
-touch_dirty_relative_path: ../.dirty
-
-sources:
-  # Minimal — just a URL. Filename auto-derived from page title (e.g. c123456-page-title.md)
-  - url: https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title
-
-  # Explicit filename override (use sparingly — auto is preferred)
-  - url: https://docs.google.com/document/d/abc123
-    file: design-doc.md
-
-  # Full context discovery — linked pages, children, and attachments
-  - url: https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/789/Architecture
-    include_links: true
-    include_children: true
-    include_attachments: true
-```
-
-### Run
+### Add a source
 
 ```bash
-brain-sync --root /path/to/target/folder
+brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
+  --path initiatives/my-project \
+  --include-links --include-children
 ```
 
-Or with debug logging:
+Sources are registered in SQLite — no manifest files needed.
+
+### Start the daemon
 
 ```bash
-brain-sync --root /path/to/target/folder --log-level DEBUG
+brain-sync run --root ~/my-brain
 ```
 
-## Manifest schema
+The daemon syncs sources, watches `knowledge/` for changes, and enqueues insight regeneration when content changes.
 
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `sources` | Yes | | List of sources to sync |
-| `sources[*].url` | Yes | | URL of the external document |
-| `sources[*].file` | No | `auto` | Output filename (bare name, no path separators). `auto` derives a stable ID-anchored filename from the document (e.g. `c123456-page-title.md`) |
-| `sources[*].include_links` | No | `false` | Discover and sync pages linked from this source |
-| `sources[*].include_children` | No | `false` | Discover and sync child pages |
-| `sources[*].include_attachments` | No | `false` | Discover and sync attachments |
-| `sources[*].link_depth` | No | `1` | How many levels of links to follow (0 or 1) |
-| `touch_dirty_relative_path` | No | `.dirty` | Path to dirty marker, relative to manifest folder |
+### Talk to your brain
+
+The skill is auto-installed during `brain-sync init`. In Claude Code, invoke it with `/serko-brain` or mention "brain" in conversation. The agent progressively loads context from `insights/` and `knowledge/`, starting with the core summary.
+
+## Folder structure
+
+```
+my-brain/
+  .sync-state.sqlite              # state database (managed by brain-sync)
+  knowledge/                      # ALL human/sync content lives here
+    _core/                        # always-loaded by agent (about-me, org context)
+    initiatives/
+      My Project/
+        ERD/
+          c123456-erd.md          # synced confluence page
+          _sync-context/          # linked/child pages, attachments
+            _index.md
+            linked/
+            children/
+            attachments/
+    <arbitrary folders>/          # users can organise freely
+  insights/                       # AI-generated, mirrors knowledge/ tree
+    _core/
+      summary.md                  # always-loaded orientation summary
+    initiatives/
+      My Project/
+        summary.md                # cross-cutting project summary
+        ERD/
+          summary.md              # leaf summary from knowledge files
+          journal/
+            2026-03/
+              2026-03-07.md       # temporal context: what changed
+```
+
+**`knowledge/`** is human-owned. Users and brain-sync write here. Arbitrary structure allowed.
+
+**`insights/`** is agent-owned. brain-sync triggers regeneration; the insights agent writes summaries and journal entries. Mirrors `knowledge/` 1:1.
+
+## CLI reference
+
+| Command | Description |
+|---|---|
+| `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
+| `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
+| `brain-sync add <url> [--path <path>] [--include-links] [--include-children] [--include-attachments]` | Register a source for syncing |
+| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
+| `brain-sync list [--path <filter>] [--status]` | List registered sources |
+| `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
+| `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
+| `brain-sync update-skill` | Re-install SKILL.md and INSTRUCTIONS.md from templates |
+
+All commands accept `--root <path>` (defaults to current directory) and `--log-level` (DEBUG, INFO, WARNING).
 
 ## How it works
 
-1. **Watcher** detects new/changed/removed `sync-manifest.yaml` files (via `watchdog` + periodic rescan)
-2. **Scheduler** maintains a priority queue with adaptive backoff per source, ±20% jitter, persisted across restarts
-3. **Pipeline** for each source: detect type → version check (REST API) → fetch → convert to markdown → context discovery → link rewriting → atomic write → touch dirty if changed
+### Sync engine
 
-### Refresh model
+The daemon polls registered sources on an adaptive schedule:
 
 | Unchanged duration | Check interval |
 |---|---|
@@ -105,55 +114,85 @@ brain-sync --root /path/to/target/folder --log-level DEBUG
 | 3+ weeks | 12 hours |
 | 3+ months | 24 hours |
 
-When content changes, the interval resets to 30 minutes.
-
-### Confluence features
-
-- Page content fetched via REST API (fast version check before full fetch)
-- Inline comments appended under a `## Comments` section (via confluence-cli)
-- Context discovery: linked pages, child pages, attachments stored in `_sync-context/`
-- Context index generated at `_sync-context/_index.md`
-- Confluence URLs in primary markdown rewritten to local relative paths
-- YAML frontmatter on context files for self-description
+When content changes, the interval resets to 30 minutes. Each source gets a version check (REST API) before a full fetch, so unchanged pages are cheap.
 
 ### Context discovery
 
-When a source declares `include_links`, `include_children`, or `include_attachments`, the daemon discovers and syncs related documents alongside the primary source. Context files are stored in `_sync-context/` subdirectories next to the manifest.
+When a source has `include_links`, `include_children`, or `include_attachments` enabled, the daemon discovers and syncs related documents into `_sync-context/` subdirectories:
 
-| Flag | What it discovers | Storage folder |
+| Flag | Discovers | Storage |
 |---|---|---|
-| `include_links: true` | Pages linked from the primary document's HTML body | `_sync-context/linked/` |
-| `include_children: true` | Direct child pages in the Confluence page tree | `_sync-context/children/` |
-| `include_attachments: true` | Files attached to the primary page (images, PDFs, etc.) | `_sync-context/attachments/` |
+| `--include-links` | Pages linked from the primary document | `_sync-context/linked/` |
+| `--include-children` | Direct child pages in the page tree | `_sync-context/children/` |
+| `--include-attachments` | Attached files (images, PDFs, etc.) | `_sync-context/attachments/` |
 
-The `link_depth` field controls how many levels of links are followed from the primary source. Set to `1` (default) to discover pages directly linked from the primary. Set to `0` to disable link discovery even when `include_links` is true. Values greater than 1 are rejected to prevent runaway crawling.
+Context documents are incrementally maintained (added, updated, removed) and an auto-generated index at `_sync-context/_index.md` provides a navigable map.
 
-Context documents are **incrementally maintained**:
+### Knowledge watcher
 
-- **Added** — newly discovered documents are fetched and written on first encounter
-- **Updated** — existing context documents are version-checked each cycle and only re-fetched when the source has changed
-- **Removed** — documents no longer discoverable from the primary are cleaned up automatically
-- **Shared** — if two primary sources both link to the same page, the context file is kept as long as at least one primary still references it
+The daemon watches `knowledge/` recursively for file changes:
 
-Each context markdown file includes YAML frontmatter with its canonical ID, source URL, relationship type, and parent reference, making files self-describing even without the database.
+- 30-second debounce window (batches rapid changes)
+- Ignores `_sync-context/`, temp files, and `insights/`
+- On change: enqueues insight regeneration for the affected folder
+- On folder move: mirrors the move to `insights/` and updates source paths in the database
 
-An auto-generated index at `_sync-context/_index.md` provides a navigable map of all context documents grouped by relationship type.
+### Insight regeneration
 
-Confluence URLs appearing in the primary markdown are automatically rewritten to relative paths pointing at the local context files (e.g. `https://...atlassian.net/.../pages/789/...` becomes `./_sync-context/linked/c789-design-overview.md`). Links to pages outside the discovered set are left intact.
+Regeneration works like a build system (Make/Bazel), not an AI reasoning chain. The engine is deterministic — the LLM's only job is to write good summaries.
 
-### Folder moves and reorganisation
+**How it works:**
 
-The sync engine identifies documents by **canonical ID** (e.g. `confluence:123456`), not by file path. If you move a `sync-manifest.yaml` and its surrounding folder to a different location under the root, or reorganise files within the manifest directory, the daemon will automatically reconnect:
+1. A knowledge folder changes (detected by watcher or manual `brain-sync regen`)
+2. Compute content hash of all `.md` files in the folder
+3. If hash matches the last regen — skip (nothing changed)
+4. Invoke Claude CLI headless to read the knowledge files and write `summary.md`
+5. If the new summary is >97% similar to the old one — discard (prevents LLM rewording drift)
+6. Walk up to the parent folder and repeat (parent reads child summaries, never raw knowledge)
+7. Stop when a summary is unchanged
 
-- On each sync cycle, the daemon checks whether stored file paths still exist
-- If a file has moved, it searches the manifest directory for the canonical filename prefix (e.g. `c123456-`) and reconnects the match
-- The internal database is updated with the new path — no manual intervention required
+**Leaf summaries** read raw knowledge files. **Parent summaries** read only child summaries. This creates a compression pyramid where each level abstracts the level below.
 
-This means you can freely reorganise your folder structure without breaking sync state.
+The insights agent also writes **journal entries** at `insights/<path>/journal/YYYY-MM/YYYY-MM-DD.md` when knowledge changes are significant, capturing what changed and why it matters.
 
-### Filename convention
+**Timing and tokens** are tracked in the database (`insight_state` table) for observability.
 
-All synced files use ID-anchored filenames so identity is stable even when titles change:
+### Insight regeneration vs agent skill
+
+brain-sync has two distinct agent roles:
+
+| | Insights agent | Skill agent |
+|---|---|---|
+| **When** | Triggered by brain-sync (daemon or `regen` command) | Triggered by user in Claude Code |
+| **How** | Claude CLI headless (`--print --dangerously-skip-permissions`) | Interactive Claude Code session |
+| **Access** | Reads `knowledge/`, writes `insights/` | Reads everything, writes nothing |
+| **Purpose** | Maintain summaries and journal entries | Answer questions, navigate context |
+| **Instructions** | INSIGHT_INSTRUCTIONS.md (embedded in prompt) | SKILL.md + INSTRUCTIONS.md (in `~/.claude/skills/`) |
+
+The skill agent benefits from the insights agent's work — it loads pre-computed summaries instead of reading raw knowledge files, enabling fast progressive disclosure.
+
+## Configuration
+
+brain-sync stores configuration in `~/.brain-sync/config.json`:
+
+```json
+{
+  "brains": ["/path/to/my-brain"],
+  "regen": {
+    "model": "claude-sonnet-4-20250514",
+    "effort": "medium",
+    "timeout": 300,
+    "max_turns": 50,
+    "similarity_threshold": 0.97
+  }
+}
+```
+
+The `brains` list is written by `brain-sync init`. The `regen` section is optional — defaults are used if omitted.
+
+## Filename convention
+
+All synced files use ID-anchored filenames for stability across title changes:
 
 | Source | Pattern | Example |
 |---|---|---|
@@ -161,50 +200,29 @@ All synced files use ID-anchored filenames so identity is stable even when title
 | Google Docs | `g{doc_id}-{slug}.md` | `g1A2B3C-product-prd.md` |
 | Attachments | `a{attachment_id}-{filename}` | `a456789-architecture-diagram.png` |
 
-### Path rediscovery
-
-If a synced file is moved or its parent folder is reorganised, the daemon automatically reconnects it by searching for the canonical filename prefix (e.g. `c123456-`) under the manifest directory. No manual intervention required.
-
-### Output structure
-
-```
-project/
-  sync-manifest.yaml
-  c123456-erd.md                        # primary source
-  _sync-context/
-    _index.md                           # auto-generated context graph
-    linked/
-      c789012-design-overview.md
-    children/
-      c456789-sub-page.md
-    attachments/
-      a456789-diagram.png
-```
-
 ## State
 
-Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the root folder, tracking:
+Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the brain root:
 
-- **sources** — per-source scheduling, content hash, metadata fingerprint, polling interval
+- **sources** — per-source scheduling, content hash, target path, context flags
 - **documents** — canonical ID, URL, title, content hash for all synced documents
-- **relationships** — parent→child links between primary sources and context documents
+- **relationships** — parent-child links between primary sources and context documents
+- **insight_state** — per-folder content hash, regen timing, token counts, status
 
-If the state file is lost or corrupt, the daemon starts fresh (one redundant fetch cycle).
+If the state file is lost, the daemon starts fresh (one redundant fetch cycle, insights regenerated on next change).
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest
+python -m pytest
 ```
 
-### Tests
-
-156 tests covering: manifest parsing, state persistence (SQLite round-trips, schema migration), file operations (including path rediscovery), scheduler (jitter, adaptive tiers, persistence), URL parsing (all Confluence formats), HTML conversion, context discovery, reconciliation, link rewriting, context index generation, REST client (with mocked responses including 429 retry), and integration tests.
+200 tests covering: state persistence, schema migrations (v1-v6), file operations, scheduler, context discovery, link rewriting, regen engine, regen queue, watcher moves, and integration tests.
 
 ## Supported sources
 
 | Source | Status | Auth |
 |---|---|---|
-| Confluence | Working | REST API (basic auth via confluence-cli config or env vars) |
+| Confluence | Working | REST API (basic auth via config or env vars) |
 | Google Docs | Scaffolded | gcloud OAuth (pending setup) |
