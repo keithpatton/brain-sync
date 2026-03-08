@@ -15,6 +15,7 @@ from brain_sync.regen import (
     ClaudeResult,
     PromptResult,
     RegenConfig,
+    RegenFailed,
     _build_prompt,
     _collect_child_summaries,
     _collect_global_context,
@@ -29,6 +30,7 @@ from brain_sync.regen import (
     regen_path,
     text_similarity,
 )
+from brain_sync.retry import claude_breaker
 from brain_sync.state import (
     InsightState,
     _connect,
@@ -36,6 +38,21 @@ from brain_sync.state import (
     load_insight_state,
     save_insight_state,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_breaker():
+    """Reset the global circuit breaker between tests."""
+    claude_breaker.reset()
+    yield
+    claude_breaker.reset()
+
+
+@pytest.fixture(autouse=True)
+def _skip_retry_sleep():
+    """Skip retry backoff sleeps in tests."""
+    with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+        yield
 
 
 @pytest.fixture
@@ -152,7 +169,6 @@ class TestInsightStateDB:
             summary_hash="def456",
             last_regen_utc="2026-03-07T00:00:00Z",
             regen_status="idle",
-            retry_count=0,
         )
         save_insight_state(brain, istate)
         loaded = load_insight_state(brain, "initiatives/test")
@@ -263,7 +279,7 @@ class TestRegenPath:
         assert current == old_summary
 
     def test_claude_failure_marks_failed(self, brain):
-        """If Claude CLI fails, insight state is marked as failed."""
+        """If Claude CLI fails, insight state is marked as failed and RegenFailed raised."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Content", encoding="utf-8")
@@ -272,13 +288,12 @@ class TestRegenPath:
             return ClaudeResult(success=False, output="")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=fail_invoke):
-            count = asyncio.run(regen_path(brain, "project"))
+            with pytest.raises(RegenFailed):
+                asyncio.run(regen_path(brain, "project"))
 
-        assert count == 0
         istate = load_insight_state(brain, "project")
         assert istate is not None
         assert istate.regen_status == "failed"
-        assert istate.retry_count == 1
 
     def test_parent_reads_child_summaries(self, brain):
         """Parent regen reads child summaries, not raw knowledge."""
@@ -299,9 +314,14 @@ class TestRegenPath:
 
         async def capture_and_write(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            summary_path = brain / "insights" / "parent" / "summary.md"
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text("# Parent Summary\nOverview.", encoding="utf-8")
+            # Write summary to whatever path the prompt requests
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    path_str = line.split(":", 1)[-1].strip()
+                    sp = Path(path_str)
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_text("# Parent Summary\nOverview.", encoding="utf-8")
+                    break
             return ClaudeResult(success=True, output="Done")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
@@ -372,9 +392,12 @@ class TestRegenPath:
 
         async def capture_and_write(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            summary_path = brain / "insights" / "initiative" / "summary.md"
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text("# Initiative Summary", encoding="utf-8")
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    sp = Path(line.split(":", 1)[-1].strip())
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_text("# Initiative Summary", encoding="utf-8")
+                    break
             return ClaudeResult(success=True, output="Done")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
@@ -514,9 +537,12 @@ class TestRegenPath:
 
         async def capture_and_write(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            summary_path = brain / "insights" / "project" / "summary.md"
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text("# Summary", encoding="utf-8")
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    sp = Path(line.split(":", 1)[-1].strip())
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_text("# Summary", encoding="utf-8")
+                    break
             return ClaudeResult(success=True, output="Done")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
@@ -568,9 +594,12 @@ class TestRegenPath:
 
         async def capture(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            summary_path = brain / "insights" / "leaf" / "summary.md"
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text("# Summary", encoding="utf-8")
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    sp = Path(line.split(":", 1)[-1].strip())
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_text("# Summary", encoding="utf-8")
+                    break
             return ClaudeResult(success=True, output="Done")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture):
@@ -1062,9 +1091,12 @@ class TestConditionalTools:
 
         async def capture_invoke(prompt, cwd, **kwargs):
             kwargs_captured.append(kwargs)
-            summary_path = brain / "insights" / "project" / "summary.md"
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text("# Summary", encoding="utf-8")
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    sp = Path(line.split(":", 1)[-1].strip())
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_text("# Summary", encoding="utf-8")
+                    break
             return ClaudeResult(success=True, output="Done")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture_invoke):
@@ -1083,9 +1115,12 @@ class TestConditionalTools:
 
         async def capture_invoke(prompt, cwd, **kwargs):
             kwargs_captured.append(kwargs)
-            summary_path = brain / "insights" / "project" / "summary.md"
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text("# Summary", encoding="utf-8")
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    sp = Path(line.split(":", 1)[-1].strip())
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_text("# Summary", encoding="utf-8")
+                    break
             return ClaudeResult(success=True, output="Done")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture_invoke):

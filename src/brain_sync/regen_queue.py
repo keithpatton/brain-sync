@@ -42,6 +42,7 @@ class RegenQueue:
     max_regens_per_hour: int = DEFAULT_MAX_REGENS_PER_HOUR
 
     _pending: dict[str, _PendingRegen] = field(default_factory=dict)
+    _retry_counts: dict[str, int] = field(default_factory=dict)  # queue-level retry tracking
     _last_regen: dict[str, float] = field(default_factory=dict)  # monotonic time
     _regen_times: list[float] = field(default_factory=list)  # timestamps for rate limiting
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -97,6 +98,8 @@ class RegenQueue:
                 still_pending[path] = pending
                 continue
             ready.append(path)
+            # Preserve retry count before removing from pending
+            self._retry_counts[path] = pending.retry_count
 
         self._pending = still_pending
         return ready
@@ -127,15 +130,13 @@ class RegenQueue:
                         except (ValueError, TypeError):
                             pass
 
-                # Check retry count
-                if istate and istate.retry_count >= MAX_RETRIES:
-                    log.warning("Max retries reached for %s, dropping", knowledge_path)
-                    continue
+                # Queue owns retry budgeting via _retry_counts (see re-enqueue below)
 
                 try:
                     count = await regen_path(self.root, knowledge_path)
                     self._last_regen[knowledge_path] = time.monotonic()
                     self._regen_times.append(time.monotonic())
+                    self._retry_counts.pop(knowledge_path, None)
                     total += count
                     log.info(
                         "[regen] path=%s summaries_updated=%d",
@@ -143,8 +144,8 @@ class RegenQueue:
                     )
                 except Exception as e:
                     log.warning("Regen failed for %s: %s", knowledge_path, e)
-                    # Re-enqueue with backoff
-                    retry = (istate.retry_count if istate else 0)
+                    # Re-enqueue with backoff (queue owns retry budgeting)
+                    retry = self._retry_counts.get(knowledge_path, 0)
                     if retry < MAX_RETRIES:
                         backoff = RETRY_BACKOFFS[min(retry, len(RETRY_BACKOFFS) - 1)]
                         self._pending[knowledge_path] = _PendingRegen(

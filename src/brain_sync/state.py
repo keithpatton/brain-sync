@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS insight_state (
     regen_started_utc TEXT,
     last_regen_utc TEXT,
     regen_status TEXT NOT NULL DEFAULT 'idle',
-    retry_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER,
     output_tokens INTEGER,
     num_turns INTEGER,
@@ -197,7 +196,6 @@ class InsightState:
     regen_started_utc: str | None = None
     last_regen_utc: str | None = None
     regen_status: str = "idle"
-    retry_count: int = 0
     input_tokens: int | None = None
     output_tokens: int | None = None
     num_turns: int | None = None
@@ -472,6 +470,19 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         }
         if "cost_usd" in existing_cols:
             conn.execute("ALTER TABLE insight_state DROP COLUMN cost_usd")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')",
+        )
+        conn.commit()
+        from_version = 8
+
+    if from_version < 9:
+        # v8 → v9: Drop retry_count (queue now owns retry budgeting)
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
+        }
+        if "retry_count" in existing_cols:
+            conn.execute("ALTER TABLE insight_state DROP COLUMN retry_count")
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -854,7 +865,7 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     try:
         row = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
-            "regen_started_utc, last_regen_utc, regen_status, retry_count, "
+            "regen_started_utc, last_regen_utc, regen_status, "
             "input_tokens, output_tokens, num_turns, model "
             "FROM insight_state WHERE knowledge_path = ?",
             (knowledge_path,),
@@ -868,11 +879,10 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
             regen_started_utc=row[3],
             last_regen_utc=row[4],
             regen_status=row[5],
-            retry_count=row[6],
-            input_tokens=row[7],
-            output_tokens=row[8],
-            num_turns=row[9],
-            model=row[10],
+            input_tokens=row[6],
+            output_tokens=row[7],
+            num_turns=row[8],
+            model=row[9],
         )
     finally:
         conn.close()
@@ -885,16 +895,15 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
         conn.execute(
             "INSERT INTO insight_state "
             "(knowledge_path, content_hash, summary_hash, "
-            "regen_started_utc, last_regen_utc, regen_status, retry_count, "
+            "regen_started_utc, last_regen_utc, regen_status, "
             "input_tokens, output_tokens, num_turns, model) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(knowledge_path) DO UPDATE SET "
             "content_hash=excluded.content_hash, "
             "summary_hash=excluded.summary_hash, "
             "regen_started_utc=excluded.regen_started_utc, "
             "last_regen_utc=excluded.last_regen_utc, "
             "regen_status=excluded.regen_status, "
-            "retry_count=excluded.retry_count, "
             "input_tokens=excluded.input_tokens, "
             "output_tokens=excluded.output_tokens, "
             "num_turns=excluded.num_turns, "
@@ -906,7 +915,6 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
                 istate.regen_started_utc,
                 istate.last_regen_utc,
                 istate.regen_status,
-                istate.retry_count,
                 istate.input_tokens,
                 istate.output_tokens,
                 istate.num_turns,
@@ -924,7 +932,7 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
     try:
         rows = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
-            "regen_started_utc, last_regen_utc, regen_status, retry_count, "
+            "regen_started_utc, last_regen_utc, regen_status, "
             "input_tokens, output_tokens, num_turns, model "
             "FROM insight_state"
         ).fetchall()
@@ -936,11 +944,10 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
                 regen_started_utc=r[3],
                 last_regen_utc=r[4],
                 regen_status=r[5],
-                retry_count=r[6],
-                input_tokens=r[7],
-                output_tokens=r[8],
-                num_turns=r[9],
-                model=r[10],
+                input_tokens=r[6],
+                output_tokens=r[7],
+                num_turns=r[8],
+                model=r[9],
             )
             for r in rows
         ]

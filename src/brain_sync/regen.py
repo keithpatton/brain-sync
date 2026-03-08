@@ -26,6 +26,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from brain_sync.commands.context import CONFIG_FILE
+from brain_sync.retry import async_retry, claude_breaker
 from brain_sync.fileops import EXCLUDED_DIRS, IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
 from brain_sync.fs_utils import (
     find_all_content_paths,
@@ -40,6 +41,15 @@ from brain_sync.state import (
     reset_running_insight_states,
     save_insight_state,
 )
+
+
+class RegenFailed(Exception):
+    """Raised when insight regeneration fails after retries."""
+
+    def __init__(self, knowledge_path: str, reason: str):
+        self.knowledge_path = knowledge_path
+        self.reason = reason
+        super().__init__(f"Regen failed for {knowledge_path}: {reason}")
 
 
 def _load_instruction(name: str) -> str:
@@ -354,7 +364,9 @@ async def invoke_claude(
             log.info("Claude CLI: %s", line)
 
     if proc.returncode != 0:
-        log.warning("Claude CLI failed (rc=%d): %s", proc.returncode, stderr_text[:500])
+        log.warning("Claude CLI failed (rc=%d) stderr: %s", proc.returncode, stderr_text[:500])
+        if stdout_text.strip():
+            log.warning("Claude CLI failed stdout: %s", stdout_text[:1000])
         return ClaudeResult(success=False, output="")
 
     # Parse JSON output for token counts
@@ -671,18 +683,35 @@ async def regen_path(
             regen_started_utc=started,
             last_regen_utc=istate.last_regen_utc if istate else None,
             regen_status="running",
-            retry_count=istate.retry_count if istate else 0,
+            # retry_count deprecated — queue now owns retry budgeting
             model=config.model,
         ))
 
-        # Invoke Claude
+        # Invoke Claude (with retry + circuit breaker)
         log.info("[%s] Generating insights: %s (model=%s prompt_hash=%s)",
                  regen_id, current_path or "(root)", config.model, prompt_hash)
-        result = await invoke_claude(
-            prompt_result.text, cwd=root, timeout=config.timeout, model=config.model,
-            effort=config.effort, max_turns=config.max_turns,
-            allowed_tools=allowed_tools,
-        )
+        try:
+            result = await async_retry(
+                invoke_claude,
+                prompt_result.text, cwd=root, timeout=config.timeout,
+                model=config.model, effort=config.effort,
+                max_turns=config.max_turns, allowed_tools=allowed_tools,
+                is_success=lambda r: r.success,
+                breaker=claude_breaker,
+            )
+        except Exception as e:
+            now = datetime.now(timezone.utc).isoformat()
+            save_insight_state(root, InsightState(
+                knowledge_path=current_path,
+                content_hash=istate.content_hash if istate else None,
+                summary_hash=istate.summary_hash if istate else None,
+                regen_started_utc=started,
+                last_regen_utc=now,
+                regen_status="failed",
+
+                model=config.model,
+            ))
+            raise RegenFailed(current_path or "(root)", str(e)) from e
         now = datetime.now(timezone.utc).isoformat()
 
         # Output validation: check for unexpected files
@@ -701,23 +730,6 @@ async def regen_path(
                 elif rogue.is_dir():
                     shutil.rmtree(rogue)
 
-        if not result.success:
-            save_insight_state(root, InsightState(
-                knowledge_path=current_path,
-                content_hash=istate.content_hash if istate else None,
-                summary_hash=istate.summary_hash if istate else None,
-                regen_started_utc=started,
-                last_regen_utc=now,
-                regen_status="failed",
-                retry_count=(istate.retry_count if istate else 0) + 1,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                num_turns=result.num_turns,
-                model=config.model,
-            ))
-            log.warning("[%s] Claude CLI failed for %s", regen_id, current_path or "(root)")
-            break
-
         # Check if summary was actually written by Claude
         if summary_path.exists():
             new_summary = summary_path.read_text(encoding="utf-8")
@@ -731,13 +743,13 @@ async def regen_path(
                 regen_started_utc=started,
                 last_regen_utc=now,
                 regen_status="failed",
-                retry_count=(istate.retry_count if istate else 0) + 1,
+
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 num_turns=result.num_turns,
                 model=config.model,
             ))
-            break
+            raise RegenFailed(current_path or "(root)", "Claude did not write summary")
 
         # Similarity guard
         if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
@@ -753,7 +765,7 @@ async def regen_path(
                 regen_started_utc=started,
                 last_regen_utc=now,
                 regen_status="idle",
-                retry_count=0,
+
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 num_turns=result.num_turns,
@@ -771,7 +783,6 @@ async def regen_path(
             regen_started_utc=started,
             last_regen_utc=now,
             regen_status="idle",
-            retry_count=0,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             num_turns=result.num_turns,
@@ -815,7 +826,10 @@ async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
     total = 0
     for path in content_paths:
         log.info("Assessing insights generation: %s", path)
-        count = await regen_path(root, path, config=config)
-        total += count
+        try:
+            count = await regen_path(root, path, config=config)
+            total += count
+        except RegenFailed as e:
+            log.warning("Skipping %s: %s", path, e.reason)
 
     return total

@@ -140,21 +140,43 @@ class TestProcessReady:
         assert q._pending["project"].retry_count == 1
 
     def test_max_retries_drops_event(self, brain):
+        """After MAX_RETRIES queue-level failures, event is dropped."""
+        q = RegenQueue(root=brain, debounce_secs=0.0, cooldown_secs=0.0)
+
+        async def fail(*args, **kwargs):
+            raise RuntimeError("Claude unavailable")
+
+        # Simulate MAX_RETRIES failures through the queue
+        with patch("brain_sync.regen_queue.regen_path", side_effect=fail):
+            for i in range(MAX_RETRIES + 1):
+                if i == 0:
+                    q.enqueue("project")
+                # Process each failure — the queue re-enqueues with backoff
+                # Set fire_at to now so it's immediately ready
+                if "project" in q._pending:
+                    q._pending["project"].fire_at = 0
+                asyncio.run(q.process_ready())
+
+        # After MAX_RETRIES re-enqueues, the event should be dropped
+        assert not q.has_pending()
+
+
+    def test_regen_failed_is_caught_and_reenqueued(self, brain):
+        """RegenFailed exception is caught by the queue and re-enqueued."""
+        from brain_sync.regen import RegenFailed
+
         q = RegenQueue(root=brain, debounce_secs=0.0, cooldown_secs=0.0)
         q.enqueue("project")
 
-        # Pre-set high retry count in DB
-        save_insight_state(brain, InsightState(
-            knowledge_path="project",
-            retry_count=MAX_RETRIES,
-            regen_status="failed",
-        ))
+        async def fail_regen(*args, **kwargs):
+            raise RegenFailed("project", "Claude CLI failed")
 
-        with patch("brain_sync.regen_queue.regen_path", new_callable=AsyncMock) as mock_regen:
+        with patch("brain_sync.regen_queue.regen_path", side_effect=fail_regen):
             asyncio.run(q.process_ready())
 
-        mock_regen.assert_not_called()
-        assert not q.has_pending()
+        # Should be re-enqueued with retry_count=1
+        assert q.has_pending()
+        assert q._pending["project"].retry_count == 1
 
 
 class TestNextFireIn:
