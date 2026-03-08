@@ -18,7 +18,7 @@ from brain_sync.confluence_rest import (
     fetch_page_version,
 )
 from brain_sync.converter import html_to_markdown
-from brain_sync.fileops import atomic_write_bytes, content_hash, rediscover_local_path
+from brain_sync.fileops import EXCLUDED_DIRS, atomic_write_bytes, content_hash, rediscover_local_path
 from brain_sync.sources import (
     SourceType,
     canonical_filename,
@@ -39,7 +39,10 @@ from brain_sync.state import (
 
 log = logging.getLogger(__name__)
 
+# Must match the entry in EXCLUDED_DIRS (fileops.py) — this folder is
+# excluded from content discovery, regen, and watching.
 CONTEXT_DIR = "_sync-context"
+assert CONTEXT_DIR in EXCLUDED_DIRS, f"{CONTEXT_DIR!r} missing from EXCLUDED_DIRS"
 
 
 class RelType(str, Enum):

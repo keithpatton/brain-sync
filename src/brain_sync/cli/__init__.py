@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --- init ---
     p_init = sub.add_parser("init", help="Initialise a new brain or migrate an existing one")
     p_init.add_argument("root", type=Path, help="Brain root directory to create/initialise")
+    p_init.add_argument("--model", default=None, help="Default model for insight generation (e.g. claude-sonnet-4-6)")
     p_init.add_argument("--dry-run", action="store_true", help="Show what would happen without making changes")
 
     # --- run ---

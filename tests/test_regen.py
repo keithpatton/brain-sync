@@ -16,6 +16,7 @@ from brain_sync.regen import (
     _compute_hash,
     _find_all_content_paths,
     _get_child_dirs,
+    _is_content_dir,
     _is_readable_file,
     folder_content_hash,
     regen_all,
@@ -576,16 +577,51 @@ class TestRegenPath:
         assert "PARENT" not in prompt
 
 
+class TestIsContentDir:
+    def test_excludes_sync_context(self, tmp_path):
+        d = tmp_path / "_sync-context"
+        d.mkdir()
+        assert not _is_content_dir(d)
+
+    def test_excludes_dotfiles(self, tmp_path):
+        d = tmp_path / ".hidden"
+        d.mkdir()
+        assert not _is_content_dir(d)
+
+    def test_includes_core(self, tmp_path):
+        d = tmp_path / "_core"
+        d.mkdir()
+        assert _is_content_dir(d)
+
+    def test_includes_normal(self, tmp_path):
+        d = tmp_path / "initiatives"
+        d.mkdir()
+        assert _is_content_dir(d)
+
+    def test_excludes_files(self, tmp_path):
+        f = tmp_path / "doc.md"
+        f.write_text("content", encoding="utf-8")
+        assert not _is_content_dir(f)
+
+
 class TestGetChildDirs:
-    def test_excludes_underscore_prefixed(self, tmp_path):
-        """_get_child_dirs excludes dirs starting with _."""
+    def test_excludes_sync_context(self, tmp_path):
+        """_get_child_dirs excludes _sync-context."""
         root = tmp_path / "knowledge"
         root.mkdir()
         (root / "normal").mkdir()
         (root / "_sync-context").mkdir()
-        (root / "_notes").mkdir()
         result = _get_child_dirs(root)
         assert [p.name for p in result] == ["normal"]
+
+    def test_includes_core(self, tmp_path):
+        """_get_child_dirs includes _core."""
+        root = tmp_path / "knowledge"
+        root.mkdir()
+        (root / "_core").mkdir()
+        (root / "initiatives").mkdir()
+        result = _get_child_dirs(root)
+        assert [p.name for p in result] == ["_core", "initiatives"]
 
     def test_excludes_dot_prefixed(self, tmp_path):
         """_get_child_dirs excludes dirs starting with ."""
@@ -786,18 +822,42 @@ class TestFindAllContentPaths:
         # sub-1, sub-2 before area-a; area-b independent
         assert paths == ["area-a/sub-1", "area-a/sub-2", "area-a", "area-b"]
 
-    def test_excludes_hidden_and_underscore(self, tmp_path):
-        """Hidden and underscore-prefixed dirs are excluded."""
+    def test_excludes_sync_context_and_hidden(self, tmp_path):
+        """_sync-context and hidden dirs are excluded, _core is included."""
         root = tmp_path / "knowledge"
         root.mkdir()
-        (root / "_core").mkdir()
+        core = root / "_core"
+        core.mkdir()
+        (core / "about.md").write_text("identity", encoding="utf-8")
+        (root / "_sync-context").mkdir()
         (root / ".hidden").mkdir()
         normal = root / "visible"
         normal.mkdir()
         (normal / "doc.md").write_text("content", encoding="utf-8")
 
         paths = _find_all_content_paths(root)
-        assert paths == ["visible"]
+        assert "_core" in paths
+        assert "visible" in paths
+        assert not any("_sync-context" in p for p in paths)
+        assert not any(".hidden" in p for p in paths)
+
+    def test_core_subfolders_included(self, tmp_path):
+        """_core subfolders (Me/, Organisation/) are discovered."""
+        root = tmp_path / "knowledge"
+        root.mkdir()
+        core = root / "_core"
+        core.mkdir()
+        me = core / "Me"
+        me.mkdir()
+        (me / "about-me.md").write_text("identity", encoding="utf-8")
+        org = core / "Organisation"
+        org.mkdir()
+        (org / "org.md").write_text("org chart", encoding="utf-8")
+
+        paths = _find_all_content_paths(root)
+        assert "_core/Me" in paths
+        assert "_core/Organisation" in paths
+        assert "_core" in paths
 
     def test_empty_tree(self, tmp_path):
         """Empty knowledge root returns empty list."""

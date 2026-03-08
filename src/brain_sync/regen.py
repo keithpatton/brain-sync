@@ -19,7 +19,8 @@ from difflib import SequenceMatcher
 from importlib import resources
 from pathlib import Path
 
-from brain_sync.fileops import IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
+from brain_sync.commands.context import CONFIG_FILE
+from brain_sync.fileops import EXCLUDED_DIRS, IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
@@ -43,11 +44,15 @@ log = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
-CONFIG_FILE = Path.home() / ".brain-sync" / "config.json"
 
 def _is_readable_file(p: Path) -> bool:
     """Check if a file has a readable extension and is not hidden."""
     return p.is_file() and p.suffix.lower() in KNOWLEDGE_EXTENSIONS and not p.name.startswith(("_", "."))
+
+
+def _is_content_dir(p: Path) -> bool:
+    """Check if a directory should be included in content discovery."""
+    return p.is_dir() and not p.name.startswith(".") and p.name not in EXCLUDED_DIRS
 
 
 @dataclass
@@ -147,6 +152,7 @@ async def invoke_claude(
         "claude", "--print",
         "--output-format", "json",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--max-turns", str(max_turns),
         "--allowedTools", "Read,Write,Glob",
     ]
@@ -296,13 +302,10 @@ Write the summary to: {insights_dir / "summary.md"}"""
 
 
 def _get_child_dirs(knowledge_dir: Path) -> list[Path]:
-    """Get child directories, excluding _ and . prefixed dirs."""
+    """Get child content directories, excluding EXCLUDED_DIRS and dotfiles."""
     if not knowledge_dir.is_dir():
         return []
-    return sorted(
-        p for p in knowledge_dir.iterdir()
-        if p.is_dir() and not p.name.startswith(("_", "."))
-    )
+    return sorted(p for p in knowledge_dir.iterdir() if _is_content_dir(p))
 
 
 def _collect_child_summaries(
@@ -543,17 +546,14 @@ def _find_all_content_paths(knowledge_root: Path) -> list[str]:
         if not directory.is_dir():
             return
         for child in sorted(directory.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
+            if not _is_content_dir(child):
                 continue
             child_rel = prefix + "/" + child.name if prefix else child.name
             # Recurse first (depth-first → deepest paths added first)
             _walk(child, child_rel)
             # Include this folder if it has readable files or content child dirs
             has_files = any(_is_readable_file(p) for p in child.iterdir())
-            has_children = any(
-                p.is_dir() and not p.name.startswith(("_", "."))
-                for p in child.iterdir()
-            )
+            has_children = any(_is_content_dir(p) for p in child.iterdir())
             if has_files or has_children:
                 paths.append(child_rel)
 

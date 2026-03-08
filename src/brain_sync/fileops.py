@@ -12,6 +12,10 @@ TEXT_EXTENSIONS = {".md", ".txt", ".csv", ".json"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 KNOWLEDGE_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
 
+# Directories excluded from content discovery, regen, and watching.
+# _sync-context/ contains relationship metadata managed by the sync engine.
+EXCLUDED_DIRS = frozenset({"_sync-context"})
+
 
 def content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()

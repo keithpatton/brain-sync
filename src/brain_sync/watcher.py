@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from brain_sync.fileops import EXCLUDED_DIRS
 from watchdog.events import (
     DirMovedEvent,
     FileMovedEvent,
@@ -39,11 +40,11 @@ def _should_ignore(path: Path, knowledge_root: Path) -> bool:
     name = path.name
     if IGNORE_PATTERNS.search(name):
         return True
-    # Ignore _sync-context/ directories (managed by sync engine)
+    # Ignore excluded directories (e.g. _sync-context/ managed by sync engine)
     try:
         rel = path.relative_to(knowledge_root)
         parts = rel.parts
-        if "_sync-context" in parts:
+        if any(part in EXCLUDED_DIRS for part in parts):
             return True
     except ValueError:
         pass

@@ -48,8 +48,10 @@ def _ensure_dir(path: Path, dry_run: bool = False) -> bool:
     return True
 
 
-def _register_brain_root(root: Path, dry_run: bool = False) -> None:
-    """Register this brain root in ~/.brain-sync/config.json."""
+def _register_brain_root(
+    root: Path, *, model: str | None = None, dry_run: bool = False,
+) -> None:
+    """Register this brain root and optional settings in ~/.brain-sync/config.json."""
     if dry_run:
         log.info("[dry-run] Would register brain root in %s", CONFIG_FILE)
         return
@@ -63,13 +65,24 @@ def _register_brain_root(root: Path, dry_run: bool = False) -> None:
         except (json.JSONDecodeError, OSError):
             config = {}
 
+    changed = False
+
     brains = config.get("brains", [])
     root_str = str(root)
     if root_str not in brains:
         brains.append(root_str)
         config["brains"] = brains
+        changed = True
+
+    if model:
+        regen = config.get("regen", {})
+        regen["model"] = model
+        config["regen"] = regen
+        changed = True
+
+    if changed:
         CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-        log.info("Registered brain root in %s", CONFIG_FILE)
+        log.info("Updated config in %s", CONFIG_FILE)
 
 
 @dataclass
@@ -79,7 +92,7 @@ class InitResult:
     dirs_created: list[str] = field(default_factory=list)
 
 
-def init_brain(root: Path, *, dry_run: bool = False) -> InitResult:
+def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -> InitResult:
     """Initialise a brain at the given root directory."""
     root = root.resolve()
     was_existing = root.exists()
@@ -121,7 +134,7 @@ def init_brain(root: Path, *, dry_run: bool = False) -> InitResult:
         conn.close()
         log.info("SQLite state database ready at %s", root / ".sync-state.sqlite")
 
-    _register_brain_root(root, dry_run)
+    _register_brain_root(root, model=model, dry_run=dry_run)
 
     return InitResult(root=root, was_existing=was_existing, dirs_created=dirs_created)
 
