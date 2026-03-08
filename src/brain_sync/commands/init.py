@@ -15,19 +15,21 @@ log = logging.getLogger(__name__)
 SKILL_INSTALL_DIR = Path.home() / ".claude" / "skills" / "brain-sync"
 
 
-def _template_path(name: str) -> Path:
-    """Get the path to a template file bundled with the package."""
-    ref = resources.files("brain_sync.templates").joinpath(name)
+def _resource_path(package: str, name: str) -> Path:
+    """Get the path to a bundled resource file."""
+    ref = resources.files(package).joinpath(name)
     with resources.as_file(ref) as p:
         return Path(p)
 
 
-def _copy_template(name: str, dest: Path, dry_run: bool = False) -> bool:
-    """Copy a template file to dest. Returns True if copied."""
+def _copy_resource(
+    package: str, name: str, dest: Path, dry_run: bool = False,
+) -> bool:
+    """Copy a bundled resource file to dest. Returns True if copied."""
     if dry_run:
-        log.info("[dry-run] Would copy template %s -> %s", name, dest)
+        log.info("[dry-run] Would copy %s:%s -> %s", package, name, dest)
         return False
-    src = _template_path(name)
+    src = _resource_path(package, name)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(src), str(dest))
     log.info("Installed %s", dest)
@@ -86,12 +88,32 @@ def init_brain(root: Path, *, dry_run: bool = False) -> InitResult:
         _ensure_dir(root, dry_run)
 
     dirs_created: list[str] = []
-    for rel in ["knowledge", "knowledge/_core", "insights", "insights/_core"]:
+    for rel in [
+        "knowledge", "knowledge/_core",
+        "insights", "insights/_core",
+        "schemas/insights",
+    ]:
         if _ensure_dir(root / rel, dry_run):
             dirs_created.append(rel)
 
-    _copy_template("SKILL.md", SKILL_INSTALL_DIR / "SKILL.md", dry_run)
-    _copy_template("INSTRUCTIONS.md", SKILL_INSTALL_DIR / "INSTRUCTIONS.md", dry_run)
+    # Deploy insight schemas to brain root
+    for schema in ["summary.md", "decisions.md", "glossary.md", "status.md"]:
+        _copy_resource(
+            "brain_sync.schemas",
+            f"insights/{schema}",
+            root / "schemas" / "insights" / schema,
+            dry_run,
+        )
+
+    # Install skill and instructions to Claude skill directory
+    _copy_resource(
+        "brain_sync.skills.brain_sync", "SKILL.md",
+        SKILL_INSTALL_DIR / "SKILL.md", dry_run,
+    )
+    _copy_resource(
+        "brain_sync.instructions", "CORE_INSTRUCTIONS.md",
+        SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md", dry_run,
+    )
 
     if not dry_run:
         from brain_sync.state import _connect
@@ -105,13 +127,19 @@ def init_brain(root: Path, *, dry_run: bool = False) -> InitResult:
 
 
 def update_skill() -> list[Path]:
-    """Re-install SKILL.md and INSTRUCTIONS.md from templates.
+    """Re-install SKILL.md and CORE_INSTRUCTIONS.md to the skill directory.
 
     Returns list of updated file paths.
     """
     updated: list[Path] = []
-    for name in ["SKILL.md", "INSTRUCTIONS.md"]:
-        dest = SKILL_INSTALL_DIR / name
-        _copy_template(name, dest)
-        updated.append(dest)
+    _copy_resource(
+        "brain_sync.skills.brain_sync", "SKILL.md",
+        SKILL_INSTALL_DIR / "SKILL.md",
+    )
+    updated.append(SKILL_INSTALL_DIR / "SKILL.md")
+    _copy_resource(
+        "brain_sync.instructions", "CORE_INSTRUCTIONS.md",
+        SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md",
+    )
+    updated.append(SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md")
     return updated

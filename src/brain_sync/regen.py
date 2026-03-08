@@ -28,15 +28,15 @@ from brain_sync.state import (
 )
 
 
-def _load_template(name: str) -> str:
-    """Load a template file bundled with the package."""
-    ref = resources.files("brain_sync.templates").joinpath(name)
+def _load_instruction(name: str) -> str:
+    """Load an instruction file bundled with the package."""
+    ref = resources.files("brain_sync.instructions").joinpath(name)
     return ref.read_text(encoding="utf-8")
 
 
 # Loaded once at import time — embedded into every insights agent prompt
-_INSTRUCTIONS = _load_template("INSTRUCTIONS.md")
-_INSIGHT_INSTRUCTIONS = _load_template("INSIGHT_INSTRUCTIONS.md")
+_INSTRUCTIONS = _load_instruction("CORE_INSTRUCTIONS.md")
+_INSIGHT_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
 
 log = logging.getLogger(__name__)
 

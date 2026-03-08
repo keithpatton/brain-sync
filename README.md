@@ -57,7 +57,7 @@ The skill is auto-installed during `brain-sync init`. In Claude Code, invoke it 
 my-brain/
   .sync-state.sqlite              # state database (managed by brain-sync)
   knowledge/                      # ALL human/sync content lives here
-    _core/                        # always-loaded by agent (about-me, org context)
+    _core/                        # global context: semantic grounding
     initiatives/
       My Project/
         ERD/
@@ -69,8 +69,8 @@ my-brain/
             attachments/
     <arbitrary folders>/          # users can organise freely
   insights/                       # AI-generated, mirrors knowledge/ tree
-    _core/
-      summary.md                  # always-loaded orientation summary
+    _core/                        # global context: shared understanding
+      summary.md                  # primary orientation summary
     initiatives/
       My Project/
         summary.md                # cross-cutting project summary
@@ -79,11 +79,19 @@ my-brain/
           journal/
             2026-03/
               2026-03-07.md       # temporal context: what changed
+  schemas/                        # global context: insight structure
+    insights/
+      summary.md                  # artifact schema for summaries
+      decisions.md                # artifact schema for decisions
+      glossary.md                 # artifact schema for glossaries
+      status.md                   # artifact schema for status tracking
 ```
 
 **`knowledge/`** is human-owned. Users and brain-sync write here. Arbitrary structure allowed.
 
 **`insights/`** is agent-owned. brain-sync triggers regeneration; the insights agent writes summaries and journal entries. Mirrors `knowledge/` 1:1.
+
+**`schemas/`** defines structural meaning surfaces used by both agents. Deployed by `brain-sync init`.
 
 ## CLI reference
 
@@ -96,7 +104,7 @@ my-brain/
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
-| `brain-sync update-skill` | Re-install SKILL.md and INSTRUCTIONS.md from templates |
+| `brain-sync update-skill` | Re-install skill and instruction files to `~/.claude/skills/brain-sync/` |
 
 All commands accept `--root <path>` (defaults to current directory) and `--log-level` (DEBUG, INFO, WARNING).
 
@@ -165,9 +173,9 @@ brain-sync has two distinct agent roles:
 |---|---|---|
 | **When** | Triggered by brain-sync (daemon or `regen` command) | Triggered by user in Claude Code |
 | **How** | Claude CLI headless (`--print --dangerously-skip-permissions`) | Interactive Claude Code session |
-| **Access** | Reads `knowledge/`, writes `insights/` | Reads everything, writes nothing |
+| **Access** | Reads `knowledge/`, `schemas/`, writes `insights/` | Reads everything, writes nothing |
 | **Purpose** | Maintain summaries and journal entries | Answer questions, navigate context |
-| **Instructions** | INSIGHT_INSTRUCTIONS.md (embedded in prompt) | SKILL.md + INSTRUCTIONS.md (in `~/.claude/skills/`) |
+| **Instructions** | INSIGHT_INSTRUCTIONS.md + CORE_INSTRUCTIONS.md (embedded in prompt) | SKILL.md + CORE_INSTRUCTIONS.md (in `~/.claude/skills/`) |
 
 The skill agent benefits from the insights agent's work — it loads pre-computed summaries instead of reading raw knowledge files, enabling fast progressive disclosure.
 

@@ -251,6 +251,11 @@ class TestInitBrain:
         assert (root / "knowledge" / "_core").is_dir()
         assert (root / "insights").is_dir()
         assert (root / "insights" / "_core").is_dir()
+        assert (root / "schemas" / "insights").is_dir()
+        assert (root / "schemas" / "insights" / "summary.md").exists()
+        assert (root / "schemas" / "insights" / "decisions.md").exists()
+        assert (root / "schemas" / "insights" / "glossary.md").exists()
+        assert (root / "schemas" / "insights" / "status.md").exists()
         assert (root / ".sync-state.sqlite").exists()
 
     def test_existing_directory(self, tmp_path):
@@ -269,16 +274,16 @@ class TestInitBrain:
 
 
 class TestUpdateSkill:
-    def test_copies_templates(self, tmp_path, monkeypatch):
+    def test_copies_skill_files(self, tmp_path, monkeypatch):
         skill_dir = tmp_path / "skills" / "brain-sync"
         monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", skill_dir)
 
         updated = update_skill()
         assert len(updated) == 2
         assert any(p.name == "SKILL.md" for p in updated)
-        assert any(p.name == "INSTRUCTIONS.md" for p in updated)
+        assert any(p.name == "CORE_INSTRUCTIONS.md" for p in updated)
         assert (skill_dir / "SKILL.md").exists()
-        assert (skill_dir / "INSTRUCTIONS.md").exists()
+        assert (skill_dir / "CORE_INSTRUCTIONS.md").exists()
 
 
 class TestCliLibraryParity:

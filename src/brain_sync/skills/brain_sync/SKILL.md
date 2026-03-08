@@ -13,13 +13,14 @@ description: >
 ## Step 1: Discover the brain
 
 The brain is a filesystem folder with `.sync-state.sqlite` at its root,
-alongside `knowledge/` and `insights/` folders. The brain root is configured
+alongside `knowledge/`, `insights/`, and `schemas/` folders. The brain root is configured
 in `~/.brain-sync/config.json`.
 
 ## Step 2: Understand the protocol
 
-INSTRUCTIONS.md (loaded alongside this skill) defines the folder structure,
-summary template, and conventions. **Follow it from this point forward.**
+CORE_INSTRUCTIONS.md (loaded alongside this skill) defines the folder
+structure, summary template, and conventions. **Follow it from this point
+forward.**
 
 ## Step 3: Load context
 
@@ -28,9 +29,15 @@ goal is minimum viable context, not comprehensive loading.
 
 ### Priority order
 
-#### 1. Always load first (every conversation)
-- All files in `insights/_core/` (excluding `journal/`). This is the primary
-  orientation: identity, org context, current priorities, active work.
+#### 1. Always load first (every conversation) — global context
+- All files in `knowledge/_core/` — semantic grounding: identity, org context,
+  taxonomy, artifact semantics.
+- All files in `schemas/` — insight structure: defines how meaning is surfaced
+  in insights. Schemas are structural, not domain knowledge.
+- All files in `insights/_core/` (excluding `journal/`) — shared understanding:
+  global summaries, glossaries, current priorities, active work.
+
+Load in this order: `knowledge/_core/` → `schemas/` → `insights/_core/`.
 
 This same pattern applies at every level: when loading insights for any area,
 load all insight files in that folder but always exclude `journal/` unless
@@ -52,7 +59,6 @@ temporal context is specifically needed.
 - Journal is never loaded proactively.
 
 #### 4. Load knowledge for deep dives (last resort)
-- `knowledge/_core/` only when the core insights are insufficient
 - Area knowledge only when the question requires detail beyond what insights
   capture
 - When loading synced content, check `_sync-context/_index.md` first. Use
@@ -73,7 +79,7 @@ context, or ask.
 
 ## Your access
 
-- **Read** everything: knowledge/, insights/
+- **Read** everything: knowledge/, insights/, schemas/
 - **Do not write** to insights/ — insights are regenerated asynchronously
   by brain-sync when knowledge changes
 - **May manage** sync sources when the user asks
@@ -124,7 +130,7 @@ Do not run these unless the user explicitly asks:
 
 - `brain-sync init` — creates a new brain
 - `brain-sync run` — starts the long-running daemon
-- `brain-sync update-skill` — reinstalls skill templates
+- `brain-sync update-skill` — reinstalls skill files
 
 ### Interpreting sync requests
 

@@ -15,7 +15,24 @@ keep AI-generated insights accurate and up to date based on what exists in
 - **Journal entries** — temporal context in `journal/YYYY-MM/YYYY-MM-DD.md`
   capturing what changed and why it matters
 
-You have read access to `knowledge/` and read+write access to `insights/`.
+You have read access to `knowledge/` and `schemas/`, and read+write access
+to `insights/`.
+
+## Global Context
+
+Before processing any area, always load global context in this order:
+
+1. **`knowledge/_core/`** — all files. Semantic grounding: identity, org
+   context, taxonomy, artifact semantics.
+2. **`schemas/`** — all files. Insight structure: defines how meaning should
+   be surfaced in insights. Schemas are structural definitions, not domain
+   knowledge.
+3. **`insights/_core/`** — all files (excluding `journal/`). Shared
+   understanding: global summaries, glossaries.
+
+Use this foundational context when interpreting the knowledge being
+summarized. Only proceed to the area-specific content after global context
+is established.
 
 ## Regeneration Types
 

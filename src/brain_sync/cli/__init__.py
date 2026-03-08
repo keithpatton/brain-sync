@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_regen.add_argument("knowledge_path", nargs="?", help="Knowledge path to regenerate (all if omitted)")
 
     # --- update-skill ---
-    p_skill = sub.add_parser("update-skill", help="Update the installed skill and INSTRUCTIONS.md")
+    p_skill = sub.add_parser("update-skill", help="Update the installed skill and instructions")
     p_skill.add_argument("--root", type=Path, default=None, help="Brain root directory (auto-detected from config if omitted)")
 
     return parser
