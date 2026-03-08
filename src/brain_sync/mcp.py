@@ -642,7 +642,7 @@ def brain_sync_open_area(
         "(e.g. 'insights/_core/summary.md', 'knowledge/initiatives/AAA/doc.md'). "
         "Returns file content. Supports .md, .txt, .json, .yaml, .yml files only. "
         "For large files, use offset (0-based char position) to paginate. "
-        "Default limit is 16000 chars per call."
+        "Default limit is 200000 chars per call."
     ),
 )
 def brain_sync_open_file(
@@ -709,4 +709,17 @@ def brain_sync_open_file(
 
 
 if __name__ == "__main__":
+    import json
+
+    from brain_sync.commands.context import CONFIG_FILE
+    from brain_sync.logging_config import setup_logging
+
+    log_level = "INFO"
+    try:
+        if CONFIG_FILE.exists():
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            log_level = data.get("log_level", log_level)
+    except (json.JSONDecodeError, OSError):
+        pass
+    setup_logging(log_level)
     server.run(transport="stdio")

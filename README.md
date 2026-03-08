@@ -245,8 +245,9 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 ```json
 {
   "brains": ["/path/to/my-brain"],
+  "log_level": "INFO",
   "regen": {
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-sonnet-4-6",
     "effort": "medium",
     "timeout": 300,
     "max_turns": 50,
@@ -255,7 +256,7 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 }
 ```
 
-The `brains` list is written by `brain-sync init`. The `regen` section is optional — defaults are used if omitted.
+The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `regen` section is optional — defaults are used if omitted.
 
 ## Converting .docx files
 
@@ -307,7 +308,7 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-283 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, and integration tests.
+359 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, and integration tests.
 
 ## Supported sources
 
