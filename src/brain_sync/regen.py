@@ -4,6 +4,10 @@ Deterministic incremental recomputation loop (Make/Bazel model):
 - Every folder is treated identically: summary = readable files + child summaries
 - Loop walks up ancestors, stops when summary hash is unchanged
 - Similarity guard prevents trivial LLM rewording (>0.97 → discard)
+
+Architectural boundary: Python handles all orchestration (context assembly,
+hash comparison, scheduling, validation). The LLM is a pure function:
+assembled context in → summary.md out.
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -18,6 +23,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from importlib import resources
 from pathlib import Path
+from uuid import uuid4
 
 from brain_sync.commands.context import CONFIG_FILE
 from brain_sync.fileops import EXCLUDED_DIRS, IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
@@ -36,14 +42,31 @@ def _load_instruction(name: str) -> str:
     return ref.read_text(encoding="utf-8")
 
 
-# Loaded once at import time — embedded into every insights agent prompt
-_INSTRUCTIONS = _load_instruction("CORE_INSTRUCTIONS.md")
-_INSIGHT_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
+# Loaded once at import time — the single consolidated instruction set
+PROMPT_VERSION = "regen-v1"
+_REGEN_INSTRUCTIONS = _load_instruction("REGEN_INSTRUCTIONS.md")
+
+# Journal instructions — conditionally appended when write_journal=True
+_JOURNAL_INSTRUCTIONS = """
+## Journal Entry
+
+Write a journal entry capturing what changed and any significant observations.
+
+Write the journal entry to the path given at the end of this prompt.
+Keep entries concise. Distinguish between facts, interpretations, and open
+questions. Use `## YYYY-MM-DD` headings.
+
+Do not write a journal entry if the knowledge change is trivial (formatting,
+minor wording). Only journal when something meaningful shifted.
+"""
 
 log = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
+MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 4
+MIN_CHILDREN = 5  # always include at least this many child summaries
+
 
 def _is_readable_file(p: Path) -> bool:
     """Check if a file has a readable extension and is not hidden."""
@@ -59,10 +82,11 @@ def _is_content_dir(p: Path) -> bool:
 class RegenConfig:
     """Configuration for the insights agent."""
     model: str = "claude-sonnet-4-6"
-    effort: str = "medium"  # low, medium, high — controls thinking budget
+    effort: str = "low"  # low, medium, high — controls thinking budget
     timeout: int = CLAUDE_TIMEOUT
-    max_turns: int = 50
+    max_turns: int = 6
     similarity_threshold: float = SIMILARITY_THRESHOLD
+    write_journal: bool = False
 
     @classmethod
     def load(cls) -> RegenConfig:
@@ -74,10 +98,11 @@ class RegenConfig:
             regen = data.get("regen", {})
             return cls(
                 model=regen.get("model", "claude-sonnet-4-6"),
-                effort=regen.get("effort", "medium"),
+                effort=regen.get("effort", "low"),
                 timeout=regen.get("timeout", CLAUDE_TIMEOUT),
-                max_turns=regen.get("max_turns", 50),
+                max_turns=regen.get("max_turns", 6),
                 similarity_threshold=regen.get("similarity_threshold", SIMILARITY_THRESHOLD),
+                write_journal=regen.get("write_journal", False),
             )
         except (json.JSONDecodeError, OSError):
             return cls()
@@ -114,6 +139,13 @@ class ClaudeResult:
     num_turns: int | None = None
 
 
+@dataclass
+class PromptResult:
+    """Result from prompt construction."""
+    text: str
+    has_binary_files: bool
+
+
 def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
     """Parse token counts from Claude CLI stderr output.
 
@@ -136,116 +168,263 @@ def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
     return input_tokens, output_tokens
 
 
+# ---------------------------------------------------------------------------
+# Global context cache — built once, invalidated by watcher
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _GlobalContextCache:
+    """Cached global context for prompt assembly."""
+    content_hash: str
+    compiled_text: str
+
+
+_global_context_cache: _GlobalContextCache | None = None
+
+
+def invalidate_global_context_cache() -> None:
+    """Invalidate the cached global context. Called by the watcher."""
+    global _global_context_cache
+    _global_context_cache = None
+    log.debug("Global context cache invalidated")
+
+
+def _hash_directory(directory: Path) -> str:
+    """Compute a hash over all readable files in a directory tree."""
+    h = hashlib.sha256()
+    if not directory.is_dir():
+        return h.hexdigest()
+    for p in sorted(directory.rglob("*")):
+        if p.is_file() and not p.name.startswith("."):
+            h.update(str(p.relative_to(directory)).encode("utf-8"))
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def _collect_global_context(root: Path, current_path: str) -> str:
+    """Collect and inline global context from knowledge/_core, schemas, insights/_core.
+
+    Uses a module-level cache keyed by content hash. Rebuilt only when files change.
+    """
+    global _global_context_cache
+
+    core_dir = root / "knowledge" / "_core"
+    schemas_dir = root / "schemas"
+    insights_core_dir = root / "insights" / "_core"
+
+    # Compute combined hash for cache validation
+    combined = hashlib.sha256()
+    combined.update(_hash_directory(core_dir).encode())
+    combined.update(_hash_directory(schemas_dir).encode())
+    combined.update(_hash_directory(insights_core_dir).encode())
+    content_hash = combined.hexdigest()
+
+    if _global_context_cache and _global_context_cache.content_hash == content_hash:
+        log.debug("Global context cache hit")
+        return _global_context_cache.compiled_text
+
+    log.debug("Global context cache miss, rebuilding")
+    sections: list[str] = []
+
+    # 1. knowledge/_core
+    if core_dir.is_dir():
+        parts: list[str] = []
+        count = 0
+        for p in sorted(core_dir.rglob("*")):
+            if p.is_file() and p.suffix.lower() in TEXT_EXTENSIONS and not p.name.startswith(("_", ".")):
+                try:
+                    content = p.read_text(encoding="utf-8")
+                    rel = p.relative_to(core_dir)
+                    parts.append(f"### {rel}\n```\n{content}\n```")
+                    count += 1
+                except (OSError, UnicodeDecodeError):
+                    pass
+        if parts:
+            sections.append("## Global Context: knowledge/_core\n" + "\n\n".join(parts))
+            log.debug("Global context: %d files from knowledge/_core", count)
+
+    # 2. schemas
+    if schemas_dir.is_dir():
+        parts = []
+        count = 0
+        for p in sorted(schemas_dir.rglob("*")):
+            if p.is_file() and p.suffix.lower() in {".md", ".txt"} and not p.name.startswith("."):
+                try:
+                    content = p.read_text(encoding="utf-8")
+                    rel = p.relative_to(schemas_dir)
+                    parts.append(f"### {rel}\n```\n{content}\n```")
+                    count += 1
+                except (OSError, UnicodeDecodeError):
+                    pass
+        if parts:
+            sections.append("## Global Context: schemas\n" + "\n\n".join(parts))
+            log.debug("Global context: %d files from schemas", count)
+
+    # 3. insights/_core (excluding journal/)
+    if insights_core_dir.is_dir():
+        parts = []
+        count = 0
+        for p in sorted(insights_core_dir.rglob("*")):
+            if p.is_file() and p.suffix.lower() in TEXT_EXTENSIONS and not p.name.startswith(("_", ".")):
+                # Skip journal entries
+                try:
+                    rel = p.relative_to(insights_core_dir)
+                    if str(rel).startswith("journal"):
+                        continue
+                    # Skip self-reference when regenerating _core
+                    if current_path == "_core" and rel.name == "summary.md" and len(rel.parts) == 1:
+                        continue
+                    content = p.read_text(encoding="utf-8")
+                    parts.append(f"### {rel}\n```\n{content}\n```")
+                    count += 1
+                except (OSError, UnicodeDecodeError):
+                    pass
+        if parts:
+            sections.append("## Global Context: insights/_core\n" + "\n\n".join(parts))
+            log.debug("Global context: %d files from insights/_core", count)
+
+    compiled = "\n\n".join(sections)
+    _global_context_cache = _GlobalContextCache(content_hash=content_hash, compiled_text=compiled)
+
+    total_chars = len(compiled)
+    log.debug("Global context compiled: %d chars (~%d tokens est.)", total_chars, total_chars // 4)
+    return compiled
+
+
+# ---------------------------------------------------------------------------
+# Claude CLI invocation
+# ---------------------------------------------------------------------------
+
 async def invoke_claude(
     prompt: str,
     cwd: Path,
     timeout: int = CLAUDE_TIMEOUT,
     model: str = "",
     effort: str = "",
-    max_turns: int = 50,
+    max_turns: int = 6,
+    allowed_tools: str = "Write",
 ) -> ClaudeResult:
-    """Invoke Claude CLI in non-interactive mode."""
-    import os
-    import tempfile
+    """Invoke Claude CLI in non-interactive mode.
 
+    Prompt is delivered via stdin to avoid the extra Read turn
+    that the temp-file indirection pattern caused.
+    """
     cmd = [
         "claude", "--print",
         "--output-format", "json",
         "--dangerously-skip-permissions",
         "--disable-slash-commands",
         "--max-turns", str(max_turns),
-        "--allowedTools", "Read,Write,Glob",
+        "--allowedTools", allowed_tools,
     ]
     if model:
         cmd.extend(["--model", model])
     if effort:
         cmd.extend(["--effort", effort])
 
-    # Write prompt to temp file to avoid Windows command-line length limits
-    # (WinError 206). Claude CLI reads the file via its Read tool.
-    fd, prompt_path = tempfile.mkstemp(suffix=".md", prefix="brain-sync-prompt-")
+    log.debug("Claude CLI cmd: %s", " ".join(c for c in cmd))
+
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
     try:
-        os.write(fd, prompt.encode("utf-8"))
-        os.close(fd)
-        cmd.extend(["-p", f"Read and follow the instructions in {prompt_path}"])
-
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=prompt.encode("utf-8")),
+            timeout=timeout,
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            log.warning("Claude CLI timed out after %ds", timeout)
-            return ClaudeResult(success=False, output="")
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        log.warning("Claude CLI timed out after %ds", timeout)
+        return ClaudeResult(success=False, output="")
 
-        stderr_text = stderr.decode("utf-8", errors="replace").strip()
-        stdout_text = stdout.decode("utf-8", errors="replace")
+    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+    stdout_text = stdout.decode("utf-8", errors="replace")
 
-        if stderr_text:
-            for line in stderr_text.splitlines():
-                log.info("Claude CLI: %s", line)
+    if stderr_text:
+        for line in stderr_text.splitlines():
+            log.info("Claude CLI: %s", line)
 
-        if proc.returncode != 0:
-            log.warning("Claude CLI failed (rc=%d): %s", proc.returncode, stderr_text[:500])
-            return ClaudeResult(success=False, output="")
+    if proc.returncode != 0:
+        log.warning("Claude CLI failed (rc=%d): %s", proc.returncode, stderr_text[:500])
+        return ClaudeResult(success=False, output="")
 
-        # Parse JSON output for token counts
-        input_tokens = None
-        output_tokens = None
-        num_turns = None
-        result_text = stdout_text
-        try:
-            data = json.loads(stdout_text)
-            result_text = data.get("result", stdout_text)
-            usage = data.get("usage", {})
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            duration_ms = data.get("duration_ms")
-            num_turns = data.get("num_turns")
-            log.info("Claude CLI: tokens=%s/%s turns=%s duration=%ss",
-                     input_tokens, output_tokens,
-                     num_turns,
-                     f"{duration_ms / 1000:.1f}" if duration_ms else "?")
-            if data.get("is_error") or data.get("subtype", "").startswith("error"):
-                log.warning("Claude CLI error subtype: %s", data.get("subtype"))
-                return ClaudeResult(
-                    success=False, output=result_text,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
-                    num_turns=num_turns,
-                )
-        except (json.JSONDecodeError, TypeError):
-            log.debug("Claude CLI output was not JSON, falling back to stderr parsing")
-            input_tokens, output_tokens = _parse_token_counts(stderr_text)
+    # Parse JSON output for token counts
+    input_tokens = None
+    output_tokens = None
+    num_turns = None
+    result_text = stdout_text
+    try:
+        data = json.loads(stdout_text)
+        result_text = data.get("result", stdout_text)
+        usage = data.get("usage", {})
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        duration_ms = data.get("duration_ms")
+        num_turns = data.get("num_turns")
+        log.info("Claude CLI: model=%s tokens=%s/%s turns=%s duration=%ss",
+                 model or "default",
+                 input_tokens, output_tokens,
+                 num_turns,
+                 f"{duration_ms / 1000:.1f}" if duration_ms else "?")
+        if data.get("is_error") or data.get("subtype", "").startswith("error"):
+            log.warning("Claude CLI error subtype: %s", data.get("subtype"))
+            return ClaudeResult(
+                success=False, output=result_text,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                num_turns=num_turns,
+            )
+    except (json.JSONDecodeError, TypeError):
+        log.debug("Claude CLI output was not JSON, falling back to stderr parsing")
+        input_tokens, output_tokens = _parse_token_counts(stderr_text)
 
-        return ClaudeResult(
-            success=True, output=result_text,
-            input_tokens=input_tokens, output_tokens=output_tokens,
-            num_turns=num_turns,
-        )
-    finally:
-        os.unlink(prompt_path)
+    return ClaudeResult(
+        success=True, output=result_text,
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        num_turns=num_turns,
+    )
 
+
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
 
 def _build_prompt(
     knowledge_path: str,
     knowledge_dir: Path,
     child_summaries: dict[str, str],
     insights_dir: Path,
-) -> str:
+    root: Path,
+    *,
+    write_journal: bool = False,
+) -> PromptResult:
     """Build the prompt for regenerating an insight summary.
 
-    Unified prompt — includes direct files and/or child summaries as available.
+    Sections are assembled in a fixed deterministic order — never reorder:
+    1. Instructions (REGEN_INSTRUCTIONS)
+    2. Global context (knowledge/_core → schemas → insights/_core)
+    3. Node content (knowledge files for leaf, child summaries for parent)
+    4. Existing summary
+    5. Output path(s)
     """
-    # Direct files section — inline text files, tell Claude to Read binary ones
+    # 1. Instructions
+    instructions = _REGEN_INSTRUCTIONS
+    if write_journal:
+        instructions += _JOURNAL_INSTRUCTIONS
+
+    # 2. Global context (inlined by Python, not discovered by agent)
+    global_context = _collect_global_context(root, knowledge_path)
+
+    # 3a. Direct files section — inline text files, list binary ones
     files_text = ""
+    has_binary_files = False
     files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
     if files:
         inlined_parts: list[str] = []
@@ -260,25 +439,36 @@ def _build_prompt(
             else:
                 binary_files.append(f)
 
-        parts = []
+        parts: list[str] = []
         if inlined_parts:
             parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
         if binary_files:
-            file_list = "\n".join(f"- {p.name}" for p in binary_files)
-            parts.append(f"Read these files (binary/non-text) from {knowledge_dir}:\n{file_list}")
+            has_binary_files = True
+            file_list = "\n".join(f"- {p}" for p in binary_files)
+            parts.append(f"Read these files (binary/non-text) using the Read tool:\n{file_list}")
         files_text = "\n\n".join(parts) + "\n" if parts else ""
 
-    # Child summaries section
+    # 3b. Child summaries section — adaptive loading with token budget
     children_text = ""
     if child_summaries:
-        parts = []
-        for name, content in sorted(child_summaries.items()):
-            parts.append(f"\n### {name}\n{content}")
+        loaded_parts: list[str] = []
+        skipped = 0
+        current_tokens = len(instructions + global_context + files_text) // 4
+        for i, (name, content) in enumerate(sorted(child_summaries.items())):
+            child_tokens = len(content) // 4
+            if i >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
+                skipped += 1
+                continue
+            loaded_parts.append(f"\n### {name}\n{content}")
+            current_tokens += child_tokens
+        if skipped:
+            log.info("Truncated %d child summaries for %s (token budget)", skipped, knowledge_path or "(root)")
         children_text = f"""
 This area has the following sub-areas with their own summaries:
-{"".join(parts)}
+{"".join(loaded_parts)}
 """
 
+    # 4. Existing summary
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
     if summary_path.exists():
@@ -286,11 +476,21 @@ This area has the following sub-areas with their own summaries:
 
     display_path = knowledge_path or "(root)"
 
-    return f"""{_INSIGHT_INSTRUCTIONS}
+    # 5. Output paths
+    output_lines = [f"Write the summary to: {insights_dir / 'summary.md'}"]
+    if write_journal:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        journal_dir = insights_dir / "journal" / month
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        journal_path = journal_dir / f"{today}.md"
+        output_lines.append(f"Write the journal entry to: {journal_path}")
+
+    prompt = f"""{instructions}
 
 ---
 
-{_INSTRUCTIONS}
+{global_context}
 
 ---
 
@@ -298,7 +498,19 @@ You are regenerating the insight summary for knowledge area: {display_path}
 {files_text}{children_text}
 {"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
 
-Write the summary to: {insights_dir / "summary.md"}"""
+{chr(10).join(output_lines)}"""
+
+    # Token estimate and guardrail warning
+    estimated_tokens = len(prompt) // 4
+    log.debug("Prompt for %s: ~%d tokens est., %d text files, %d binary files, %d child summaries",
+              display_path, estimated_tokens,
+              len([f for f in files if f.suffix.lower() in TEXT_EXTENSIONS]) if files else 0,
+              1 if has_binary_files else 0,
+              len(child_summaries))
+    if estimated_tokens > 100_000:
+        log.warning("Large prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
+
+    return PromptResult(text=prompt, has_binary_files=has_binary_files)
 
 
 def _get_child_dirs(knowledge_dir: Path) -> list[Path]:
@@ -343,6 +555,13 @@ def _compute_hash(
     return h.hexdigest()
 
 
+def _snapshot_dir(directory: Path) -> set[str]:
+    """Snapshot filenames in a directory (non-recursive)."""
+    if not directory.is_dir():
+        return set()
+    return {p.name for p in directory.iterdir() if p.is_file()}
+
+
 async def regen_path(
     root: Path,
     knowledge_rel_path: str,
@@ -361,6 +580,7 @@ async def regen_path(
     if config is None:
         config = RegenConfig.load()
 
+    regen_id = uuid4().hex[:6]
     similarity_threshold = config.similarity_threshold
     regen_count = 0
     current_path = knowledge_rel_path
@@ -371,10 +591,10 @@ async def regen_path(
 
         # Guard: if knowledge dir doesn't exist, clean up stale insights and walk up
         if not knowledge_dir.is_dir():
-            log.debug("Knowledge dir does not exist: %s", knowledge_dir)
+            log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
             if insights_dir.is_dir():
                 shutil.rmtree(insights_dir)
-                log.info("Cleaned up stale insights for %s", current_path)
+                log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
             delete_insight_state(root, current_path)
             if not current_path:
                 break
@@ -388,10 +608,10 @@ async def regen_path(
 
         # Cleanup: no readable files and no child dirs → remove stale insights
         if not has_direct_files and not child_dirs:
-            log.debug("No readable files or child dirs in %s, cleaning up", current_path or "(root)")
+            log.debug("[%s] No readable files or child dirs in %s, cleaning up", regen_id, current_path or "(root)")
             if insights_dir.is_dir():
                 shutil.rmtree(insights_dir)
-                log.info("Cleaned up stale insights for %s", current_path or "(root)")
+                log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
             delete_insight_state(root, current_path)
             if not current_path:
                 break
@@ -406,23 +626,43 @@ async def regen_path(
         child_summaries = _collect_child_summaries(root, current_path, child_dirs)
 
         if not child_summaries and not has_direct_files:
-            log.debug("No child summaries or direct content for %s, skipping", current_path or "(root)")
+            log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
             break
 
         new_hash = _compute_hash(child_dirs, child_summaries, knowledge_dir, has_direct_files)
 
         if istate and istate.content_hash == new_hash:
-            log.debug("Content hash unchanged for %s, stopping", current_path or "(root)")
+            log.debug("[%s] Content hash unchanged for %s, stopping (hash=%s)",
+                      regen_id, current_path or "(root)", new_hash[:12])
             break
 
+        log.debug("[%s] Content hash changed for %s: %s -> %s",
+                  regen_id, current_path or "(root)",
+                  (istate.content_hash[:12] if istate and istate.content_hash else "none"),
+                  new_hash[:12])
+
         # Build prompt
-        prompt = _build_prompt(current_path, knowledge_dir, child_summaries, insights_dir)
+        prompt_result = _build_prompt(
+            current_path, knowledge_dir, child_summaries, insights_dir, root,
+            write_journal=config.write_journal,
+        )
+
+        # Determine allowed tools
+        allowed_tools = "Read,Write" if prompt_result.has_binary_files else "Write"
+        log.debug("[%s] Allowed tools for %s: %s", regen_id, current_path or "(root)", allowed_tools)
+
+        # Prompt fingerprint for forensic tracing
+        prompt_hash = hashlib.sha1(prompt_result.text.encode("utf-8")).hexdigest()[:8]
 
         # Read old summary for similarity check
         summary_path = insights_dir / "summary.md"
         old_summary = ""
         if summary_path.exists():
             old_summary = summary_path.read_text(encoding="utf-8")
+
+        # Snapshot insights dir before invocation (for output validation)
+        insights_dir.mkdir(parents=True, exist_ok=True)
+        pre_snapshot = _snapshot_dir(insights_dir)
 
         # Mark as running — keep old hash so crashes/failures don't block retries
         started = datetime.now(timezone.utc).isoformat()
@@ -438,12 +678,30 @@ async def regen_path(
         ))
 
         # Invoke Claude
-        log.info("Generating insights: %s", current_path or "(root)")
+        log.info("[%s] Generating insights: %s (model=%s prompt_hash=%s)",
+                 regen_id, current_path or "(root)", config.model, prompt_hash)
         result = await invoke_claude(
-            prompt, cwd=root, timeout=config.timeout, model=config.model,
+            prompt_result.text, cwd=root, timeout=config.timeout, model=config.model,
             effort=config.effort, max_turns=config.max_turns,
+            allowed_tools=allowed_tools,
         )
         now = datetime.now(timezone.utc).isoformat()
+
+        # Output validation: check for unexpected files
+        post_snapshot = _snapshot_dir(insights_dir)
+        unexpected = post_snapshot - pre_snapshot - {"summary.md"}
+        # Allow journal directory (it's a dir, not in snapshot) and journal files
+        if config.write_journal:
+            unexpected -= {"journal"}
+        if unexpected:
+            log.warning("[%s] Unexpected files created by agent in %s: %s — removing",
+                        regen_id, current_path or "(root)", unexpected)
+            for name in unexpected:
+                rogue = insights_dir / name
+                if rogue.is_file():
+                    rogue.unlink()
+                elif rogue.is_dir():
+                    shutil.rmtree(rogue)
 
         if not result.success:
             save_insight_state(root, InsightState(
@@ -459,14 +717,15 @@ async def regen_path(
                 num_turns=result.num_turns,
                 model=config.model,
             ))
-            log.warning("Claude CLI failed for %s", current_path or "(root)")
+            log.warning("[%s] Claude CLI failed for %s", regen_id, current_path or "(root)")
             break
 
         # Check if summary was actually written by Claude
         if summary_path.exists():
             new_summary = summary_path.read_text(encoding="utf-8")
         else:
-            log.warning("Claude did not write summary for %s. Output: %s", current_path or "(root)", result.output[:500])
+            log.warning("[%s] Claude did not write summary for %s. Output: %s",
+                        regen_id, current_path or "(root)", result.output[:500])
             save_insight_state(root, InsightState(
                 knowledge_path=current_path,
                 content_hash=istate.content_hash if istate else None,
@@ -484,8 +743,8 @@ async def regen_path(
 
         # Similarity guard
         if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
-            log.info("Summary for %s is >%.0f%% similar, discarding rewrite",
-                     current_path or "(root)", similarity_threshold * 100)
+            log.info("[%s] Summary for %s is >%.0f%% similar, discarding rewrite",
+                     regen_id, current_path or "(root)", similarity_threshold * 100)
             # Restore old summary
             summary_path.write_text(old_summary, encoding="utf-8")
             summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
@@ -521,8 +780,9 @@ async def regen_path(
             model=config.model,
         ))
         regen_count += 1
-        log.info("Regenerated summary for %s (in=%s, out=%s tokens)",
-                 current_path or "(root)", result.input_tokens, result.output_tokens)
+        log.info("[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
+                 regen_id, current_path or "(root)", config.model,
+                 result.input_tokens, result.output_tokens, result.num_turns)
 
         # Walk up to parent (or break if at root)
         if not current_path:

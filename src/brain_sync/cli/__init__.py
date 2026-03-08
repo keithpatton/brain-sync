@@ -11,9 +11,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--log-level",
-        default="INFO",
+        default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level (default: INFO)",
+        help="Logging level (default: INFO, or from config.json)",
     )
 
     sub = parser.add_subparsers(dest="command", help="Available commands")

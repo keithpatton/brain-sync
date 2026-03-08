@@ -10,15 +10,21 @@ import pytest
 
 from brain_sync.fileops import KNOWLEDGE_EXTENSIONS
 from brain_sync.regen import (
+    PROMPT_VERSION,
     SIMILARITY_THRESHOLD,
     ClaudeResult,
+    PromptResult,
+    RegenConfig,
+    _build_prompt,
     _collect_child_summaries,
+    _collect_global_context,
     _compute_hash,
     _find_all_content_paths,
     _get_child_dirs,
     _is_content_dir,
     _is_readable_file,
     folder_content_hash,
+    invalidate_global_context_cache,
     regen_all,
     regen_path,
     text_similarity,
@@ -919,3 +925,268 @@ class TestRegenAll:
             total = asyncio.run(regen_all(brain))
         assert total == 0
         mock.assert_not_called()
+
+
+class TestRegenConfigDefaults:
+    def test_max_turns_default(self):
+        assert RegenConfig().max_turns == 6
+
+    def test_effort_default(self):
+        assert RegenConfig().effort == "low"
+
+    def test_write_journal_default(self):
+        assert RegenConfig().write_journal is False
+
+    def test_load_with_new_fields(self, tmp_path):
+        """Config loading handles write_journal field."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"regen": {"write_journal": true, "max_turns": 4}}', encoding="utf-8")
+        with patch("brain_sync.regen.CONFIG_FILE", config_file):
+            cfg = RegenConfig.load()
+        assert cfg.write_journal is True
+        assert cfg.max_turns == 4
+        assert cfg.effort == "low"
+
+
+class TestGlobalContext:
+    def test_collects_core_knowledge(self, brain):
+        """Global context inlines knowledge/_core files."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        (core / "about.md").write_text("# About Me\nI am a test.", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "some/path")
+        assert "knowledge/_core" in ctx
+        assert "About Me" in ctx
+
+    def test_collects_schemas(self, brain):
+        """Global context inlines schemas files."""
+        schemas = brain / "schemas" / "insights"
+        schemas.mkdir(parents=True)
+        (schemas / "summary.md").write_text("# Summary Schema", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "some/path")
+        assert "schemas" in ctx
+        assert "Summary Schema" in ctx
+
+    def test_collects_insights_core(self, brain):
+        """Global context inlines insights/_core files."""
+        icore = brain / "insights" / "_core"
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Core Summary", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "some/path")
+        assert "insights/_core" in ctx
+        assert "Core Summary" in ctx
+
+    def test_excludes_journal(self, brain):
+        """Global context excludes insights/_core/journal."""
+        icore = brain / "insights" / "_core"
+        journal = icore / "journal" / "2026-03"
+        journal.mkdir(parents=True)
+        (journal / "2026-03-08.md").write_text("# Journal entry", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "some/path")
+        assert "Journal entry" not in ctx
+
+    def test_skips_self_for_core_regen(self, brain):
+        """When regenerating _core, insights/_core/summary.md is excluded."""
+        icore = brain / "insights" / "_core"
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Self Reference", encoding="utf-8")
+        (icore / "glossary.md").write_text("# Glossary", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "_core")
+        assert "Self Reference" not in ctx
+        assert "Glossary" in ctx
+
+    def test_handles_missing_dirs(self, brain):
+        """Returns empty string when no global context dirs exist."""
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "some/path")
+        assert ctx == ""
+
+    def test_cache_hit(self, brain):
+        """Second call returns cached result."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        (core / "about.md").write_text("# About", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx1 = _collect_global_context(brain, "path")
+        ctx2 = _collect_global_context(brain, "path")
+        assert ctx1 == ctx2
+
+
+class TestPromptResult:
+    def test_text_only_no_binary(self, brain):
+        """Prompt with only text files reports no binary files."""
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        idir = brain / "insights" / "leaf"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("leaf", kdir, {}, idir, brain)
+        assert isinstance(result, PromptResult)
+        assert not result.has_binary_files
+
+    def test_binary_files_detected(self, brain):
+        """Prompt with image files reports binary files."""
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        (kdir / "diagram.png").write_bytes(b"\x89PNG")
+        idir = brain / "insights" / "leaf"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("leaf", kdir, {}, idir, brain)
+        assert result.has_binary_files
+
+
+class TestConditionalTools:
+    def test_write_only_when_no_binary(self, brain):
+        """When no binary files, allowed_tools is Write only."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        kwargs_captured = []
+
+        async def capture_invoke(prompt, cwd, **kwargs):
+            kwargs_captured.append(kwargs)
+            summary_path = brain / "insights" / "project" / "summary.md"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text("# Summary", encoding="utf-8")
+            return ClaudeResult(success=True, output="Done")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=capture_invoke):
+            asyncio.run(regen_path(brain, "project"))
+
+        assert kwargs_captured[0]["allowed_tools"] == "Write"
+
+    def test_read_write_when_binary(self, brain):
+        """When binary files present, allowed_tools includes Read."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        (kdir / "image.png").write_bytes(b"\x89PNG")
+
+        kwargs_captured = []
+
+        async def capture_invoke(prompt, cwd, **kwargs):
+            kwargs_captured.append(kwargs)
+            summary_path = brain / "insights" / "project" / "summary.md"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text("# Summary", encoding="utf-8")
+            return ClaudeResult(success=True, output="Done")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=capture_invoke):
+            asyncio.run(regen_path(brain, "project"))
+
+        assert kwargs_captured[0]["allowed_tools"] == "Read,Write"
+
+
+class TestJournalOptIn:
+    def test_journal_absent_by_default(self, brain):
+        """With default config, journal instructions are not in prompt."""
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        idir = brain / "insights" / "leaf"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=False)
+        assert "journal entry" not in result.text.lower()
+
+    def test_journal_present_when_enabled(self, brain):
+        """With write_journal=True, journal instructions and path are in prompt."""
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        idir = brain / "insights" / "leaf"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=True)
+        assert "journal entry" in result.text.lower()
+        assert "Write the journal entry to:" in result.text
+
+
+class TestPromptVersionAndContent:
+    def test_prompt_version_in_instructions(self):
+        """REGEN_INSTRUCTIONS.md contains the version marker."""
+        from brain_sync.regen import _REGEN_INSTRUCTIONS
+        assert "regen-v1" in _REGEN_INSTRUCTIONS
+
+    def test_prompt_version_constant(self):
+        assert PROMPT_VERSION == "regen-v1"
+
+    def test_global_context_in_prompt(self, brain):
+        """Global context is inlined in the prompt (not left for agent to discover)."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        (core / "about.md").write_text("# Identity Info", encoding="utf-8")
+
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        idir = brain / "insights" / "leaf"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("leaf", kdir, {}, idir, brain)
+        assert "Identity Info" in result.text
+        assert "Global Context" in result.text
+
+    def test_no_glob_or_read_instructions(self, brain):
+        """Prompt explicitly tells agent not to use Read or Glob."""
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+        idir = brain / "insights" / "leaf"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("leaf", kdir, {}, idir, brain)
+        assert "Do NOT use Read or Glob" in result.text
+
+
+class TestOutputValidation:
+    def test_unexpected_files_removed(self, brain):
+        """Unexpected files created by agent are removed."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        call_count = [0]
+
+        async def rogue_writer(prompt, cwd, **kwargs):
+            call_count[0] += 1
+            # Extract target path from prompt
+            for line in prompt.split("\n"):
+                if "Write the summary to:" in line:
+                    path_str = line.split(":", 1)[-1].strip()
+                    summary_path = Path(path_str)
+                    summary_path.parent.mkdir(parents=True, exist_ok=True)
+                    summary_path.write_text("# Summary", encoding="utf-8")
+                    # Only create rogue file on first call (for "project")
+                    if call_count[0] == 1:
+                        (summary_path.parent / "rogue.md").write_text("# Rogue", encoding="utf-8")
+                    break
+            return ClaudeResult(success=True, output="Done")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=rogue_writer):
+            asyncio.run(regen_path(brain, "project"))
+
+        # summary.md should exist, rogue.md should be deleted
+        assert (brain / "insights" / "project" / "summary.md").exists()
+        assert not (brain / "insights" / "project" / "rogue.md").exists()

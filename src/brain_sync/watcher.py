@@ -69,6 +69,14 @@ class KnowledgeEventHandler(FileSystemEventHandler):
         path = Path(str(event.src_path))
         if _should_ignore(path, self._knowledge_root):
             return
+        # Invalidate global context cache if change is in _core/
+        try:
+            rel = path.relative_to(self._knowledge_root)
+            if rel.parts and rel.parts[0] == "_core":
+                from brain_sync.regen import invalidate_global_context_cache
+                invalidate_global_context_cache()
+        except ValueError:
+            pass
         self._queue.put(path.resolve())
 
     def on_created(self, event: FileSystemEvent) -> None:
