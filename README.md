@@ -234,7 +234,7 @@ brain-sync has two distinct agent roles:
 | **How** | Claude CLI headless (`--print --dangerously-skip-permissions`) | Interactive Claude Code session |
 | **Access** | Reads `knowledge/`, `schemas/`, writes `insights/` | Reads everything, writes nothing |
 | **Purpose** | Maintain summaries and journal entries | Answer questions, navigate context |
-| **Instructions** | INSIGHT_INSTRUCTIONS.md + CORE_INSTRUCTIONS.md (embedded in prompt) | SKILL.md + CORE_INSTRUCTIONS.md (in `~/.claude/skills/`) |
+| **Instructions** | INSIGHT_INSTRUCTIONS.md (embedded in prompt) | SKILL.md (in `~/.claude/skills/`) |
 
 The skill agent benefits from the insights agent's work — it loads pre-computed summaries instead of reading raw knowledge files, enabling fast progressive disclosure.
 

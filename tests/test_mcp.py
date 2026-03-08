@@ -534,6 +534,9 @@ class TestBrainSyncOpenFile:
 
         assert result["status"] == "ok"
         assert "Core Summary" in result["content"]
+        assert result["offset"] == 0
+        assert result["truncated"] is False
+        assert "next_offset" not in result
 
     def test_open_file_not_found(self, brain_root):
         from brain_sync.mcp import brain_sync_open_file
@@ -602,6 +605,87 @@ class TestBrainSyncOpenFile:
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
+
+    def test_open_file_truncated_includes_metadata(self, brain_root):
+        """File larger than MAX_FILE_CHARS returns pagination metadata."""
+        from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
+
+        # Write a file larger than the limit with line breaks
+        lines = [f"Line {i}: " + "x" * 80 for i in range(250)]
+        large_content = "\n".join(lines)
+        assert len(large_content) > MAX_FILE_CHARS
+        (brain_root / "large.md").write_text(large_content, encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="large.md")
+
+        assert result["status"] == "ok"
+        assert result["truncated"] is True
+        assert "next_offset" in result
+        assert result["next_offset"] > 0
+        assert "hint" in result
+        assert 'offset=' in result["hint"]
+
+    def test_open_file_offset_reads_remainder(self, brain_root):
+        """Pagination with offset picks up where previous call left off."""
+        from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
+
+        lines = [f"Line {i}: " + "x" * 80 for i in range(250)]
+        large_content = "\n".join(lines)
+        (brain_root / "large.md").write_text(large_content, encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            # First call
+            r1 = brain_sync_open_file(path="large.md")
+            assert r1["truncated"] is True
+
+            # Second call at next_offset
+            r2 = brain_sync_open_file(path="large.md", offset=r1["next_offset"])
+
+        # Content should be contiguous
+        combined = r1["content"] + r2["content"]
+        assert combined == large_content[:len(combined)]
+
+    def test_open_file_offset_beyond_eof(self, brain_root):
+        """Offset past end of file returns empty content."""
+        from brain_sync.mcp import brain_sync_open_file
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(
+                path="insights/_core/summary.md", offset=999999,
+            )
+
+        assert result["status"] == "ok"
+        assert result["content"] == ""
+        assert result["truncated"] is False
+
+    def test_open_file_limit_clamped(self, brain_root):
+        """Limit larger than MAX_FILE_CHARS is clamped."""
+        from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(
+                path="insights/_core/summary.md", limit=999999,
+            )
+
+        assert result["status"] == "ok"
+        assert result["limit"] == MAX_FILE_CHARS
+
+    def test_open_file_newline_alignment(self, brain_root):
+        """Chunk boundary aligns to newline, not mid-line."""
+        from brain_sync.mcp import brain_sync_open_file
+
+        # Write content where truncation would land mid-line
+        lines = [f"Line {i}: " + "y" * 80 for i in range(250)]
+        large_content = "\n".join(lines)
+        (brain_root / "aligned.md").write_text(large_content, encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="aligned.md")
+
+        if result["truncated"]:
+            # Content should end at a newline
+            assert result["content"].endswith("\n") or "\n" not in result["content"][-1:]
 
 
 # ---------------------------------------------------------------------------

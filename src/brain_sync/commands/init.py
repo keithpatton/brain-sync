@@ -118,14 +118,10 @@ def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -
             dry_run,
         )
 
-    # Install skill and instructions to Claude skill directory
+    # Install skill to Claude skill directory (MCP tools handle all context)
     _copy_resource(
         "brain_sync.skills.brain_sync", "SKILL.md",
         SKILL_INSTALL_DIR / "SKILL.md", dry_run,
-    )
-    _copy_resource(
-        "brain_sync.instructions", "CORE_INSTRUCTIONS.md",
-        SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md", dry_run,
     )
 
     if not dry_run:
@@ -140,7 +136,7 @@ def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -
 
 
 def update_skill() -> list[Path]:
-    """Re-install SKILL.md and CORE_INSTRUCTIONS.md to the skill directory.
+    """Re-install SKILL.md to the skill directory.
 
     Returns list of updated file paths.
     """
@@ -150,9 +146,9 @@ def update_skill() -> list[Path]:
         SKILL_INSTALL_DIR / "SKILL.md",
     )
     updated.append(SKILL_INSTALL_DIR / "SKILL.md")
-    _copy_resource(
-        "brain_sync.instructions", "CORE_INSTRUCTIONS.md",
-        SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md",
-    )
-    updated.append(SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md")
+    # Clean up legacy CORE_INSTRUCTIONS.md if present
+    legacy = SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md"
+    if legacy.exists():
+        legacy.unlink()
+        log.info("Removed legacy %s", legacy)
     return updated

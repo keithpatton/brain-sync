@@ -1123,12 +1123,12 @@ class TestJournalOptIn:
 
 class TestPromptVersionAndContent:
     def test_prompt_version_in_instructions(self):
-        """REGEN_INSTRUCTIONS.md contains the version marker."""
+        """INSIGHT_INSTRUCTIONS.md contains the version marker."""
         from brain_sync.regen import _REGEN_INSTRUCTIONS
-        assert "regen-v1" in _REGEN_INSTRUCTIONS
+        assert "insight-v2" in _REGEN_INSTRUCTIONS
 
     def test_prompt_version_constant(self):
-        assert PROMPT_VERSION == "regen-v1"
+        assert PROMPT_VERSION == "insight-v2"
 
     def test_global_context_in_prompt(self, brain):
         """Global context is inlined in the prompt (not left for agent to discover)."""

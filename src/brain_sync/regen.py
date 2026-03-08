@@ -49,8 +49,8 @@ def _load_instruction(name: str) -> str:
 
 
 # Loaded once at import time — the single consolidated instruction set
-PROMPT_VERSION = "regen-v1"
-_REGEN_INSTRUCTIONS = _load_instruction("REGEN_INSTRUCTIONS.md")
+PROMPT_VERSION = "insight-v2"
+_REGEN_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
 
 # Journal instructions — conditionally appended when write_journal=True
 _JOURNAL_INSTRUCTIONS = """
@@ -409,7 +409,7 @@ def _build_prompt(
     """Build the prompt for regenerating an insight summary.
 
     Sections are assembled in a fixed deterministic order — never reorder:
-    1. Instructions (REGEN_INSTRUCTIONS)
+    1. Instructions (INSIGHT_INSTRUCTIONS)
     2. Global context (knowledge/_core → schemas → insights/_core)
     3. Node content (knowledge files for leaf, child summaries for parent)
     4. Existing summary

@@ -47,7 +47,7 @@ _regen_lock = asyncio.Lock()
 # Constants — token budget enforcement
 # ---------------------------------------------------------------------------
 
-TRUNCATION_MARKER = "[truncated — use brain_sync_open_file for full content]"
+TRUNCATION_MARKER = "[truncated — call brain_sync_open_file(path=..., offset=N) to read more]"
 MAX_SUMMARY_CHARS = 12000        # ~3000 tokens
 MAX_CHILD_SUMMARY_CHARS = 2000   # ~500 tokens each
 MAX_CHILDREN = 5                 # max child summaries returned
@@ -639,11 +639,17 @@ def brain_sync_open_area(
     description=(
         "Read a specific text file from the brain by relative path "
         "(e.g. 'insights/_core/summary.md', 'knowledge/initiatives/AAA/doc.md'). "
-        "Returns file content. Supports .md, .txt, .json, .yaml, .yml files only."
+        "Returns file content. Supports .md, .txt, .json, .yaml, .yml files only. "
+        "For large files, use offset (0-based char position) to paginate. "
+        "Default limit is 16000 chars per call."
     ),
 )
-def brain_sync_open_file(path: str) -> dict:
-    """Read a specific file from the brain."""
+def brain_sync_open_file(
+    path: str,
+    offset: int = 0,
+    limit: int = MAX_FILE_CHARS,
+) -> dict:
+    """Read a specific file from the brain with pagination support."""
     resolved = _safe_resolve(_root, path)
     if resolved is None:
         return {"status": "error", "error": "not_found", "path": path}
@@ -655,9 +661,50 @@ def brain_sync_open_file(path: str) -> dict:
     if ext not in ALLOWED_EXTENSIONS:
         return {"status": "error", "error": "unsupported_type", "path": path, "extension": ext}
 
-    content = _read_file_safe(resolved, MAX_FILE_CHARS)
-    log.debug("brain_sync_open_file(%r) → %d chars", path, len(content))
-    return {"status": "ok", "path": path, "content": content}
+    limit = min(limit, MAX_FILE_CHARS)
+    offset = max(0, offset)
+
+    # Read full file — seek() on text-mode files uses opaque positions
+    # (not character offsets), so we must read-then-slice for correctness.
+    # Knowledge files are at most ~500 KB; this is fine.
+    text = resolved.read_text(encoding="utf-8", errors="replace")
+
+    if offset >= len(text):
+        return {
+            "status": "ok", "path": path, "content": "",
+            "offset": offset, "limit": limit, "truncated": False,
+        }
+
+    raw = text[offset:offset + limit + 512]
+
+    # Align to newline boundary to preserve Markdown structure
+    if len(raw) > limit:
+        last_nl = raw.rfind("\n", 0, limit)
+        chunk = raw[:last_nl + 1] if last_nl != -1 else raw[:limit]
+        has_more = True
+    else:
+        chunk = raw
+        has_more = False
+
+    next_offset = offset + len(chunk)
+
+    result: dict = {
+        "status": "ok",
+        "path": path,
+        "content": chunk,
+        "offset": offset,
+        "limit": limit,
+        "truncated": has_more,
+    }
+    if has_more:
+        result["next_offset"] = next_offset
+        result["hint"] = (
+            f'Call brain_sync_open_file(path="{path}", offset={next_offset}) to continue.'
+        )
+
+    log.debug("brain_sync_open_file(%r, offset=%d) → %d chars, truncated=%s",
+              path, offset, len(chunk), has_more)
+    return result
 
 
 if __name__ == "__main__":

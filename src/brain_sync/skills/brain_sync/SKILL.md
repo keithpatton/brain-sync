@@ -34,7 +34,7 @@ source files directly.
 | `brain_sync_query` | **Start here.** Search for areas matching a query. If additional context is needed, call `brain_sync_get_context()`. |
 | `brain_sync_get_context` | Load global context (knowledge/_core, schemas, insights/_core) for broad orientation. |
 | `brain_sync_open_area` | Drill into a specific area — full summary, insight artifacts, children. |
-| `brain_sync_open_file` | Read a specific file when insights aren't enough (.md, .txt, .json, .yaml). |
+| `brain_sync_open_file` | Read a specific file when insights aren't enough. Supports `offset` for pagination (default 16k chars/call). |
 
 ### Managing sync sources
 

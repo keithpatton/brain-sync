@@ -279,11 +279,20 @@ class TestUpdateSkill:
         monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", skill_dir)
 
         updated = update_skill()
-        assert len(updated) == 2
-        assert any(p.name == "SKILL.md" for p in updated)
-        assert any(p.name == "CORE_INSTRUCTIONS.md" for p in updated)
+        assert len(updated) == 1
+        assert updated[0].name == "SKILL.md"
         assert (skill_dir / "SKILL.md").exists()
-        assert (skill_dir / "CORE_INSTRUCTIONS.md").exists()
+        assert not (skill_dir / "CORE_INSTRUCTIONS.md").exists()
+
+    def test_removes_legacy_core_instructions(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "skills" / "brain-sync"
+        skill_dir.mkdir(parents=True)
+        legacy = skill_dir / "CORE_INSTRUCTIONS.md"
+        legacy.write_text("old content")
+        monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", skill_dir)
+
+        update_skill()
+        assert not legacy.exists()
 
 
 class TestCliLibraryParity:
