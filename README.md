@@ -53,45 +53,70 @@ The skill is auto-installed during `brain-sync init`. In Claude Code, invoke it 
 
 ## Folder structure
 
+### After `brain-sync init`
+
 ```
-my-brain/
-  .sync-state.sqlite              # state database (managed by brain-sync)
-  knowledge/                      # ALL human/sync content lives here
-    _core/                        # global context: semantic grounding
-    initiatives/
-      My Project/
+my-brain/                               ← you choose the name
+  .sync-state.sqlite                    ← managed by brain-sync
+  knowledge/                            ← your content goes here
+    _core/                              ← global context you maintain
+  insights/                             ← agent-generated, don't edit
+    _core/
+  schemas/                              ← editable — you can modify or add schemas
+    insights/
+      summary.md
+      decisions.md
+      glossary.md
+      status.md
+```
+
+Init also installs the Claude Code skill to `~/.claude/skills/brain-sync/` and registers the brain in `~/.brain-sync/config.json`.
+
+### In practice — human, synced, and generated content
+
+```
+serko-brain/
+  .sync-state.sqlite
+  knowledge/
+    _core/                              ← you write and maintain these
+      about-me.md
+      org.md
+      taxonomy.md
+    initiatives/                        ← your folder structure, any depth
+      Platform - AAA/
         ERD/
-          c123456-erd.md          # synced confluence page
-          _sync-context/          # linked/child pages, attachments
+          c123456-erd.md                ← synced from Confluence by brain-sync
+          _sync-context/                ← auto-managed by brain-sync
             _index.md
             linked/
             children/
             attachments/
-    <arbitrary folders>/          # users can organise freely
-  insights/                       # AI-generated, mirrors knowledge/ tree
-    _core/                        # global context: shared understanding
-      summary.md                  # primary orientation summary
+        Meetings/
+          notes.md                      ← manually added by you
+  insights/                             ← all agent-generated, mirrors knowledge/
+    _core/
+      summary.md
     initiatives/
-      My Project/
-        summary.md                # cross-cutting project summary
+      Platform - AAA/
+        summary.md
         ERD/
-          summary.md              # leaf summary from knowledge files
+          summary.md
           journal/
             2026-03/
-              2026-03-07.md       # temporal context: what changed
-  schemas/                        # global context: insight structure
+              2026-03-07.md
+  schemas/
     insights/
-      summary.md                  # artifact schema for summaries
-      decisions.md                # artifact schema for decisions
-      glossary.md                 # artifact schema for glossaries
-      status.md                   # artifact schema for status tracking
+      summary.md                        ← deployed by init, editable
+      decisions.md
+      glossary.md
+      status.md
 ```
 
-**`knowledge/`** is human-owned. Users and brain-sync write here. Arbitrary structure allowed.
+**`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually.
 
 **`insights/`** is agent-owned. brain-sync triggers regeneration; the insights agent writes summaries and journal entries. Mirrors `knowledge/` 1:1.
 
-**`schemas/`** defines structural meaning surfaces used by both agents. Deployed by `brain-sync init`.
+**`schemas/`** defines the structure of insight artifacts. Deployed by `brain-sync init` — you can edit existing schemas or add new ones.
 
 ## MCP server
 
