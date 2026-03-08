@@ -1096,7 +1096,7 @@ class TestConditionalTools:
 
 class TestJournalOptIn:
     def test_journal_absent_by_default(self, brain):
-        """With default config, journal instructions are not in prompt."""
+        """With default config, journal write path is not in prompt."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1105,7 +1105,7 @@ class TestJournalOptIn:
 
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=False)
-        assert "journal entry" not in result.text.lower()
+        assert "Write the journal entry to:" not in result.text
 
     def test_journal_present_when_enabled(self, brain):
         """With write_journal=True, journal instructions and path are in prompt."""
@@ -1157,7 +1157,7 @@ class TestPromptVersionAndContent:
 
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain)
-        assert "Do NOT use Read or Glob" in result.text
+        assert "Do NOT attempt to read additional files" in result.text
 
 
 class TestOutputValidation:

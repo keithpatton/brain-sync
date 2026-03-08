@@ -12,18 +12,19 @@ description: >
 
 A structured second brain with `knowledge/` (human + synced content),
 `insights/` (agent-generated summaries), and `schemas/` (structural definitions).
-All interaction goes through brain-sync MCP tools. An "area" is a user-managed
-folder in the brain's knowledge structure (e.g. `initiatives/Platform - AAA`)
-with a corresponding `insights/<area>/summary.md`.
+All interaction goes through brain-sync MCP tools. An "area" is a folder under
+`knowledge/`. Each area has a corresponding folder in `insights/` containing a
+`summary.md` that acts as the area's landing page.
 
 ## Typical workflow
 
-1. `brain_sync_query("topic")` — find matching areas.
+1. `brain_sync_query("search terms")` — find matching areas.
 2. `brain_sync_open_area("path")` — read the summary and insight artifacts.
 3. `brain_sync_open_file("path")` — only if insights don't answer the question.
 
-Stop once the question can be answered. Prefer insights summaries over reading
-source files directly.
+Always read the area's summary via `brain_sync_open_area()` before opening raw
+source files. Only call `brain_sync_open_file()` when the summary and insight
+artifacts do not answer the question. Stop once the question can be answered.
 
 ## MCP Tools
 
@@ -51,9 +52,14 @@ All tools return `{"status": "ok", ...}` on success or
 
 ## When to use which tool
 
-- **User asks about a topic:** `brain_sync_query("topic")` → review matches → `brain_sync_open_area("path")` if needed.
-- **Broad orientation needed:** `brain_sync_get_context()` for global context without a specific search.
-- **Deep dive into source material:** `brain_sync_open_file("knowledge/path/file.md")` — only when insights don't answer the question.
+- **First interaction with the brain:** call `brain_sync_get_context()` to load
+  global context (taxonomy, terminology, org structure) before querying.
+- **Know what you're looking for:** `brain_sync_query("search terms")` → review
+  matches → `brain_sync_open_area("path")`.
+- **Need background understanding:** `brain_sync_get_context()` for broad
+  orientation without a specific search.
+- **Deep dive into source material:** `brain_sync_open_file("knowledge/path/file.md")`
+  — only when insights don't answer the question.
 - **User wants to sync a URL:** `brain_sync_add(url=..., target_path=...)`.
 
 ## Access rules
