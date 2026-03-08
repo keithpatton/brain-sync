@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 from importlib import resources
 from pathlib import Path
 
+from brain_sync.fileops import IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
@@ -44,13 +45,9 @@ SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
 CONFIG_FILE = Path.home() / ".brain-sync" / "config.json"
 
-# File types that Claude CLI can meaningfully read
-READABLE_EXTENSIONS = {".md", ".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg"}
-
-
 def _is_readable_file(p: Path) -> bool:
     """Check if a file has a readable extension and is not hidden."""
-    return p.is_file() and p.suffix.lower() in READABLE_EXTENSIONS and not p.name.startswith(("_", "."))
+    return p.is_file() and p.suffix.lower() in KNOWLEDGE_EXTENSIONS and not p.name.startswith(("_", "."))
 
 
 @dataclass
@@ -245,7 +242,6 @@ def _build_prompt(
     files_text = ""
     files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
     if files:
-        TEXT_EXTENSIONS = {".md", ".txt"}
         inlined_parts: list[str] = []
         binary_files: list[Path] = []
         for f in files:

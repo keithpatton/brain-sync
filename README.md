@@ -104,6 +104,7 @@ my-brain/
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
+| `brain-sync convert <file> [--comments-from <docx>]` | Convert .docx to markdown, or append comments from .docx to .md |
 | `brain-sync update-skill` | Re-install skill and instruction files to `~/.claude/skills/brain-sync/` |
 
 All commands accept `--root <path>` (defaults to current directory) and `--log-level` (DEBUG, INFO, WARNING).
@@ -198,6 +199,28 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 
 The `brains` list is written by `brain-sync init`. The `regen` section is optional — defaults are used if omitted.
 
+## Converting .docx files
+
+Google Docs comments are only preserved in `.docx` exports (not markdown). The `convert` command extracts comments and produces markdown files the regen engine can process.
+
+**Hybrid mode** (recommended) — export from Google Docs as both `.md` and `.docx`, then merge:
+
+```bash
+brain-sync convert document.md --comments-from document.docx
+```
+
+This appends a `## Comments` section to the markdown with author, date, annotated text, and comment body. Idempotent — re-running replaces the existing comments section.
+
+**Full conversion** — when only `.docx` is available:
+
+```bash
+brain-sync convert document.docx
+```
+
+Converts body text to markdown and appends comments. Writes `document.md` alongside the original.
+
+Options: `--output <path>` to write to a specific location.
+
 ## Filename convention
 
 All synced files use ID-anchored filenames for stability across title changes:
@@ -226,7 +249,7 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-200 tests covering: state persistence, schema migrations (v1-v6), file operations, scheduler, context discovery, link rewriting, regen engine, regen queue, watcher moves, and integration tests.
+283 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, and integration tests.
 
 ## Supported sources
 

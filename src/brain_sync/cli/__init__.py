@@ -63,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_regen.add_argument("--root", type=Path, default=None, help="Brain root directory (auto-detected from config if omitted)")
     p_regen.add_argument("knowledge_path", nargs="?", help="Knowledge path to regenerate (all if omitted)")
 
+    # --- convert ---
+    p_convert = sub.add_parser("convert", help="Convert .docx to markdown with comments")
+    p_convert.add_argument("file", type=Path, help=".md or .docx file to process")
+    p_convert.add_argument("--comments-from", type=Path, dest="comments_from",
+                           help=".docx file to extract comments from (when file is .md)")
+    p_convert.add_argument("--output", "-o", type=Path, help="Output path (default: in-place or .md extension)")
+
     # --- update-skill ---
     p_skill = sub.add_parser("update-skill", help="Update the installed skill and instructions")
     p_skill.add_argument("--root", type=Path, default=None, help="Brain root directory (auto-detected from config if omitted)")

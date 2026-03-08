@@ -235,6 +235,47 @@ def handle_regen(args) -> None:
             loop.close()
 
 
+def handle_convert(args) -> None:
+    file_path = args.file.resolve()
+    if not file_path.exists():
+        log.error("File not found: %s", file_path)
+        sys.exit(1)
+
+    if args.comments_from:
+        # Mode 1: .md body + .docx comments
+        docx_path = args.comments_from.resolve()
+        if not docx_path.exists():
+            log.error("Comments file not found: %s", docx_path)
+            sys.exit(1)
+
+        from brain_sync.docx_converter import append_comments_to_markdown
+
+        output_path = args.output or file_path
+        if output_path != file_path:
+            import shutil
+            shutil.copy2(file_path, output_path)
+            added = append_comments_to_markdown(output_path, docx_path)
+        else:
+            added = append_comments_to_markdown(file_path, docx_path)
+
+        if added:
+            log.info("Comments appended to %s", output_path)
+        else:
+            log.info("No comments found in %s", docx_path.name)
+    else:
+        # Mode 2: .docx only (body + comments)
+        if file_path.suffix.lower() != ".docx":
+            log.error("Expected .docx file, or use --comments-from with a .md file")
+            sys.exit(1)
+
+        from brain_sync.docx_converter import docx_to_markdown
+
+        output_path = args.output or file_path.with_suffix(".md")
+        markdown = docx_to_markdown(file_path)
+        output_path.write_text(markdown, encoding="utf-8")
+        log.info("Converted %s -> %s", file_path.name, output_path)
+
+
 def handle_update_skill(args) -> None:
     from brain_sync.commands.init import update_skill
 

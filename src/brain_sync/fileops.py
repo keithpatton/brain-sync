@@ -5,6 +5,13 @@ import os
 import tempfile
 from pathlib import Path
 
+# Canonical whitelist of file formats processed from knowledge/.
+# Text formats are inlined in regen prompts; images are passed to Claude
+# multimodal. Everything else is ignored.
+TEXT_EXTENSIONS = {".md", ".txt", ".csv", ".json"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+KNOWLEDGE_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
+
 
 def content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()

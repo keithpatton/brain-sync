@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain_sync.fileops import KNOWLEDGE_EXTENSIONS
 from brain_sync.regen import (
-    READABLE_EXTENSIONS,
     SIMILARITY_THRESHOLD,
     ClaudeResult,
     _collect_child_summaries,
@@ -460,16 +460,39 @@ class TestRegenPath:
         assert not child_idir.exists()
         assert load_insight_state(brain, "area/sub") is None
 
-    def test_folder_with_only_pdf_not_cleaned_up(self, brain):
-        """A folder containing only a PDF is treated as having content."""
+    def test_folder_with_only_pdf_cleaned_up(self, brain):
+        """A folder containing only a PDF (not in KNOWLEDGE_EXTENSIONS) is cleaned up."""
         kdir = brain / "knowledge" / "docs"
         kdir.mkdir(parents=True)
         (kdir / "report.pdf").write_bytes(b"%PDF-1.4 fake pdf content")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary()) as mock:
+        with patch("brain_sync.regen.invoke_claude") as mock:
             count = asyncio.run(regen_path(brain, "docs"))
 
-        # Should trigger regen (has readable content), not cleanup
+        # PDF is not a knowledge extension, so folder is treated as empty
+        assert count == 0
+        mock.assert_not_called()
+
+    def test_folder_with_csv_triggers_regen(self, brain):
+        """A folder containing a .csv file triggers regen."""
+        kdir = brain / "knowledge" / "data"
+        kdir.mkdir(parents=True)
+        (kdir / "metrics.csv").write_text("a,b\n1,2", encoding="utf-8")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary()) as mock:
+            count = asyncio.run(regen_path(brain, "data"))
+
+        mock.assert_called()
+
+    def test_folder_with_json_triggers_regen(self, brain):
+        """A folder containing a .json file triggers regen."""
+        kdir = brain / "knowledge" / "config"
+        kdir.mkdir(parents=True)
+        (kdir / "spec.json").write_text('{"key": "value"}', encoding="utf-8")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary()) as mock:
+            count = asyncio.run(regen_path(brain, "config"))
+
         mock.assert_called()
 
     def test_readable_files_listed_in_prompt(self, brain):
