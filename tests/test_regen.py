@@ -197,18 +197,10 @@ class TestInsightStateDB:
 class TestRegenPath:
     """Tests for the regen_path loop with mocked Claude CLI."""
 
-    def _mock_claude_write_summary(self, content: str = "# Test Summary\n\nGenerated."):
-        """Create a mock invoke_claude that writes a summary.md file."""
+    def _mock_claude_return_summary(self, content: str = "# Test Summary\n\nGenerated insight summary content."):
+        """Create a mock invoke_claude that returns summary text."""
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            # Extract the summary path from the prompt
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    path_str = line.split(":", 1)[-1].strip()
-                    summary_path = Path(path_str)
-                    summary_path.parent.mkdir(parents=True, exist_ok=True)
-                    summary_path.write_text(content, encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output=content)
         return fake_invoke
 
     def test_leaf_regen_creates_summary(self, brain):
@@ -217,7 +209,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Project Doc\nSome content.", encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary()):
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()):
             count = asyncio.run(regen_path(brain, "project"))
 
         assert count >= 1
@@ -270,7 +262,7 @@ class TestRegenPath:
         # Mock Claude to write an almost-identical summary
         near_identical = "# Project Summary\n\nThis is the existing summary about the project ."
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary(near_identical)):
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary(near_identical)):
             count = asyncio.run(regen_path(brain, "project"))
 
         # Summary should have been discarded (restored to old)
@@ -312,19 +304,11 @@ class TestRegenPath:
 
         prompt_captured = []
 
-        async def capture_and_write(prompt: str, cwd: Path, **kwargs):
+        async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            # Write summary to whatever path the prompt requests
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    path_str = line.split(":", 1)[-1].strip()
-                    sp = Path(path_str)
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_text("# Parent Summary\nOverview.", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output="# Parent Summary\nOverview.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
+        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
             count = asyncio.run(regen_path(brain, "parent"))
 
         assert count >= 1
@@ -390,17 +374,11 @@ class TestRegenPath:
 
         prompt_captured = []
 
-        async def capture_and_write(prompt: str, cwd: Path, **kwargs):
+        async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    sp = Path(line.split(":", 1)[-1].strip())
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_text("# Initiative Summary", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output="# Initiative Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
+        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
             asyncio.run(regen_path(brain, "initiative"))
 
         assert len(prompt_captured) >= 1
@@ -425,14 +403,14 @@ class TestRegenPath:
         (child_idir / "summary.md").write_text("# Meetings Summary", encoding="utf-8")
 
         # First regen
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary("# Summary V1")):
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary("# Summary V1\n\nInitiative overview content.")):
             asyncio.run(regen_path(brain, "initiative"))
 
         # Change direct file
         (kdir / "overview.md").write_text("# V2 — significant change", encoding="utf-8")
 
         # Second regen should trigger (hash changed)
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary("# Summary V2 — very different")) as mock:
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary("# Summary V2\n\nCompletely different initiative overview.")) as mock:
             count = asyncio.run(regen_path(brain, "initiative"))
 
         assert count >= 1
@@ -509,7 +487,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "metrics.csv").write_text("a,b\n1,2", encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary()) as mock:
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
             count = asyncio.run(regen_path(brain, "data"))
 
         mock.assert_called()
@@ -520,7 +498,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "spec.json").write_text('{"key": "value"}', encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_write_summary()) as mock:
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
             count = asyncio.run(regen_path(brain, "config"))
 
         mock.assert_called()
@@ -535,17 +513,11 @@ class TestRegenPath:
 
         prompt_captured = []
 
-        async def capture_and_write(prompt: str, cwd: Path, **kwargs):
+        async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    sp = Path(line.split(":", 1)[-1].strip())
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_text("# Summary", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
+        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
             asyncio.run(regen_path(brain, "project"))
 
         prompt = prompt_captured[0]
@@ -562,19 +534,11 @@ class TestRegenPath:
 
         prompts = []
 
-        async def capture_and_write(prompt: str, cwd: Path, **kwargs):
+        async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompts.append(prompt)
-            # Parse summary path from prompt
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    path_str = line.split(":", 1)[-1].strip()
-                    summary_path = Path(path_str)
-                    summary_path.parent.mkdir(parents=True, exist_ok=True)
-                    summary_path.write_text("# Summary", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_write):
+        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
             count = asyncio.run(regen_path(brain, "area"))
 
         # Should regenerate both the leaf and root
@@ -594,13 +558,7 @@ class TestRegenPath:
 
         async def capture(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    sp = Path(line.split(":", 1)[-1].strip())
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_text("# Summary", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=capture):
             asyncio.run(regen_path(brain, "leaf"))
@@ -777,7 +735,7 @@ class TestStructuralHash:
         (idir / "summary.md").write_text("summary a", encoding="utf-8")
 
         # First regen to establish parent hash
-        with patch("brain_sync.regen.invoke_claude", side_effect=TestRegenPath._mock_claude_write_summary(None, "# Parent V1")):
+        with patch("brain_sync.regen.invoke_claude", side_effect=TestRegenPath._mock_claude_return_summary(None, "# Parent V1\n\nParent summary content.")):
             asyncio.run(regen_path(brain, "parent"))
 
         old_istate = load_insight_state(brain, "parent")
@@ -791,7 +749,7 @@ class TestStructuralHash:
         (child_b_idir / "summary.md").write_text("summary b", encoding="utf-8")
 
         # Second regen should trigger (structural change)
-        with patch("brain_sync.regen.invoke_claude", side_effect=TestRegenPath._mock_claude_write_summary(None, "# Parent V2 with both children")) as mock:
+        with patch("brain_sync.regen.invoke_claude", side_effect=TestRegenPath._mock_claude_return_summary(None, "# Parent V2\n\nParent summary with both children included.")) as mock:
             asyncio.run(regen_path(brain, "parent"))
 
         mock.assert_called()
@@ -902,17 +860,10 @@ class TestFindAllContentPaths:
 
 
 class TestRegenAll:
-    def _mock_claude_write_summary(self, content: str = "# Summary\n\nGenerated."):
-        """Create a mock invoke_claude that writes a summary.md file."""
+    def _mock_claude_return_summary(self, content: str = "# Summary\n\nGenerated insight summary content."):
+        """Create a mock invoke_claude that returns summary text."""
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    path_str = line.split(":", 1)[-1].strip()
-                    summary_path = Path(path_str)
-                    summary_path.parent.mkdir(parents=True, exist_ok=True)
-                    summary_path.write_text(content, encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output=content)
         return fake_invoke
 
     def test_regen_all_bottom_up(self, brain):
@@ -927,21 +878,17 @@ class TestRegenAll:
 
         call_order = []
 
-        async def track_and_write(prompt: str, cwd: Path, **kwargs):
+        async def track_and_return(prompt: str, cwd: Path, **kwargs):
             # Extract the knowledge area from prompt
+            area = ""
             for line in prompt.split("\n"):
                 if "regenerating the insight summary for knowledge area:" in line:
                     area = line.split(":")[-1].strip()
                     call_order.append(area)
-                if "Write the summary to:" in line:
-                    path_str = line.split(":", 1)[-1].strip()
-                    summary_path = Path(path_str)
-                    summary_path.parent.mkdir(parents=True, exist_ok=True)
-                    summary_path.write_text(f"# Summary for {area}", encoding="utf-8")
                     break
-            return ClaudeResult(success=True, output="Done")
+            return ClaudeResult(success=True, output=f"# Summary for {area}\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=track_and_write):
+        with patch("brain_sync.regen.invoke_claude", side_effect=track_and_return):
             total = asyncio.run(regen_all(brain))
 
         assert total >= 2
@@ -1054,7 +1001,7 @@ class TestGlobalContext:
 
 class TestPromptResult:
     def test_text_only_no_binary(self, brain):
-        """Prompt with only text files reports no binary files."""
+        """Prompt with only text files does not mention binary files."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1064,10 +1011,10 @@ class TestPromptResult:
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain)
         assert isinstance(result, PromptResult)
-        assert not result.has_binary_files
+        assert "binary files" not in result.text
 
     def test_binary_files_detected(self, brain):
-        """Prompt with image files reports binary files."""
+        """Prompt with image files mentions them for context."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1077,56 +1024,7 @@ class TestPromptResult:
 
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain)
-        assert result.has_binary_files
-
-
-class TestConditionalTools:
-    def test_write_only_when_no_binary(self, brain):
-        """When no binary files, allowed_tools is Write only."""
-        kdir = brain / "knowledge" / "project"
-        kdir.mkdir(parents=True)
-        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-
-        kwargs_captured = []
-
-        async def capture_invoke(prompt, cwd, **kwargs):
-            kwargs_captured.append(kwargs)
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    sp = Path(line.split(":", 1)[-1].strip())
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_text("# Summary", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
-
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_invoke):
-            asyncio.run(regen_path(brain, "project"))
-
-        assert kwargs_captured[0]["allowed_tools"] == "Write"
-
-    def test_read_write_when_binary(self, brain):
-        """When binary files present, allowed_tools includes Read."""
-        kdir = brain / "knowledge" / "project"
-        kdir.mkdir(parents=True)
-        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-        (kdir / "image.png").write_bytes(b"\x89PNG")
-
-        kwargs_captured = []
-
-        async def capture_invoke(prompt, cwd, **kwargs):
-            kwargs_captured.append(kwargs)
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    sp = Path(line.split(":", 1)[-1].strip())
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_text("# Summary", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
-
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_invoke):
-            asyncio.run(regen_path(brain, "project"))
-
-        assert kwargs_captured[0]["allowed_tools"] == "Read,Write"
+        assert "diagram.png" in result.text
 
 
 class TestJournalOptIn:
@@ -1142,8 +1040,8 @@ class TestJournalOptIn:
         result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=False)
         assert "Write the journal entry to:" not in result.text
 
-    def test_journal_present_when_enabled(self, brain):
-        """With write_journal=True, journal instructions and path are in prompt."""
+    def test_journal_instructions_in_prompt(self, brain):
+        """Journal instructions are included in the prompt via INSIGHT_INSTRUCTIONS."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1153,7 +1051,6 @@ class TestJournalOptIn:
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=True)
         assert "journal entry" in result.text.lower()
-        assert "Write the journal entry to:" in result.text
 
 
 class TestPromptVersionAndContent:
@@ -1196,32 +1093,31 @@ class TestPromptVersionAndContent:
 
 
 class TestOutputValidation:
-    def test_unexpected_files_removed(self, brain):
-        """Unexpected files created by agent are removed."""
+    def test_empty_output_raises_regen_failed(self, brain):
+        """Claude returning empty/tiny output raises RegenFailed."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
 
-        call_count = [0]
+        async def empty_output(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output="short")
 
-        async def rogue_writer(prompt, cwd, **kwargs):
-            call_count[0] += 1
-            # Extract target path from prompt
-            for line in prompt.split("\n"):
-                if "Write the summary to:" in line:
-                    path_str = line.split(":", 1)[-1].strip()
-                    summary_path = Path(path_str)
-                    summary_path.parent.mkdir(parents=True, exist_ok=True)
-                    summary_path.write_text("# Summary", encoding="utf-8")
-                    # Only create rogue file on first call (for "project")
-                    if call_count[0] == 1:
-                        (summary_path.parent / "rogue.md").write_text("# Rogue", encoding="utf-8")
-                    break
-            return ClaudeResult(success=True, output="Done")
+        with patch("brain_sync.regen.invoke_claude", side_effect=empty_output):
+            with pytest.raises(RegenFailed):
+                asyncio.run(regen_path(brain, "project"))
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=rogue_writer):
+    def test_valid_output_written(self, brain):
+        """Valid summary output is written to summary.md by Python."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        async def valid_output(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output="# Summary\n\nThis is a valid summary.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=valid_output):
             asyncio.run(regen_path(brain, "project"))
 
-        # summary.md should exist, rogue.md should be deleted
-        assert (brain / "insights" / "project" / "summary.md").exists()
-        assert not (brain / "insights" / "project" / "rogue.md").exists()
+        summary_path = brain / "insights" / "project" / "summary.md"
+        assert summary_path.exists()
+        assert "valid summary" in summary_path.read_text(encoding="utf-8")
