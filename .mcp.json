@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "brain-sync": {
+      "command": "python",
+      "args": ["-m", "brain_sync.mcp"]
+    }
+  }
+}

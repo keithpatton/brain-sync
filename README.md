@@ -93,6 +93,38 @@ my-brain/
 
 **`schemas/`** defines structural meaning surfaces used by both agents. Deployed by `brain-sync init`.
 
+## MCP server
+
+brain-sync includes an MCP server that exposes source management and insight regeneration as tools. This lets Claude Code call brain-sync directly — no Bash, no subprocess, no permission prompts.
+
+### Register the server
+
+The project includes `.mcp.json` at the repo root, which Claude Code picks up automatically. To register globally (across all projects):
+
+```bash
+claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
+```
+
+Restart Claude Code. The following tools become available:
+
+| Tool | Description |
+|------|-------------|
+| `brain_sync_list` | List registered sources (optional `filter_path`) |
+| `brain_sync_add` | Register a URL for syncing |
+| `brain_sync_remove` | Unregister a source |
+| `brain_sync_move` | Move a source to a new path |
+| `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
+
+All tools return `{"status": "ok", ...}` on success or `{"status": "error", "error": "<type>", ...}` on failure.
+
+### Run manually
+
+```bash
+python -m brain_sync.mcp
+```
+
+The server communicates over stdio using the MCP JSON-RPC protocol.
+
 ## CLI reference
 
 | Command | Description |

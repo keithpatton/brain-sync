@@ -84,34 +84,34 @@ context, or ask.
   by brain-sync when knowledge changes
 - **May manage** sync sources when the user asks
 
-### Managing sync sources — Python API (preferred)
+### Managing sync sources — MCP tools (preferred)
 
-When possible, use the importable Python API instead of CLI subprocess
-calls. This avoids permission prompts and root discovery issues.
+Use the brain-sync MCP tools directly. These run in-process via the MCP
+server — no Bash, no subprocess, no permission prompts.
+
+| Tool | Purpose |
+|------|---------|
+| `brain_sync_list` | List registered sources (optional `filter_path`) |
+| `brain_sync_add` | Register a URL for syncing (`url`, `target_path`, optional `include_links`/`include_children`/`include_attachments`) |
+| `brain_sync_remove` | Unregister a source (`source` = canonical ID or URL, optional `delete_files`) |
+| `brain_sync_move` | Move a source to a new path (`source`, `to_path`) |
+| `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
+
+All tools return `{"status": "ok", ...}` on success or
+`{"status": "error", "error": "<type>", ...}` on failure.
+
+### Python API fallback
+
+Use when MCP tools are unavailable:
 
 ```python
-from brain_sync.commands import (
-    add_source, remove_source, list_sources, move_source,
-)
+from brain_sync.commands import add_source, remove_source, list_sources, move_source
 from brain_sync.regen import regen_path, regen_all
 ```
 
-All functions auto-discover the brain root from `~/.brain-sync/config.json`
-when called without an explicit `root` argument.
-
-| Function | Usage |
-|---|---|
-| `add_source(url=url, target_path=path)` | Register a URL for syncing |
-| `remove_source(source=id_or_url)` | Unregister a source |
-| `list_sources()` | List registered sources |
-| `move_source(source=id, to_path=path)` | Move a source |
-| `regen_path(root, path)` | Regenerate insights for a path |
-| `regen_all(root)` | Regenerate all insights |
-
 ### CLI fallback
 
-Use CLI commands only when Python import is unavailable. The `--root`
-flag is optional — if omitted, the brain root is read from config.
+Use CLI commands only when both MCP and Python API are unavailable:
 
 | Command | Usage |
 |---|---|
@@ -134,16 +134,12 @@ Do not run these unless the user explicitly asks:
 
 ### Interpreting sync requests
 
-When the user asks to "sync", "add", or "track" a URL, use:
+When the user asks to "sync", "add", or "track" a URL, use `brain_sync_add`:
 
-```python
-from brain_sync.commands import add_source
-result = add_source(url="<url>", target_path="<knowledge-path>")
-```
-
-Infer `target_path` from the URL content type (e.g. a Confluence page
-about "Architecture" → `target_path="architecture"`). Ask the user to
-confirm the path if uncertain.
+- `url`: the URL to sync
+- `target_path`: infer from the URL content type (e.g. a Confluence page
+  about "Architecture" -> `target_path="architecture"`)
+- Ask the user to confirm the path if uncertain
 
 ## Step 4: Orient and confirm
 
