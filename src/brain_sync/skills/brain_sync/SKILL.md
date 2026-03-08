@@ -8,145 +8,68 @@ description: >
   load the brain.
 ---
 
-# brain-sync - Second Brain Skill
+# brain-sync — Second Brain Skill
 
-## Step 1: Discover the brain
+A structured second brain with `knowledge/` (human + synced content),
+`insights/` (agent-generated summaries), and `schemas/` (structural definitions).
+All interaction goes through brain-sync MCP tools. An "area" is a user-managed
+folder in the brain's knowledge structure (e.g. `initiatives/Platform - AAA`)
+with a corresponding `insights/<area>/summary.md`.
 
-The brain is a filesystem folder with `.sync-state.sqlite` at its root,
-alongside `knowledge/`, `insights/`, and `schemas/` folders. The brain root is configured
-in `~/.brain-sync/config.json`.
+## Typical workflow
 
-## Step 2: Understand the protocol
+1. `brain_sync_query("topic")` — find matching areas.
+2. `brain_sync_open_area("path")` — read the summary and insight artifacts.
+3. `brain_sync_open_file("path")` — only if insights don't answer the question.
 
-CORE_INSTRUCTIONS.md (loaded alongside this skill) defines the folder
-structure, summary template, and conventions. **Follow it from this point
-forward.**
+Stop once the question can be answered. Prefer insights summaries over reading
+source files directly.
 
-## Step 3: Load context
+## MCP Tools
 
-Load context progressively. Stop as soon as you can answer the question. The
-goal is minimum viable context, not comprehensive loading.
-
-### Priority order
-
-#### 1. Always load first (every conversation) — global context
-- All files in `knowledge/_core/` — semantic grounding: identity, org context,
-  taxonomy, artifact semantics.
-- All files in `schemas/` — insight structure: defines how meaning is surfaced
-  in insights. Schemas are structural, not domain knowledge.
-- All files in `insights/_core/` (excluding `journal/`) — shared understanding:
-  global summaries, glossaries, current priorities, active work.
-
-Load in this order: `knowledge/_core/` → `schemas/` → `insights/_core/`.
-
-This same pattern applies at every level: when loading insights for any area,
-load all insight files in that folder but always exclude `journal/` unless
-temporal context is specifically needed.
-
-#### 2. Load area insights for topic orientation
-- `insights/<area>/summary.md` for the relevant area. **If the summary answers
-  the question, stop here.**
-- Other insight artifacts in the area only if the summary references them and
-  the question requires that detail.
-- Sub-area `summary.md` files only if the conversation is specifically about
-  that sub-area. Do not load all sub-area summaries speculatively.
-
-#### 3. Load journal for historical context (when needed)
-- Only when understanding how thinking evolved matters, e.g. "why did we
-  decide X?" or "what changed since last month?"
-- Start with the most recent entries. Load at most 2-3 entries before checking
-  if the answer has emerged.
-- Journal is never loaded proactively.
-
-#### 4. Load knowledge for deep dives (last resort)
-- Area knowledge only when the question requires detail beyond what insights
-  capture
-- When loading synced content, check `_sync-context/_index.md` first. Use
-  child/linked page **titles** to decide which to load. Do not load all
-  children speculatively.
-
-### Stop rules
-
-- **If the summary answers the question, do not load source documents.**
-- **Do not load `_sync-context/` content unless answering a question the
-  summary cannot.**
-- **Do not load journal unless temporal context is needed.**
-- **Do not load attachments (images, PDFs) unless specifically asked.**
-
-Use $ARGUMENTS as a hint for which area to load (e.g. invoked with "AAA",
-load the matching initiative insights). Otherwise infer from conversation
-context, or ask.
-
-## Your access
-
-- **Read** everything: knowledge/, insights/, schemas/
-- **Do not write** to insights/ — insights are regenerated asynchronously
-  by brain-sync when knowledge changes
-- **May manage** sync sources when the user asks
-
-### Managing sync sources — MCP tools (preferred)
-
-Use the brain-sync MCP tools directly. These run in-process via the MCP
-server — no Bash, no subprocess, no permission prompts.
+### Querying the brain
 
 | Tool | Purpose |
 |------|---------|
-| `brain_sync_list` | List registered sources (optional `filter_path`) |
-| `brain_sync_add` | Register a URL for syncing (`url`, `target_path`, optional `include_links`/`include_children`/`include_attachments`) |
-| `brain_sync_remove` | Unregister a source (`source` = canonical ID or URL, optional `delete_files`) |
-| `brain_sync_move` | Move a source to a new path (`source`, `to_path`) |
-| `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
+| `brain_sync_query` | **Start here.** Search for areas matching a query. If additional context is needed, call `brain_sync_get_context()`. |
+| `brain_sync_get_context` | Load global context (knowledge/_core, schemas, insights/_core) for broad orientation. |
+| `brain_sync_open_area` | Drill into a specific area — full summary, insight artifacts, children. |
+| `brain_sync_open_file` | Read a specific file when insights aren't enough (.md, .txt, .json, .yaml). |
+
+### Managing sync sources
+
+| Tool | Purpose |
+|------|---------|
+| `brain_sync_list` | List registered sources (optional `filter_path`). |
+| `brain_sync_add` | Register a URL for syncing (`url`, `target_path`, optional flags). |
+| `brain_sync_remove` | Unregister a source (`source` = canonical ID or URL). |
+| `brain_sync_move` | Move a source to a new path (`source`, `to_path`). |
+| `brain_sync_regen` | Regenerate insights (optional `path`, omit for all). |
 
 All tools return `{"status": "ok", ...}` on success or
 `{"status": "error", "error": "<type>", ...}` on failure.
 
-### Python API fallback
+## When to use which tool
 
-Use when MCP tools are unavailable:
+- **User asks about a topic:** `brain_sync_query("topic")` → review matches → `brain_sync_open_area("path")` if needed.
+- **Broad orientation needed:** `brain_sync_get_context()` for global context without a specific search.
+- **Deep dive into source material:** `brain_sync_open_file("knowledge/path/file.md")` — only when insights don't answer the question.
+- **User wants to sync a URL:** `brain_sync_add(url=..., target_path=...)`.
 
-```python
-from brain_sync.commands import add_source, remove_source, list_sources, move_source
-from brain_sync.regen import regen_path, regen_all
-```
+## Access rules
 
-### CLI fallback
+- **Read** everything: knowledge/, insights/, schemas/ (via MCP tools)
+- **Do not write** to insights/ — insights are regenerated by brain-sync when knowledge changes
+- **May manage** sync sources when the user asks
 
-Use CLI commands only when both MCP and Python API are unavailable:
-
-| Command | Usage |
-|---|---|
-| `brain-sync add <url> --path <path>` | Register a URL for syncing |
-| `brain-sync remove <id-or-url>` | Unregister a source |
-| `brain-sync list` | List registered sources |
-| `brain-sync move <id> --to <path>` | Move a source |
-| `brain-sync regen [<path>]` | Manually trigger insight regen |
-
-Optional flags for `add`: `--include-links`, `--include-children`,
-`--include-attachments`
-
-### Commands you should NOT invoke
-
-Do not run these unless the user explicitly asks:
-
-- `brain-sync init` — creates a new brain
-- `brain-sync run` — starts the long-running daemon
-- `brain-sync update-skill` — reinstalls skill files
-
-### Interpreting sync requests
+## Interpreting sync requests
 
 When the user asks to "sync", "add", or "track" a URL, use `brain_sync_add`:
 
 - `url`: the URL to sync
-- `target_path`: infer from the URL content type (e.g. a Confluence page
-  about "Architecture" -> `target_path="architecture"`)
+- `target_path`: infer a suitable folder name from the page title or topic
+  (e.g. a Confluence page about "Architecture" → `target_path="architecture"`)
 - Ask the user to confirm the path if uncertain
 
-## Step 4: Orient and confirm
-
-After loading context, report back:
-- Which files were loaded
-- A brief orientation: who the user is, what's in scope, current status
-- Confirm readiness to assist
-
-**Always report changes:** When creating or updating any file, report which
-files were created/updated at the end of the response.
+Use $ARGUMENTS as a hint for which area to query (e.g. invoked with "AAA",
+search for the matching initiative). Otherwise infer from conversation context.

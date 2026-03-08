@@ -49,7 +49,7 @@ The daemon syncs sources, watches `knowledge/` for changes, and enqueues insight
 
 ### Talk to your brain
 
-The skill is auto-installed during `brain-sync init`. In Claude Code, invoke it with `/serko-brain` or mention "brain" in conversation. The agent progressively loads context from `insights/` and `knowledge/`, starting with the core summary.
+The skill is auto-installed during `brain-sync init`. In Claude Code, invoke it with `/brain-sync` or mention "brain" in conversation. All brain interaction goes through MCP tools — no filesystem access required.
 
 ## Folder structure
 
@@ -95,7 +95,7 @@ my-brain/
 
 ## MCP server
 
-brain-sync includes an MCP server that exposes source management and insight regeneration as tools. This lets Claude Code call brain-sync directly — no Bash, no subprocess, no permission prompts.
+brain-sync includes an MCP server that provides complete brain access — querying, searching, reading, source management, and insight regeneration. This lets Claude Code and Claude Desktop interact with the brain without filesystem access.
 
 ### Register the server
 
@@ -105,7 +105,31 @@ The project includes `.mcp.json` at the repo root, which Claude Code picks up au
 claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
 ```
 
-Restart Claude Code. The following tools become available:
+For Claude Desktop, add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "brain-sync": {
+      "command": "python",
+      "args": ["-m", "brain_sync.mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Code/Desktop. The following tools become available:
+
+#### Brain query tools
+
+| Tool | Description |
+|------|-------------|
+| `brain_sync_query` | **Primary entrypoint.** Search for areas matching a query. Set `include_global=True` for core context. |
+| `brain_sync_get_context` | Load global context (knowledge/_core, schemas, insights/_core) for broad orientation. |
+| `brain_sync_open_area` | Load full insight context for a specific area — summary, artifacts, children. |
+| `brain_sync_open_file` | Read a specific text file from the brain (.md, .txt, .json, .yaml, .yml). |
+
+#### Source management tools
 
 | Tool | Description |
 |------|-------------|
@@ -116,6 +140,8 @@ Restart Claude Code. The following tools become available:
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
 
 All tools return `{"status": "ok", ...}` on success or `{"status": "error", "error": "<type>", ...}` on failure.
+
+Token budgets are enforced server-side — responses are deterministically capped to prevent prompt explosion.
 
 ### Run manually
 

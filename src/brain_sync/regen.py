@@ -27,6 +27,12 @@ from uuid import uuid4
 
 from brain_sync.commands.context import CONFIG_FILE
 from brain_sync.fileops import EXCLUDED_DIRS, IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
+from brain_sync.fs_utils import (
+    find_all_content_paths,
+    get_child_dirs,
+    is_content_dir,
+    is_readable_file,
+)
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
@@ -68,14 +74,9 @@ MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 4
 MIN_CHILDREN = 5  # always include at least this many child summaries
 
 
-def _is_readable_file(p: Path) -> bool:
-    """Check if a file has a readable extension and is not hidden."""
-    return p.is_file() and p.suffix.lower() in KNOWLEDGE_EXTENSIONS and not p.name.startswith(("_", "."))
-
-
-def _is_content_dir(p: Path) -> bool:
-    """Check if a directory should be included in content discovery."""
-    return p.is_dir() and not p.name.startswith(".") and p.name not in EXCLUDED_DIRS
+# Aliases for backward compat within this module
+_is_readable_file = is_readable_file
+_is_content_dir = is_content_dir
 
 
 @dataclass
@@ -513,11 +514,7 @@ You are regenerating the insight summary for knowledge area: {display_path}
     return PromptResult(text=prompt, has_binary_files=has_binary_files)
 
 
-def _get_child_dirs(knowledge_dir: Path) -> list[Path]:
-    """Get child content directories, excluding EXCLUDED_DIRS and dotfiles."""
-    if not knowledge_dir.is_dir():
-        return []
-    return sorted(p for p in knowledge_dir.iterdir() if _is_content_dir(p))
+_get_child_dirs = get_child_dirs
 
 
 def _collect_child_summaries(
@@ -793,32 +790,7 @@ async def regen_path(
     return regen_count
 
 
-def _find_all_content_paths(knowledge_root: Path) -> list[str]:
-    """Find all knowledge paths bottom-up (deepest first).
-
-    Walks the tree, collects all folders that have readable files or
-    child content dirs, sorted deepest-first so that regen_all processes
-    leaves before parents.
-    """
-    paths: list[str] = []
-
-    def _walk(directory: Path, prefix: str) -> None:
-        if not directory.is_dir():
-            return
-        for child in sorted(directory.iterdir()):
-            if not _is_content_dir(child):
-                continue
-            child_rel = prefix + "/" + child.name if prefix else child.name
-            # Recurse first (depth-first → deepest paths added first)
-            _walk(child, child_rel)
-            # Include this folder if it has readable files or content child dirs
-            has_files = any(_is_readable_file(p) for p in child.iterdir())
-            has_children = any(_is_content_dir(p) for p in child.iterdir())
-            if has_files or has_children:
-                paths.append(child_rel)
-
-    _walk(knowledge_root, "")
-    return paths
+_find_all_content_paths = find_all_content_paths
 
 
 async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:

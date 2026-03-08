@@ -1,11 +1,14 @@
 """Tests for the MCP server tool handlers.
 
 Tests call tool handler functions directly — no stdio transport needed.
-All underlying commands/regen functions are mocked.
+Source management tools mock underlying commands. Query tools use real
+filesystem via tmp_path fixtures.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,7 +25,7 @@ from brain_sync.sources import UnsupportedSourceError
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: sample data
+# Fixtures: sample data for source management tests
 # ---------------------------------------------------------------------------
 
 SAMPLE_SOURCE = SourceInfo(
@@ -59,6 +62,77 @@ SAMPLE_MOVE_RESULT = MoveResult(
     new_path="initiatives/moved",
     files_moved=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# Fixture: brain filesystem for query tools
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def brain_root(tmp_path: Path) -> Path:
+    """Create a minimal brain structure for query tool tests."""
+    root = tmp_path / "brain"
+
+    # knowledge/_core
+    (root / "knowledge" / "_core").mkdir(parents=True)
+    (root / "knowledge" / "_core" / "about-me.md").write_text("I am a test user.", encoding="utf-8")
+
+    # schemas
+    (root / "schemas" / "insights").mkdir(parents=True)
+    (root / "schemas" / "insights" / "summary.md").write_text("# Summary Schema\nTemplate for summaries.", encoding="utf-8")
+
+    # insights/_core
+    (root / "insights" / "_core").mkdir(parents=True)
+    (root / "insights" / "_core" / "summary.md").write_text("# Core Summary\nOverview of the brain.", encoding="utf-8")
+    # journal should be excluded
+    (root / "insights" / "_core" / "journal" / "2026-03").mkdir(parents=True)
+    (root / "insights" / "_core" / "journal" / "2026-03" / "2026-03-08.md").write_text("Journal entry.", encoding="utf-8")
+
+    # Area: initiatives/AAA
+    (root / "knowledge" / "initiatives" / "AAA").mkdir(parents=True)
+    (root / "knowledge" / "initiatives" / "AAA" / "c12345-doc.md").write_text("AAA knowledge doc.", encoding="utf-8")
+    (root / "insights" / "initiatives" / "AAA").mkdir(parents=True)
+    (root / "insights" / "initiatives" / "AAA" / "summary.md").write_text(
+        "# Platform AAA Summary\n\nAAA is the main platform initiative.\n\n## Architecture\n\nMicroservices.",
+        encoding="utf-8",
+    )
+    (root / "insights" / "initiatives" / "AAA" / "decisions.md").write_text(
+        "# Decisions\n\n- Chose microservices.",
+        encoding="utf-8",
+    )
+
+    # Sub-area: initiatives/AAA/Accounts Service
+    (root / "knowledge" / "initiatives" / "AAA" / "Accounts Service").mkdir(parents=True)
+    (root / "knowledge" / "initiatives" / "AAA" / "Accounts Service" / "doc.md").write_text("Accounts doc.", encoding="utf-8")
+    (root / "insights" / "initiatives" / "AAA" / "Accounts Service").mkdir(parents=True)
+    (root / "insights" / "initiatives" / "AAA" / "Accounts Service" / "summary.md").write_text(
+        "# Accounts Service\n\nHandles user accounts.",
+        encoding="utf-8",
+    )
+
+    # Area: initiatives/BBB
+    (root / "knowledge" / "initiatives" / "BBB").mkdir(parents=True)
+    (root / "knowledge" / "initiatives" / "BBB" / "doc.md").write_text("BBB knowledge doc.", encoding="utf-8")
+    (root / "insights" / "initiatives" / "BBB").mkdir(parents=True)
+    (root / "insights" / "initiatives" / "BBB" / "summary.md").write_text(
+        "# Platform BBB\n\nBBB handles billing.",
+        encoding="utf-8",
+    )
+
+    return root
+
+
+@pytest.fixture
+def brain_with_many_children(brain_root: Path) -> Path:
+    """Extend brain_root with 20+ child areas under initiatives/AAA."""
+    for i in range(20):
+        name = f"Child-{i:02d}"
+        (brain_root / "insights" / "initiatives" / "AAA" / name).mkdir(parents=True)
+        (brain_root / "insights" / "initiatives" / "AAA" / name / "summary.md").write_text(
+            f"# {name}\n\nSummary for {name}.",
+            encoding="utf-8",
+        )
+    return brain_root
 
 
 # ---------------------------------------------------------------------------
@@ -218,3 +292,420 @@ class TestBrainSyncRegen:
             assert result["status"] == "ok"
             assert result["summaries_regenerated"] == 7
             assert result["path"] == "all"
+
+
+# ---------------------------------------------------------------------------
+# Query tools — use real filesystem via brain_root fixture
+# ---------------------------------------------------------------------------
+
+class TestBrainSyncQuery:
+    def test_query_with_match(self, brain_root):
+        from brain_sync.mcp import AreaIndex, brain_sync_query
+
+        with patch("brain_sync.mcp._root", brain_root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+            result = brain_sync_query(query="AAA")
+
+        assert result["status"] == "ok"
+        assert len(result["matches"]) >= 1
+        assert result["matches"][0]["path"] == "initiatives/AAA"
+        assert "global_context" not in result
+        assert result["total_areas"] > 0
+
+    def test_query_with_global(self, brain_root):
+        from brain_sync.mcp import AreaIndex, brain_sync_query
+
+        with patch("brain_sync.mcp._root", brain_root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+            result = brain_sync_query(query="AAA", include_global=True)
+
+        assert result["status"] == "ok"
+        assert "global_context" in result
+        gc = result["global_context"]
+        assert "about-me.md" in gc["knowledge_core"]
+        assert "insights/summary.md" in gc["schemas"]
+        assert "summary.md" in gc["insights_core"]
+        # Journal should be excluded from insights_core
+        assert not any("journal" in k for k in gc["insights_core"])
+
+    def test_query_no_match(self, brain_root):
+        from brain_sync.mcp import AreaIndex, brain_sync_query
+
+        with patch("brain_sync.mcp._root", brain_root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+            result = brain_sync_query(query="nonexistent")
+
+        assert result["status"] == "ok"
+        assert result["matches"] == []
+
+    def test_query_max_results(self, brain_root):
+        from brain_sync.mcp import AreaIndex, brain_sync_query
+
+        with patch("brain_sync.mcp._root", brain_root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+            result = brain_sync_query(query="initiatives", max_results=1)
+
+        assert result["status"] == "ok"
+        assert len(result["matches"]) == 1
+
+    def test_query_searches_summary_content(self, brain_root):
+        """Matches against summary.md content, not just folder names."""
+        from brain_sync.mcp import AreaIndex, brain_sync_query
+
+        with patch("brain_sync.mcp._root", brain_root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+            # "billing" appears only in BBB's summary, not in path
+            result = brain_sync_query(query="billing")
+
+        assert result["status"] == "ok"
+        assert len(result["matches"]) >= 1
+        assert result["matches"][0]["path"] == "initiatives/BBB"
+
+    def test_query_path_weighted_higher(self, brain_root):
+        """Path matches score higher than body matches."""
+        from brain_sync.mcp import AreaIndex, brain_sync_query
+
+        with patch("brain_sync.mcp._root", brain_root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+            result = brain_sync_query(query="AAA")
+
+        assert result["status"] == "ok"
+        # AAA should be first because "AAA" is in the path (×3)
+        assert result["matches"][0]["path"] == "initiatives/AAA"
+
+    def test_query_areas_capped(self, tmp_path):
+        """Areas listing respects MAX_AREAS_LISTED cap."""
+        from brain_sync.mcp import MAX_AREAS_LISTED, AreaIndex, brain_sync_query
+
+        root = tmp_path / "big-brain"
+        (root / "knowledge" / "_core").mkdir(parents=True)
+        (root / "schemas").mkdir(parents=True)
+        (root / "insights" / "_core").mkdir(parents=True)
+        # Create 60 areas
+        for i in range(60):
+            area = root / "insights" / f"area-{i:03d}"
+            area.mkdir(parents=True)
+            (area / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", root), \
+             patch("brain_sync.mcp._area_index", AreaIndex.build(root)):
+            result = brain_sync_query(query="area")
+
+        assert result["status"] == "ok"
+        assert len(result["areas"]) == MAX_AREAS_LISTED
+        assert result["areas_truncated"] is True
+        assert result["total_areas"] == 60
+
+
+class TestBrainSyncGetContext:
+    def test_get_context(self, brain_root):
+        from brain_sync.mcp import brain_sync_get_context
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_get_context()
+
+        assert result["status"] == "ok"
+        gc = result["global_context"]
+        assert "about-me.md" in gc["knowledge_core"]
+        assert gc["knowledge_core"]["about-me.md"] == "I am a test user."
+        assert "insights/summary.md" in gc["schemas"]
+        assert "summary.md" in gc["insights_core"]
+        assert result["total_areas"] > 0
+
+    def test_get_context_missing_core(self, tmp_path):
+        """Graceful when _core/ doesn't exist."""
+        from brain_sync.mcp import brain_sync_get_context
+
+        root = tmp_path / "empty-brain"
+        root.mkdir()
+
+        with patch("brain_sync.mcp._root", root):
+            result = brain_sync_get_context()
+
+        assert result["status"] == "ok"
+        assert result["global_context"]["knowledge_core"] == {}
+        assert result["global_context"]["schemas"] == {}
+        assert result["global_context"]["insights_core"] == {}
+        assert result["total_areas"] == 0
+
+
+class TestBrainSyncOpenArea:
+    def test_open_area(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_area
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_area(path="initiatives/AAA")
+
+        assert result["status"] == "ok"
+        assert result["path"] == "initiatives/AAA"
+        assert "summary.md" in result["insights"]
+        assert "decisions.md" in result["insights"]
+        assert result["total_children"] >= 1
+        # Accounts Service should be in children
+        child_names = [c["name"] for c in result["children"]]
+        assert "Accounts Service" in child_names
+
+    def test_open_area_with_children(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_area
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_area(path="initiatives/AAA", include_children=True)
+
+        assert result["status"] == "ok"
+        assert "child_summaries" in result
+        assert "Accounts Service" in result["child_summaries"]
+        assert "Handles user accounts" in result["child_summaries"]["Accounts Service"]
+
+    def test_open_area_with_knowledge_list(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_area
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_area(path="initiatives/AAA", include_knowledge_list=True)
+
+        assert result["status"] == "ok"
+        assert "knowledge_files" in result
+        assert "c12345-doc.md" in result["knowledge_files"]
+
+    def test_open_area_not_found(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_area
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_area(path="nonexistent/area")
+
+        assert result["status"] == "error"
+        assert result["error"] == "not_found"
+
+    def test_open_area_summary_truncation(self, brain_root):
+        """Large summary.md is truncated with marker."""
+        from brain_sync.mcp import MAX_SUMMARY_CHARS, TRUNCATION_MARKER, brain_sync_open_area
+
+        # Write a large summary
+        large_summary = "# Large Summary\n\n" + "x" * (MAX_SUMMARY_CHARS + 5000)
+        (brain_root / "insights" / "initiatives" / "AAA" / "summary.md").write_text(
+            large_summary, encoding="utf-8",
+        )
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_area(path="initiatives/AAA")
+
+        assert result["status"] == "ok"
+        summary = result["insights"]["summary.md"]
+        assert len(summary) <= MAX_SUMMARY_CHARS + len(TRUNCATION_MARKER) + 10
+        assert TRUNCATION_MARKER in summary
+
+    def test_open_area_child_limit(self, brain_with_many_children):
+        """Area with many children respects MAX_CHILDREN cap."""
+        from brain_sync.mcp import MAX_CHILDREN, brain_sync_open_area
+
+        with patch("brain_sync.mcp._root", brain_with_many_children):
+            result = brain_sync_open_area(path="initiatives/AAA", include_children=True)
+
+        assert result["status"] == "ok"
+        assert len(result["child_summaries"]) <= MAX_CHILDREN
+        assert result["children_truncated"] is True
+        assert result["total_children"] > MAX_CHILDREN
+
+    def test_open_area_payload_cap(self, brain_root):
+        """Total response respects MAX_AREA_PAYLOAD, drops artifacts first."""
+        from brain_sync.mcp import MAX_AREA_PAYLOAD, TRUNCATION_MARKER, brain_sync_open_area
+
+        # Write a very large summary and large artifacts
+        insights_dir = brain_root / "insights" / "initiatives" / "AAA"
+        (insights_dir / "summary.md").write_text("# Summary\n" + "s" * 30000, encoding="utf-8")
+        for i in range(5):
+            (insights_dir / f"artifact-{i}.md").write_text("a" * 8000, encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_area(path="initiatives/AAA")
+
+        assert result["status"] == "ok"
+        # Artifacts should have been replaced with truncation marker
+        for key, value in result["insights"].items():
+            if key != "summary.md":
+                assert value == TRUNCATION_MARKER or len(value) <= 8000
+
+
+class TestBrainSyncOpenFile:
+    def test_open_file(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_file
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="insights/_core/summary.md")
+
+        assert result["status"] == "ok"
+        assert "Core Summary" in result["content"]
+
+    def test_open_file_not_found(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_file
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="nonexistent/file.md")
+
+        assert result["status"] == "error"
+        assert result["error"] == "not_found"
+
+    def test_open_file_path_traversal(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_file
+
+        # Create a file outside brain root
+        (brain_root.parent / "secret.md").write_text("secret!", encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="../secret.md")
+
+        assert result["status"] == "error"
+        assert result["error"] == "not_found"
+
+    def test_open_file_directory_rejected(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_file
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="insights/_core")
+
+        assert result["status"] == "error"
+        assert result["error"] == "not_found"
+
+    def test_open_file_binary_rejected(self, brain_root):
+        """Binary extensions return unsupported_type error."""
+        from brain_sync.mcp import brain_sync_open_file
+
+        (brain_root / "test.pdf").write_bytes(b"fake pdf")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="test.pdf")
+
+        assert result["status"] == "error"
+        assert result["error"] == "unsupported_type"
+        assert result["extension"] == ".pdf"
+
+    def test_open_file_json_allowed(self, brain_root):
+        from brain_sync.mcp import brain_sync_open_file
+
+        (brain_root / "data.json").write_text('{"key": "value"}', encoding="utf-8")
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="data.json")
+
+        assert result["status"] == "ok"
+        assert '"key"' in result["content"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks may require elevated privileges on Windows")
+    def test_open_file_symlink_escape(self, brain_root):
+        """Symlink pointing outside brain root is rejected."""
+        outside = brain_root.parent / "outside.md"
+        outside.write_text("escaped!", encoding="utf-8")
+        link = brain_root / "link.md"
+        link.symlink_to(outside)
+
+        with patch("brain_sync.mcp._root", brain_root):
+            result = brain_sync_open_file(path="link.md")
+
+        assert result["status"] == "error"
+        assert result["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Search index
+# ---------------------------------------------------------------------------
+
+class TestAreaIndex:
+    def test_build_and_search(self, brain_root):
+        from brain_sync.mcp import AreaIndex
+
+        index = AreaIndex.build(brain_root)
+        assert len(index.entries) > 0
+
+        results = index.search("AAA")
+        assert len(results) >= 1
+        assert results[0]["path"] == "initiatives/AAA"
+
+    def test_search_deterministic_ordering(self, brain_root):
+        """Two searches with same query produce identical results."""
+        from brain_sync.mcp import AreaIndex
+
+        index = AreaIndex.build(brain_root)
+        r1 = index.search("initiatives")
+        r2 = index.search("initiatives")
+        assert r1 == r2
+
+    def test_missing_summary(self, tmp_path):
+        """Areas without summary.md are indexed with empty fields."""
+        from brain_sync.mcp import AreaIndex
+
+        root = tmp_path / "brain"
+        (root / "insights" / "area-no-summary").mkdir(parents=True)
+        # No summary.md
+
+        index = AreaIndex.build(root)
+        assert len(index.entries) == 1
+        entry = index.entries[0]
+        assert entry.summary_first_para == ""
+        assert entry.summary_headings == []
+
+    def test_staleness_detection(self, brain_root):
+        """Index detects when summaries change."""
+        from brain_sync.mcp import AreaIndex
+
+        index = AreaIndex.build(brain_root)
+        assert not index.is_stale(brain_root)
+
+        # Modify a summary
+        summary = brain_root / "insights" / "initiatives" / "AAA" / "summary.md"
+        import time
+        time.sleep(0.05)  # ensure mtime changes
+        summary.write_text("# Updated\nNew content.", encoding="utf-8")
+
+        assert index.is_stale(brain_root)
+
+
+# ---------------------------------------------------------------------------
+# fs_utils
+# ---------------------------------------------------------------------------
+
+class TestFsUtils:
+    def test_is_readable_file(self, tmp_path):
+        from brain_sync.fs_utils import is_readable_file
+
+        md = tmp_path / "doc.md"
+        md.write_text("hello", encoding="utf-8")
+        assert is_readable_file(md) is True
+
+        exe = tmp_path / "program.exe"
+        exe.write_bytes(b"\x00")
+        assert is_readable_file(exe) is False
+
+        hidden = tmp_path / ".hidden.md"
+        hidden.write_text("hidden", encoding="utf-8")
+        assert is_readable_file(hidden) is False
+
+        underscore = tmp_path / "_private.md"
+        underscore.write_text("private", encoding="utf-8")
+        assert is_readable_file(underscore) is False
+
+    def test_is_content_dir(self, tmp_path):
+        from brain_sync.fs_utils import is_content_dir
+
+        normal = tmp_path / "area"
+        normal.mkdir()
+        assert is_content_dir(normal) is True
+
+        dotdir = tmp_path / ".hidden"
+        dotdir.mkdir()
+        assert is_content_dir(dotdir) is False
+
+        sync_ctx = tmp_path / "_sync-context"
+        sync_ctx.mkdir()
+        assert is_content_dir(sync_ctx) is False
+
+    def test_get_child_dirs(self, tmp_path):
+        from brain_sync.fs_utils import get_child_dirs
+
+        (tmp_path / "b-area").mkdir()
+        (tmp_path / "a-area").mkdir()
+        (tmp_path / ".hidden").mkdir()
+        (tmp_path / "_sync-context").mkdir()
+        (tmp_path / "file.md").write_text("not a dir", encoding="utf-8")
+
+        result = get_child_dirs(tmp_path)
+        names = [p.name for p in result]
+        assert names == ["a-area", "b-area"]  # sorted, no hidden/excluded

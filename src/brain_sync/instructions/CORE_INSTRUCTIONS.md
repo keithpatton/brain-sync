@@ -40,10 +40,7 @@ brain-root/
 ## Global Context
 
 The brain contains a small set of locations that form global context.
-Global context represents the shared semantic foundation of the brain and
-must always be loaded before interpreting any local knowledge.
-
-Global context consists of three layers:
+Global context represents the shared semantic foundation of the brain.
 
 | Location | Role |
 |---|---|
@@ -51,24 +48,14 @@ Global context consists of three layers:
 | `schemas/` | **Structural definitions** — contains subfolders that define structure for different concerns. `schemas/insights/` defines how meaning should be surfaced when generating and interpreting insights. |
 | `insights/_core/` | **Shared understanding** — global insights derived from core knowledge: summaries, glossaries. Represents the brain's current shared understanding. |
 
-Always load global context in the following order:
-
-1. `knowledge/_core/` — all files
-2. `schemas/` — all files (fully loaded, not just scanned)
-3. `insights/_core/` — all files (excluding `journal/`)
-
-Only after global context is established should you interpret or generate
-insights for specific folders.
-
 ### Ownership and resilience
 
 Global context folders are deployed by `brain-sync init` but are
 human-managed — the user may modify, extend, or remove them, just like
 the knowledge folder itself.
 
-- If `_core/` or `schemas/` folders are present, use them as described above.
-- If any are absent, proceed without them. Follow the general conventions
-  below and apply reasonable defaults.
+- If `_core/` or `schemas/` folders are present, use them as global context.
+- If any are absent, proceed without them and apply reasonable defaults.
 - `schemas/insights/` files define the recommended artifact structures.
   Without them, generate insights using general best practices, but the
   results will be less consistent.
