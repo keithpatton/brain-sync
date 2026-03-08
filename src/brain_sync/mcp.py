@@ -57,7 +57,8 @@ MAX_AREAS_LISTED = 50
 MAX_GLOBAL_CONTEXT_FILE_CHARS = 4000
 MAX_PREVIEW_CHARS = 500
 MAX_SEARCH_RESULTS = 10
-MAX_FILE_CHARS = 16000
+MAX_FILE_CHARS = 1_000_000
+DEFAULT_FILE_CHARS = 200_000
 SUMMARY_INDEX_CHARS = 2000
 ALLOWED_EXTENSIONS = frozenset({".md", ".txt", ".json", ".yaml", ".yml"})
 
@@ -647,7 +648,7 @@ def brain_sync_open_area(
 def brain_sync_open_file(
     path: str,
     offset: int = 0,
-    limit: int = MAX_FILE_CHARS,
+    limit: int = DEFAULT_FILE_CHARS,
 ) -> dict:
     """Read a specific file from the brain with pagination support."""
     resolved = _safe_resolve(_root, path)

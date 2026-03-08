@@ -607,13 +607,13 @@ class TestBrainSyncOpenFile:
         assert result["error"] == "not_found"
 
     def test_open_file_truncated_includes_metadata(self, brain_root):
-        """File larger than MAX_FILE_CHARS returns pagination metadata."""
-        from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
+        """File larger than DEFAULT_FILE_CHARS returns pagination metadata."""
+        from brain_sync.mcp import DEFAULT_FILE_CHARS, brain_sync_open_file
 
-        # Write a file larger than the limit with line breaks
-        lines = [f"Line {i}: " + "x" * 80 for i in range(250)]
+        # Write a file larger than the default limit with line breaks
+        lines = [f"Line {i}: " + "x" * 80 for i in range(2500)]
         large_content = "\n".join(lines)
-        assert len(large_content) > MAX_FILE_CHARS
+        assert len(large_content) > DEFAULT_FILE_CHARS
         (brain_root / "large.md").write_text(large_content, encoding="utf-8")
 
         with patch("brain_sync.mcp._root", brain_root):
@@ -628,9 +628,9 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_offset_reads_remainder(self, brain_root):
         """Pagination with offset picks up where previous call left off."""
-        from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
+        from brain_sync.mcp import DEFAULT_FILE_CHARS, brain_sync_open_file
 
-        lines = [f"Line {i}: " + "x" * 80 for i in range(250)]
+        lines = [f"Line {i}: " + "x" * 80 for i in range(2500)]
         large_content = "\n".join(lines)
         (brain_root / "large.md").write_text(large_content, encoding="utf-8")
 
@@ -665,7 +665,7 @@ class TestBrainSyncOpenFile:
 
         with patch("brain_sync.mcp._root", brain_root):
             result = brain_sync_open_file(
-                path="insights/_core/summary.md", limit=999999,
+                path="insights/_core/summary.md", limit=MAX_FILE_CHARS + 100,
             )
 
         assert result["status"] == "ok"

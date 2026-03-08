@@ -70,7 +70,7 @@ log = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
-MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 4
+MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 3
 MIN_CHILDREN = 5  # always include at least this many child summaries
 
 
@@ -288,7 +288,7 @@ def _collect_global_context(root: Path, current_path: str) -> str:
     _global_context_cache = _GlobalContextCache(content_hash=content_hash, compiled_text=compiled)
 
     total_chars = len(compiled)
-    log.debug("Global context compiled: %d chars (~%d tokens est.)", total_chars, total_chars // 4)
+    log.debug("Global context compiled: %d chars (~%d tokens est.)", total_chars, total_chars // 3)
     return compiled
 
 
@@ -454,9 +454,10 @@ def _build_prompt(
     if child_summaries:
         loaded_parts: list[str] = []
         skipped = 0
-        current_tokens = len(instructions + global_context + files_text) // 4
+        total = len(child_summaries)
+        current_tokens = len(instructions + global_context + files_text) // 3
         for i, (name, content) in enumerate(sorted(child_summaries.items())):
-            child_tokens = len(content) // 4
+            child_tokens = len(content) // 3
             if i >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
                 skipped += 1
                 continue
@@ -464,10 +465,10 @@ def _build_prompt(
             current_tokens += child_tokens
         if skipped:
             log.info("Truncated %d child summaries for %s (token budget)", skipped, knowledge_path or "(root)")
-        children_text = f"""
-This area has the following sub-areas with their own summaries:
-{"".join(loaded_parts)}
-"""
+        loaded = total - skipped
+        header = f"Sub-area summaries ({loaded} of {total} loaded):" if skipped else "Sub-area summaries:"
+        footer = f"\n({skipped} sub-area summaries omitted — token budget)" if skipped else ""
+        children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n"
 
     # 4. Existing summary
     existing_summary = ""
@@ -502,7 +503,7 @@ You are regenerating the insight summary for knowledge area: {display_path}
 {chr(10).join(output_lines)}"""
 
     # Token estimate and guardrail warning
-    estimated_tokens = len(prompt) // 4
+    estimated_tokens = len(prompt) // 3
     log.debug("Prompt for %s: ~%d tokens est., %d text files, %d binary files, %d child summaries",
               display_path, estimated_tokens,
               len([f for f in files if f.suffix.lower() in TEXT_EXTENSIONS]) if files else 0,

@@ -313,7 +313,7 @@ class TestRegenPath:
         prompt = prompt_captured[0]
         assert "child-a" in prompt
         assert "child-b" in prompt
-        assert "sub-areas" in prompt
+        assert "Sub-area summaries" in prompt
 
     def test_nonexistent_knowledge_dir_cleans_up(self, brain):
         """Regen for a nonexistent knowledge dir cleans up stale insights."""
@@ -384,7 +384,7 @@ class TestRegenPath:
         prompt = prompt_captured[0]
         # Should contain both direct file listing AND child summaries
         assert "overview.md" in prompt
-        assert "sub-areas" in prompt
+        assert "Sub-area summaries" in prompt
         assert "meetings" in prompt
 
     def test_mixed_folder_direct_file_change_triggers_regen(self, brain):
