@@ -12,20 +12,6 @@ pip install -e .
 
 ### Prerequisites
 
-**Confluence** — create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then configure credentials via either:
-
-- `~/.brain-sync/config.json` (set during `brain-sync init` or manually):
-  ```json
-  {
-    "confluence": {
-      "domain": "yourcompany.atlassian.net",
-      "email": "you@example.com",
-      "token": "your-api-token"
-    }
-  }
-  ```
-- Environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`
-
 **Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
 ### Initialise a brain
@@ -37,6 +23,21 @@ brain-sync init ~/my-brain
 This creates the folder structure, initialises the SQLite state database, and installs the Claude Code skill to `~/.claude/skills/brain-sync/`.
 
 Safe to run on an existing folder — only adds missing structure.
+
+### Configure source credentials
+
+After initialising, configure credentials for each source type you want to sync from. Currently supported: Confluence.
+
+**Confluence** — create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then:
+
+```bash
+brain-sync config confluence \
+  --domain yourcompany.atlassian.net \
+  --email you@example.com \
+  --token your-api-token
+```
+
+This writes credentials to `~/.brain-sync/config.json`. Alternatively, set environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`.
 
 ### Add a source
 
@@ -196,6 +197,7 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
+| `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
 | `brain-sync convert <file> [--comments-from <docx>]` | Convert .docx to markdown, or append comments from .docx to .md |
 | `brain-sync update-skill` | Re-install skill and instruction files to `~/.claude/skills/brain-sync/` |
 

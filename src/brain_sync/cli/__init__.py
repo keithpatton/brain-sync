@@ -22,9 +22,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="Initialise a new brain or migrate an existing one")
     p_init.add_argument("root", type=Path, help="Brain root directory to create/initialise")
     p_init.add_argument("--model", default=None, help="Default model for insight generation (e.g. claude-sonnet-4-6)")
-    p_init.add_argument("--confluence-domain", default=None, help="Confluence domain (e.g. yourcompany.atlassian.net)")
-    p_init.add_argument("--confluence-email", default=None, help="Confluence account email")
-    p_init.add_argument("--confluence-token", default=None, help="Confluence API token")
     p_init.add_argument("--dry-run", action="store_true", help="Show what would happen without making changes")
 
     # --- run ---
@@ -112,6 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=".docx file to extract comments from (when file is .md)",
     )
     p_convert.add_argument("--output", "-o", type=Path, help="Output path (default: in-place or .md extension)")
+
+    # --- config ---
+    p_config = sub.add_parser("config", help="Configure source credentials")
+    config_sub = p_config.add_subparsers(dest="config_source", help="Source to configure")
+
+    p_config_confluence = config_sub.add_parser("confluence", help="Configure Confluence credentials")
+    p_config_confluence.add_argument("--domain", required=True, help="Confluence domain (e.g. yourcompany.atlassian.net)")
+    p_config_confluence.add_argument("--email", required=True, help="Confluence account email")
+    p_config_confluence.add_argument("--token", required=True, help="Confluence API token")
 
     # --- update-skill ---
     p_skill = sub.add_parser("update-skill", help="Update the installed skill and instructions")
