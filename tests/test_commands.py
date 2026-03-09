@@ -1,8 +1,8 @@
 """Tests for the commands/ library API."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -22,7 +22,7 @@ from brain_sync.commands import (
     resolve_root,
     update_skill,
 )
-from brain_sync.commands.context import CONFIG_FILE, _require_root
+from brain_sync.commands.context import _require_root
 from brain_sync.state import _connect
 
 
@@ -118,8 +118,12 @@ class TestAddSource:
 
     def test_include_flags(self, brain):
         result = add_source(
-            root=brain, url=CONFLUENCE_URL, target_path="project",
-            include_links=True, include_children=True, include_attachments=True,
+            root=brain,
+            url=CONFLUENCE_URL,
+            target_path="project",
+            include_links=True,
+            include_children=True,
+            include_attachments=True,
         )
         assert result.include_links is True
         assert result.include_children is True
@@ -267,7 +271,7 @@ class TestInitBrain:
 
     def test_dry_run_no_changes(self, tmp_path):
         root = tmp_path / "dry-run-brain"
-        result = init_brain(root, dry_run=True)
+        init_brain(root, dry_run=True)
 
         # Root should not be created in dry-run
         assert not (root / "knowledge").exists()

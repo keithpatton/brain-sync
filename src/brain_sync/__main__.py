@@ -4,20 +4,17 @@ import asyncio
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 
-from brain_sync.config import Config
 from brain_sync.fs_utils import normalize_path
 from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
 from brain_sync.regen_queue import RegenQueue
 from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval
-from brain_sync.sources import SourceType, UnsupportedSourceError, detect_source_type
 from brain_sync.state import (
-    SourceState,
     SyncState,
     load_state,
     save_state,
@@ -27,7 +24,7 @@ from brain_sync.watcher import KnowledgeWatcher, mirror_folder_move
 log = logging.getLogger(__name__)
 
 RESCAN_INTERVAL = 300  # 5 minutes
-TICK_MAX_SLEEP = 10    # max seconds between ticks
+TICK_MAX_SLEEP = 10.0  # max seconds between ticks
 
 
 def _ensure_source_states(
@@ -39,7 +36,9 @@ def _ensure_source_states(
         if cid not in scheduler._scheduled_keys:
             if ss.next_check_utc and ss.interval_seconds:
                 scheduler.schedule_from_persisted(
-                    cid, ss.next_check_utc, ss.interval_seconds,
+                    cid,
+                    ss.next_check_utc,
+                    ss.interval_seconds,
                 )
             else:
                 scheduler.schedule_immediate(cid)
@@ -103,9 +102,7 @@ async def run(root: Path) -> None:
                     ss = state.sources[key]
 
                     try:
-                        changed = await process_source(
-                            ss, http_client, root=root
-                        )
+                        changed = await process_source(ss, http_client, root=root)
                         interval = compute_interval(ss.last_changed_utc)
                         ss.current_interval_secs = interval
                         # Enqueue regen if content changed
@@ -121,7 +118,7 @@ async def run(root: Path) -> None:
 
                     scheduler.reschedule(key, interval)
                     ss.interval_seconds = interval
-                    ss.next_check_utc = datetime.now(timezone.utc).isoformat()
+                    ss.next_check_utc = datetime.now(UTC).isoformat()
                     save_state(root, state)
 
                 # 4. Process regen events
@@ -171,8 +168,10 @@ def main() -> None:
     if log_level is None:
         try:
             from brain_sync.commands.context import CONFIG_FILE
+
             if CONFIG_FILE.exists():
                 import json
+
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 log_level = data.get("log_level")
         except (json.JSONDecodeError, OSError):

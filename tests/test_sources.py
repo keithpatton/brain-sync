@@ -2,8 +2,8 @@ import pytest
 
 from brain_sync.sources import (
     SourceType,
-    URLParseError,
     UnsupportedSourceError,
+    URLParseError,
     canonical_filename,
     canonical_id,
     detect_source_type,

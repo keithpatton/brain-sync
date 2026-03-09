@@ -8,8 +8,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from brain_sync.fileops import EXCLUDED_DIRS
-from brain_sync.fs_utils import normalize_path
 from watchdog.events import (
     DirMovedEvent,
     FileMovedEvent,
@@ -17,6 +15,9 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 from watchdog.observers import Observer
+
+from brain_sync.fileops import EXCLUDED_DIRS
+from brain_sync.fs_utils import normalize_path
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ IGNORE_PATTERNS = re.compile(
 @dataclass
 class FolderMove:
     """A detected folder rename/move within knowledge/."""
+
     src: Path
     dest: Path
 
@@ -75,6 +77,7 @@ class KnowledgeEventHandler(FileSystemEventHandler):
             rel = path.relative_to(self._knowledge_root)
             if rel.parts and rel.parts[0] == "_core":
                 from brain_sync.regen import invalidate_global_context_cache
+
                 invalidate_global_context_cache()
         except ValueError:
             pass
@@ -129,11 +132,12 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
 
     # Update insight_state paths in DB
     try:
-        from brain_sync.state import update_insight_path, load_all_insight_states
+        from brain_sync.state import load_all_insight_states, update_insight_path
+
         all_states = load_all_insight_states(root)
         for istate in all_states:
             if istate.knowledge_path == src_rel_str or istate.knowledge_path.startswith(src_rel_str + "/"):
-                new_path = dest_rel_str + istate.knowledge_path[len(src_rel_str):]
+                new_path = dest_rel_str + istate.knowledge_path[len(src_rel_str) :]
                 update_insight_path(root, istate.knowledge_path, new_path)
                 log.debug("Updated insight_state: %s -> %s", istate.knowledge_path, new_path)
     except Exception as e:
@@ -142,10 +146,11 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
     # Update sources target_path directly in DB
     try:
         from brain_sync.state import load_state, update_source_target_path
+
         state = load_state(root)
         for ss in state.sources.values():
             if ss.target_path == src_rel_str or ss.target_path.startswith(src_rel_str + "/"):
-                new_tp = dest_rel_str + ss.target_path[len(src_rel_str):]
+                new_tp = dest_rel_str + ss.target_path[len(src_rel_str) :]
                 log.info("Updated source target_path: %s -> %s", ss.target_path, new_tp)
                 update_source_target_path(root, ss.canonical_id, new_tp)
     except Exception as e:

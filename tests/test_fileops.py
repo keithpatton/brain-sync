@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from brain_sync.fileops import (
     content_hash,
     rediscover_local_path,

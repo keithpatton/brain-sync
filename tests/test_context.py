@@ -5,14 +5,13 @@ import pytest
 from brain_sync.context import (
     DiscoveredDoc,
     RelType,
-    RELTYPE_FOLDER,
+    SafetyError,
     _local_path_for_doc,
     discover_links_from_html,
     ensure_context_dirs,
     reconcile,
     rediscover_relationship_paths,
     remove_synced_file,
-    SafetyError,
 )
 from brain_sync.state import (
     Relationship,
@@ -31,10 +30,10 @@ class TestDiscoverLinksFromHtml:
         """
         links = discover_links_from_html(html, "x.atlassian.net")
         assert len(links) == 2
-        ids = {l.canonical_id for l in links}
+        ids = {lnk.canonical_id for lnk in links}
         assert "confluence:456" in ids
         assert "confluence:789" in ids
-        assert all(l.relationship_type == RelType.LINK for l in links)
+        assert all(lnk.relationship_type == RelType.LINK for lnk in links)
 
     def test_skips_anchors(self):
         html = '<a href="#section">Jump</a>'

@@ -4,12 +4,14 @@ Events are batched by knowledge path. A path is only processed after its
 debounce window elapses (30s from last change). Post-regen cooldown prevents
 re-triggering the same path within 5 minutes.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 
 from brain_sync.regen import regen_path
@@ -27,6 +29,7 @@ RETRY_BACKOFFS = [30.0, 60.0, 120.0]
 @dataclass
 class _PendingRegen:
     """A pending regen event for a knowledge path."""
+
     knowledge_path: str
     fire_at: float  # monotonic time when debounce expires
     retry_count: int = 0
@@ -113,17 +116,16 @@ class RegenQueue:
         total = 0
         async with self._lock:
             for knowledge_path in ready:
-                now = time.monotonic()
-
                 # Check DB state for running status
                 istate = load_insight_state(self.root, knowledge_path)
                 if istate and istate.regen_status == "running":
                     # Check if it's stale (>5 min)
                     if istate.last_regen_utc:
-                        from datetime import datetime, timezone
+                        from datetime import datetime
+
                         try:
                             started = datetime.fromisoformat(istate.last_regen_utc)
-                            age = (datetime.now(timezone.utc) - started).total_seconds()
+                            age = (datetime.now(UTC) - started).total_seconds()
                             if age < self.cooldown_secs:
                                 log.debug("Regen already running for %s, skipping", knowledge_path)
                                 continue
@@ -140,7 +142,8 @@ class RegenQueue:
                     total += count
                     log.info(
                         "[regen] path=%s summaries_updated=%d",
-                        knowledge_path or "(root)", count,
+                        knowledge_path or "(root)",
+                        count,
                     )
                 except Exception as e:
                     log.warning("Regen failed for %s: %s", knowledge_path, e)

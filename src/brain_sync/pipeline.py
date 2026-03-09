@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -34,7 +34,10 @@ log = logging.getLogger(__name__)
 
 
 async def _resolve_auto_filename(
-    url: str, source_type: SourceType, auth: ConfluenceAuth | None, http_client: httpx.AsyncClient,
+    url: str,
+    source_type: SourceType,
+    auth: ConfluenceAuth | None,
+    http_client: httpx.AsyncClient,
 ) -> str:
     """Derive an ID-anchored filename from the source URL/title."""
     if source_type == SourceType.CONFLUENCE:
@@ -69,7 +72,7 @@ async def process_source(
 ) -> bool:
     """Process a single source. Returns True if content changed."""
     source_type = detect_source_type(source_state.source_url)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     auth = get_confluence_auth()
 
     # Determine target directory
@@ -83,7 +86,10 @@ async def process_source(
 
     # Resolve output filename
     filename = await _resolve_auto_filename(
-        source_state.source_url, source_type, auth, http_client,
+        source_state.source_url,
+        source_type,
+        auth,
+        http_client,
     )
     target = target_dir / filename
 
@@ -98,17 +104,17 @@ async def process_source(
                 version = str(v)
         context_dir = target_dir / "_sync-context"
         context_missing = _has_context_flags(source_state) and not context_dir.exists()
-        if version is not None and version == source_state.metadata_fingerprint and target.exists() and not context_missing:
+        unchanged = version is not None and version == source_state.metadata_fingerprint
+        if unchanged and target.exists() and not context_missing:
             log.debug("Confluence page %s unchanged (version %s)", page_id, version)
             source_state.last_checked_utc = now
             return False
 
         # Full fetch via REST API or CLI fallback
         html: str | None = None
-        title: str | None = None
         if auth:
             try:
-                html, title, v = await fetch_page_body(page_id, auth, http_client)
+                html, _title, v = await fetch_page_body(page_id, auth, http_client)
                 if v is not None:
                     version = str(v)
             except Exception as e:
@@ -128,6 +134,7 @@ async def process_source(
             if auth:
                 try:
                     from brain_sync.context import process_context
+
                     await process_context(
                         manifest_dir=target_dir,
                         entry_url=source_state.source_url,
@@ -168,6 +175,7 @@ async def process_source(
     # Rewrite links if we have context relationships
     if rels:
         from brain_sync.link_rewriter import rewrite_links
+
         cid_to_path = {r.canonical_id: f"./{r.local_path}" for r in rels}
         markdown = rewrite_links(markdown, cid_to_path)
 

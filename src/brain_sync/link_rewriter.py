@@ -11,6 +11,7 @@ def rewrite_links(markdown: str, canonical_id_to_path: dict[str, str]) -> str:
     Only rewrites links whose canonical_id exists in the map.
     All other links are left intact.
     """
+
     def _replace(match: re.Match) -> str:
         text = match.group(1)
         url = match.group(2)

@@ -1,4 +1,5 @@
 """Brain initialisation and skill installation commands."""
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,10 @@ def _resource_path(package: str, name: str) -> Path:
 
 
 def _copy_resource(
-    package: str, name: str, dest: Path, dry_run: bool = False,
+    package: str,
+    name: str,
+    dest: Path,
+    dry_run: bool = False,
 ) -> bool:
     """Copy a bundled resource file to dest. Returns True if copied."""
     if dry_run:
@@ -49,7 +53,10 @@ def _ensure_dir(path: Path, dry_run: bool = False) -> bool:
 
 
 def _register_brain_root(
-    root: Path, *, model: str | None = None, dry_run: bool = False,
+    root: Path,
+    *,
+    model: str | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Register this brain root and optional settings in ~/.brain-sync/config.json."""
     if dry_run:
@@ -102,8 +109,10 @@ def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -
 
     dirs_created: list[str] = []
     for rel in [
-        "knowledge", "knowledge/_core",
-        "insights", "insights/_core",
+        "knowledge",
+        "knowledge/_core",
+        "insights",
+        "insights/_core",
         "schemas/insights",
     ]:
         if _ensure_dir(root / rel, dry_run):
@@ -120,12 +129,15 @@ def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -
 
     # Install skill to Claude skill directory (MCP tools handle all context)
     _copy_resource(
-        "brain_sync.skills.brain_sync", "SKILL.md",
-        SKILL_INSTALL_DIR / "SKILL.md", dry_run,
+        "brain_sync.skills.brain_sync",
+        "SKILL.md",
+        SKILL_INSTALL_DIR / "SKILL.md",
+        dry_run,
     )
 
     if not dry_run:
         from brain_sync.state import _connect
+
         conn = _connect(root)
         conn.close()
         log.info("SQLite state database ready at %s", root / ".sync-state.sqlite")
@@ -142,7 +154,8 @@ def update_skill() -> list[Path]:
     """
     updated: list[Path] = []
     _copy_resource(
-        "brain_sync.skills.brain_sync", "SKILL.md",
+        "brain_sync.skills.brain_sync",
+        "SKILL.md",
         SKILL_INSTALL_DIR / "SKILL.md",
     )
     updated.append(SKILL_INSTALL_DIR / "SKILL.md")

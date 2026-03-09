@@ -1,7 +1,6 @@
 """Tests for watcher folder move mirroring."""
-from __future__ import annotations
 
-from pathlib import Path
+from __future__ import annotations
 
 import pytest
 
@@ -52,16 +51,22 @@ class TestMirrorFolderMove:
 
     def test_updates_insight_state_path(self, brain):
         """insight_state DB rows updated after move."""
-        save_insight_state(brain, InsightState(
-            knowledge_path="old-name",
-            content_hash="abc",
-            regen_status="idle",
-        ))
-        save_insight_state(brain, InsightState(
-            knowledge_path="old-name/sub",
-            content_hash="def",
-            regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="old-name",
+                content_hash="abc",
+                regen_status="idle",
+            ),
+        )
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="old-name/sub",
+                content_hash="def",
+                regen_status="idle",
+            ),
+        )
 
         k_old = brain / "knowledge" / "old-name"
         k_old.mkdir()
@@ -120,10 +125,13 @@ class TestMirrorFolderMove:
         i_old.mkdir(parents=True)
         (i_old / "summary.md").write_text("child summary", encoding="utf-8")
 
-        save_insight_state(brain, InsightState(
-            knowledge_path="parent/old-child",
-            content_hash="abc",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="parent/old-child",
+                content_hash="abc",
+            ),
+        )
 
         k_new = brain / "knowledge" / "parent" / "new-child"
 

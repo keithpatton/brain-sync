@@ -216,6 +216,7 @@ class Relationship:
 def source_key_for_entry(entry_url: str) -> str:
     """Compute canonical_id from a source URL. This is the source identity key."""
     from brain_sync.sources import canonical_id, detect_source_type
+
     stype = detect_source_type(entry_url)
     return canonical_id(stype, entry_url)
 
@@ -232,7 +233,8 @@ def _db_path(root: Path) -> Path:
 def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
     """Compute canonical_id for migration. Falls back to unknown:{url} on failure."""
     try:
-        from brain_sync.sources import canonical_id, SourceType
+        from brain_sync.sources import SourceType, canonical_id
+
         stype = SourceType(source_type)
         return canonical_id(stype, source_url)
     except Exception:
@@ -244,9 +246,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
     if from_version < 2:
         conn.executescript(_SCHEMA_V2_ADDITIONS)
         # Add new columns to sources table (v1 -> v2)
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
         if "next_check_utc" not in existing_cols:
             conn.execute("ALTER TABLE sources ADD COLUMN next_check_utc TEXT")
         if "interval_seconds" not in existing_cols:
@@ -286,9 +286,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             # 3. If still tied, prefer smallest manifest_path (ascending)
             best = max(group, key=lambda r: (r[5] or "", r[8] is not None))
             candidates = [
-                r for r in group
-                if (r[5] or "") == (best[5] or "")
-                and (r[8] is not None) == (best[8] is not None)
+                r for r in group if (r[5] or "") == (best[5] or "") and (r[8] is not None) == (best[8] is not None)
             ]
             candidates.sort(key=lambda r: r[1])  # lexicographic manifest_path
             winner = candidates[0]
@@ -316,9 +314,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             # All rows create bindings
             for r in group:
                 conn.execute(
-                    "INSERT OR IGNORE INTO source_bindings "
-                    "(canonical_id, manifest_path, target_file) "
-                    "VALUES (?, ?, ?)",
+                    "INSERT OR IGNORE INTO source_bindings (canonical_id, manifest_path, target_file) VALUES (?, ?, ?)",
                     (cid, r[1], r[3]),
                 )
 
@@ -371,9 +367,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
     if from_version < 5:
         # v4 → v5: Add target_path + context flags to sources, add insight_state,
         # drop source_bindings
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
         if "target_path" not in existing_cols:
             conn.execute("ALTER TABLE sources ADD COLUMN target_path TEXT NOT NULL DEFAULT ''")
         if "include_links" not in existing_cols:
@@ -384,11 +378,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             conn.execute("ALTER TABLE sources ADD COLUMN include_attachments INTEGER NOT NULL DEFAULT 0")
 
         # Migrate bindings data into sources if bindings table exists
-        tables = {
-            row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "source_bindings" in tables:
             # For each source, pick the first binding's flags and derive target_path
             rows = conn.execute(
@@ -408,6 +398,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
                     if root is not None:
                         target_path = str(manifest_path.parent.relative_to(root))
                         from brain_sync.fs_utils import normalize_path
+
                         target_path = normalize_path(target_path)
                     else:
                         target_path = ""
@@ -433,9 +424,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 
     if from_version < 6:
         # v5 → v6: Add regen timing and token tracking to insight_state
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
         if "regen_started_utc" not in existing_cols:
             conn.execute("ALTER TABLE insight_state ADD COLUMN regen_started_utc TEXT")
         if "input_tokens" not in existing_cols:
@@ -451,9 +440,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 
     if from_version < 7:
         # v6 → v7: Add num_turns and model to insight_state
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
         if "num_turns" not in existing_cols:
             conn.execute("ALTER TABLE insight_state ADD COLUMN num_turns INTEGER")
         if "model" not in existing_cols:
@@ -466,9 +453,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 
     if from_version < 8:
         # v7 → v8: Drop cost_usd column
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
         if "cost_usd" in existing_cols:
             conn.execute("ALTER TABLE insight_state DROP COLUMN cost_usd")
         conn.execute(
@@ -479,9 +464,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 
     if from_version < 9:
         # v8 → v9: Drop retry_count (queue now owns retry budgeting)
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
         if "retry_count" in existing_cols:
             conn.execute("ALTER TABLE insight_state DROP COLUMN retry_count")
         conn.execute(
@@ -548,11 +531,7 @@ def _connect(root: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
 
     # Check if DB is fresh (no tables yet)
-    tables = {
-        row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
     if not tables or "meta" not in tables:
         # Fresh DB — create current schema directly
@@ -573,9 +552,7 @@ def _connect(root: Path) -> sqlite3.Connection:
         conn.commit()
     else:
         # Existing DB — check version and migrate if needed
-        row = conn.execute(
-            "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         current_version = int(row[0]) if row else 1
         if current_version < SCHEMA_VERSION:
             _migrate(conn, current_version, root=root)
@@ -633,6 +610,7 @@ def save_state(root: Path, state: SyncState) -> None:
     Only inserts if the source doesn't exist yet.
     """
     from brain_sync.fs_utils import normalize_path
+
     conn = _connect(root)
     try:
         for key, ss in state.sources.items():
@@ -689,6 +667,7 @@ def save_state(root: Path, state: SyncState) -> None:
 def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:
     """Update a source's target_path directly in the DB."""
     from brain_sync.fs_utils import normalize_path
+
     new_target_path = normalize_path(new_target_path)
     conn = _connect(root)
     try:
@@ -712,9 +691,7 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
     """Remove rows from the DB that are no longer active."""
     conn = _connect(root)
     try:
-        existing = {
-            row[0] for row in conn.execute("SELECT canonical_id FROM sources").fetchall()
-        }
+        existing = {row[0] for row in conn.execute("SELECT canonical_id FROM sources").fetchall()}
         stale = existing - active_keys
         for key in stale:
             conn.execute("DELETE FROM sources WHERE canonical_id = ?", (key,))
@@ -790,6 +767,7 @@ def load_document(root: Path, canonical_id: str) -> DocumentState | None:
 def save_relationship(root: Path, rel: Relationship) -> None:
     """UPSERT a relationship record."""
     from brain_sync.fs_utils import normalize_path
+
     local_path = normalize_path(rel.local_path)
     conn = _connect(root)
     try:
@@ -818,9 +796,7 @@ def save_relationship(root: Path, rel: Relationship) -> None:
         conn.close()
 
 
-def load_relationships_for_primary(
-    root: Path, parent_canonical_id: str
-) -> list[Relationship]:
+def load_relationships_for_primary(root: Path, parent_canonical_id: str) -> list[Relationship]:
     conn = _connect(root)
     try:
         rows = conn.execute(
@@ -846,16 +822,19 @@ def load_relationships_for_primary(
 
 
 def update_relationship_path(
-    root: Path, parent_canonical_id: str, canonical_id: str, new_local_path: str,
+    root: Path,
+    parent_canonical_id: str,
+    canonical_id: str,
+    new_local_path: str,
 ) -> None:
     """Update the local_path for a relationship after file rediscovery."""
     from brain_sync.fs_utils import normalize_path
+
     new_local_path = normalize_path(new_local_path)
     conn = _connect(root)
     try:
         conn.execute(
-            "UPDATE relationships SET local_path = ? "
-            "WHERE parent_canonical_id = ? AND canonical_id = ?",
+            "UPDATE relationships SET local_path = ? WHERE parent_canonical_id = ? AND canonical_id = ?",
             (new_local_path, parent_canonical_id, canonical_id),
         )
         conn.commit()
@@ -863,14 +842,11 @@ def update_relationship_path(
         conn.close()
 
 
-def remove_relationship(
-    root: Path, parent_canonical_id: str, canonical_id: str
-) -> None:
+def remove_relationship(root: Path, parent_canonical_id: str, canonical_id: str) -> None:
     conn = _connect(root)
     try:
         conn.execute(
-            "DELETE FROM relationships "
-            "WHERE parent_canonical_id = ? AND canonical_id = ?",
+            "DELETE FROM relationships WHERE parent_canonical_id = ? AND canonical_id = ?",
             (parent_canonical_id, canonical_id),
         )
         conn.commit()
@@ -901,9 +877,7 @@ def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
         return False
     conn = _connect(root)
     try:
-        conn.execute(
-            "DELETE FROM documents WHERE canonical_id = ?", (canonical_id,)
-        )
+        conn.execute("DELETE FROM documents WHERE canonical_id = ?", (canonical_id,))
         conn.commit()
         return True
     finally:
@@ -916,6 +890,7 @@ def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
 def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     """Load insight state for a knowledge path."""
     from brain_sync.fs_utils import normalize_path
+
     knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
@@ -947,6 +922,7 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
 def save_insight_state(root: Path, istate: InsightState) -> None:
     """UPSERT insight state for a knowledge path."""
     from brain_sync.fs_utils import normalize_path
+
     kp = normalize_path(istate.knowledge_path)
     conn = _connect(root)
     try:
@@ -1016,6 +992,7 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
 def delete_insight_state(root: Path, knowledge_path: str) -> None:
     """Delete an insight_state entry."""
     from brain_sync.fs_utils import normalize_path
+
     knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
@@ -1032,9 +1009,7 @@ def reset_running_insight_states(root: Path) -> int:
     """Reset any 'running' insight states to 'idle' (orphaned from a crash)."""
     conn = _connect(root)
     try:
-        cur = conn.execute(
-            "UPDATE insight_state SET regen_status = 'idle' WHERE regen_status = 'running'"
-        )
+        cur = conn.execute("UPDATE insight_state SET regen_status = 'idle' WHERE regen_status = 'running'")
         conn.commit()
         return cur.rowcount
     finally:
@@ -1044,6 +1019,7 @@ def reset_running_insight_states(root: Path) -> int:
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
     """Update a knowledge_path in insight_state (for folder renames)."""
     from brain_sync.fs_utils import normalize_path
+
     old_path = normalize_path(old_path)
     new_path = normalize_path(new_path)
     conn = _connect(root)

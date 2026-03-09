@@ -1,19 +1,17 @@
 """Tests for the insight regeneration engine."""
+
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from brain_sync.fileops import KNOWLEDGE_EXTENSIONS
 from brain_sync.regen import (
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
     PROMPT_VERSION,
-    SIMILARITY_THRESHOLD,
     ClaudeResult,
     PromptResult,
     RegenConfig,
@@ -27,7 +25,6 @@ from brain_sync.regen import (
     _first_heading,
     _get_child_dirs,
     _is_content_dir,
-    _is_readable_file,
     _preprocess_content,
     _split_markdown_chunks,
     folder_content_hash,
@@ -205,8 +202,10 @@ class TestRegenPath:
 
     def _mock_claude_return_summary(self, content: str = "# Test Summary\n\nGenerated insight summary content."):
         """Create a mock invoke_claude that returns summary text."""
+
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
             return ClaudeResult(success=True, output=content)
+
         return fake_invoke
 
     def test_leaf_regen_creates_summary(self, brain):
@@ -234,19 +233,20 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Stable Doc", encoding="utf-8")
 
-        content_hash = folder_content_hash(kdir)
-
         # Pre-populate insight state with matching hash
         # For a leaf (no child dirs), the unified hash equals folder_content_hash
         child_dirs = _get_child_dirs(kdir)
         unified_hash = _compute_hash(child_dirs, {}, kdir, True)
 
-        save_insight_state(brain, InsightState(
-            knowledge_path="project",
-            content_hash=unified_hash,
-            summary_hash="existing",
-            regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash=unified_hash,
+                summary_hash="existing",
+                regen_status="idle",
+            ),
+        )
 
         with patch("brain_sync.regen.invoke_claude") as mock_claude:
             count = asyncio.run(regen_path(brain, "project"))
@@ -331,9 +331,14 @@ class TestRegenPath:
         idir = brain / "insights" / "deleted"
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("stale", encoding="utf-8")
-        save_insight_state(brain, InsightState(
-            knowledge_path="deleted", content_hash="old", regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="deleted",
+                content_hash="old",
+                regen_status="idle",
+            ),
+        )
 
         with patch("brain_sync.regen.invoke_claude") as mock:
             count = asyncio.run(regen_path(brain, "deleted"))
@@ -351,9 +356,14 @@ class TestRegenPath:
         idir = brain / "insights" / "empty"
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("stale", encoding="utf-8")
-        save_insight_state(brain, InsightState(
-            knowledge_path="empty", content_hash="old", regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="empty",
+                content_hash="old",
+                regen_status="idle",
+            ),
+        )
 
         with patch("brain_sync.regen.invoke_claude") as mock:
             count = asyncio.run(regen_path(brain, "empty"))
@@ -409,14 +419,22 @@ class TestRegenPath:
         (child_idir / "summary.md").write_text("# Meetings Summary", encoding="utf-8")
 
         # First regen
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary("# Summary V1\n\nInitiative overview content.")):
+        with patch(
+            "brain_sync.regen.invoke_claude",
+            side_effect=self._mock_claude_return_summary("# Summary V1\n\nInitiative overview content."),
+        ):
             asyncio.run(regen_path(brain, "initiative"))
 
         # Change direct file
         (kdir / "overview.md").write_text("# V2 — significant change", encoding="utf-8")
 
         # Second regen should trigger (hash changed)
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary("# Summary V2\n\nCompletely different initiative overview.")) as mock:
+        with patch(
+            "brain_sync.regen.invoke_claude",
+            side_effect=self._mock_claude_return_summary(
+                "# Summary V2\n\nCompletely different initiative overview.",
+            ),
+        ) as mock:
             count = asyncio.run(regen_path(brain, "initiative"))
 
         assert count >= 1
@@ -432,14 +450,19 @@ class TestRegenPath:
         idir = brain / "insights" / "parent" / "child"
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("child summary", encoding="utf-8")
-        save_insight_state(brain, InsightState(
-            knowledge_path="parent/child", content_hash="old", regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="parent/child",
+                content_hash="old",
+                regen_status="idle",
+            ),
+        )
 
         # Delete all files from the leaf
         (kdir / "doc.md").unlink()
 
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.invoke_claude"):
             asyncio.run(regen_path(brain, "parent/child"))
 
         # Child insights should be cleaned up
@@ -459,16 +482,22 @@ class TestRegenPath:
         child_idir = brain / "insights" / "area" / "sub"
         child_idir.mkdir(parents=True)
         (child_idir / "summary.md").write_text("summary", encoding="utf-8")
-        save_insight_state(brain, InsightState(
-            knowledge_path="area/sub", content_hash="old", regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/sub",
+                content_hash="old",
+                regen_status="idle",
+            ),
+        )
 
         # Delete the child knowledge folder
         import shutil
+
         shutil.rmtree(child_kdir)
 
         # Regen for the deleted child should clean up
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.invoke_claude"):
             asyncio.run(regen_path(brain, "area/sub"))
 
         assert not child_idir.exists()
@@ -494,7 +523,7 @@ class TestRegenPath:
         (kdir / "metrics.csv").write_text("a,b\n1,2", encoding="utf-8")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
-            count = asyncio.run(regen_path(brain, "data"))
+            asyncio.run(regen_path(brain, "data"))
 
         mock.assert_called()
 
@@ -505,7 +534,7 @@ class TestRegenPath:
         (kdir / "spec.json").write_text('{"key": "value"}', encoding="utf-8")
 
         with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
-            count = asyncio.run(regen_path(brain, "config"))
+            asyncio.run(regen_path(brain, "config"))
 
         mock.assert_called()
 
@@ -741,10 +770,14 @@ class TestStructuralHash:
         (idir / "summary.md").write_text("summary a", encoding="utf-8")
 
         # First regen to establish parent hash
-        with patch("brain_sync.regen.invoke_claude", side_effect=TestRegenPath._mock_claude_return_summary(None, "# Parent V1\n\nParent summary content.")):
+        with patch(
+            "brain_sync.regen.invoke_claude",
+            side_effect=TestRegenPath._mock_claude_return_summary(
+                None,
+                "# Parent V1\n\nParent summary content.",
+            ),
+        ):
             asyncio.run(regen_path(brain, "parent"))
-
-        old_istate = load_insight_state(brain, "parent")
 
         # Add a new child dir (empty for now, but structurally present)
         child_b = kdir / "child-b"
@@ -755,7 +788,13 @@ class TestStructuralHash:
         (child_b_idir / "summary.md").write_text("summary b", encoding="utf-8")
 
         # Second regen should trigger (structural change)
-        with patch("brain_sync.regen.invoke_claude", side_effect=TestRegenPath._mock_claude_return_summary(None, "# Parent V2\n\nParent summary with both children included.")) as mock:
+        with patch(
+            "brain_sync.regen.invoke_claude",
+            side_effect=TestRegenPath._mock_claude_return_summary(
+                None,
+                "# Parent V2\n\nParent summary with both children included.",
+            ),
+        ) as mock:
             asyncio.run(regen_path(brain, "parent"))
 
         mock.assert_called()
@@ -763,9 +802,14 @@ class TestStructuralHash:
 
 class TestDeleteInsightState:
     def test_delete_existing(self, brain):
-        save_insight_state(brain, InsightState(
-            knowledge_path="test", content_hash="abc", regen_status="idle",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="test",
+                content_hash="abc",
+                regen_status="idle",
+            ),
+        )
         assert load_insight_state(brain, "test") is not None
         delete_insight_state(brain, "test")
         assert load_insight_state(brain, "test") is None
@@ -868,8 +912,10 @@ class TestFindAllContentPaths:
 class TestRegenAll:
     def _mock_claude_return_summary(self, content: str = "# Summary\n\nGenerated insight summary content."):
         """Create a mock invoke_claude that returns summary text."""
+
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
             return ClaudeResult(success=True, output=content)
+
         return fake_invoke
 
     def test_regen_all_bottom_up(self, brain):
@@ -916,12 +962,15 @@ class TestRegenAll:
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
 
         # Simulate an orphaned state for a path that no longer exists
-        save_insight_state(brain, InsightState(
-            knowledge_path="old/deleted",
-            content_hash=None,
-            summary_hash=None,
-            regen_status="failed",
-        ))
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="old/deleted",
+                content_hash=None,
+                summary_hash=None,
+                regen_status="failed",
+            ),
+        )
         # Verify it exists
         assert load_insight_state(brain, "old/deleted") is not None
 
@@ -1086,6 +1135,7 @@ class TestPromptVersionAndContent:
     def test_prompt_version_in_instructions(self):
         """INSIGHT_INSTRUCTIONS.md contains the version marker."""
         from brain_sync.regen import _REGEN_INSTRUCTIONS
+
         assert "insight-v2" in _REGEN_INSTRUCTIONS
 
     def test_prompt_version_constant(self):
@@ -1156,8 +1206,7 @@ class TestPreprocessing:
     """Tests for _preprocess_content()."""
 
     def test_strip_base64_data_uri(self):
-        from brain_sync.regen import _preprocess_content
-        content = 'Some text data:image/png;base64,iVBORw0KGgo= more text'
+        content = "Some text data:image/png;base64,iVBORw0KGgo= more text"
         result = _preprocess_content(content, "test.md")
         assert "iVBORw0KGgo" not in result
         assert "[image removed]" in result
@@ -1165,21 +1214,18 @@ class TestPreprocessing:
         assert "more text" in result
 
     def test_strip_base64_markdown_image(self):
-        from brain_sync.regen import _preprocess_content
-        content = '![Login Screen](data:image/png;base64,iVBORw0KGgo=)\nSome text after.'
+        content = "![Login Screen](data:image/png;base64,iVBORw0KGgo=)\nSome text after."
         result = _preprocess_content(content, "test.md")
         assert "iVBORw0KGgo" not in result
         assert "[diagram: Login Screen]" in result
         assert "Some text after." in result
 
     def test_strip_base64_markdown_image_no_alt(self):
-        from brain_sync.regen import _preprocess_content
-        content = '![](data:image/jpeg;base64,/9j/4AAQ=)\nAfter.'
+        content = "![](data:image/jpeg;base64,/9j/4AAQ=)\nAfter."
         result = _preprocess_content(content, "test.md")
         assert "[image removed]" in result
 
     def test_collapse_blank_lines(self):
-        from brain_sync.regen import _preprocess_content
         # 4+ newlines should collapse to 3 (2 blank lines)
         content = "line1\n\n\n\n\nline2"
         result = _preprocess_content(content, "test.md")
@@ -1190,21 +1236,18 @@ class TestPreprocessing:
         assert result3 == "line1\n\n\nline2"
 
     def test_tables_preserved(self):
-        from brain_sync.regen import _preprocess_content
         table = "| Col1 | Col2 |\n| --- | --- |\n| val1 | val2 |"
         result = _preprocess_content(table, "test.md")
         assert result == table
 
     def test_base64_regex_single_line(self):
         """Regex must not consume across newlines."""
-        from brain_sync.regen import _preprocess_content
         # base64 payload on one line, important text on next line
         content = "data:image/png;base64,abc123=\nIMPORTANT: Keep this text"
         result = _preprocess_content(content, "test.md")
         assert "IMPORTANT: Keep this text" in result
 
     def test_no_change_clean_content(self):
-        from brain_sync.regen import _preprocess_content
         content = "# Heading\n\nSome normal markdown with no images."
         result = _preprocess_content(content, "test.md")
         assert result == content
@@ -1214,7 +1257,6 @@ class TestChunking:
     """Tests for _split_markdown_chunks() and related chunking logic."""
 
     def test_split_by_headings(self):
-        from brain_sync.regen import _split_markdown_chunks
         content = "# Section 1\nContent 1\n\n# Section 2\nContent 2\n\n# Section 3\nContent 3"
         chunks = _split_markdown_chunks(content, target_chars=30)
         assert len(chunks) >= 2
@@ -1223,14 +1265,12 @@ class TestChunking:
             assert "#" in chunk
 
     def test_split_fallback_paragraphs(self):
-        from brain_sync.regen import _split_markdown_chunks
         # No headings, just paragraphs
         content = "Para 1 content here.\n\nPara 2 content here.\n\nPara 3 content here."
         chunks = _split_markdown_chunks(content, target_chars=30)
         assert len(chunks) >= 2
 
     def test_split_preserves_all_content(self):
-        from brain_sync.regen import _split_markdown_chunks
         content = "# H1 First\nSome content here.\n\n# H1 Second\nMore content.\n\n## H2 Sub\nDeep content."
         chunks = _split_markdown_chunks(content, target_chars=40)
         # Lossless invariant (trailing newline tolerant)
@@ -1238,7 +1278,6 @@ class TestChunking:
 
     def test_split_preserves_content_large(self):
         """Lossless invariant with realistic content."""
-        from brain_sync.regen import _split_markdown_chunks
         sections = [f"## Section {i}\n{'x' * 500}\n" for i in range(20)]
         content = "\n".join(sections)
         chunks = _split_markdown_chunks(content, target_chars=2000)
@@ -1246,14 +1285,12 @@ class TestChunking:
 
     def test_split_recursive_large_section(self):
         """Oversized H1 section should split at H2."""
-        from brain_sync.regen import _split_markdown_chunks
         # One H1 with two H2s inside, each bigger than target
         content = "# Big Section\n\n## Sub A\n" + "a" * 200 + "\n\n## Sub B\n" + "b" * 200
         chunks = _split_markdown_chunks(content, target_chars=250)
         assert len(chunks) >= 2
 
     def test_small_content_no_split(self):
-        from brain_sync.regen import _split_markdown_chunks
         content = "# Small\nJust a little content."
         chunks = _split_markdown_chunks(content, target_chars=1000)
         assert len(chunks) == 1
@@ -1261,7 +1298,6 @@ class TestChunking:
 
     def test_chunk_count_guard(self, brain):
         """More than MAX_CHUNKS raises RegenFailed."""
-        from brain_sync.regen import MAX_CHUNKS, _split_markdown_chunks
         # Create content that will produce many chunks
         sections = [f"# Section {i}\n{'x' * 100}" for i in range(40)]
         content = "\n\n".join(sections)
@@ -1271,6 +1307,7 @@ class TestChunking:
 
         # Mock invoke_claude to return valid summary
         call_count = 0
+
         async def mock_invoke(prompt, cwd, **kwargs):
             nonlocal call_count
             call_count += 1
@@ -1278,14 +1315,15 @@ class TestChunking:
 
         # Patch _split_markdown_chunks to return >30 chunks
         fake_chunks = ["chunk"] * (MAX_CHUNKS + 1)
-        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke), \
-             patch("brain_sync.regen._split_markdown_chunks", return_value=fake_chunks), \
-             patch("brain_sync.regen._preprocess_content", side_effect=lambda c, f: "x" * 200_000):
+        with (
+            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen._split_markdown_chunks", return_value=fake_chunks),
+            patch("brain_sync.regen._preprocess_content", side_effect=lambda c, f: "x" * 200_000),
+        ):
             with pytest.raises(RegenFailed, match="exceeds limit"):
                 asyncio.run(regen_path(brain, "huge"))
 
     def test_chunk_prompt_format(self):
-        from brain_sync.regen import _build_chunk_prompt
         prompt = _build_chunk_prompt("chunk content here", 2, 5, "prd.md", "Authentication Flow")
         assert "[Chunk 2/5" in prompt
         assert "Authentication Flow" in prompt
@@ -1294,7 +1332,6 @@ class TestChunking:
         assert "[image removed]" in prompt  # placeholder instructions present
 
     def test_first_heading(self):
-        from brain_sync.regen import _first_heading
         assert _first_heading("# Top Level\nContent") == "Top Level"
         assert _first_heading("## Sub Level\nContent") == "Sub Level"
         assert _first_heading("No heading here") is None
@@ -1306,7 +1343,6 @@ class TestOversizedDetection:
 
     def test_oversized_files_detected(self, brain):
         """Files larger than CHUNK_TARGET_CHARS go to oversized_files."""
-        from brain_sync.regen import CHUNK_TARGET_CHARS
         kdir = brain / "knowledge" / "big"
         kdir.mkdir(parents=True)
         (kdir / "huge.md").write_text("# Huge\n" + "x" * (CHUNK_TARGET_CHARS + 1000), encoding="utf-8")
@@ -1333,7 +1369,6 @@ class TestOversizedDetection:
 
     def test_preprocessing_applied(self, brain):
         """Base64 images are stripped before size check."""
-        from brain_sync.regen import CHUNK_TARGET_CHARS
         # Content is over threshold due to base64, but under after preprocessing
         base64_payload = "A" * (CHUNK_TARGET_CHARS + 1000)
         content = f"# Doc\n![img](data:image/png;base64,{base64_payload})\nReal content."
@@ -1355,7 +1390,6 @@ class TestChunkedRegenFlow:
 
     def test_regen_path_chunked_flow(self, brain):
         """Oversized file triggers chunk calls then merge call."""
-        from brain_sync.regen import CHUNK_TARGET_CHARS
         kdir = brain / "knowledge" / "prd"
         kdir.mkdir(parents=True)
         # Create oversized file (no base64, just big)
@@ -1363,6 +1397,7 @@ class TestChunkedRegenFlow:
         (kdir / "prd.md").write_text(big_content, encoding="utf-8")
 
         call_count = 0
+
         async def mock_invoke(prompt, cwd, **kwargs):
             nonlocal call_count
             call_count += 1
@@ -1373,8 +1408,10 @@ class TestChunkedRegenFlow:
                 output_tokens=500,
             )
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke), \
-             patch("brain_sync.regen.CHUNK_TARGET_CHARS", 2000):
+        with (
+            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.CHUNK_TARGET_CHARS", 2000),
+        ):
             count = asyncio.run(regen_path(brain, "prd"))
 
         assert count >= 1
@@ -1385,7 +1422,6 @@ class TestChunkedRegenFlow:
 
     def test_token_tracking_across_chunks(self, brain):
         """Total tokens include chunk + merge calls."""
-        from brain_sync.regen import CHUNK_TARGET_CHARS
         kdir = brain / "knowledge" / "tok"
         kdir.mkdir(parents=True)
         big_content = "\n\n".join(f"## Section {i}\n{'data ' * 100}" for i in range(20))
@@ -1399,8 +1435,10 @@ class TestChunkedRegenFlow:
                 output_tokens=200,
             )
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke), \
-             patch("brain_sync.regen.CHUNK_TARGET_CHARS", 1500):
+        with (
+            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.CHUNK_TARGET_CHARS", 1500),
+        ):
             asyncio.run(regen_path(brain, "tok"))
 
         istate = load_insight_state(brain, "tok")

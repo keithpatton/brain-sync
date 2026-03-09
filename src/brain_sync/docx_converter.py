@@ -6,6 +6,7 @@ are only preserved in .docx format. Supports two workflows:
 1. Hybrid: Google markdown export for body + .docx only for comments
 2. Full: .docx for both body and comments (lower fidelity body conversion)
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,7 +15,6 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,6 @@ def _collect_text_between(start_elem, end_elem) -> str:
 
     Walks siblings and descendants from start to end marker.
     """
-    from lxml import etree
 
     texts: list[str] = []
     collecting = False
@@ -47,12 +46,12 @@ def _collect_text_between(start_elem, end_elem) -> str:
     return " ".join(texts).strip()
 
 
-def _extract_comments_from_doc(doc: Document) -> list[dict]:
+def _extract_comments_from_doc(doc: Document) -> list[dict]:  # pyright: ignore[reportGeneralTypeIssues]
     """Extract comments with metadata and annotated text from a Document.
 
     Returns list of dicts with keys: author, date, text, annotated_text.
     """
-    from lxml import etree
+    from lxml import etree  # pyright: ignore[reportAttributeAccessIssue]
 
     # Parse comments from word/comments.xml
     comments_part = None
@@ -223,7 +222,7 @@ def _table_to_markdown(table) -> str:
         # Pad to match header column count
         while len(row) < len(rows[0]):
             row.append("")
-        lines.append("| " + " | ".join(row[:len(rows[0])]) + " |")
+        lines.append("| " + " | ".join(row[: len(rows[0])]) + " |")
 
     return "\n".join(lines)
 

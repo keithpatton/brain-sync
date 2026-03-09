@@ -8,6 +8,7 @@ Architecture: SKILL.md (WHAT/WHEN) → MCP tools (HOW) → brain_sync library
 Usage:
     python -m brain_sync.mcp
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,11 +49,11 @@ _regen_lock = asyncio.Lock()
 # ---------------------------------------------------------------------------
 
 TRUNCATION_MARKER = "[truncated — call brain_sync_open_file(path=..., offset=N) to read more]"
-MAX_SUMMARY_CHARS = 12000        # ~3000 tokens
-MAX_CHILD_SUMMARY_CHARS = 2000   # ~500 tokens each
-MAX_CHILDREN = 5                 # max child summaries returned
-MAX_INSIGHT_FILE_CHARS = 8000    # other insight artifacts
-MAX_AREA_PAYLOAD = 40000         # total response chars — hard cap
+MAX_SUMMARY_CHARS = 12000  # ~3000 tokens
+MAX_CHILD_SUMMARY_CHARS = 2000  # ~500 tokens each
+MAX_CHILDREN = 5  # max child summaries returned
+MAX_INSIGHT_FILE_CHARS = 8000  # other insight artifacts
+MAX_AREA_PAYLOAD = 40000  # total response chars — hard cap
 MAX_AREAS_LISTED = 50
 MAX_GLOBAL_CONTEXT_FILE_CHARS = 4000
 MAX_PREVIEW_CHARS = 500
@@ -66,6 +67,7 @@ ALLOWED_EXTENSIONS = frozenset({".md", ".txt", ".json", ".yaml", ".yml"})
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _truncate(text: str, limit: int) -> str:
     """Truncate text to limit chars, appending marker if truncated."""
@@ -166,13 +168,15 @@ def _collect_areas(root: Path) -> list[dict]:
 # Search index — built at startup, rebuilt on staleness
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class AreaIndexEntry:
     """Index entry for a single brain area."""
+
     path: str
     path_parts: list[str]
-    summary_first_para: str = ""   # first paragraph (used for preview)
-    summary_body: str = ""         # full indexed text (used for search)
+    summary_first_para: str = ""  # first paragraph (used for preview)
+    summary_body: str = ""  # full indexed text (used for search)
     summary_headings: list[str] = field(default_factory=list)
     children: list[str] = field(default_factory=list)
     has_knowledge: bool = False
@@ -231,9 +235,7 @@ class AreaIndex:
                         entry.summary_first_para = paras[0][:MAX_PREVIEW_CHARS] if paras else ""
                         # Headings
                         entry.summary_headings = sorted(
-                            line.lstrip("#").strip()
-                            for line in text.splitlines()
-                            if line.startswith("##")
+                            line.lstrip("#").strip() for line in text.splitlines() if line.startswith("##")
                         )
 
                 # Children
@@ -277,16 +279,16 @@ class AreaIndex:
 
         for entry in self.entries:
             score = 0
-            # Path segments — highest weight (×3)
+            # Path segments — highest weight (x3)
             for part in entry.path_parts:
                 if query_lower in part.lower():
                     score += 3
 
-            # Summary body — medium weight (×2)
+            # Summary body — medium weight (x2)
             if query_lower in entry.summary_body.lower():
                 score += 2
 
-            # Headings — base weight (×1)
+            # Headings — base weight (x1)
             for heading in entry.summary_headings:
                 if query_lower in heading.lower():
                     score += 1
@@ -300,13 +302,15 @@ class AreaIndex:
 
         results: list[dict] = []
         for score, _, entry in scored[:max_results]:
-            results.append({
-                "path": entry.path,
-                "summary_preview": entry.summary_first_para[:MAX_PREVIEW_CHARS],
-                "children": entry.children,
-                "has_knowledge": entry.has_knowledge,
-                "score": score,
-            })
+            results.append(
+                {
+                    "path": entry.path,
+                    "summary_preview": entry.summary_first_para[:MAX_PREVIEW_CHARS],
+                    "children": entry.children,
+                    "has_knowledge": entry.has_knowledge,
+                    "score": score,
+                }
+            )
         return results
 
 
@@ -326,6 +330,7 @@ def _get_index() -> AreaIndex:
 # ---------------------------------------------------------------------------
 # Source management tools (existing)
 # ---------------------------------------------------------------------------
+
 
 @server.tool(
     name="brain_sync_list",
@@ -388,8 +393,7 @@ def brain_sync_add(
 @server.tool(
     name="brain_sync_remove",
     description=(
-        "Unregister a sync source by canonical ID or URL. "
-        "Set delete_files=true to also remove the knowledge folder."
+        "Unregister a sync source by canonical ID or URL. Set delete_files=true to also remove the knowledge folder."
     ),
 )
 def brain_sync_remove(source: str, delete_files: bool = False) -> dict:
@@ -458,6 +462,7 @@ async def brain_sync_regen(path: str | None = None) -> dict:
 # Brain query tools (new)
 # ---------------------------------------------------------------------------
 
+
 @server.tool(
     name="brain_sync_query",
     description=(
@@ -491,8 +496,13 @@ def brain_sync_query(
     result["areas_truncated"] = truncated
     result["total_areas"] = total
 
-    log.debug("brain_sync_query(query=%r, include_global=%s) → %d matches, %d areas",
-              query, include_global, len(matches), total)
+    log.debug(
+        "brain_sync_query(query=%r, include_global=%s) → %d matches, %d areas",
+        query,
+        include_global,
+        len(matches),
+        total,
+    )
     return result
 
 
@@ -544,7 +554,6 @@ def brain_sync_open_area(
 
     # Read insight files (excluding journal/)
     insights: dict[str, str] = {}
-    summary_content = ""
     for p in sorted(insights_dir.iterdir()):
         if not p.is_file() or p.suffix.lower() not in {".md", ".txt"}:
             continue
@@ -556,7 +565,6 @@ def brain_sync_open_area(
 
         if p.name == "summary.md":
             content = _read_file_safe(p, MAX_SUMMARY_CHARS)
-            summary_content = content
         else:
             content = _read_file_safe(p, MAX_INSIGHT_FILE_CHARS)
 
@@ -567,10 +575,12 @@ def brain_sync_open_area(
     child_dirs = get_child_dirs(insights_dir)
     children: list[dict] = []
     for d in sorted(child_dirs, key=lambda d: d.name):
-        children.append({
-            "name": d.name,
-            "has_summary": (d / "summary.md").is_file(),
-        })
+        children.append(
+            {
+                "name": d.name,
+                "has_summary": (d / "summary.md").is_file(),
+            }
+        )
     total_children = len(children)
 
     # Child summaries (optional, capped)
@@ -631,8 +641,13 @@ def brain_sync_open_area(
     if include_knowledge_list:
         result["knowledge_files"] = knowledge_files
 
-    log.debug("brain_sync_open_area(%r) → %d insight files, %d children, payload %d chars",
-              path, len(insights), total_children, payload_size)
+    log.debug(
+        "brain_sync_open_area(%r) → %d insight files, %d children, payload %d chars",
+        path,
+        len(insights),
+        total_children,
+        payload_size,
+    )
     return result
 
 
@@ -673,16 +688,20 @@ def brain_sync_open_file(
 
     if offset >= len(text):
         return {
-            "status": "ok", "path": path, "content": "",
-            "offset": offset, "limit": limit, "truncated": False,
+            "status": "ok",
+            "path": path,
+            "content": "",
+            "offset": offset,
+            "limit": limit,
+            "truncated": False,
         }
 
-    raw = text[offset:offset + limit + 512]
+    raw = text[offset : offset + limit + 512]
 
     # Align to newline boundary to preserve Markdown structure
     if len(raw) > limit:
         last_nl = raw.rfind("\n", 0, limit)
-        chunk = raw[:last_nl + 1] if last_nl != -1 else raw[:limit]
+        chunk = raw[: last_nl + 1] if last_nl != -1 else raw[:limit]
         has_more = True
     else:
         chunk = raw
@@ -700,12 +719,9 @@ def brain_sync_open_file(
     }
     if has_more:
         result["next_offset"] = next_offset
-        result["hint"] = (
-            f'Call brain_sync_open_file(path="{path}", offset={next_offset}) to continue.'
-        )
+        result["hint"] = f'Call brain_sync_open_file(path="{path}", offset={next_offset}) to continue.'
 
-    log.debug("brain_sync_open_file(%r, offset=%d) → %d chars, truncated=%s",
-              path, offset, len(chunk), has_more)
+    log.debug("brain_sync_open_file(%r, offset=%d) → %d chars, truncated=%s", path, offset, len(chunk), has_more)
     return result
 
 

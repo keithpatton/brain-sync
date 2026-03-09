@@ -1,4 +1,5 @@
 """Source management commands — importable Python API."""
+
 from __future__ import annotations
 
 import logging
@@ -7,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
-from brain_sync.sources import UnsupportedSourceError, canonical_id, detect_source_type
+from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import SourceState, _connect, load_state, save_state
 
 log = logging.getLogger(__name__)
@@ -190,17 +191,19 @@ def list_sources(
         target = getattr(ss, "target_path", "")
         if filter_path and not target.startswith(filter_path):
             continue
-        results.append(SourceInfo(
-            canonical_id=cid,
-            source_url=ss.source_url,
-            target_path=target,
-            last_checked_utc=ss.last_checked_utc,
-            last_changed_utc=ss.last_changed_utc,
-            current_interval_secs=ss.current_interval_secs,
-            include_links=getattr(ss, "include_links", False),
-            include_children=getattr(ss, "include_children", False),
-            include_attachments=getattr(ss, "include_attachments", False),
-        ))
+        results.append(
+            SourceInfo(
+                canonical_id=cid,
+                source_url=ss.source_url,
+                target_path=target,
+                last_checked_utc=ss.last_checked_utc,
+                last_changed_utc=ss.last_changed_utc,
+                current_interval_secs=ss.current_interval_secs,
+                include_links=getattr(ss, "include_links", False),
+                include_children=getattr(ss, "include_children", False),
+                include_attachments=getattr(ss, "include_attachments", False),
+            )
+        )
 
     return results
 

@@ -16,20 +16,26 @@ class TestGenerateContextIndex:
         manifest_dir = tmp_path / "project"
         manifest_dir.mkdir()
 
-        save_relationship(tmp_path, Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence:200",
-            relationship_type="link",
-            local_path="_sync-context/linked/c200-page-a.md",
-            source_type="confluence",
-        ))
-        save_relationship(tmp_path, Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence:300",
-            relationship_type="child",
-            local_path="_sync-context/children/c300-child.md",
-            source_type="confluence",
-        ))
+        save_relationship(
+            tmp_path,
+            Relationship(
+                parent_canonical_id="confluence:100",
+                canonical_id="confluence:200",
+                relationship_type="link",
+                local_path="_sync-context/linked/c200-page-a.md",
+                source_type="confluence",
+            ),
+        )
+        save_relationship(
+            tmp_path,
+            Relationship(
+                parent_canonical_id="confluence:100",
+                canonical_id="confluence:300",
+                relationship_type="child",
+                local_path="_sync-context/children/c300-child.md",
+                source_type="confluence",
+            ),
+        )
 
         generate_context_index("confluence:100", manifest_dir, tmp_path)
 
@@ -46,13 +52,16 @@ class TestGenerateContextIndex:
         manifest_dir = tmp_path / "project"
         manifest_dir.mkdir()
 
-        save_relationship(tmp_path, Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence:200",
-            relationship_type="link",
-            local_path="_sync-context/linked/c200.md",
-            source_type="confluence",
-        ))
+        save_relationship(
+            tmp_path,
+            Relationship(
+                parent_canonical_id="confluence:100",
+                canonical_id="confluence:200",
+                relationship_type="link",
+                local_path="_sync-context/linked/c200.md",
+                source_type="confluence",
+            ),
+        )
 
         generate_context_index("confluence:100", manifest_dir, tmp_path)
 
@@ -67,19 +76,22 @@ class TestGenerateContextIndex:
         manifest_dir.mkdir()
 
         for name in ["c300-zebra.md", "c200-alpha.md", "c250-middle.md"]:
-            save_relationship(tmp_path, Relationship(
-                parent_canonical_id="confluence:100",
-                canonical_id=f"confluence:{name[:4]}",
-                relationship_type="link",
-                local_path=f"_sync-context/linked/{name}",
-                source_type="confluence",
-            ))
+            save_relationship(
+                tmp_path,
+                Relationship(
+                    parent_canonical_id="confluence:100",
+                    canonical_id=f"confluence:{name[:4]}",
+                    relationship_type="link",
+                    local_path=f"_sync-context/linked/{name}",
+                    source_type="confluence",
+                ),
+            )
 
         generate_context_index("confluence:100", manifest_dir, tmp_path)
 
         index = (manifest_dir / CONTEXT_DIR / INDEX_FILENAME).read_text()
-        lines = [l for l in index.splitlines() if l.startswith("- ")]
-        paths = [l.split(" (")[0].lstrip("- ") for l in lines]
+        lines = [ln for ln in index.splitlines() if ln.startswith("- ")]
+        paths = [ln.split(" (")[0].lstrip("- ") for ln in lines]
         assert paths == sorted(paths)
 
     def test_removes_index_when_no_relationships(self, tmp_path):
@@ -98,13 +110,16 @@ class TestGenerateContextIndex:
         manifest_dir = tmp_path / "project"
         manifest_dir.mkdir()
 
-        save_relationship(tmp_path, Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence:200",
-            relationship_type="link",
-            local_path="_sync-context/linked/c200.md",
-            source_type="confluence",
-        ))
+        save_relationship(
+            tmp_path,
+            Relationship(
+                parent_canonical_id="confluence:100",
+                canonical_id="confluence:200",
+                relationship_type="link",
+                local_path="_sync-context/linked/c200.md",
+                source_type="confluence",
+            ),
+        )
 
         generate_context_index("confluence:100", manifest_dir, tmp_path)
         content1 = (manifest_dir / CONTEXT_DIR / INDEX_FILENAME).read_text()

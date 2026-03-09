@@ -1,4 +1,5 @@
 """Brain root resolution and context discovery."""
+
 from __future__ import annotations
 
 import json

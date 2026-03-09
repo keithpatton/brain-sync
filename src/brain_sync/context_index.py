@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from brain_sync.context import CONTEXT_DIR, RELTYPE_FOLDER, RelType
+from brain_sync.context import CONTEXT_DIR, RelType
 from brain_sync.fileops import atomic_write_bytes
 from brain_sync.state import load_relationships_for_primary
 
@@ -43,7 +43,7 @@ def generate_context_index(
         # local_path is relative from manifest_dir, make it relative from _sync-context/
         lp = rel.local_path
         if lp.startswith(f"{CONTEXT_DIR}/"):
-            lp = lp[len(f"{CONTEXT_DIR}/"):]
+            lp = lp[len(f"{CONTEXT_DIR}/") :]
         grouped[rt].append((lp, rel.canonical_id))
 
     # Sort entries alphabetically within each group

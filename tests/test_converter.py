@@ -8,9 +8,7 @@ class TestHtmlToMarkdown:
         assert "Body text." in md
 
     def test_strips_script_and_style(self):
-        md = html_to_markdown(
-            "<style>body{}</style><script>alert(1)</script><p>Clean</p>"
-        )
+        md = html_to_markdown("<style>body{}</style><script>alert(1)</script><p>Clean</p>")
         assert "body{}" not in md
         assert "alert" not in md
         assert "Clean" in md

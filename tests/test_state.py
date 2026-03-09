@@ -214,13 +214,16 @@ class TestRelationshipCrud:
     def test_count_relationships(self, tmp_path):
         save_state(tmp_path, SyncState())
         for parent_id in ["confluence:100", "confluence:101"]:
-            save_relationship(tmp_path, Relationship(
-                parent_canonical_id=parent_id,
-                canonical_id="confluence:200",
-                relationship_type="link",
-                local_path="path",
-                source_type="confluence",
-            ))
+            save_relationship(
+                tmp_path,
+                Relationship(
+                    parent_canonical_id=parent_id,
+                    canonical_id="confluence:200",
+                    relationship_type="link",
+                    local_path="path",
+                    source_type="confluence",
+                ),
+            )
         assert count_relationships_for_doc(tmp_path, "confluence:200") == 2
 
     def test_remove_document_if_orphaned(self, tmp_path):
@@ -241,13 +244,16 @@ class TestRelationshipCrud:
             url="https://x.atlassian.net/wiki/spaces/S/pages/200",
         )
         save_document(tmp_path, doc)
-        save_relationship(tmp_path, Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence:200",
-            relationship_type="link",
-            local_path="path",
-            source_type="confluence",
-        ))
+        save_relationship(
+            tmp_path,
+            Relationship(
+                parent_canonical_id="confluence:100",
+                canonical_id="confluence:200",
+                relationship_type="link",
+                local_path="path",
+                source_type="confluence",
+            ),
+        )
         assert remove_document_if_orphaned(tmp_path, "confluence:200") is False
         assert load_document(tmp_path, "confluence:200") is not None
 
@@ -255,13 +261,16 @@ class TestRelationshipCrud:
 class TestUpdateRelationshipPath:
     def test_updates_path(self, tmp_path):
         save_state(tmp_path, SyncState())
-        save_relationship(tmp_path, Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence:200",
-            relationship_type="link",
-            local_path="old/path.md",
-            source_type="confluence",
-        ))
+        save_relationship(
+            tmp_path,
+            Relationship(
+                parent_canonical_id="confluence:100",
+                canonical_id="confluence:200",
+                relationship_type="link",
+                local_path="old/path.md",
+                source_type="confluence",
+            ),
+        )
         update_relationship_path(tmp_path, "confluence:100", "confluence:200", "new/path.md")
         rels = load_relationships_for_primary(tmp_path, "confluence:100")
         assert rels[0].local_path == "new/path.md"
@@ -293,6 +302,7 @@ class TestSchemaV3Migration:
     def test_v2_to_v3_migration(self, tmp_path):
         """Simulate a v2 DB and verify migration to v3."""
         import sqlite3
+
         db_path = tmp_path / ".sync-state.sqlite"
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA journal_mode=WAL")
@@ -374,6 +384,7 @@ class TestSchemaV3Migration:
     def test_v2_to_v3_deduplication(self, tmp_path):
         """Two v2 rows for the same page resolve to one source row."""
         import sqlite3
+
         db_path = tmp_path / ".sync-state.sqlite"
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA journal_mode=WAL")
@@ -425,8 +436,17 @@ class TestSchemaV3Migration:
             "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "/a/sync-manifest.yaml::" + url,
-                "/a/sync-manifest.yaml", url, "a.md", "confluence",
-                "2026-01-01T00:00:00+00:00", None, 1800, "hashA", None, None, None,
+                "/a/sync-manifest.yaml",
+                url,
+                "a.md",
+                "confluence",
+                "2026-01-01T00:00:00+00:00",
+                None,
+                1800,
+                "hashA",
+                None,
+                None,
+                None,
             ),
         )
         # Row B — newer, no hash
@@ -434,8 +454,17 @@ class TestSchemaV3Migration:
             "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "/b/sync-manifest.yaml::" + url,
-                "/b/sync-manifest.yaml", url, "b.md", "confluence",
-                "2026-02-01T00:00:00+00:00", None, 1800, None, None, None, None,
+                "/b/sync-manifest.yaml",
+                url,
+                "b.md",
+                "confluence",
+                "2026-02-01T00:00:00+00:00",
+                None,
+                1800,
+                None,
+                None,
+                None,
+                None,
             ),
         )
         conn.commit()
@@ -451,6 +480,7 @@ class TestSchemaV4Migration:
     def test_v3_to_v4_adds_unique_url(self, tmp_path):
         """v3 DB migrates to v4: documents get UNIQUE(url)."""
         import sqlite3
+
         db_path = tmp_path / ".sync-state.sqlite"
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA journal_mode=WAL")
@@ -507,8 +537,17 @@ class TestSchemaV4Migration:
         # Insert test data
         conn.execute(
             "INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("confluence:100", "confluence",
-             "https://x.atlassian.net/wiki/spaces/S/pages/100", "Page", None, None, None, None, None),
+            (
+                "confluence:100",
+                "confluence",
+                "https://x.atlassian.net/wiki/spaces/S/pages/100",
+                "Page",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
         )
         conn.execute(
             "INSERT INTO relationships VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -518,7 +557,7 @@ class TestSchemaV4Migration:
         conn.close()
 
         # load_state triggers v3→v4→v5 migration
-        state = load_state(tmp_path)
+        load_state(tmp_path)
 
         # Verify schema version is 9 (v3→v4→v5→v6→v7→v8→v9 migration chain)
         conn = sqlite3.connect(str(db_path))
@@ -553,8 +592,11 @@ class TestSchemaV4Migration:
             source_type="confluence",
             url="https://x.atlassian.net/wiki/spaces/S/pages/100",
         )
+        import sqlite3
+
         import pytest
-        with pytest.raises(Exception):
+
+        with pytest.raises(sqlite3.IntegrityError):
             save_document(tmp_path, doc2)
 
 
@@ -562,40 +604,52 @@ class TestInsightStatePathNormalization:
     """Verify that knowledge_path is always stored with forward slashes."""
 
     def test_save_normalizes_backslashes(self, tmp_path):
-        save_insight_state(tmp_path, InsightState(
-            knowledge_path="initiatives\\B4B\\Platform PRD",
-            content_hash="abc",
-            summary_hash="def",
-        ))
+        save_insight_state(
+            tmp_path,
+            InsightState(
+                knowledge_path="initiatives\\B4B\\Platform PRD",
+                content_hash="abc",
+                summary_hash="def",
+            ),
+        )
         loaded = load_insight_state(tmp_path, "initiatives/B4B/Platform PRD")
         assert loaded is not None
         assert loaded.knowledge_path == "initiatives/B4B/Platform PRD"
 
     def test_load_normalizes_query(self, tmp_path):
-        save_insight_state(tmp_path, InsightState(
-            knowledge_path="initiatives/B4B/Platform PRD",
-            content_hash="abc",
-            summary_hash="def",
-        ))
+        save_insight_state(
+            tmp_path,
+            InsightState(
+                knowledge_path="initiatives/B4B/Platform PRD",
+                content_hash="abc",
+                summary_hash="def",
+            ),
+        )
         # Query with backslashes should still find it
         loaded = load_insight_state(tmp_path, "initiatives\\B4B\\Platform PRD")
         assert loaded is not None
 
     def test_delete_normalizes_path(self, tmp_path):
-        save_insight_state(tmp_path, InsightState(
-            knowledge_path="teams/product",
-            content_hash="abc",
-            summary_hash="def",
-        ))
+        save_insight_state(
+            tmp_path,
+            InsightState(
+                knowledge_path="teams/product",
+                content_hash="abc",
+                summary_hash="def",
+            ),
+        )
         delete_insight_state(tmp_path, "teams\\product")
         assert load_insight_state(tmp_path, "teams/product") is None
 
     def test_update_normalizes_paths(self, tmp_path):
-        save_insight_state(tmp_path, InsightState(
-            knowledge_path="old/path",
-            content_hash="abc",
-            summary_hash="def",
-        ))
+        save_insight_state(
+            tmp_path,
+            InsightState(
+                knowledge_path="old/path",
+                content_hash="abc",
+                summary_hash="def",
+            ),
+        )
         update_insight_path(tmp_path, "old\\path", "new\\path")
         assert load_insight_state(tmp_path, "old/path") is None
         assert load_insight_state(tmp_path, "new/path") is not None

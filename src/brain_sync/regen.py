@@ -9,6 +9,7 @@ Architectural boundary: Python handles all orchestration (context assembly,
 hash comparison, scheduling, validation). The LLM is a pure function:
 assembled context in → summary.md out.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,21 +20,21 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from importlib import resources
 from pathlib import Path
 from uuid import uuid4
 
 from brain_sync.commands.context import CONFIG_FILE
-from brain_sync.retry import async_retry, claude_breaker
-from brain_sync.fileops import EXCLUDED_DIRS, IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
+from brain_sync.fileops import TEXT_EXTENSIONS
 from brain_sync.fs_utils import (
     find_all_content_paths,
     get_child_dirs,
     is_content_dir,
     is_readable_file,
 )
+from brain_sync.retry import async_retry, claude_breaker
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
@@ -148,7 +149,10 @@ def _preprocess_content(content: str, filename: str) -> str:
 
 
 def _split_markdown_chunks(
-    content: str, target_chars: int = CHUNK_TARGET_CHARS, *, _level: int | None = None,
+    content: str,
+    target_chars: int = CHUNK_TARGET_CHARS,
+    *,
+    _level: int | None = None,
 ) -> list[str]:
     """Split markdown content into chunks at heading boundaries.
 
@@ -224,6 +228,7 @@ def _split_markdown_chunks(
 @dataclass
 class RegenConfig:
     """Configuration for the insights agent."""
+
     model: str = "claude-sonnet-4-6"
     effort: str = "low"  # low, medium, high — controls thinking budget
     timeout: int = CLAUDE_TIMEOUT
@@ -267,14 +272,17 @@ def folder_content_hash(folder: Path) -> str:
 
 def text_similarity(a: str, b: str) -> float:
     """Compute text similarity between two strings after normalising whitespace."""
+
     def normalise(s: str) -> str:
         return " ".join(s.split())
+
     return SequenceMatcher(None, normalise(a), normalise(b)).ratio()
 
 
 @dataclass
 class ClaudeResult:
     """Result from a Claude CLI invocation."""
+
     success: bool
     output: str
     input_tokens: int | None = None
@@ -285,6 +293,7 @@ class ClaudeResult:
 @dataclass
 class PromptResult:
     """Result from prompt construction."""
+
     text: str
     oversized_files: dict[str, str] | None = None  # filename → preprocessed content
 
@@ -315,9 +324,11 @@ def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
 # Global context cache — built once, invalidated by watcher
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _GlobalContextCache:
     """Cached global context for prompt assembly."""
+
     content_hash: str
     compiled_text: str
 
@@ -438,6 +449,7 @@ def _collect_global_context(root: Path, current_path: str) -> str:
 # Claude CLI invocation
 # ---------------------------------------------------------------------------
 
+
 async def invoke_claude(
     prompt: str,
     cwd: Path,
@@ -455,10 +467,13 @@ async def invoke_claude(
     minimal directive, turning it into a thin inference wrapper.
     """
     cmd = [
-        "claude", "--print",
-        "--output-format", "json",
+        "claude",
+        "--print",
+        "--output-format",
+        "json",
         "--no-session-persistence",
-        "--max-turns", str(max_turns),
+        "--max-turns",
+        str(max_turns),
     ]
     if system_prompt is not None:
         cmd.extend(["--system-prompt", system_prompt])
@@ -489,7 +504,7 @@ async def invoke_claude(
             proc.communicate(input=prompt.encode("utf-8")),
             timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.communicate()
         log.warning("Claude CLI timed out after %ds", timeout)
@@ -521,16 +536,21 @@ async def invoke_claude(
         output_tokens = usage.get("output_tokens")
         duration_ms = data.get("duration_ms")
         num_turns = data.get("num_turns")
-        log.info("Claude CLI: model=%s tokens=%s/%s turns=%s duration=%ss",
-                 model or "default",
-                 input_tokens, output_tokens,
-                 num_turns,
-                 f"{duration_ms / 1000:.1f}" if duration_ms else "?")
+        log.info(
+            "Claude CLI: model=%s tokens=%s/%s turns=%s duration=%ss",
+            model or "default",
+            input_tokens,
+            output_tokens,
+            num_turns,
+            f"{duration_ms / 1000:.1f}" if duration_ms else "?",
+        )
         if data.get("is_error") or data.get("subtype", "").startswith("error"):
             log.warning("Claude CLI error subtype: %s", data.get("subtype"))
             return ClaudeResult(
-                success=False, output=result_text,
-                input_tokens=input_tokens, output_tokens=output_tokens,
+                success=False,
+                output=result_text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 num_turns=num_turns,
             )
     except (json.JSONDecodeError, TypeError):
@@ -538,8 +558,10 @@ async def invoke_claude(
         input_tokens, output_tokens = _parse_token_counts(stderr_text)
 
     return ClaudeResult(
-        success=True, output=result_text,
-        input_tokens=input_tokens, output_tokens=output_tokens,
+        success=True,
+        output=result_text,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         num_turns=num_turns,
     )
 
@@ -548,8 +570,13 @@ async def invoke_claude(
 # Prompt construction
 # ---------------------------------------------------------------------------
 
+
 def _build_chunk_prompt(
-    chunk: str, chunk_idx: int, total_chunks: int, filename: str, first_heading: str,
+    chunk: str,
+    chunk_idx: int,
+    total_chunks: int,
+    filename: str,
+    first_heading: str,
 ) -> str:
     """Build a lightweight prompt for summarizing a single chunk.
 
@@ -601,8 +628,7 @@ def _build_prompt_from_chunks(
             heading = _first_heading(summary) or f"part {i}"
             chunk_parts.append(f"#### Chunk {i}/{n} — section: {heading}\n{summary}")
         files_parts.append(
-            f"### {filename} (summarized in {n} chunks — original too large to inline)\n\n"
-            + "\n\n".join(chunk_parts)
+            f"### {filename} (summarized in {n} chunks — original too large to inline)\n\n" + "\n\n".join(chunk_parts)
         )
 
     if binary_names:
@@ -655,8 +681,9 @@ You are regenerating the insight summary for knowledge area: {display_path}
 Output the updated summary now."""
 
     estimated_tokens = len(prompt) // 3
-    log.debug("Merge prompt for %s: ~%d tokens est., %d chunked files",
-              display_path, estimated_tokens, len(chunk_summaries))
+    log.debug(
+        "Merge prompt for %s: ~%d tokens est., %d chunked files", display_path, estimated_tokens, len(chunk_summaries)
+    )
     if estimated_tokens > 100_000:
         log.warning("Large merge prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
 
@@ -769,8 +796,14 @@ Output the updated summary now."""
     estimated_tokens = len(prompt) // 3
     text_file_count = len([f for f in files if f.suffix.lower() in TEXT_EXTENSIONS]) if files else 0
     binary_count = len(binary_names) if files else 0
-    log.debug("Prompt for %s: ~%d tokens est., %d text files, %d binary files, %d child summaries",
-              display_path, estimated_tokens, text_file_count, binary_count, len(child_summaries))
+    log.debug(
+        "Prompt for %s: ~%d tokens est., %d text files, %d binary files, %d child summaries",
+        display_path,
+        estimated_tokens,
+        text_file_count,
+        binary_count,
+        len(child_summaries),
+    )
     if estimated_tokens > 100_000:
         log.warning("Large prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
 
@@ -781,7 +814,9 @@ _get_child_dirs = get_child_dirs
 
 
 def _collect_child_summaries(
-    root: Path, current_path: str, child_dirs: list[Path],
+    root: Path,
+    current_path: str,
+    child_dirs: list[Path],
 ) -> dict[str, str]:
     """Read existing child summaries from insights/."""
     child_summaries: dict[str, str] = {}
@@ -885,18 +920,29 @@ async def regen_path(
         new_hash = _compute_hash(child_dirs, child_summaries, knowledge_dir, has_direct_files)
 
         if istate and istate.content_hash == new_hash:
-            log.debug("[%s] Content hash unchanged for %s, stopping (hash=%s)",
-                      regen_id, current_path or "(root)", new_hash[:12])
+            log.debug(
+                "[%s] Content hash unchanged for %s, stopping (hash=%s)",
+                regen_id,
+                current_path or "(root)",
+                new_hash[:12],
+            )
             break
 
-        log.debug("[%s] Content hash changed for %s: %s -> %s",
-                  regen_id, current_path or "(root)",
-                  (istate.content_hash[:12] if istate and istate.content_hash else "none"),
-                  new_hash[:12])
+        log.debug(
+            "[%s] Content hash changed for %s: %s -> %s",
+            regen_id,
+            current_path or "(root)",
+            (istate.content_hash[:12] if istate and istate.content_hash else "none"),
+            new_hash[:12],
+        )
 
         # Build prompt
         prompt_result = _build_prompt(
-            current_path, knowledge_dir, child_summaries, insights_dir, root,
+            current_path,
+            knowledge_dir,
+            child_summaries,
+            insights_dir,
+            root,
             write_journal=config.write_journal,
         )
 
@@ -912,16 +958,19 @@ async def regen_path(
         insights_dir.mkdir(parents=True, exist_ok=True)
 
         # Mark as running — keep old hash so crashes/failures don't block retries
-        started = datetime.now(timezone.utc).isoformat()
-        save_insight_state(root, InsightState(
-            knowledge_path=current_path,
-            content_hash=istate.content_hash if istate else None,
-            summary_hash=istate.summary_hash if istate else None,
-            regen_started_utc=started,
-            last_regen_utc=istate.last_regen_utc if istate else None,
-            regen_status="running",
-            model=config.model,
-        ))
+        started = datetime.now(UTC).isoformat()
+        save_insight_state(
+            root,
+            InsightState(
+                knowledge_path=current_path,
+                content_hash=istate.content_hash if istate else None,
+                summary_hash=istate.summary_hash if istate else None,
+                regen_started_utc=started,
+                last_regen_utc=istate.last_regen_utc if istate else None,
+                regen_status="running",
+                model=config.model,
+            ),
+        )
 
         # Chunk-and-merge + final invoke — unified exception handler
         # ensures "failed" state is always saved on any error.
@@ -945,57 +994,83 @@ async def regen_path(
                         chunk_result = await async_retry(
                             invoke_claude,
                             _build_chunk_prompt(chunk, i, len(chunks), filename, heading),
-                            cwd=root, timeout=config.timeout,
-                            model=config.model, effort=config.effort,
+                            cwd=root,
+                            timeout=config.timeout,
+                            model=config.model,
+                            effort=config.effort,
                             max_turns=1,
-                            system_prompt=MINIMAL_SYSTEM_PROMPT, tools="",
+                            system_prompt=MINIMAL_SYSTEM_PROMPT,
+                            tools="",
                             is_success=lambda r: r.success,
                             breaker=claude_breaker,
                         )
                         file_summaries.append(chunk_result.output.strip())
                         chunk_input_tokens += chunk_result.input_tokens or 0
                         chunk_output_tokens += chunk_result.output_tokens or 0
-                        log.debug("[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
-                                  regen_id, i, len(chunks), filename,
-                                  chunk_result.input_tokens, chunk_result.output_tokens)
+                        log.debug(
+                            "[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
+                            regen_id,
+                            i,
+                            len(chunks),
+                            filename,
+                            chunk_result.input_tokens,
+                            chunk_result.output_tokens,
+                        )
                     chunk_summaries_map[filename] = file_summaries
 
                 # Collect binary_names from the original _build_prompt pass
                 binary_names = [
-                    f.name for f in sorted(knowledge_dir.iterdir())
+                    f.name
+                    for f in sorted(knowledge_dir.iterdir())
                     if _is_readable_file(f) and f.suffix.lower() not in TEXT_EXTENSIONS
                 ]
                 # Rebuild prompt with chunk summaries replacing raw content
                 prompt_result = _build_prompt_from_chunks(
-                    current_path, chunk_summaries_map, child_summaries,
-                    insights_dir, root, binary_names,
+                    current_path,
+                    chunk_summaries_map,
+                    child_summaries,
+                    insights_dir,
+                    root,
+                    binary_names,
                 )
 
             # Invoke Claude in inference mode (minimal system prompt, no tools)
-            log.info("[%s] Generating insights: %s (model=%s prompt_hash=%s)",
-                     regen_id, current_path or "(root)", config.model, prompt_hash)
+            log.info(
+                "[%s] Generating insights: %s (model=%s prompt_hash=%s)",
+                regen_id,
+                current_path or "(root)",
+                config.model,
+                prompt_hash,
+            )
             result = await async_retry(
                 invoke_claude,
-                prompt_result.text, cwd=root, timeout=config.timeout,
-                model=config.model, effort=config.effort,
+                prompt_result.text,
+                cwd=root,
+                timeout=config.timeout,
+                model=config.model,
+                effort=config.effort,
                 max_turns=config.max_turns,
-                system_prompt=MINIMAL_SYSTEM_PROMPT, tools="",
+                system_prompt=MINIMAL_SYSTEM_PROMPT,
+                tools="",
                 is_success=lambda r: r.success,
                 breaker=claude_breaker,
             )
         except Exception as e:
-            now = datetime.now(timezone.utc).isoformat()
-            save_insight_state(root, InsightState(
-                knowledge_path=current_path,
-                content_hash=istate.content_hash if istate else None,
-                summary_hash=istate.summary_hash if istate else None,
-                regen_started_utc=started,
-                last_regen_utc=now,
-                regen_status="failed",
-                model=config.model,
-            ))
+            now = datetime.now(UTC).isoformat()
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=istate.content_hash if istate else None,
+                    summary_hash=istate.summary_hash if istate else None,
+                    regen_started_utc=started,
+                    last_regen_utc=now,
+                    regen_status="failed",
+                    model=config.model,
+                ),
+            )
             raise RegenFailed(current_path or "(root)", str(e)) from e
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Add chunk token totals to final result for unified tracking
         if chunk_input_tokens or chunk_output_tokens:
@@ -1010,28 +1085,63 @@ async def regen_path(
         # Validate output — Claude returns summary text directly
         new_summary = result.output.strip() if result.output else ""
         if len(new_summary) < 20:
-            log.warning("[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
-                        regen_id, current_path or "(root)", len(new_summary), result.output[:500])
-            save_insight_state(root, InsightState(
-                knowledge_path=current_path,
-                content_hash=istate.content_hash if istate else None,
-                summary_hash=istate.summary_hash if istate else None,
-                regen_started_utc=started,
-                last_regen_utc=now,
-                regen_status="failed",
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                num_turns=result.num_turns,
-                model=config.model,
-            ))
+            log.warning(
+                "[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
+                regen_id,
+                current_path or "(root)",
+                len(new_summary),
+                result.output[:500],
+            )
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=istate.content_hash if istate else None,
+                    summary_hash=istate.summary_hash if istate else None,
+                    regen_started_utc=started,
+                    last_regen_utc=now,
+                    regen_status="failed",
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    num_turns=result.num_turns,
+                    model=config.model,
+                ),
+            )
             raise RegenFailed(current_path or "(root)", "Claude returned empty or suspiciously small output")
 
         # Similarity guard
         if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
-            log.info("[%s] Summary for %s is >%.0f%% similar, discarding rewrite",
-                     regen_id, current_path or "(root)", similarity_threshold * 100)
+            log.info(
+                "[%s] Summary for %s is >%.0f%% similar, discarding rewrite",
+                regen_id,
+                current_path or "(root)",
+                similarity_threshold * 100,
+            )
             summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
-            save_insight_state(root, InsightState(
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=new_hash,
+                    summary_hash=summary_hash,
+                    regen_started_utc=started,
+                    last_regen_utc=now,
+                    regen_status="idle",
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    num_turns=result.num_turns,
+                    model=config.model,
+                ),
+            )
+            # Summary unchanged → stop walking up
+            break
+
+        # Summary changed — Python writes the file
+        summary_path.write_text(new_summary, encoding="utf-8")
+        summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
+        save_insight_state(
+            root,
+            InsightState(
                 knowledge_path=current_path,
                 content_hash=new_hash,
                 summary_hash=summary_hash,
@@ -1042,29 +1152,18 @@ async def regen_path(
                 output_tokens=result.output_tokens,
                 num_turns=result.num_turns,
                 model=config.model,
-            ))
-            # Summary unchanged → stop walking up
-            break
-
-        # Summary changed — Python writes the file
-        summary_path.write_text(new_summary, encoding="utf-8")
-        summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
-        save_insight_state(root, InsightState(
-            knowledge_path=current_path,
-            content_hash=new_hash,
-            summary_hash=summary_hash,
-            regen_started_utc=started,
-            last_regen_utc=now,
-            regen_status="idle",
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            num_turns=result.num_turns,
-            model=config.model,
-        ))
+            ),
+        )
         regen_count += 1
-        log.info("[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
-                 regen_id, current_path or "(root)", config.model,
-                 result.input_tokens, result.output_tokens, result.num_turns)
+        log.info(
+            "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
+            regen_id,
+            current_path or "(root)",
+            config.model,
+            result.input_tokens,
+            result.output_tokens,
+            result.num_turns,
+        )
 
         # Walk up to parent (or break if at root)
         if not current_path:

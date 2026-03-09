@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from urllib.parse import urljoin
 
 import httpx
 
@@ -46,7 +45,7 @@ CONTEXT_DIR = "_sync-context"
 assert CONTEXT_DIR in EXCLUDED_DIRS, f"{CONTEXT_DIR!r} missing from EXCLUDED_DIRS"
 
 
-class RelType(str, Enum):
+class RelType(StrEnum):
     PRIMARY = "primary"
     LINK = "link"
     CHILD = "child"
@@ -144,18 +143,22 @@ def discover_links_from_html(html: str, source_domain: str) -> list[DiscoveredDo
             continue
         seen.add(cid)
 
-        results.append(DiscoveredDoc(
-            canonical_id=cid,
-            url=href,
-            title=None,  # Unknown at discovery time
-            relationship_type=RelType.LINK,
-        ))
+        results.append(
+            DiscoveredDoc(
+                canonical_id=cid,
+                url=href,
+                title=None,  # Unknown at discovery time
+                relationship_type=RelType.LINK,
+            )
+        )
 
     return results
 
 
 async def discover_children(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> list[DiscoveredDoc]:
     """Discover child pages via REST API."""
     children = await fetch_child_pages(page_id, auth, client)
@@ -172,7 +175,9 @@ async def discover_children(
 
 
 async def discover_attachments(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> list[DiscoveredDoc]:
     """Discover attachments via REST API."""
     attachments = await fetch_attachments(page_id, auth, client)
@@ -220,20 +225,27 @@ def rediscover_relationship_paths(
 
             log.info(
                 "Rediscovered %s: %s → %s",
-                rel.canonical_id, rel.local_path, new_local,
+                rel.canonical_id,
+                rel.local_path,
+                new_local,
             )
             update_relationship_path(
-                root, rel.parent_canonical_id, rel.canonical_id, new_local,
+                root,
+                rel.parent_canonical_id,
+                rel.canonical_id,
+                new_local,
             )
-            updated.append(Relationship(
-                parent_canonical_id=rel.parent_canonical_id,
-                canonical_id=rel.canonical_id,
-                relationship_type=rel.relationship_type,
-                local_path=new_local,
-                source_type=rel.source_type,
-                first_seen_utc=rel.first_seen_utc,
-                last_seen_utc=rel.last_seen_utc,
-            ))
+            updated.append(
+                Relationship(
+                    parent_canonical_id=rel.parent_canonical_id,
+                    canonical_id=rel.canonical_id,
+                    relationship_type=rel.relationship_type,
+                    local_path=new_local,
+                    source_type=rel.source_type,
+                    first_seen_utc=rel.first_seen_utc,
+                    last_seen_utc=rel.last_seen_utc,
+                )
+            )
         else:
             # Not found — keep original record (will be re-synced)
             updated.append(rel)
@@ -260,7 +272,8 @@ def reconcile(
 
 
 def _local_path_for_doc(
-    doc: DiscoveredDoc, manifest_dir: Path,
+    doc: DiscoveredDoc,
+    manifest_dir: Path,
 ) -> str:
     """Compute the local_path (relative from manifest_dir) for a discovered doc."""
     folder = RELTYPE_FOLDER[doc.relationship_type]
@@ -367,7 +380,7 @@ async def process_context(
     """
     from brain_sync.context_index import generate_context_index
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     page_id = primary_canonical_id.split(":", 1)[1]
 
     # Discover
@@ -403,26 +416,39 @@ async def process_context(
         try:
             if doc.relationship_type == RelType.ATTACHMENT:
                 doc_state = await _sync_attachment_doc(
-                    doc, local_path, manifest_dir, auth, client, now,
+                    doc,
+                    local_path,
+                    manifest_dir,
+                    auth,
+                    client,
+                    now,
                 )
             else:
                 doc_state = await _sync_page_doc(
-                    doc, local_path, manifest_dir, primary_canonical_id,
-                    auth, client, now,
+                    doc,
+                    local_path,
+                    manifest_dir,
+                    primary_canonical_id,
+                    auth,
+                    client,
+                    now,
                 )
                 # Update local_path if title was resolved
                 local_path = _local_path_for_doc(doc, manifest_dir)
 
             save_document(root, doc_state)
-            save_relationship(root, Relationship(
-                parent_canonical_id=primary_canonical_id,
-                canonical_id=doc.canonical_id,
-                relationship_type=doc.relationship_type.value,
-                local_path=local_path,
-                source_type="confluence",
-                first_seen_utc=now,
-                last_seen_utc=now,
-            ))
+            save_relationship(
+                root,
+                Relationship(
+                    parent_canonical_id=primary_canonical_id,
+                    canonical_id=doc.canonical_id,
+                    relationship_type=doc.relationship_type.value,
+                    local_path=local_path,
+                    source_type="confluence",
+                    first_seen_utc=now,
+                    last_seen_utc=now,
+                ),
+            )
             log.info("Added context doc: %s → %s", doc.canonical_id, local_path)
         except Exception as e:
             log.warning("Failed to sync context doc %s: %s", doc.canonical_id, e)
@@ -433,34 +459,55 @@ async def process_context(
         rel = existing_rel_map[doc.canonical_id]
         try:
             # Update last_seen_utc
-            save_relationship(root, Relationship(
-                parent_canonical_id=primary_canonical_id,
-                canonical_id=doc.canonical_id,
-                relationship_type=rel.relationship_type,
-                local_path=rel.local_path,
-                source_type=rel.source_type,
-                first_seen_utc=rel.first_seen_utc,
-                last_seen_utc=now,
-            ))
+            save_relationship(
+                root,
+                Relationship(
+                    parent_canonical_id=primary_canonical_id,
+                    canonical_id=doc.canonical_id,
+                    relationship_type=rel.relationship_type,
+                    local_path=rel.local_path,
+                    source_type=rel.source_type,
+                    first_seen_utc=rel.first_seen_utc,
+                    last_seen_utc=now,
+                ),
+            )
 
             # Version check
             existing_doc = load_document(root, doc.canonical_id)
             if doc.relationship_type == RelType.ATTACHMENT:
-                if (existing_doc and existing_doc.metadata_fingerprint
-                        and doc.version and str(doc.version) == existing_doc.metadata_fingerprint):
+                if (
+                    existing_doc
+                    and existing_doc.metadata_fingerprint
+                    and doc.version
+                    and str(doc.version) == existing_doc.metadata_fingerprint
+                ):
                     continue
                 doc_state = await _sync_attachment_doc(
-                    doc, rel.local_path, manifest_dir, auth, client, now,
+                    doc,
+                    rel.local_path,
+                    manifest_dir,
+                    auth,
+                    client,
+                    now,
                 )
             else:
                 page_id_check = doc.canonical_id.split(":", 1)[1]
                 version = await fetch_page_version(page_id_check, auth, client)
-                if (existing_doc and existing_doc.metadata_fingerprint
-                        and version and str(version) == existing_doc.metadata_fingerprint):
+                if (
+                    existing_doc
+                    and existing_doc.metadata_fingerprint
+                    and version
+                    and str(version) == existing_doc.metadata_fingerprint
+                ):
                     continue
                 doc_state = await _sync_page_doc(
-                    doc, rel.local_path, manifest_dir, primary_canonical_id,
-                    auth, client, now,
+                    doc,
+                    rel.local_path,
+                    manifest_dir,
+                    primary_canonical_id,
+                    auth,
+                    client,
+                    now,
                 )
 
             save_document(root, doc_state)

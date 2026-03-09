@@ -33,17 +33,20 @@ async def confluence_metadata(page_id: str) -> str | None:
     try:
         cmd = _confluence_cmd()
         proc = await asyncio.create_subprocess_exec(
-            cmd, "read", page_id, "--format", "json",
+            cmd,
+            "read",
+            page_id,
+            "--format",
+            "json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=SUBPROCESS_TIMEOUT
-        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT)
         if proc.returncode != 0:
             log.debug("Confluence metadata check failed: %s", stderr.decode())
             return None
         import json
+
         data = json.loads(stdout.decode("utf-8"))
         version = data.get("version", {}).get("number")
         return str(version) if version is not None else None
@@ -60,13 +63,13 @@ async def confluence_title(page_id: str) -> str | None:
     try:
         cmd = _confluence_cmd()
         proc = await asyncio.create_subprocess_exec(
-            cmd, "info", page_id,
+            cmd,
+            "info",
+            page_id,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=SUBPROCESS_TIMEOUT
-        )
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT)
         if proc.returncode != 0:
             return None
         # info output typically has "Title: <title>" on first line
@@ -86,22 +89,20 @@ async def confluence_fetch(page_id: str) -> str:
     """
     cmd = _confluence_cmd()
     proc = await asyncio.create_subprocess_exec(
-        cmd, "read", page_id,
+        cmd,
+        "read",
+        page_id,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=SUBPROCESS_TIMEOUT
-        )
-    except asyncio.TimeoutError:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT)
+    except TimeoutError:
         proc.kill()
-        raise FetchError(f"Confluence fetch timed out for page {page_id}")
+        raise FetchError(f"Confluence fetch timed out for page {page_id}") from None
 
     if proc.returncode != 0:
-        raise FetchError(
-            f"confluence read failed (exit {proc.returncode}): {stderr.decode().strip()}"
-        )
+        raise FetchError(f"confluence read failed (exit {proc.returncode}): {stderr.decode().strip()}")
 
     return stdout.decode("utf-8")
 
@@ -114,13 +115,16 @@ async def confluence_comments(page_id: str) -> str | None:
     try:
         cmd = _confluence_cmd()
         proc = await asyncio.create_subprocess_exec(
-            cmd, "comments", page_id, "--format", "markdown", "--all",
+            cmd,
+            "comments",
+            page_id,
+            "--format",
+            "markdown",
+            "--all",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=SUBPROCESS_TIMEOUT
-        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT)
         if proc.returncode != 0:
             log.debug("Confluence comments fetch failed: %s", stderr.decode())
             return None

@@ -1,12 +1,10 @@
 """Tests for the .docx comment extraction and conversion module."""
+
 from __future__ import annotations
 
-from io import BytesIO
 from pathlib import Path
 
-import pytest
 from docx import Document
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from lxml import etree
 
 from brain_sync.docx_converter import (
@@ -15,7 +13,6 @@ from brain_sync.docx_converter import (
     extract_comments,
     extract_comments_from_bytes,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers for creating .docx fixtures with comments
@@ -73,8 +70,8 @@ def _add_comments_to_docx(
         ct_elem.text = c["text"]
 
     # Create comments part
-    from docx.opc.part import Part
     from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
 
     comments_blob = etree.tostring(comments_xml, xml_declaration=True, encoding="UTF-8")
     content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
@@ -106,22 +103,25 @@ def _make_docx_with_comments(tmp_path: Path, name: str = "commented.docx") -> Pa
     """Create a .docx with body text and comments."""
     path = _make_simple_docx(tmp_path, name)
 
-    _add_comments_to_docx(path, [
-        {
-            "id": "1",
-            "author": "Jane Smith",
-            "date": "2026-03-05T10:30:00Z",
-            "text": "Should we consider canary deployments instead?",
-            "para_idx": 1,
-        },
-        {
-            "id": "2",
-            "author": "Bob Jones",
-            "date": "2026-03-06T14:00:00Z",
-            "text": "This section needs more detail.",
-            "para_idx": 3,
-        },
-    ])
+    _add_comments_to_docx(
+        path,
+        [
+            {
+                "id": "1",
+                "author": "Jane Smith",
+                "date": "2026-03-05T10:30:00Z",
+                "text": "Should we consider canary deployments instead?",
+                "para_idx": 1,
+            },
+            {
+                "id": "2",
+                "author": "Bob Jones",
+                "date": "2026-03-06T14:00:00Z",
+                "text": "This section needs more detail.",
+                "para_idx": 3,
+            },
+        ],
+    )
     return path
 
 
@@ -145,6 +145,7 @@ def _make_docx_with_table(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Tests: extract_comments
 # ---------------------------------------------------------------------------
+
 
 class TestExtractComments:
     def test_no_comments_returns_none(self, tmp_path):
@@ -207,6 +208,7 @@ class TestExtractCommentsFromBytes:
 # Tests: docx_to_markdown
 # ---------------------------------------------------------------------------
 
+
 class TestDocxToMarkdown:
     def test_converts_headings(self, tmp_path):
         """Heading styles are converted to # prefixes."""
@@ -263,6 +265,7 @@ class TestDocxToMarkdown:
 # ---------------------------------------------------------------------------
 # Tests: append_comments_to_markdown
 # ---------------------------------------------------------------------------
+
 
 class TestAppendCommentsToMarkdown:
     def test_appends_comments_to_clean_md(self, tmp_path):
@@ -331,9 +334,11 @@ class TestAppendCommentsToMarkdown:
 # Tests: KNOWLEDGE_EXTENSIONS whitelist
 # ---------------------------------------------------------------------------
 
+
 class TestKnowledgeExtensions:
     def test_includes_text_formats(self):
         from brain_sync.fileops import TEXT_EXTENSIONS
+
         assert ".md" in TEXT_EXTENSIONS
         assert ".txt" in TEXT_EXTENSIONS
         assert ".csv" in TEXT_EXTENSIONS
@@ -341,12 +346,14 @@ class TestKnowledgeExtensions:
 
     def test_includes_image_formats(self):
         from brain_sync.fileops import IMAGE_EXTENSIONS
+
         assert ".png" in IMAGE_EXTENSIONS
         assert ".jpg" in IMAGE_EXTENSIONS
         assert ".jpeg" in IMAGE_EXTENSIONS
 
     def test_excludes_binary_formats(self):
         from brain_sync.fileops import KNOWLEDGE_EXTENSIONS
+
         assert ".pdf" not in KNOWLEDGE_EXTENSIONS
         assert ".docx" not in KNOWLEDGE_EXTENSIONS
         assert ".zip" not in KNOWLEDGE_EXTENSIONS
@@ -354,4 +361,5 @@ class TestKnowledgeExtensions:
 
     def test_union(self):
         from brain_sync.fileops import IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
+
         assert KNOWLEDGE_EXTENSIONS == TEXT_EXTENSIONS | IMAGE_EXTENSIONS

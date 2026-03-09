@@ -1,4 +1,5 @@
 """Tests for the retry module: CircuitBreaker and async_retry."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +14,6 @@ from brain_sync.retry import (
     async_retry,
     claude_breaker,
 )
-
 
 # ---------------------------------------------------------------------------
 # CircuitBreaker
@@ -104,10 +104,13 @@ class TestAsyncRetry:
         fn = AsyncMock(side_effect=[10, 20, 30])
 
         with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
-            result = asyncio.run(async_retry(
-                fn, max_retries=2,
-                is_success=lambda r: r >= 30,
-            ))
+            result = asyncio.run(
+                async_retry(
+                    fn,
+                    max_retries=2,
+                    is_success=lambda r: r >= 30,
+                )
+            )
 
         assert result == 30
         assert fn.call_count == 3
@@ -117,10 +120,13 @@ class TestAsyncRetry:
 
         with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match="Retry attempts exhausted"):
-                asyncio.run(async_retry(
-                    fn, max_retries=2,
-                    is_success=lambda r: False,
-                ))
+                asyncio.run(
+                    async_retry(
+                        fn,
+                        max_retries=2,
+                        is_success=lambda r: False,
+                    )
+                )
 
         assert fn.call_count == 3
 
@@ -128,10 +134,13 @@ class TestAsyncRetry:
         fn = AsyncMock(return_value="bad")
 
         with pytest.raises(RuntimeError, match="Retry attempts exhausted"):
-            asyncio.run(async_retry(
-                fn, max_retries=0,
-                is_success=lambda r: False,
-            ))
+            asyncio.run(
+                async_retry(
+                    fn,
+                    max_retries=0,
+                    is_success=lambda r: False,
+                )
+            )
 
         fn.assert_called_once()
 
@@ -160,10 +169,14 @@ class TestAsyncRetry:
 
         with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(CircuitOpenError):
-                asyncio.run(async_retry(
-                    flaky, max_retries=5, breaker=cb,
-                    is_success=lambda r: False,
-                ))
+                asyncio.run(
+                    async_retry(
+                        flaky,
+                        max_retries=5,
+                        breaker=cb,
+                        is_success=lambda r: False,
+                    )
+                )
 
         # Called once, then breaker tripped, no more calls
         assert call_count == 1
@@ -183,10 +196,13 @@ class TestAsyncRetry:
         fn = AsyncMock(side_effect=[ValueError("boom"), 42])
 
         with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
-            result = asyncio.run(async_retry(
-                fn, max_retries=1,
-                is_success=lambda r: True,
-            ))
+            result = asyncio.run(
+                async_retry(
+                    fn,
+                    max_retries=1,
+                    is_success=lambda r: True,
+                )
+            )
 
         assert result == 42
 
@@ -204,10 +220,14 @@ class TestAsyncRetry:
             return "fast"
 
         with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
-            result = asyncio.run(async_retry(
-                fn, max_retries=1, timeout=0.01,
-                is_success=lambda r: True,
-            ))
+            result = asyncio.run(
+                async_retry(
+                    fn,
+                    max_retries=1,
+                    timeout=0.01,
+                    is_success=lambda r: True,
+                )
+            )
 
         assert result == "fast"
         assert call_count == 2
@@ -222,10 +242,13 @@ class TestAsyncRetry:
 
         with patch("brain_sync.retry.asyncio.sleep", side_effect=track_sleep):
             with pytest.raises(RuntimeError):
-                asyncio.run(async_retry(
-                    fn, max_retries=2,
-                    is_success=lambda r: False,
-                ))
+                asyncio.run(
+                    async_retry(
+                        fn,
+                        max_retries=2,
+                        is_success=lambda r: False,
+                    )
+                )
 
         assert len(sleep_delays) == 2
         # First delay should be around 1.0-1.5s (2^1/2 + jitter)

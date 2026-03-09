@@ -4,19 +4,19 @@ import heapq
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-BASE_INTERVAL = 1800          # 30 minutes
-MAX_ERROR_BACKOFF = 86400     # 24 hours
+BASE_INTERVAL = 1800  # 30 minutes
+MAX_ERROR_BACKOFF = 86400  # 24 hours
 MAX_FUTURE_CLAMP = 30 * 24 * 3600  # 30 days
 
 # (unchanged_days_threshold, interval_seconds)
 BACKOFF_TIERS = [
-    (90, 24 * 3600),    # 3+ months stable → 24 hours
-    (21, 12 * 3600),    # 3+ weeks stable  → 12 hours
-    (14, 4 * 3600),     # 2+ weeks stable  → 4 hours
-    (7, 3600),          # 1+ week stable   → 1 hour
-    (0, BASE_INTERVAL), # recently changed  → 30 minutes
+    (90, 24 * 3600),  # 3+ months stable → 24 hours
+    (21, 12 * 3600),  # 3+ weeks stable  → 12 hours
+    (14, 4 * 3600),  # 2+ weeks stable  → 4 hours
+    (7, 3600),  # 1+ week stable   → 1 hour
+    (0, BASE_INTERVAL),  # recently changed  → 30 minutes
 ]
 
 
@@ -25,7 +25,7 @@ def compute_interval(last_changed_utc: str | None) -> int:
         return BASE_INTERVAL
 
     last_changed = datetime.fromisoformat(last_changed_utc)
-    days_unchanged = (datetime.now(timezone.utc) - last_changed).days
+    days_unchanged = (datetime.now(UTC) - last_changed).days
 
     for threshold, interval in BACKOFF_TIERS:
         if days_unchanged >= threshold:
@@ -81,7 +81,7 @@ class Scheduler:
             self.schedule(source_key, delay_secs=0)
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         delta = (next_dt - now).total_seconds()
 
         # Clamp: if too far in the future, use interval instead

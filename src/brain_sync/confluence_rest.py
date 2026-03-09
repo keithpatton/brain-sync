@@ -59,6 +59,7 @@ def get_confluence_auth() -> ConfluenceAuth | None:
 
     # Fallback to env vars
     import os
+
     domain = os.environ.get("CONFLUENCE_DOMAIN")
     email = os.environ.get("CONFLUENCE_EMAIL")
     token = os.environ.get("CONFLUENCE_TOKEN")
@@ -91,7 +92,10 @@ async def _request(
     url = f"{auth.base_url}{path}"
     for attempt in range(MAX_RETRIES + 1):
         resp = await client.request(
-            method, url, auth=auth.basic_auth, **kwargs,
+            method,
+            url,
+            auth=auth.basic_auth,
+            **kwargs,  # pyright: ignore[reportArgumentType]
         )
         if resp.status_code != 429 or attempt == MAX_RETRIES:
             resp.raise_for_status()
@@ -101,7 +105,7 @@ async def _request(
         if retry_after:
             delay = float(retry_after)
         else:
-            delay = BACKOFF_BASE * (2 ** attempt)
+            delay = BACKOFF_BASE * (2**attempt)
         log.debug("Rate limited (429), retrying in %.1fs (attempt %d)", delay, attempt + 1)
         await asyncio.sleep(delay)
 
@@ -109,12 +113,16 @@ async def _request(
 
 
 async def fetch_page_version(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> int | None:
     """Cheap metadata check: returns page version number."""
     try:
         resp = await _request(
-            client, auth, "GET",
+            client,
+            auth,
+            "GET",
             f"/content/{page_id}",
             params={"expand": "version"},
         )
@@ -126,14 +134,18 @@ async def fetch_page_version(
 
 
 async def fetch_page_body(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> tuple[str, str | None, int | None]:
     """Fetch page body, title, and version in one call.
 
     Returns (html, title, version_number).
     """
     resp = await _request(
-        client, auth, "GET",
+        client,
+        auth,
+        "GET",
         f"/content/{page_id}",
         params={"expand": "body.storage,version,title"},
     )
@@ -145,7 +157,9 @@ async def fetch_page_body(
 
 
 async def fetch_child_pages(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> list[dict]:
     """Fetch child pages. Returns list of {id, title, version}."""
     results: list[dict] = []
@@ -153,17 +167,21 @@ async def fetch_child_pages(
     limit = 25
     while True:
         resp = await _request(
-            client, auth, "GET",
+            client,
+            auth,
+            "GET",
             f"/content/{page_id}/child/page",
             params={"expand": "version", "start": str(start), "limit": str(limit)},
         )
         data = resp.json()
         for item in data.get("results", []):
-            results.append({
-                "id": item["id"],
-                "title": item.get("title"),
-                "version": item.get("version", {}).get("number"),
-            })
+            results.append(
+                {
+                    "id": item["id"],
+                    "title": item.get("title"),
+                    "version": item.get("version", {}).get("number"),
+                }
+            )
         if data.get("size", 0) < limit:
             break
         start += limit
@@ -171,7 +189,9 @@ async def fetch_child_pages(
 
 
 async def fetch_attachments(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> list[dict]:
     """Fetch attachments. Returns list of {id, title, version, download_url, media_type}."""
     results: list[dict] = []
@@ -179,20 +199,24 @@ async def fetch_attachments(
     limit = 25
     while True:
         resp = await _request(
-            client, auth, "GET",
+            client,
+            auth,
+            "GET",
             f"/content/{page_id}/child/attachment",
             params={"expand": "version", "start": str(start), "limit": str(limit)},
         )
         data = resp.json()
         for item in data.get("results", []):
             download = item.get("_links", {}).get("download", "")
-            results.append({
-                "id": item["id"],
-                "title": item.get("title"),
-                "version": item.get("version", {}).get("number"),
-                "download_url": f"https://{auth.domain}/wiki{download}" if download else "",
-                "media_type": item.get("metadata", {}).get("mediaType", ""),
-            })
+            results.append(
+                {
+                    "id": item["id"],
+                    "title": item.get("title"),
+                    "version": item.get("version", {}).get("number"),
+                    "download_url": f"https://{auth.domain}/wiki{download}" if download else "",
+                    "media_type": item.get("metadata", {}).get("mediaType", ""),
+                }
+            )
         if data.get("size", 0) < limit:
             break
         start += limit
@@ -200,7 +224,9 @@ async def fetch_attachments(
 
 
 async def download_attachment(
-    url: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    url: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> bytes:
     """Download attachment binary content."""
     resp = await client.get(url, auth=auth.basic_auth, follow_redirects=True)

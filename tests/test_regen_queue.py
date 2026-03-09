@@ -1,21 +1,18 @@
 """Tests for the regen event queue."""
+
 from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from brain_sync.regen_queue import (
-    DEFAULT_COOLDOWN_SECS,
-    DEFAULT_DEBOUNCE_SECS,
-    DEFAULT_MAX_REGENS_PER_HOUR,
     MAX_RETRIES,
     RegenQueue,
 )
-from brain_sync.state import InsightState, _connect, save_insight_state
+from brain_sync.state import _connect
 
 
 @pytest.fixture
@@ -159,7 +156,6 @@ class TestProcessReady:
 
         # After MAX_RETRIES re-enqueues, the event should be dropped
         assert not q.has_pending()
-
 
     def test_regen_failed_is_caught_and_reenqueued(self, brain):
         """RegenFailed exception is caught by the queue and re-enqueued."""

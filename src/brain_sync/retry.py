@@ -12,7 +12,7 @@ Designed for the two-tier retry model used by brain-sync:
    (service down, bad state).
 
 The circuit breaker prevents retry storms during full regeneration.
-Worst case per path is 3 queue × 3 immediate = 9 Claude calls, but in
+Worst case per path is 3 queue x 3 immediate = 9 Claude calls, but in
 practice the breaker opens after the first path's 3 failures, so
 remaining paths get ``CircuitOpenError`` immediately (~3 total calls).
 
@@ -20,13 +20,15 @@ Scope: the ``claude_breaker`` singleton is **global** — one pathological
 prompt can trip the breaker for all paths.  Acceptable for v1; future
 options include per-prompt-hash or per-operation scoping.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
 import time
-from typing import Awaitable, Callable, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 log = logging.getLogger(__name__)
 
@@ -114,26 +116,18 @@ async def async_retry(
     Returns the result on success.  Raises ``CircuitOpenError`` if the
     breaker is open, or ``RuntimeError`` if all retries are exhausted.
     """
-    last_result: T | None = None
-
     for attempt in range(max_retries + 1):
         if breaker and breaker.is_open():
             raise CircuitOpenError("Circuit breaker open")
 
         try:
             coro = fn(*args, **kwargs)
-            result: T = (
-                await asyncio.wait_for(coro, timeout)
-                if timeout
-                else await coro
-            )
+            result: T = await asyncio.wait_for(coro, timeout) if timeout else await coro
 
             if is_success(result):
                 if breaker:
                     breaker.record_success()
                 return result
-
-            last_result = result
 
         except CircuitOpenError:
             raise
@@ -149,8 +143,7 @@ async def async_retry(
 
         # Jittered backoff: ~1s, ~2s, ~4s
         delay = (backoff_base ** (attempt + 1)) / 2 + random.uniform(0, 0.5)
-        log.info("Call failed (attempt %d/%d), retrying in %.1fs",
-                 attempt + 1, max_retries + 1, delay)
+        log.info("Call failed (attempt %d/%d), retrying in %.1fs", attempt + 1, max_retries + 1, delay)
         await asyncio.sleep(delay)
 
     raise RuntimeError(

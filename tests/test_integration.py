@@ -9,6 +9,7 @@ Exercises:
 6. Second run with unchanged content skips write
 7. Second run with changed content triggers state reset
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,12 +20,12 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from brain_sync.manifest import Manifest, SourceEntry, discover_manifests, load_manifest
+from brain_sync.manifest import discover_manifests
 from brain_sync.pipeline import process_source
 from brain_sync.scheduler import Scheduler, compute_interval
 from brain_sync.state import (
-    SyncState,
     SourceState,
+    SyncState,
     load_state,
     save_state,
     source_key_for_entry,
@@ -50,17 +51,21 @@ def _write_manifest(root: Path, rel_dir: str = "project") -> Path:
     manifest_dir = root / rel_dir
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "sync-manifest.yaml"
-    manifest_path.write_text(f"""
+    manifest_path.write_text(
+        f"""
 touch_dirty_relative_path: ../.dirty
 sources:
   - url: {FAKE_URL}
     file: test-page.md
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
     return manifest_path
 
 
 def _mock_subprocess(html: str, comments: str | None = FAKE_COMMENTS):
     """Create a mock for asyncio.create_subprocess_exec that fakes confluence CLI."""
+
     async def fake_exec(*args, **kwargs):
         cmd_args = list(args)
         mock_proc = AsyncMock()
@@ -107,9 +112,7 @@ class TestFullSyncFlow:
             "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
-            changed = asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            changed = asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         # File written to knowledge/<target_path>/
         knowledge_dir = root / "knowledge" / target_path
@@ -151,9 +154,7 @@ class TestFullSyncFlow:
             "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
             side_effect=mock_fn,
         ):
-            asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         first_changed_utc = state.sources[key].last_changed_utc
         time.sleep(0.05)
@@ -163,9 +164,7 @@ class TestFullSyncFlow:
             "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
-            changed = asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            changed = asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         assert changed is False
         # last_changed_utc should NOT have been updated
@@ -190,9 +189,7 @@ class TestFullSyncFlow:
             "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
-            asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         first_hash = state.sources[key].content_hash
         time.sleep(0.05)
@@ -202,9 +199,7 @@ class TestFullSyncFlow:
             "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
             side_effect=_mock_subprocess(FAKE_HTML_V2),
         ):
-            changed = asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            changed = asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         assert changed is True
 
@@ -264,11 +259,8 @@ class TestManifestDiscoveryAndScheduling:
         )
 
         from brain_sync.state import prune_state
-        active = {
-            source_key_for_entry(e.url)
-            for m in manifests.values()
-            for e in m.sources
-        }
+
+        active = {source_key_for_entry(e.url) for m in manifests.values() for e in m.sources}
         prune_state(state, active)
         assert "stale:key" not in state.sources
 
@@ -294,9 +286,7 @@ class TestStatePersistenceRoundTrip:
             "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
             side_effect=_mock_subprocess(FAKE_HTML_V1),
         ):
-            asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         # Save state
         save_state(root, state)

@@ -49,7 +49,9 @@ class TestFetchPageVersion:
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
         resp = _mock_response({}, status_code=404)
-        resp.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError("not found", request=resp.request, response=resp))
+        resp.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError("not found", request=resp.request, response=resp),
+        )
         client = _mock_client(resp)
         result = await fetch_page_version("123", AUTH, client)
         assert result is None
@@ -58,11 +60,13 @@ class TestFetchPageVersion:
 class TestFetchPageBody:
     @pytest.mark.asyncio
     async def test_returns_html_title_version(self):
-        resp = _mock_response({
-            "body": {"storage": {"value": "<p>Hello</p>"}},
-            "title": "My Page",
-            "version": {"number": 5},
-        })
+        resp = _mock_response(
+            {
+                "body": {"storage": {"value": "<p>Hello</p>"}},
+                "title": "My Page",
+                "version": {"number": 5},
+            }
+        )
         client = _mock_client(resp)
         html, title, version = await fetch_page_body("123", AUTH, client)
         assert html == "<p>Hello</p>"
@@ -73,13 +77,15 @@ class TestFetchPageBody:
 class TestFetchChildPages:
     @pytest.mark.asyncio
     async def test_returns_children(self):
-        resp = _mock_response({
-            "results": [
-                {"id": "10", "title": "Child 1", "version": {"number": 1}},
-                {"id": "20", "title": "Child 2", "version": {"number": 3}},
-            ],
-            "size": 2,
-        })
+        resp = _mock_response(
+            {
+                "results": [
+                    {"id": "10", "title": "Child 1", "version": {"number": 1}},
+                    {"id": "20", "title": "Child 2", "version": {"number": 3}},
+                ],
+                "size": 2,
+            }
+        )
         client = _mock_client(resp)
         children = await fetch_child_pages("123", AUTH, client)
         assert len(children) == 2
@@ -88,14 +94,18 @@ class TestFetchChildPages:
 
     @pytest.mark.asyncio
     async def test_pagination(self):
-        page1 = _mock_response({
-            "results": [{"id": str(i), "title": f"C{i}", "version": {"number": 1}} for i in range(25)],
-            "size": 25,
-        })
-        page2 = _mock_response({
-            "results": [{"id": "99", "title": "Last", "version": {"number": 1}}],
-            "size": 1,
-        })
+        page1 = _mock_response(
+            {
+                "results": [{"id": str(i), "title": f"C{i}", "version": {"number": 1}} for i in range(25)],
+                "size": 25,
+            }
+        )
+        page2 = _mock_response(
+            {
+                "results": [{"id": "99", "title": "Last", "version": {"number": 1}}],
+                "size": 1,
+            }
+        )
         client = _mock_client(page1, page2)
         children = await fetch_child_pages("123", AUTH, client)
         assert len(children) == 26
@@ -104,16 +114,20 @@ class TestFetchChildPages:
 class TestFetchAttachments:
     @pytest.mark.asyncio
     async def test_returns_attachments(self):
-        resp = _mock_response({
-            "results": [{
-                "id": "att1",
-                "title": "diagram.png",
-                "version": {"number": 2},
-                "_links": {"download": "/download/attachments/123/diagram.png"},
-                "metadata": {"mediaType": "image/png"},
-            }],
-            "size": 1,
-        })
+        resp = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "att1",
+                        "title": "diagram.png",
+                        "version": {"number": 2},
+                        "_links": {"download": "/download/attachments/123/diagram.png"},
+                        "metadata": {"mediaType": "image/png"},
+                    }
+                ],
+                "size": 1,
+            }
+        )
         client = _mock_client(resp)
         atts = await fetch_attachments("123", AUTH, client)
         assert len(atts) == 1
@@ -173,11 +187,15 @@ class TestGetConfluenceAuth:
 
     def test_reads_config_file(self, tmp_path):
         config = tmp_path / "config.json"
-        config.write_text(json.dumps({
-            "domain": "test.atlassian.net",
-            "email": "a@b.com",
-            "token": "secret",
-        }))
+        config.write_text(
+            json.dumps(
+                {
+                    "domain": "test.atlassian.net",
+                    "email": "a@b.com",
+                    "token": "secret",
+                }
+            )
+        )
         with patch("brain_sync.confluence_rest._CONFIG_PATH", config):
             auth = get_confluence_auth()
         assert auth is not None

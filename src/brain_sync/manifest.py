@@ -65,31 +65,27 @@ def load_manifest(path: Path) -> Manifest:
             raise ManifestError(f"sources[{i}].file must be a string in {path}")
         file = file.strip()
         if file != "auto" and ("/" in file or "\\" in file):
-            raise ManifestError(
-                f"sources[{i}].file must be a bare filename or 'auto', got '{file}' in {path}"
-            )
+            raise ManifestError(f"sources[{i}].file must be a bare filename or 'auto', got '{file}' in {path}")
         include_links = bool(entry.get("include_links", False))
         include_children = bool(entry.get("include_children", False))
         include_attachments = bool(entry.get("include_attachments", False))
         link_depth = entry.get("link_depth", 1)
         if not isinstance(link_depth, int) or link_depth not in (0, 1):
-            raise ManifestError(
-                f"sources[{i}].link_depth must be 0 or 1, got {link_depth!r} in {path}"
+            raise ManifestError(f"sources[{i}].link_depth must be 0 or 1, got {link_depth!r} in {path}")
+        sources.append(
+            SourceEntry(
+                url=url.strip(),
+                file=file,
+                include_links=include_links,
+                include_children=include_children,
+                include_attachments=include_attachments,
+                link_depth=link_depth,
             )
-        sources.append(SourceEntry(
-            url=url.strip(),
-            file=file,
-            include_links=include_links,
-            include_children=include_children,
-            include_attachments=include_attachments,
-            link_depth=link_depth,
-        ))
+        )
 
     dirty_path = data.get("touch_dirty_relative_path")
     if dirty_path is not None and not isinstance(dirty_path, str):
-        raise ManifestError(
-            f"touch_dirty_relative_path must be a string in {path}"
-        )
+        raise ManifestError(f"touch_dirty_relative_path must be a string in {path}")
 
     return Manifest(
         path=path.resolve(),

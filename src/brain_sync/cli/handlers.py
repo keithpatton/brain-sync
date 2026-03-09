@@ -1,4 +1,5 @@
 """CLI command handlers — logging-based wrappers around commands/ API."""
+
 from __future__ import annotations
 
 import asyncio
@@ -35,6 +36,7 @@ def handle_init(args) -> None:
     log.info("  insights/        - Auto-generated summaries and journal")
 
     from brain_sync.commands.init import SKILL_INSTALL_DIR
+
     log.info("  Skill installed to %s", SKILL_INSTALL_DIR)
 
 
@@ -43,6 +45,7 @@ def handle_run(args) -> None:
     if root is None:
         try:
             from brain_sync.commands.context import resolve_root
+
             root = resolve_root()
         except BrainNotFoundError:
             log.exception("Cannot resolve brain root")
@@ -101,8 +104,12 @@ def handle_add(args) -> None:
     log.info("Registered source: %s", result.canonical_id)
     log.info("  URL: %s", result.source_url)
     log.info("  Path: knowledge/%s", result.target_path)
-    log.info("  Links: %s, Children: %s, Attachments: %s",
-             result.include_links, result.include_children, result.include_attachments)
+    log.info(
+        "  Links: %s, Children: %s, Attachments: %s",
+        result.include_links,
+        result.include_children,
+        result.include_attachments,
+    )
     log.info("  Will sync on next `brain-sync run`")
 
 
@@ -195,6 +202,7 @@ def handle_regen(args) -> None:
     if root is None:
         try:
             from brain_sync.commands.context import resolve_root
+
             root = resolve_root()
         except BrainNotFoundError:
             log.exception("Cannot resolve brain root")
@@ -253,6 +261,7 @@ def handle_convert(args) -> None:
         output_path = args.output or file_path
         if output_path != file_path:
             import shutil
+
             shutil.copy2(file_path, output_path)
             added = append_comments_to_markdown(output_path, docx_path)
         else:

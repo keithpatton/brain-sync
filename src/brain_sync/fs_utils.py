@@ -3,6 +3,7 @@
 Used by both the regen engine and the MCP server. Extracted from regen.py
 to avoid coupling between these independent consumers.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

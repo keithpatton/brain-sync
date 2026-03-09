@@ -4,6 +4,7 @@ Tests call tool handler functions directly — no stdio transport needed.
 Source management tools mock underlying commands. Query tools use real
 filesystem via tmp_path fixtures.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,6 @@ from brain_sync.commands import (
     SourceNotFoundError,
 )
 from brain_sync.sources import UnsupportedSourceError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: sample data for source management tests
@@ -68,6 +68,7 @@ SAMPLE_MOVE_RESULT = MoveResult(
 # Fixture: brain filesystem for query tools
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def brain_root(tmp_path: Path) -> Path:
     """Create a minimal brain structure for query tool tests."""
@@ -79,14 +80,20 @@ def brain_root(tmp_path: Path) -> Path:
 
     # schemas
     (root / "schemas" / "insights").mkdir(parents=True)
-    (root / "schemas" / "insights" / "summary.md").write_text("# Summary Schema\nTemplate for summaries.", encoding="utf-8")
+    (root / "schemas" / "insights" / "summary.md").write_text(
+        "# Summary Schema\nTemplate for summaries.",
+        encoding="utf-8",
+    )
 
     # insights/_core
     (root / "insights" / "_core").mkdir(parents=True)
     (root / "insights" / "_core" / "summary.md").write_text("# Core Summary\nOverview of the brain.", encoding="utf-8")
     # journal should be excluded
     (root / "insights" / "_core" / "journal" / "2026-03").mkdir(parents=True)
-    (root / "insights" / "_core" / "journal" / "2026-03" / "2026-03-08.md").write_text("Journal entry.", encoding="utf-8")
+    (root / "insights" / "_core" / "journal" / "2026-03" / "2026-03-08.md").write_text(
+        "Journal entry.",
+        encoding="utf-8",
+    )
 
     # Area: initiatives/AAA
     (root / "knowledge" / "initiatives" / "AAA").mkdir(parents=True)
@@ -103,7 +110,10 @@ def brain_root(tmp_path: Path) -> Path:
 
     # Sub-area: initiatives/AAA/Accounts Service
     (root / "knowledge" / "initiatives" / "AAA" / "Accounts Service").mkdir(parents=True)
-    (root / "knowledge" / "initiatives" / "AAA" / "Accounts Service" / "doc.md").write_text("Accounts doc.", encoding="utf-8")
+    (root / "knowledge" / "initiatives" / "AAA" / "Accounts Service" / "doc.md").write_text(
+        "Accounts doc.",
+        encoding="utf-8",
+    )
     (root / "insights" / "initiatives" / "AAA" / "Accounts Service").mkdir(parents=True)
     (root / "insights" / "initiatives" / "AAA" / "Accounts Service" / "summary.md").write_text(
         "# Accounts Service\n\nHandles user accounts.",
@@ -139,6 +149,7 @@ def brain_with_many_children(brain_root: Path) -> Path:
 # List
 # ---------------------------------------------------------------------------
 
+
 class TestBrainSyncList:
     @patch("brain_sync.mcp.list_sources", return_value=[])
     def test_list_empty(self, mock_list):
@@ -171,6 +182,7 @@ class TestBrainSyncList:
 # ---------------------------------------------------------------------------
 # Add
 # ---------------------------------------------------------------------------
+
 
 class TestBrainSyncAdd:
     @patch("brain_sync.mcp.add_source", return_value=SAMPLE_ADD_RESULT)
@@ -220,6 +232,7 @@ class TestBrainSyncAdd:
 # Remove
 # ---------------------------------------------------------------------------
 
+
 class TestBrainSyncRemove:
     @patch("brain_sync.mcp.remove_source", return_value=SAMPLE_REMOVE_RESULT)
     def test_remove_success(self, mock_remove):
@@ -245,6 +258,7 @@ class TestBrainSyncRemove:
 # ---------------------------------------------------------------------------
 # Move
 # ---------------------------------------------------------------------------
+
 
 class TestBrainSyncMove:
     @patch("brain_sync.mcp.move_source", return_value=SAMPLE_MOVE_RESULT)
@@ -272,6 +286,7 @@ class TestBrainSyncMove:
 # Regen
 # ---------------------------------------------------------------------------
 
+
 class TestBrainSyncRegen:
     @pytest.mark.asyncio
     async def test_regen_path(self):
@@ -298,12 +313,15 @@ class TestBrainSyncRegen:
 # Query tools — use real filesystem via brain_root fixture
 # ---------------------------------------------------------------------------
 
+
 class TestBrainSyncQuery:
     def test_query_with_match(self, brain_root):
         from brain_sync.mcp import AreaIndex, brain_sync_query
 
-        with patch("brain_sync.mcp._root", brain_root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+        with (
+            patch("brain_sync.mcp._root", brain_root),
+            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
+        ):
             result = brain_sync_query(query="AAA")
 
         assert result["status"] == "ok"
@@ -315,8 +333,10 @@ class TestBrainSyncQuery:
     def test_query_with_global(self, brain_root):
         from brain_sync.mcp import AreaIndex, brain_sync_query
 
-        with patch("brain_sync.mcp._root", brain_root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+        with (
+            patch("brain_sync.mcp._root", brain_root),
+            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
+        ):
             result = brain_sync_query(query="AAA", include_global=True)
 
         assert result["status"] == "ok"
@@ -331,8 +351,10 @@ class TestBrainSyncQuery:
     def test_query_no_match(self, brain_root):
         from brain_sync.mcp import AreaIndex, brain_sync_query
 
-        with patch("brain_sync.mcp._root", brain_root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+        with (
+            patch("brain_sync.mcp._root", brain_root),
+            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
+        ):
             result = brain_sync_query(query="nonexistent")
 
         assert result["status"] == "ok"
@@ -341,8 +363,10 @@ class TestBrainSyncQuery:
     def test_query_max_results(self, brain_root):
         from brain_sync.mcp import AreaIndex, brain_sync_query
 
-        with patch("brain_sync.mcp._root", brain_root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+        with (
+            patch("brain_sync.mcp._root", brain_root),
+            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
+        ):
             result = brain_sync_query(query="initiatives", max_results=1)
 
         assert result["status"] == "ok"
@@ -352,8 +376,10 @@ class TestBrainSyncQuery:
         """Matches against summary.md content, not just folder names."""
         from brain_sync.mcp import AreaIndex, brain_sync_query
 
-        with patch("brain_sync.mcp._root", brain_root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+        with (
+            patch("brain_sync.mcp._root", brain_root),
+            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
+        ):
             # "billing" appears only in BBB's summary, not in path
             result = brain_sync_query(query="billing")
 
@@ -365,12 +391,14 @@ class TestBrainSyncQuery:
         """Path matches score higher than body matches."""
         from brain_sync.mcp import AreaIndex, brain_sync_query
 
-        with patch("brain_sync.mcp._root", brain_root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)):
+        with (
+            patch("brain_sync.mcp._root", brain_root),
+            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
+        ):
             result = brain_sync_query(query="AAA")
 
         assert result["status"] == "ok"
-        # AAA should be first because "AAA" is in the path (×3)
+        # AAA should be first because "AAA" is in the path (x3)
         assert result["matches"][0]["path"] == "initiatives/AAA"
 
     def test_query_areas_capped(self, tmp_path):
@@ -387,8 +415,7 @@ class TestBrainSyncQuery:
             area.mkdir(parents=True)
             (area / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", root), \
-             patch("brain_sync.mcp._area_index", AreaIndex.build(root)):
+        with patch("brain_sync.mcp._root", root), patch("brain_sync.mcp._area_index", AreaIndex.build(root)):
             result = brain_sync_query(query="area")
 
         assert result["status"] == "ok"
@@ -482,7 +509,8 @@ class TestBrainSyncOpenArea:
         # Write a large summary
         large_summary = "# Large Summary\n\n" + "x" * (MAX_SUMMARY_CHARS + 5000)
         (brain_root / "insights" / "initiatives" / "AAA" / "summary.md").write_text(
-            large_summary, encoding="utf-8",
+            large_summary,
+            encoding="utf-8",
         )
 
         with patch("brain_sync.mcp._root", brain_root):
@@ -507,7 +535,7 @@ class TestBrainSyncOpenArea:
 
     def test_open_area_payload_cap(self, brain_root):
         """Total response respects MAX_AREA_PAYLOAD, drops artifacts first."""
-        from brain_sync.mcp import MAX_AREA_PAYLOAD, TRUNCATION_MARKER, brain_sync_open_area
+        from brain_sync.mcp import TRUNCATION_MARKER, brain_sync_open_area
 
         # Write a very large summary and large artifacts
         insights_dir = brain_root / "insights" / "initiatives" / "AAA"
@@ -595,6 +623,8 @@ class TestBrainSyncOpenFile:
     @pytest.mark.skipif(os.name == "nt", reason="symlinks may require elevated privileges on Windows")
     def test_open_file_symlink_escape(self, brain_root):
         """Symlink pointing outside brain root is rejected."""
+        from brain_sync.mcp import brain_sync_open_file
+
         outside = brain_root.parent / "outside.md"
         outside.write_text("escaped!", encoding="utf-8")
         link = brain_root / "link.md"
@@ -624,11 +654,11 @@ class TestBrainSyncOpenFile:
         assert "next_offset" in result
         assert result["next_offset"] > 0
         assert "hint" in result
-        assert 'offset=' in result["hint"]
+        assert "offset=" in result["hint"]
 
     def test_open_file_offset_reads_remainder(self, brain_root):
         """Pagination with offset picks up where previous call left off."""
-        from brain_sync.mcp import DEFAULT_FILE_CHARS, brain_sync_open_file
+        from brain_sync.mcp import brain_sync_open_file
 
         lines = [f"Line {i}: " + "x" * 80 for i in range(2500)]
         large_content = "\n".join(lines)
@@ -644,7 +674,7 @@ class TestBrainSyncOpenFile:
 
         # Content should be contiguous
         combined = r1["content"] + r2["content"]
-        assert combined == large_content[:len(combined)]
+        assert combined == large_content[: len(combined)]
 
     def test_open_file_offset_beyond_eof(self, brain_root):
         """Offset past end of file returns empty content."""
@@ -652,7 +682,8 @@ class TestBrainSyncOpenFile:
 
         with patch("brain_sync.mcp._root", brain_root):
             result = brain_sync_open_file(
-                path="insights/_core/summary.md", offset=999999,
+                path="insights/_core/summary.md",
+                offset=999999,
             )
 
         assert result["status"] == "ok"
@@ -665,7 +696,8 @@ class TestBrainSyncOpenFile:
 
         with patch("brain_sync.mcp._root", brain_root):
             result = brain_sync_open_file(
-                path="insights/_core/summary.md", limit=MAX_FILE_CHARS + 100,
+                path="insights/_core/summary.md",
+                limit=MAX_FILE_CHARS + 100,
             )
 
         assert result["status"] == "ok"
@@ -691,6 +723,7 @@ class TestBrainSyncOpenFile:
 # ---------------------------------------------------------------------------
 # Search index
 # ---------------------------------------------------------------------------
+
 
 class TestAreaIndex:
     def test_build_and_search(self, brain_root):
@@ -736,6 +769,7 @@ class TestAreaIndex:
         # Modify a summary
         summary = brain_root / "insights" / "initiatives" / "AAA" / "summary.md"
         import time
+
         time.sleep(0.05)  # ensure mtime changes
         summary.write_text("# Updated\nNew content.", encoding="utf-8")
 
@@ -745,6 +779,7 @@ class TestAreaIndex:
 # ---------------------------------------------------------------------------
 # fs_utils
 # ---------------------------------------------------------------------------
+
 
 class TestFsUtils:
     def test_is_readable_file(self, tmp_path):

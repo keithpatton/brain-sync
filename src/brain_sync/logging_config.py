@@ -36,20 +36,27 @@ def setup_logging(level: str = "INFO") -> None:
 
     # File handler — rotating, structured format
     file_handler = logging.handlers.RotatingFileHandler(
-        LOG_FILE, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8",
+        LOG_FILE,
+        maxBytes=MAX_BYTES,
+        backupCount=BACKUP_COUNT,
+        encoding="utf-8",
     )
-    file_handler.setFormatter(logging.Formatter(
-        fmt="%(asctime)s %(levelname)s %(run_id)s %(name)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    ))
+    file_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(levelname)s %(run_id)s %(name)s %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+    )
     file_handler.addFilter(run_id_filter)
 
     # Console handler — human-readable
     console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setFormatter(logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
+    console_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     console_handler.addFilter(run_id_filter)
 
     root.addHandler(file_handler)
