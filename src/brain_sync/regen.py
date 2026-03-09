@@ -37,6 +37,7 @@ from brain_sync.fs_utils import (
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
+    load_all_insight_states,
     load_insight_state,
     reset_running_insight_states,
     save_insight_state,
@@ -82,6 +83,8 @@ SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
 MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 3
 MIN_CHILDREN = 5  # always include at least this many child summaries
+CHUNK_TARGET_CHARS = 160_000  # ~53K tokens — max chars per chunk (leaves margin for prompt overhead)
+MAX_CHUNKS = 30  # guard against pathological documents
 
 # Minimal system prompt for Claude CLI inference mode.
 # Replaces the ~130K-token agent system prompt with a ~35-token directive,
@@ -98,6 +101,124 @@ MINIMAL_SYSTEM_PROMPT = (
 # Aliases for backward compat within this module
 _is_readable_file = is_readable_file
 _is_content_dir = is_content_dir
+
+# Strict line-anchored heading regex — avoids false positives from #include etc.
+HEADING_RE = re.compile(r"^#{1,6}\s+(.+)", re.MULTILINE)
+
+# Base64 data URI regex — single-line only (no \s in payload to prevent cross-line consumption)
+_BASE64_DATA_URI_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+# Markdown image with base64 src — captures alt text for placeholder
+_BASE64_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+\)")
+
+
+def _first_heading(text: str) -> str | None:
+    """Extract the first markdown heading from text."""
+    m = HEADING_RE.search(text)
+    return m.group(1).strip() if m else None
+
+
+def _preprocess_content(content: str, filename: str) -> str:
+    """Preprocess file content before prompt assembly.
+
+    Strips base64 embedded images and collapses excessive blank lines.
+    This is the highest-leverage optimisation for large documents — many
+    PRDs will fit in context after stripping base64 alone.
+    """
+    original_len = len(content)
+
+    # 1. Strip markdown images with base64 src → [diagram: alt_text]
+    #    (must run before bare data URI strip to capture alt text)
+    content = _BASE64_MD_IMAGE_RE.sub(
+        lambda m: f"[diagram: {m.group(1)}]" if m.group(1) else "[image removed]",
+        content,
+    )
+
+    # 2. Strip remaining bare base64 data URIs → [image removed]
+    content = _BASE64_DATA_URI_RE.sub("[image removed]", content)
+
+    # 3. Collapse 4+ consecutive newlines to 3 newlines (2 blank lines)
+    content = re.sub(r"\n{4,}", "\n\n\n", content)
+
+    new_len = len(content)
+    if new_len < original_len:
+        reduction = (1 - new_len / original_len) * 100
+        log.info("Preprocessed %s: %d → %d chars (%.0f%% reduction)", filename, original_len, new_len, reduction)
+
+    return content
+
+
+def _split_markdown_chunks(
+    content: str, target_chars: int = CHUNK_TARGET_CHARS, *, _level: int | None = None,
+) -> list[str]:
+    """Split markdown content into chunks at heading boundaries.
+
+    Uses lookahead regex to split at heading lines, preserving the heading
+    in each chunk. Greedy merge combines adjacent sections until the target
+    size is exceeded.
+
+    If a single section exceeds target, recursively splits at the next
+    heading level (H1 → H2 → H3 → paragraph).
+
+    Invariant: "".join(chunks).rstrip("\\n") == content.rstrip("\\n")
+    """
+    if len(content) <= target_chars:
+        return [content]
+
+    # Detect root heading level if not specified
+    if _level is None:
+        m = HEADING_RE.search(content)
+        if m:
+            _level = len(m.group(0).split()[0])  # count '#' chars
+        else:
+            _level = 1  # default, will fall through to paragraph split
+
+    # Try splitting at current heading level
+    if _level <= 3:
+        pattern = re.compile(rf"(?=^#{{1,{_level}}} )", re.MULTILINE)
+        sections = pattern.split(content)
+        # Filter empty strings from split (e.g. leading empty section)
+        sections = [s for s in sections if s]
+
+        if len(sections) > 1:
+            # Greedy merge: combine adjacent sections until target exceeded
+            chunks: list[str] = []
+            current = ""
+            for section in sections:
+                if current and len(current) + len(section) > target_chars:
+                    chunks.append(current)
+                    current = section
+                else:
+                    current += section
+            if current:
+                chunks.append(current)
+
+            # Recursively split any chunks that are still oversized
+            result: list[str] = []
+            for chunk in chunks:
+                if len(chunk) > target_chars:
+                    result.extend(_split_markdown_chunks(chunk, target_chars, _level=_level + 1))
+                else:
+                    result.append(chunk)
+            return result
+
+    # Fallback: split at paragraph boundaries (double newline)
+    paragraphs = content.split("\n\n")
+    if len(paragraphs) <= 1:
+        return [content]  # Can't split further
+
+    chunks = []
+    current = ""
+    for para in paragraphs:
+        candidate = current + "\n\n" + para if current else para
+        if current and len(candidate) > target_chars:
+            chunks.append(current)
+            current = para
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 @dataclass
@@ -165,6 +286,7 @@ class ClaudeResult:
 class PromptResult:
     """Result from prompt construction."""
     text: str
+    oversized_files: dict[str, str] | None = None  # filename → preprocessed content
 
 
 def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
@@ -426,6 +548,121 @@ async def invoke_claude(
 # Prompt construction
 # ---------------------------------------------------------------------------
 
+def _build_chunk_prompt(
+    chunk: str, chunk_idx: int, total_chunks: int, filename: str, first_heading: str,
+) -> str:
+    """Build a lightweight prompt for summarizing a single chunk.
+
+    No global context or existing summary — keeps chunk prompts small.
+    """
+    return f"""Summarize this section while preserving all requirements, decisions,
+technical constraints, and implementation details. Do not omit
+substantive information. Maintain lists, structure, and terminology.
+
+This document may contain [image removed] or [diagram: ...] placeholders.
+Treat [image removed] and [diagram: ...] as references to diagrams or UI screenshots.
+Preserve any functional meaning implied by surrounding text.
+Do not attempt to reconstruct the images.
+
+[Chunk {chunk_idx}/{total_chunks} — section: {first_heading}]
+File: {filename}
+
+---
+{chunk}
+---
+
+Output a thorough summary of this section now."""
+
+
+def _build_prompt_from_chunks(
+    knowledge_path: str,
+    chunk_summaries: dict[str, list[str]],
+    child_summaries: dict[str, str],
+    insights_dir: Path,
+    root: Path,
+    binary_names: list[str],
+) -> PromptResult:
+    """Build a merge prompt using chunk summaries instead of raw file content.
+
+    Reuses the exact same prompt structure as _build_prompt() — instructions,
+    global context, file content (chunk summaries), child summaries, existing
+    summary, output instruction. Not a new prompt style.
+    """
+    instructions = _REGEN_INSTRUCTIONS
+    global_context = _collect_global_context(root, knowledge_path)
+
+    # Build files section from chunk summaries (sorted for determinism)
+    files_parts: list[str] = []
+    for filename in sorted(chunk_summaries.keys()):
+        summaries = chunk_summaries[filename]
+        n = len(summaries)
+        chunk_parts: list[str] = []
+        for i, summary in enumerate(summaries, 1):
+            heading = _first_heading(summary) or f"part {i}"
+            chunk_parts.append(f"#### Chunk {i}/{n} — section: {heading}\n{summary}")
+        files_parts.append(
+            f"### {filename} (summarized in {n} chunks — original too large to inline)\n\n"
+            + "\n\n".join(chunk_parts)
+        )
+
+    if binary_names:
+        file_list = "\n".join(f"- {n}" for n in binary_names)
+        files_parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
+
+    files_text = "The knowledge folder contains these files:\n" + "\n\n".join(files_parts) + "\n" if files_parts else ""
+
+    # Child summaries (same logic as _build_prompt)
+    children_text = ""
+    if child_summaries:
+        loaded_parts: list[str] = []
+        skipped = 0
+        total = len(child_summaries)
+        current_tokens = len(instructions + global_context + files_text) // 3
+        for i, (name, content) in enumerate(sorted(child_summaries.items())):
+            child_tokens = len(content) // 3
+            if i >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
+                skipped += 1
+                continue
+            loaded_parts.append(f"\n### {name}\n{content}")
+            current_tokens += child_tokens
+        if skipped:
+            log.info("Truncated %d child summaries for %s (token budget)", skipped, knowledge_path or "(root)")
+        loaded = total - skipped
+        header = f"Sub-area summaries ({loaded} of {total} loaded):" if skipped else "Sub-area summaries:"
+        footer = f"\n({skipped} sub-area summaries omitted — token budget)" if skipped else ""
+        children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n"
+
+    # Existing summary
+    existing_summary = ""
+    summary_path = insights_dir / "summary.md"
+    if summary_path.exists():
+        existing_summary = summary_path.read_text(encoding="utf-8")
+
+    display_path = knowledge_path or "(root)"
+
+    prompt = f"""{instructions}
+
+---
+
+{global_context}
+
+---
+
+You are regenerating the insight summary for knowledge area: {display_path}
+{files_text}{children_text}
+{"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
+
+Output the updated summary now."""
+
+    estimated_tokens = len(prompt) // 3
+    log.debug("Merge prompt for %s: ~%d tokens est., %d chunked files",
+              display_path, estimated_tokens, len(chunk_summaries))
+    if estimated_tokens > 100_000:
+        log.warning("Large merge prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
+
+    return PromptResult(text=prompt)
+
+
 def _build_prompt(
     knowledge_path: str,
     knowledge_dir: Path,
@@ -452,6 +689,7 @@ def _build_prompt(
 
     # 3a. Direct files section — inline text files, note binary ones
     files_text = ""
+    oversized_files: dict[str, str] | None = None
     files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
     if files:
         inlined_parts: list[str] = []
@@ -460,7 +698,17 @@ def _build_prompt(
             if f.suffix.lower() in TEXT_EXTENSIONS:
                 try:
                     content = f.read_text(encoding="utf-8")
-                    inlined_parts.append(f"### {f.name}\n```\n{content}\n```")
+                    content = _preprocess_content(content, f.name)
+                    if len(content) > CHUNK_TARGET_CHARS:
+                        # Oversized after preprocessing — defer to chunking
+                        if oversized_files is None:
+                            oversized_files = {}
+                        oversized_files[f.name] = content
+                        inlined_parts.append(
+                            f"### {f.name}\n(This file will be summarized in chunks — too large to inline)"
+                        )
+                    else:
+                        inlined_parts.append(f"### {f.name}\n```\n{content}\n```")
                 except (OSError, UnicodeDecodeError):
                     binary_names.append(f.name)
             else:
@@ -526,7 +774,7 @@ Output the updated summary now."""
     if estimated_tokens > 100_000:
         log.warning("Large prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
 
-    return PromptResult(text=prompt)
+    return PromptResult(text=prompt, oversized_files=oversized_files)
 
 
 _get_child_dirs = get_child_dirs
@@ -675,10 +923,57 @@ async def regen_path(
             model=config.model,
         ))
 
-        # Invoke Claude in inference mode (minimal system prompt, no tools)
-        log.info("[%s] Generating insights: %s (model=%s prompt_hash=%s)",
-                 regen_id, current_path or "(root)", config.model, prompt_hash)
+        # Chunk-and-merge + final invoke — unified exception handler
+        # ensures "failed" state is always saved on any error.
+        chunk_input_tokens = 0
+        chunk_output_tokens = 0
         try:
+            # Chunk-and-merge for oversized files
+            if prompt_result.oversized_files:
+                chunk_summaries_map: dict[str, list[str]] = {}
+                for filename, content in sorted(prompt_result.oversized_files.items()):
+                    chunks = _split_markdown_chunks(content)
+                    if len(chunks) > MAX_CHUNKS:
+                        raise RegenFailed(
+                            current_path or "(root)",
+                            f"{filename}: {len(chunks)} chunks exceeds limit of {MAX_CHUNKS}",
+                        )
+                    log.info("[%s] Chunking %s: %d chunks", regen_id, filename, len(chunks))
+                    file_summaries: list[str] = []
+                    for i, chunk in enumerate(chunks, 1):
+                        heading = _first_heading(chunk) or f"part {i}"
+                        chunk_result = await async_retry(
+                            invoke_claude,
+                            _build_chunk_prompt(chunk, i, len(chunks), filename, heading),
+                            cwd=root, timeout=config.timeout,
+                            model=config.model, effort=config.effort,
+                            max_turns=1,
+                            system_prompt=MINIMAL_SYSTEM_PROMPT, tools="",
+                            is_success=lambda r: r.success,
+                            breaker=claude_breaker,
+                        )
+                        file_summaries.append(chunk_result.output.strip())
+                        chunk_input_tokens += chunk_result.input_tokens or 0
+                        chunk_output_tokens += chunk_result.output_tokens or 0
+                        log.debug("[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
+                                  regen_id, i, len(chunks), filename,
+                                  chunk_result.input_tokens, chunk_result.output_tokens)
+                    chunk_summaries_map[filename] = file_summaries
+
+                # Collect binary_names from the original _build_prompt pass
+                binary_names = [
+                    f.name for f in sorted(knowledge_dir.iterdir())
+                    if _is_readable_file(f) and f.suffix.lower() not in TEXT_EXTENSIONS
+                ]
+                # Rebuild prompt with chunk summaries replacing raw content
+                prompt_result = _build_prompt_from_chunks(
+                    current_path, chunk_summaries_map, child_summaries,
+                    insights_dir, root, binary_names,
+                )
+
+            # Invoke Claude in inference mode (minimal system prompt, no tools)
+            log.info("[%s] Generating insights: %s (model=%s prompt_hash=%s)",
+                     regen_id, current_path or "(root)", config.model, prompt_hash)
             result = await async_retry(
                 invoke_claude,
                 prompt_result.text, cwd=root, timeout=config.timeout,
@@ -701,6 +996,16 @@ async def regen_path(
             ))
             raise RegenFailed(current_path or "(root)", str(e)) from e
         now = datetime.now(timezone.utc).isoformat()
+
+        # Add chunk token totals to final result for unified tracking
+        if chunk_input_tokens or chunk_output_tokens:
+            result = ClaudeResult(
+                success=result.success,
+                output=result.output,
+                input_tokens=(result.input_tokens or 0) + chunk_input_tokens,
+                output_tokens=(result.output_tokens or 0) + chunk_output_tokens,
+                num_turns=result.num_turns,
+            )
 
         # Validate output — Claude returns summary text directly
         new_summary = result.output.strip() if result.output else ""
@@ -799,5 +1104,22 @@ async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
             total += count
         except RegenFailed as e:
             log.warning("Skipping %s: %s", path, e.reason)
+
+    # Clean up orphaned insight states whose knowledge dirs no longer exist
+    content_path_set = set(content_paths)
+    all_states = load_all_insight_states(root)
+    orphaned = 0
+    for istate in all_states:
+        kp = istate.knowledge_path
+        knowledge_dir = root / "knowledge" / kp if kp else root / "knowledge"
+        if not knowledge_dir.is_dir() and kp not in content_path_set:
+            delete_insight_state(root, kp)
+            insights_dir = root / "insights" / kp if kp else root / "insights"
+            if insights_dir.is_dir():
+                shutil.rmtree(insights_dir)
+            orphaned += 1
+            log.info("Cleaned up orphaned insight state: %s", kp)
+    if orphaned:
+        log.info("Removed %d orphaned insight states", orphaned)
 
     return total

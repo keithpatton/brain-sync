@@ -10,20 +10,26 @@ import pytest
 
 from brain_sync.fileops import KNOWLEDGE_EXTENSIONS
 from brain_sync.regen import (
+    CHUNK_TARGET_CHARS,
+    MAX_CHUNKS,
     PROMPT_VERSION,
     SIMILARITY_THRESHOLD,
     ClaudeResult,
     PromptResult,
     RegenConfig,
     RegenFailed,
+    _build_chunk_prompt,
     _build_prompt,
     _collect_child_summaries,
     _collect_global_context,
     _compute_hash,
     _find_all_content_paths,
+    _first_heading,
     _get_child_dirs,
     _is_content_dir,
     _is_readable_file,
+    _preprocess_content,
+    _split_markdown_chunks,
     folder_content_hash,
     invalidate_global_context_cache,
     regen_all,
@@ -902,6 +908,29 @@ class TestRegenAll:
         assert total == 0
         mock.assert_not_called()
 
+    def test_regen_all_cleans_orphaned_states(self, brain):
+        """regen_all removes insight states for deleted knowledge dirs."""
+        # Create and regen a path
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        # Simulate an orphaned state for a path that no longer exists
+        save_insight_state(brain, InsightState(
+            knowledge_path="old/deleted",
+            content_hash=None,
+            summary_hash=None,
+            regen_status="failed",
+        ))
+        # Verify it exists
+        assert load_insight_state(brain, "old/deleted") is not None
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()):
+            asyncio.run(regen_all(brain))
+
+        # Orphaned state should be cleaned up
+        assert load_insight_state(brain, "old/deleted") is None
+
 
 class TestRegenConfigDefaults:
     def test_max_turns_default(self):
@@ -1121,3 +1150,261 @@ class TestOutputValidation:
         summary_path = brain / "insights" / "project" / "summary.md"
         assert summary_path.exists()
         assert "valid summary" in summary_path.read_text(encoding="utf-8")
+
+
+class TestPreprocessing:
+    """Tests for _preprocess_content()."""
+
+    def test_strip_base64_data_uri(self):
+        from brain_sync.regen import _preprocess_content
+        content = 'Some text data:image/png;base64,iVBORw0KGgo= more text'
+        result = _preprocess_content(content, "test.md")
+        assert "iVBORw0KGgo" not in result
+        assert "[image removed]" in result
+        assert "Some text" in result
+        assert "more text" in result
+
+    def test_strip_base64_markdown_image(self):
+        from brain_sync.regen import _preprocess_content
+        content = '![Login Screen](data:image/png;base64,iVBORw0KGgo=)\nSome text after.'
+        result = _preprocess_content(content, "test.md")
+        assert "iVBORw0KGgo" not in result
+        assert "[diagram: Login Screen]" in result
+        assert "Some text after." in result
+
+    def test_strip_base64_markdown_image_no_alt(self):
+        from brain_sync.regen import _preprocess_content
+        content = '![](data:image/jpeg;base64,/9j/4AAQ=)\nAfter.'
+        result = _preprocess_content(content, "test.md")
+        assert "[image removed]" in result
+
+    def test_collapse_blank_lines(self):
+        from brain_sync.regen import _preprocess_content
+        # 4+ newlines should collapse to 3 (2 blank lines)
+        content = "line1\n\n\n\n\nline2"
+        result = _preprocess_content(content, "test.md")
+        assert result == "line1\n\n\nline2"
+        # 3 newlines should be preserved
+        content3 = "line1\n\n\nline2"
+        result3 = _preprocess_content(content3, "test.md")
+        assert result3 == "line1\n\n\nline2"
+
+    def test_tables_preserved(self):
+        from brain_sync.regen import _preprocess_content
+        table = "| Col1 | Col2 |\n| --- | --- |\n| val1 | val2 |"
+        result = _preprocess_content(table, "test.md")
+        assert result == table
+
+    def test_base64_regex_single_line(self):
+        """Regex must not consume across newlines."""
+        from brain_sync.regen import _preprocess_content
+        # base64 payload on one line, important text on next line
+        content = "data:image/png;base64,abc123=\nIMPORTANT: Keep this text"
+        result = _preprocess_content(content, "test.md")
+        assert "IMPORTANT: Keep this text" in result
+
+    def test_no_change_clean_content(self):
+        from brain_sync.regen import _preprocess_content
+        content = "# Heading\n\nSome normal markdown with no images."
+        result = _preprocess_content(content, "test.md")
+        assert result == content
+
+
+class TestChunking:
+    """Tests for _split_markdown_chunks() and related chunking logic."""
+
+    def test_split_by_headings(self):
+        from brain_sync.regen import _split_markdown_chunks
+        content = "# Section 1\nContent 1\n\n# Section 2\nContent 2\n\n# Section 3\nContent 3"
+        chunks = _split_markdown_chunks(content, target_chars=30)
+        assert len(chunks) >= 2
+        # Each chunk should contain at least one heading
+        for chunk in chunks:
+            assert "#" in chunk
+
+    def test_split_fallback_paragraphs(self):
+        from brain_sync.regen import _split_markdown_chunks
+        # No headings, just paragraphs
+        content = "Para 1 content here.\n\nPara 2 content here.\n\nPara 3 content here."
+        chunks = _split_markdown_chunks(content, target_chars=30)
+        assert len(chunks) >= 2
+
+    def test_split_preserves_all_content(self):
+        from brain_sync.regen import _split_markdown_chunks
+        content = "# H1 First\nSome content here.\n\n# H1 Second\nMore content.\n\n## H2 Sub\nDeep content."
+        chunks = _split_markdown_chunks(content, target_chars=40)
+        # Lossless invariant (trailing newline tolerant)
+        assert "".join(chunks).rstrip("\n") == content.rstrip("\n")
+
+    def test_split_preserves_content_large(self):
+        """Lossless invariant with realistic content."""
+        from brain_sync.regen import _split_markdown_chunks
+        sections = [f"## Section {i}\n{'x' * 500}\n" for i in range(20)]
+        content = "\n".join(sections)
+        chunks = _split_markdown_chunks(content, target_chars=2000)
+        assert "".join(chunks).rstrip("\n") == content.rstrip("\n")
+
+    def test_split_recursive_large_section(self):
+        """Oversized H1 section should split at H2."""
+        from brain_sync.regen import _split_markdown_chunks
+        # One H1 with two H2s inside, each bigger than target
+        content = "# Big Section\n\n## Sub A\n" + "a" * 200 + "\n\n## Sub B\n" + "b" * 200
+        chunks = _split_markdown_chunks(content, target_chars=250)
+        assert len(chunks) >= 2
+
+    def test_small_content_no_split(self):
+        from brain_sync.regen import _split_markdown_chunks
+        content = "# Small\nJust a little content."
+        chunks = _split_markdown_chunks(content, target_chars=1000)
+        assert len(chunks) == 1
+        assert chunks[0] == content
+
+    def test_chunk_count_guard(self, brain):
+        """More than MAX_CHUNKS raises RegenFailed."""
+        from brain_sync.regen import MAX_CHUNKS, _split_markdown_chunks
+        # Create content that will produce many chunks
+        sections = [f"# Section {i}\n{'x' * 100}" for i in range(40)]
+        content = "\n\n".join(sections)
+        kdir = brain / "knowledge" / "huge"
+        kdir.mkdir(parents=True)
+        (kdir / "huge.md").write_text(content, encoding="utf-8")
+
+        # Mock invoke_claude to return valid summary
+        call_count = 0
+        async def mock_invoke(prompt, cwd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ClaudeResult(success=True, output="# Summary\n\nChunk summary content here.")
+
+        # Patch _split_markdown_chunks to return >30 chunks
+        fake_chunks = ["chunk"] * (MAX_CHUNKS + 1)
+        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke), \
+             patch("brain_sync.regen._split_markdown_chunks", return_value=fake_chunks), \
+             patch("brain_sync.regen._preprocess_content", side_effect=lambda c, f: "x" * 200_000):
+            with pytest.raises(RegenFailed, match="exceeds limit"):
+                asyncio.run(regen_path(brain, "huge"))
+
+    def test_chunk_prompt_format(self):
+        from brain_sync.regen import _build_chunk_prompt
+        prompt = _build_chunk_prompt("chunk content here", 2, 5, "prd.md", "Authentication Flow")
+        assert "[Chunk 2/5" in prompt
+        assert "Authentication Flow" in prompt
+        assert "prd.md" in prompt
+        assert "chunk content here" in prompt
+        assert "[image removed]" in prompt  # placeholder instructions present
+
+    def test_first_heading(self):
+        from brain_sync.regen import _first_heading
+        assert _first_heading("# Top Level\nContent") == "Top Level"
+        assert _first_heading("## Sub Level\nContent") == "Sub Level"
+        assert _first_heading("No heading here") is None
+        assert _first_heading("```\n#include <stdio.h>\n```") is None  # not a heading
+
+
+class TestOversizedDetection:
+    """Tests for oversized file detection in _build_prompt()."""
+
+    def test_oversized_files_detected(self, brain):
+        """Files larger than CHUNK_TARGET_CHARS go to oversized_files."""
+        from brain_sync.regen import CHUNK_TARGET_CHARS
+        kdir = brain / "knowledge" / "big"
+        kdir.mkdir(parents=True)
+        (kdir / "huge.md").write_text("# Huge\n" + "x" * (CHUNK_TARGET_CHARS + 1000), encoding="utf-8")
+        idir = brain / "insights" / "big"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("big", kdir, {}, idir, brain)
+        assert result.oversized_files is not None
+        assert "huge.md" in result.oversized_files
+        assert "too large to inline" in result.text
+
+    def test_small_files_not_chunked(self, brain):
+        """Normal-sized files have no oversized_files."""
+        kdir = brain / "knowledge" / "small"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Small doc\nSome content.", encoding="utf-8")
+        idir = brain / "insights" / "small"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("small", kdir, {}, idir, brain)
+        assert result.oversized_files is None
+
+    def test_preprocessing_applied(self, brain):
+        """Base64 images are stripped before size check."""
+        from brain_sync.regen import CHUNK_TARGET_CHARS
+        # Content is over threshold due to base64, but under after preprocessing
+        base64_payload = "A" * (CHUNK_TARGET_CHARS + 1000)
+        content = f"# Doc\n![img](data:image/png;base64,{base64_payload})\nReal content."
+        kdir = brain / "knowledge" / "b64"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text(content, encoding="utf-8")
+        idir = brain / "insights" / "b64"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("b64", kdir, {}, idir, brain)
+        # After stripping base64, should be small enough to inline
+        assert result.oversized_files is None
+        assert "[diagram: img]" in result.text
+
+
+class TestChunkedRegenFlow:
+    """End-to-end test for chunk-and-merge regen path."""
+
+    def test_regen_path_chunked_flow(self, brain):
+        """Oversized file triggers chunk calls then merge call."""
+        from brain_sync.regen import CHUNK_TARGET_CHARS
+        kdir = brain / "knowledge" / "prd"
+        kdir.mkdir(parents=True)
+        # Create oversized file (no base64, just big)
+        big_content = "\n\n".join(f"## Section {i}\n{'content ' * 100}" for i in range(30))
+        (kdir / "prd.md").write_text(big_content, encoding="utf-8")
+
+        call_count = 0
+        async def mock_invoke(prompt, cwd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ClaudeResult(
+                success=True,
+                output="# Summary\n\nThis is a thorough summary of the content.",
+                input_tokens=1000,
+                output_tokens=500,
+            )
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke), \
+             patch("brain_sync.regen.CHUNK_TARGET_CHARS", 2000):
+            count = asyncio.run(regen_path(brain, "prd"))
+
+        assert count >= 1
+        # Should have been called multiple times: chunk calls + final merge
+        assert call_count > 1
+        summary_path = brain / "insights" / "prd" / "summary.md"
+        assert summary_path.exists()
+
+    def test_token_tracking_across_chunks(self, brain):
+        """Total tokens include chunk + merge calls."""
+        from brain_sync.regen import CHUNK_TARGET_CHARS
+        kdir = brain / "knowledge" / "tok"
+        kdir.mkdir(parents=True)
+        big_content = "\n\n".join(f"## Section {i}\n{'data ' * 100}" for i in range(20))
+        (kdir / "tok.md").write_text(big_content, encoding="utf-8")
+
+        async def mock_invoke(prompt, cwd, **kwargs):
+            return ClaudeResult(
+                success=True,
+                output="# Summary\n\nDetailed summary of this section or merge.",
+                input_tokens=500,
+                output_tokens=200,
+            )
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke), \
+             patch("brain_sync.regen.CHUNK_TARGET_CHARS", 1500):
+            asyncio.run(regen_path(brain, "tok"))
+
+        istate = load_insight_state(brain, "tok")
+        assert istate is not None
+        # Total tokens should be > single call (chunks + merge)
+        assert istate.input_tokens is not None
+        assert istate.input_tokens > 500  # more than one call
