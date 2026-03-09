@@ -24,7 +24,14 @@ def _get_root(args) -> Path | None:
 def handle_init(args) -> None:
     from brain_sync.commands.init import init_brain
 
-    result = init_brain(args.root, model=args.model, dry_run=args.dry_run)
+    result = init_brain(
+        args.root,
+        model=args.model,
+        confluence_domain=args.confluence_domain,
+        confluence_email=args.confluence_email,
+        confluence_token=args.confluence_token,
+        dry_run=args.dry_run,
+    )
 
     prefix = "[dry-run] " if args.dry_run else ""
     log.info("%sInitialising brain at: %s", prefix, result.root)

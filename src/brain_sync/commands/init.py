@@ -56,6 +56,9 @@ def _register_brain_root(
     root: Path,
     *,
     model: str | None = None,
+    confluence_domain: str | None = None,
+    confluence_email: str | None = None,
+    confluence_token: str | None = None,
     dry_run: bool = False,
 ) -> None:
     """Register this brain root and optional settings in ~/.brain-sync/config.json."""
@@ -87,6 +90,14 @@ def _register_brain_root(
         config["regen"] = regen
         changed = True
 
+    if confluence_domain and confluence_email and confluence_token:
+        config["confluence"] = {
+            "domain": confluence_domain,
+            "email": confluence_email,
+            "token": confluence_token,
+        }
+        changed = True
+
     if changed:
         CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
         log.info("Updated config in %s", CONFIG_FILE)
@@ -99,7 +110,15 @@ class InitResult:
     dirs_created: list[str] = field(default_factory=list)
 
 
-def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -> InitResult:
+def init_brain(
+    root: Path,
+    *,
+    model: str | None = None,
+    confluence_domain: str | None = None,
+    confluence_email: str | None = None,
+    confluence_token: str | None = None,
+    dry_run: bool = False,
+) -> InitResult:
     """Initialise a brain at the given root directory."""
     root = root.resolve()
     was_existing = root.exists()
@@ -142,7 +161,14 @@ def init_brain(root: Path, *, model: str | None = None, dry_run: bool = False) -
         conn.close()
         log.info("SQLite state database ready at %s", root / ".sync-state.sqlite")
 
-    _register_brain_root(root, model=model, dry_run=dry_run)
+    _register_brain_root(
+        root,
+        model=model,
+        confluence_domain=confluence_domain,
+        confluence_email=confluence_email,
+        confluence_token=confluence_token,
+        dry_run=dry_run,
+    )
 
     return InitResult(root=root, was_existing=was_existing, dirs_created=dirs_created)
 

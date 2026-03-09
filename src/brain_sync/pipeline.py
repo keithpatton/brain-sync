@@ -8,6 +8,7 @@ import httpx
 
 from brain_sync.confluence_rest import (
     ConfluenceAuth,
+    fetch_comments,
     fetch_page_body,
     fetch_page_version,
     get_confluence_auth,
@@ -21,11 +22,6 @@ from brain_sync.sources import (
     detect_source_type,
     extract_confluence_page_id,
     extract_google_doc_id,
-)
-from brain_sync.sources.confluence import (
-    confluence_comments,
-    confluence_fetch,
-    confluence_title,
 )
 from brain_sync.sources.googledocs import googledocs_fetch
 from brain_sync.state import SourceState, load_relationships_for_primary
@@ -43,15 +39,11 @@ async def _resolve_auto_filename(
     if source_type == SourceType.CONFLUENCE:
         page_id = extract_confluence_page_id(url)
         title = None
-        # Try REST API first for title
         if auth:
             try:
                 _, title, _ = await fetch_page_body(page_id, auth, http_client)
             except Exception:
                 pass
-        # Fall back to confluence-cli
-        if title is None:
-            title = await confluence_title(page_id)
         return canonical_filename(source_type, page_id, title)
 
     if source_type == SourceType.GOOGLE_DOCS:
@@ -110,21 +102,16 @@ async def process_source(
             source_state.last_checked_utc = now
             return False
 
-        # Full fetch via REST API or CLI fallback
-        html: str | None = None
-        if auth:
-            try:
-                html, _title, v = await fetch_page_body(page_id, auth, http_client)
-                if v is not None:
-                    version = str(v)
-            except Exception as e:
-                log.debug("REST body fetch failed, falling back to CLI: %s", e)
-                html = None
+        # Full fetch via REST API
+        if not auth:
+            log.warning("No Confluence auth configured, skipping %s", source_state.source_url)
+            return False
 
-        if html is None:
-            html = await confluence_fetch(page_id)
+        html, title, v = await fetch_page_body(page_id, auth, http_client)
+        if v is not None:
+            version = str(v)
 
-        comments_md = await confluence_comments(page_id)
+        comments_md = await fetch_comments(page_id, auth, http_client)
         if version is not None:
             source_state.metadata_fingerprint = version
 

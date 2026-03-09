@@ -1,9 +1,9 @@
-"""Integration test: full sync flow with mocked confluence-cli.
+"""Integration test: full sync flow with mocked Confluence REST API.
 
 Exercises:
 1. Start with empty root
 2. Register a source via SourceState
-3. Pipeline fetches content (mocked subprocess)
+3. Pipeline fetches content (mocked REST API)
 4. Markdown file written to knowledge/<target_path>/
 5. State updated with correct fields
 6. Second run with unchanged content skips write
@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from brain_sync.confluence_rest import ConfluenceAuth
 from brain_sync.manifest import discover_manifests
 from brain_sync.pipeline import process_source
 from brain_sync.scheduler import Scheduler, compute_interval
@@ -36,15 +37,16 @@ FAKE_URL = f"https://test.atlassian.net/wiki/spaces/X/pages/{FAKE_PAGE_ID}/TestP
 
 FAKE_HTML_V1 = "<h1>Test Page</h1><p>Version one content.</p>"
 FAKE_HTML_V2 = "<h1>Test Page</h1><p>Version two content with changes.</p>"
-FAKE_COMMENTS = """Found 2 comments:
-1. Alice (ID: 100) [inline]
-   Created: 2026-01-01T00:00:00Z
-   Body:
-     Great work!
-2. Bob (ID: 200) [footer]
-   Created: 2026-01-02T00:00:00Z
-   Body:
-     Needs review."""
+FAKE_COMMENTS_MD = (
+    "**Alice** (2026-01-01T00:00:00Z)\nGreat work!\n\n"
+    "**Bob** (2026-01-02T00:00:00Z)\nNeeds review."
+)
+
+FAKE_AUTH = ConfluenceAuth(
+    domain="test.atlassian.net",
+    email="test@example.com",
+    token="fake-token",
+)
 
 
 def _write_manifest(root: Path, rel_dir: str = "project") -> Path:
@@ -63,28 +65,19 @@ sources:
     return manifest_path
 
 
-def _mock_subprocess(html: str, comments: str | None = FAKE_COMMENTS):
-    """Create a mock for asyncio.create_subprocess_exec that fakes confluence CLI."""
-
-    async def fake_exec(*args, **kwargs):
-        cmd_args = list(args)
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-
-        if "comments" in cmd_args:
-            stdout = (comments or "").encode("utf-8")
-        elif "--format" in cmd_args and "json" in cmd_args:
-            # Metadata check — return invalid JSON to skip metadata
-            stdout = b"not json"
-            mock_proc.returncode = 1
-        else:
-            # Regular read
-            stdout = html.encode("utf-8")
-
-        mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
-        return mock_proc
-
-    return fake_exec
+def _mock_rest(
+    html: str,
+    title: str = "TestPage",
+    version: int = 1,
+    comments: str | None = FAKE_COMMENTS_MD,
+):
+    """Create patches for REST API functions."""
+    return {
+        "get_confluence_auth": lambda: FAKE_AUTH,
+        "fetch_page_version": AsyncMock(return_value=version),
+        "fetch_page_body": AsyncMock(return_value=(html, title, version)),
+        "fetch_comments": AsyncMock(return_value=comments),
+    }
 
 
 class TestFullSyncFlow:
@@ -93,6 +86,13 @@ class TestFullSyncFlow:
     @pytest.fixture
     def root(self, tmp_path):
         return tmp_path / "sync-root"
+
+    def _run_with_mocks(self, source_state, root, html, version=1, comments=FAKE_COMMENTS_MD):
+        mocks = _mock_rest(html, version=version, comments=comments)
+        with patch.multiple("brain_sync.pipeline", **mocks):
+            return asyncio.run(
+                process_source(source_state, httpx.AsyncClient(), root)
+            )
 
     def test_first_sync_creates_output(self, root):
         """Register source, run pipeline, verify file + state."""
@@ -108,11 +108,7 @@ class TestFullSyncFlow:
             target_path=target_path,
         )
 
-        with patch(
-            "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
-            side_effect=_mock_subprocess(FAKE_HTML_V1),
-        ):
-            changed = asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
+        changed = self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
 
         # File written to knowledge/<target_path>/
         knowledge_dir = root / "knowledge" / target_path
@@ -147,24 +143,14 @@ class TestFullSyncFlow:
             target_path=target_path,
         )
 
-        mock_fn = _mock_subprocess(FAKE_HTML_V1)
-
         # First run
-        with patch(
-            "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
-            side_effect=mock_fn,
-        ):
-            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
+        self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
 
         first_changed_utc = state.sources[key].last_changed_utc
         time.sleep(0.05)
 
         # Second run — same content
-        with patch(
-            "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
-            side_effect=_mock_subprocess(FAKE_HTML_V1),
-        ):
-            changed = asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
+        changed = self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
 
         assert changed is False
         # last_changed_utc should NOT have been updated
@@ -185,21 +171,13 @@ class TestFullSyncFlow:
         )
 
         # First run with V1
-        with patch(
-            "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
-            side_effect=_mock_subprocess(FAKE_HTML_V1),
-        ):
-            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
+        self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
 
         first_hash = state.sources[key].content_hash
         time.sleep(0.05)
 
         # Second run with V2
-        with patch(
-            "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
-            side_effect=_mock_subprocess(FAKE_HTML_V2),
-        ):
-            changed = asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
+        changed = self._run_with_mocks(state.sources[key], root, FAKE_HTML_V2, version=2)
 
         assert changed is True
 
@@ -282,11 +260,11 @@ class TestStatePersistenceRoundTrip:
             target_path=target_path,
         )
 
-        with patch(
-            "brain_sync.sources.confluence.asyncio.create_subprocess_exec",
-            side_effect=_mock_subprocess(FAKE_HTML_V1),
-        ):
-            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
+        mocks = _mock_rest(FAKE_HTML_V1)
+        with patch.multiple("brain_sync.pipeline", **mocks):
+            asyncio.run(
+                process_source(state.sources[key], httpx.AsyncClient(), root)
+            )
 
         # Save state
         save_state(root, state)

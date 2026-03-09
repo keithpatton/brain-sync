@@ -14,7 +14,16 @@ pip install -e .
 
 **Confluence** — create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then configure credentials via either:
 
-- `~/.confluence-cli/config.json` (from [confluence-cli](https://github.com/pchuri/confluence-cli))
+- `~/.brain-sync/config.json` (set during `brain-sync init` or manually):
+  ```json
+  {
+    "confluence": {
+      "domain": "yourcompany.atlassian.net",
+      "email": "you@example.com",
+      "token": "your-api-token"
+    }
+  }
+  ```
 - Environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`
 
 **Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
@@ -271,6 +280,11 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 {
   "brains": ["/path/to/my-brain"],
   "log_level": "INFO",
+  "confluence": {
+    "domain": "yourcompany.atlassian.net",
+    "email": "you@example.com",
+    "token": "your-api-token"
+  },
   "regen": {
     "model": "claude-sonnet-4-6",
     "effort": "medium",
@@ -281,7 +295,7 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 }
 ```
 
-The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `regen` section is optional — defaults are used if omitted.
+The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `confluence` section stores Confluence REST API credentials (can also be set via `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` env vars). The `regen` section is optional — defaults are used if omitted.
 
 ## Converting .docx files
 

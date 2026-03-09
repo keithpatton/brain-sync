@@ -190,9 +190,11 @@ class TestGetConfluenceAuth:
         config.write_text(
             json.dumps(
                 {
-                    "domain": "test.atlassian.net",
-                    "email": "a@b.com",
-                    "token": "secret",
+                    "confluence": {
+                        "domain": "test.atlassian.net",
+                        "email": "a@b.com",
+                        "token": "secret",
+                    },
                 }
             )
         )

@@ -9,7 +9,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path.home() / ".confluence-cli" / "config.json"
+_CONFIG_PATH = Path.home() / ".brain-sync" / "config.json"
 
 # Retry settings
 MAX_RETRIES = 3
@@ -36,26 +36,27 @@ _auth_checked: bool = False
 
 
 def get_confluence_auth() -> ConfluenceAuth | None:
-    """Read credentials from confluence-cli config, falling back to env vars."""
+    """Read credentials from brain-sync config, falling back to env vars."""
     global _cached_auth, _auth_checked
     if _auth_checked:
         return _cached_auth
 
     _auth_checked = True
 
-    # Try confluence-cli config file
+    # Try brain-sync config file (~/.brain-sync/config.json)
     if _CONFIG_PATH.exists():
         try:
             data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            domain = data.get("domain")
-            email = data.get("email")
-            token = data.get("token")
+            confluence = data.get("confluence", {})
+            domain = confluence.get("domain")
+            email = confluence.get("email")
+            token = confluence.get("token")
             if domain and email and token:
                 _cached_auth = ConfluenceAuth(domain=domain, email=email, token=token)
                 log.debug("Loaded Confluence auth from %s", _CONFIG_PATH)
                 return _cached_auth
         except Exception as e:
-            log.debug("Failed to read confluence-cli config: %s", e)
+            log.debug("Failed to read brain-sync config: %s", e)
 
     # Fallback to env vars
     import os
@@ -221,6 +222,62 @@ async def fetch_attachments(
             break
         start += limit
     return results
+
+
+async def fetch_comments(
+    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+) -> str | None:
+    """Fetch page comments via REST API. Returns markdown string, or None."""
+    results: list[dict] = []
+    start = 0
+    limit = 25
+    try:
+        while True:
+            resp = await _request(
+                client, auth, "GET",
+                f"/content/{page_id}/child/comment",
+                params={
+                    "expand": "body.storage,version",
+                    "start": str(start),
+                    "limit": str(limit),
+                },
+            )
+            data = resp.json()
+            for item in data.get("results", []):
+                body_html = item.get("body", {}).get("storage", {}).get("value", "")
+                title = item.get("title") or ""
+                version = item.get("version", {})
+                author = version.get("by", {}).get("displayName", "Unknown")
+                when = version.get("when", "")
+                results.append({
+                    "author": author,
+                    "date": when,
+                    "title": title,
+                    "body": body_html,
+                })
+            if data.get("size", 0) < limit:
+                break
+            start += limit
+    except Exception as e:
+        log.debug("Comments fetch failed for page %s: %s", page_id, e)
+        return None
+
+    if not results:
+        return None
+
+    from brain_sync.converter import html_to_markdown
+
+    lines: list[str] = []
+    for c in results:
+        header = f"**{c['author']}**"
+        if c["date"]:
+            header += f" ({c['date']})"
+        lines.append(header)
+        body_md = html_to_markdown(c["body"]).strip()
+        if body_md:
+            lines.append(body_md)
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 async def download_attachment(
