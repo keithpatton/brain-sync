@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -407,7 +407,8 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
                 try:
                     if root is not None:
                         target_path = str(manifest_path.parent.relative_to(root))
-                        target_path = target_path.replace("\\", "/")
+                        from brain_sync.fs_utils import normalize_path
+                        target_path = normalize_path(target_path)
                     else:
                         target_path = ""
                 except ValueError:
@@ -484,10 +485,56 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         if "retry_count" in existing_cols:
             conn.execute("ALTER TABLE insight_state DROP COLUMN retry_count")
         conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '9')",
+        )
+        conn.commit()
+        from_version = 9
+
+    if from_version < 10:
+        # v9 → v10: Normalize all path separators (backslash → forward slash)
+        bs = "\\"
+
+        # insight_state: delete backslash duplicates that clash with existing
+        # forward-slash rows, then normalize the rest
+        conn.execute(
+            "DELETE FROM insight_state WHERE knowledge_path LIKE ? "
+            "AND REPLACE(knowledge_path, ?, '/') IN "
+            "(SELECT knowledge_path FROM insight_state WHERE knowledge_path NOT LIKE ?)",
+            (f"%{bs}%", bs, f"%{bs}%"),
+        )
+        conn.execute(
+            "UPDATE insight_state SET knowledge_path = REPLACE(knowledge_path, ?, '/')",
+            (bs,),
+        )
+        # Strip accidental 'knowledge/' prefix
+        conn.execute(
+            "UPDATE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
+            "WHERE knowledge_path LIKE 'knowledge/%'"
+        )
+        # Deduplicate any remaining collisions
+        conn.execute("""
+            DELETE FROM insight_state WHERE rowid NOT IN (
+                SELECT MAX(rowid) FROM insight_state GROUP BY knowledge_path
+            )
+        """)
+
+        # sources: normalize target_path
+        conn.execute(
+            "UPDATE sources SET target_path = REPLACE(target_path, ?, '/')",
+            (bs,),
+        )
+
+        # relationships: normalize local_path
+        conn.execute(
+            "UPDATE relationships SET local_path = REPLACE(local_path, ?, '/')",
+            (bs,),
+        )
+        conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
+        log.info("Normalized knowledge_path separators in insight_state")
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -585,6 +632,7 @@ def save_state(root: Path, state: SyncState) -> None:
     (target_path, include_links, include_children, include_attachments).
     Only inserts if the source doesn't exist yet.
     """
+    from brain_sync.fs_utils import normalize_path
     conn = _connect(root)
     try:
         for key, ss in state.sources.items():
@@ -627,7 +675,7 @@ def save_state(root: Path, state: SyncState) -> None:
                         ss.metadata_fingerprint,
                         ss.next_check_utc,
                         ss.interval_seconds,
-                        ss.target_path,
+                        normalize_path(ss.target_path),
                         int(ss.include_links),
                         int(ss.include_children),
                         int(ss.include_attachments),
@@ -640,6 +688,8 @@ def save_state(root: Path, state: SyncState) -> None:
 
 def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:
     """Update a source's target_path directly in the DB."""
+    from brain_sync.fs_utils import normalize_path
+    new_target_path = normalize_path(new_target_path)
     conn = _connect(root)
     try:
         conn.execute(
@@ -739,6 +789,8 @@ def load_document(root: Path, canonical_id: str) -> DocumentState | None:
 
 def save_relationship(root: Path, rel: Relationship) -> None:
     """UPSERT a relationship record."""
+    from brain_sync.fs_utils import normalize_path
+    local_path = normalize_path(rel.local_path)
     conn = _connect(root)
     try:
         conn.execute(
@@ -755,7 +807,7 @@ def save_relationship(root: Path, rel: Relationship) -> None:
                 rel.parent_canonical_id,
                 rel.canonical_id,
                 rel.relationship_type,
-                rel.local_path,
+                local_path,
                 rel.source_type,
                 rel.first_seen_utc,
                 rel.last_seen_utc,
@@ -797,6 +849,8 @@ def update_relationship_path(
     root: Path, parent_canonical_id: str, canonical_id: str, new_local_path: str,
 ) -> None:
     """Update the local_path for a relationship after file rediscovery."""
+    from brain_sync.fs_utils import normalize_path
+    new_local_path = normalize_path(new_local_path)
     conn = _connect(root)
     try:
         conn.execute(
@@ -861,6 +915,8 @@ def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
 
 def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     """Load insight state for a knowledge path."""
+    from brain_sync.fs_utils import normalize_path
+    knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
         row = conn.execute(
@@ -890,6 +946,8 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
 
 def save_insight_state(root: Path, istate: InsightState) -> None:
     """UPSERT insight state for a knowledge path."""
+    from brain_sync.fs_utils import normalize_path
+    kp = normalize_path(istate.knowledge_path)
     conn = _connect(root)
     try:
         conn.execute(
@@ -909,7 +967,7 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
             "num_turns=excluded.num_turns, "
             "model=excluded.model",
             (
-                istate.knowledge_path,
+                kp,
                 istate.content_hash,
                 istate.summary_hash,
                 istate.regen_started_utc,
@@ -957,6 +1015,8 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
 
 def delete_insight_state(root: Path, knowledge_path: str) -> None:
     """Delete an insight_state entry."""
+    from brain_sync.fs_utils import normalize_path
+    knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
         conn.execute(
@@ -983,6 +1043,9 @@ def reset_running_insight_states(root: Path) -> int:
 
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
     """Update a knowledge_path in insight_state (for folder renames)."""
+    from brain_sync.fs_utils import normalize_path
+    old_path = normalize_path(old_path)
+    new_path = normalize_path(new_path)
     conn = _connect(root)
     try:
         conn.execute(

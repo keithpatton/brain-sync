@@ -19,6 +19,7 @@ from brain_sync.confluence_rest import (
 )
 from brain_sync.converter import html_to_markdown
 from brain_sync.fileops import EXCLUDED_DIRS, atomic_write_bytes, content_hash, rediscover_local_path
+from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import (
     SourceType,
     canonical_filename,
@@ -211,9 +212,7 @@ def rediscover_relationship_paths(
         found = rediscover_local_path(manifest_dir, rel.canonical_id)
         if found is not None:
             try:
-                new_local = str(found.relative_to(manifest_dir.resolve()))
-                # Normalize to forward slashes for consistency
-                new_local = new_local.replace("\\", "/")
+                new_local = normalize_path(found.relative_to(manifest_dir.resolve()))
             except ValueError:
                 # Found file is outside manifest_dir — skip
                 updated.append(rel)

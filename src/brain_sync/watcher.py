@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.fileops import EXCLUDED_DIRS
+from brain_sync.fs_utils import normalize_path
 from watchdog.events import (
     DirMovedEvent,
     FileMovedEvent,
@@ -113,8 +114,8 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
         log.debug("Move not within knowledge/: %s -> %s", move.src, move.dest)
         return
 
-    src_rel_str = str(src_rel).replace("\\", "/")
-    dest_rel_str = str(dest_rel).replace("\\", "/")
+    src_rel_str = normalize_path(src_rel)
+    dest_rel_str = normalize_path(dest_rel)
 
     insights_src = insights_root / src_rel
     insights_dest = insights_root / dest_rel

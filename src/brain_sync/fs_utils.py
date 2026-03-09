@@ -10,6 +10,15 @@ from pathlib import Path
 from brain_sync.fileops import EXCLUDED_DIRS, KNOWLEDGE_EXTENSIONS
 
 
+def normalize_path(p: str | Path) -> str:
+    """Normalize a relative path to forward slashes for consistent storage.
+
+    Use this for any path that will be stored in the DB or compared across
+    modules. Converts backslashes (Windows Path artefacts) to forward slashes.
+    """
+    return str(p).replace("\\", "/")
+
+
 def is_readable_file(p: Path) -> bool:
     """Check if a file has a readable extension and is not hidden."""
     return p.is_file() and p.suffix.lower() in KNOWLEDGE_EXTENSIONS and not p.name.startswith(("_", "."))

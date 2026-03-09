@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from brain_sync.config import Config
+from brain_sync.fs_utils import normalize_path
 from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
 from brain_sync.regen_queue import RegenQueue
@@ -49,7 +50,7 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
     knowledge_root = root / "knowledge"
     try:
         rel = folder.relative_to(knowledge_root)
-        return str(rel).replace("\\", "/")
+        return normalize_path(rel)
     except ValueError:
         return ""
 

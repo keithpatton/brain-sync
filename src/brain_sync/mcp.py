@@ -29,7 +29,7 @@ from brain_sync.commands import (
     resolve_root,
 )
 from brain_sync.fileops import TEXT_EXTENSIONS
-from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file
+from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
 from brain_sync.regen import regen_all, regen_path
 from brain_sync.sources import UnsupportedSourceError
 
@@ -115,7 +115,7 @@ def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
     if core_dir.is_dir():
         for p in sorted(core_dir.rglob("*")):
             if p.is_file() and p.suffix.lower() in TEXT_EXTENSIONS and not p.name.startswith(("_", ".")):
-                rel = str(p.relative_to(core_dir)).replace("\\", "/")
+                rel = normalize_path(p.relative_to(core_dir))
                 result["knowledge_core"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
 
     # 2. schemas
@@ -123,7 +123,7 @@ def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
     if schemas_dir.is_dir():
         for p in sorted(schemas_dir.rglob("*")):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"} and not p.name.startswith("."):
-                rel = str(p.relative_to(schemas_dir)).replace("\\", "/")
+                rel = normalize_path(p.relative_to(schemas_dir))
                 result["schemas"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
 
     # 3. insights/_core (excluding journal/)
@@ -134,7 +134,7 @@ def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
                 rel_parts = p.relative_to(insights_core).parts
                 if "journal" in rel_parts:
                     continue
-                rel = str(p.relative_to(insights_core)).replace("\\", "/")
+                rel = normalize_path(p.relative_to(insights_core))
                 result["insights_core"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
 
     return result
@@ -442,6 +442,7 @@ async def brain_sync_regen(path: str | None = None) -> dict:
     """Regenerate insight summaries."""
     async with _regen_lock:
         if path:
+            path = normalize_path(path)
             count = await regen_path(_root, path)
         else:
             count = await regen_all(_root)

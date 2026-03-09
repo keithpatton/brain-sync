@@ -1,10 +1,13 @@
 from brain_sync.state import (
     DocumentState,
+    InsightState,
     Relationship,
     SourceState,
     SyncState,
     count_relationships_for_doc,
+    delete_insight_state,
     load_document,
+    load_insight_state,
     load_relationships_for_primary,
     load_state,
     prune_db,
@@ -12,10 +15,12 @@ from brain_sync.state import (
     remove_document_if_orphaned,
     remove_relationship,
     save_document,
+    save_insight_state,
     save_relationship,
     save_state,
     source_key,
     source_key_for_entry,
+    update_insight_path,
     update_relationship_path,
 )
 
@@ -62,7 +67,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 9
+        assert state.version == 10
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -518,7 +523,7 @@ class TestSchemaV4Migration:
         # Verify schema version is 9 (v3→v4→v5→v6→v7→v8→v9 migration chain)
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "9"
+        assert version == "10"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
@@ -551,3 +556,46 @@ class TestSchemaV4Migration:
         import pytest
         with pytest.raises(Exception):
             save_document(tmp_path, doc2)
+
+
+class TestInsightStatePathNormalization:
+    """Verify that knowledge_path is always stored with forward slashes."""
+
+    def test_save_normalizes_backslashes(self, tmp_path):
+        save_insight_state(tmp_path, InsightState(
+            knowledge_path="initiatives\\B4B\\Platform PRD",
+            content_hash="abc",
+            summary_hash="def",
+        ))
+        loaded = load_insight_state(tmp_path, "initiatives/B4B/Platform PRD")
+        assert loaded is not None
+        assert loaded.knowledge_path == "initiatives/B4B/Platform PRD"
+
+    def test_load_normalizes_query(self, tmp_path):
+        save_insight_state(tmp_path, InsightState(
+            knowledge_path="initiatives/B4B/Platform PRD",
+            content_hash="abc",
+            summary_hash="def",
+        ))
+        # Query with backslashes should still find it
+        loaded = load_insight_state(tmp_path, "initiatives\\B4B\\Platform PRD")
+        assert loaded is not None
+
+    def test_delete_normalizes_path(self, tmp_path):
+        save_insight_state(tmp_path, InsightState(
+            knowledge_path="teams/product",
+            content_hash="abc",
+            summary_hash="def",
+        ))
+        delete_insight_state(tmp_path, "teams\\product")
+        assert load_insight_state(tmp_path, "teams/product") is None
+
+    def test_update_normalizes_paths(self, tmp_path):
+        save_insight_state(tmp_path, InsightState(
+            knowledge_path="old/path",
+            content_hash="abc",
+            summary_hash="def",
+        ))
+        update_insight_path(tmp_path, "old\\path", "new\\path")
+        assert load_insight_state(tmp_path, "old/path") is None
+        assert load_insight_state(tmp_path, "new/path") is not None
