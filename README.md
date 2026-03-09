@@ -44,7 +44,7 @@ This writes credentials to `~/.brain-sync/config.json`. Alternatively, set envir
 ```bash
 brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
   --path initiatives/my-project \
-  --include-links --include-children
+  --include-links --include-children --include-attachments
 ```
 
 Sources are registered in SQLite — no manifest files needed.
