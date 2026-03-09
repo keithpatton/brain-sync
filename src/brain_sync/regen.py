@@ -1114,9 +1114,6 @@ async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
         knowledge_dir = root / "knowledge" / kp if kp else root / "knowledge"
         if not knowledge_dir.is_dir() and kp not in content_path_set:
             delete_insight_state(root, kp)
-            insights_dir = root / "insights" / kp if kp else root / "insights"
-            if insights_dir.is_dir():
-                shutil.rmtree(insights_dir)
             orphaned += 1
             log.info("Cleaned up orphaned insight state: %s", kp)
     if orphaned:
