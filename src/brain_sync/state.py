@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -517,8 +517,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             (bs,),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '10')",
         )
         conn.commit()
         log.info("Normalized knowledge_path separators in insight_state")
@@ -535,6 +534,35 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '11')",
         )
         conn.commit()
+        from_version = 11
+
+    if from_version < 12:
+        # v11 → v12: Re-run backslash normalization for paths that escaped v10
+        bs = "\\"
+        conn.execute(
+            "DELETE FROM insight_state WHERE knowledge_path LIKE ? "
+            "AND REPLACE(knowledge_path, ?, '/') IN "
+            "(SELECT knowledge_path FROM insight_state WHERE knowledge_path NOT LIKE ?)",
+            (f"%{bs}%", bs, f"%{bs}%"),
+        )
+        conn.execute(
+            "UPDATE insight_state SET knowledge_path = REPLACE(knowledge_path, ?, '/')",
+            (bs,),
+        )
+        conn.execute(
+            "UPDATE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
+            "WHERE knowledge_path LIKE 'knowledge/%'"
+        )
+        conn.execute("""
+            DELETE FROM insight_state WHERE rowid NOT IN (
+                SELECT MAX(rowid) FROM insight_state GROUP BY knowledge_path
+            )
+        """)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '12')",
+        )
+        conn.commit()
+        log.info("Re-normalized backslash paths in insight_state (v12)")
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -1035,12 +1063,12 @@ def delete_insight_state(root: Path, knowledge_path: str) -> None:
     """Delete an insight_state entry."""
     from brain_sync.fs_utils import normalize_path
 
-    knowledge_path = normalize_path(knowledge_path)
+    normalized = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
         conn.execute(
-            "DELETE FROM insight_state WHERE knowledge_path = ?",
-            (knowledge_path,),
+            "DELETE FROM insight_state WHERE knowledge_path = ? OR knowledge_path = ?",
+            (knowledge_path, normalized),
         )
         conn.commit()
     finally:
