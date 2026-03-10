@@ -18,7 +18,7 @@ class TestLoadManifest:
             """
 touch_dirty_relative_path: ../.dirty
 sources:
-  - url: https://serko.atlassian.net/wiki/spaces/X/pages/123/Foo
+  - url: https://acme.atlassian.net/wiki/spaces/X/pages/123/Foo
     file: foo.md
   - url: https://docs.google.com/document/d/abc123
     file: bar.md
@@ -26,7 +26,7 @@ sources:
         )
         m = load_manifest(p)
         assert len(m.sources) == 2
-        assert m.sources[0].url == "https://serko.atlassian.net/wiki/spaces/X/pages/123/Foo"
+        assert m.sources[0].url == "https://acme.atlassian.net/wiki/spaces/X/pages/123/Foo"
         assert m.sources[0].file == "foo.md"
         assert m.sources[1].file == "bar.md"
         assert m.touch_dirty_relative_path == "../.dirty"

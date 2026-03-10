@@ -16,7 +16,7 @@ from brain_sync.sources import (
 
 class TestDetectSourceType:
     def test_confluence(self):
-        url = "https://serko.atlassian.net/wiki/spaces/PPT/pages/123/Foo"
+        url = "https://acme.atlassian.net/wiki/spaces/PPT/pages/123/Foo"
         assert detect_source_type(url) == SourceType.CONFLUENCE
 
     def test_google_docs(self):
@@ -30,7 +30,7 @@ class TestDetectSourceType:
 
 class TestExtractConfluencePageId:
     def test_standard_url(self):
-        url = "https://serko.atlassian.net/wiki/spaces/PPT/pages/4859888213/ERD+Title"
+        url = "https://acme.atlassian.net/wiki/spaces/PPT/pages/4859888213/ERD+Title"
         assert extract_confluence_page_id(url) == "4859888213"
 
     def test_url_with_query_params(self):

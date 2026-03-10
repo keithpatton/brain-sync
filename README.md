@@ -85,7 +85,7 @@ Init also installs the Claude Code skill to `~/.claude/skills/brain-sync/` and r
 ### In practice — human, synced, and generated content
 
 ```
-serko-brain/
+acme-brain/
   .sync-state.sqlite
   knowledge/
     _core/                              ← you write and maintain these
