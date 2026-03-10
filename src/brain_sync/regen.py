@@ -27,7 +27,7 @@ from importlib import resources
 from pathlib import Path
 from uuid import uuid4
 
-from brain_sync.commands.context import CONFIG_FILE
+from brain_sync.config import CONFIG_FILE
 from brain_sync.fileops import TEXT_EXTENSIONS, atomic_write_bytes
 from brain_sync.fs_utils import (
     find_all_content_paths,

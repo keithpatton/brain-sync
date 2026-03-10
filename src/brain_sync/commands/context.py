@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".brain-sync"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+from brain_sync.config import CONFIG_DIR, CONFIG_FILE, load_config
+
+# Re-export for backwards compatibility during migration
+__all__ = ["CONFIG_DIR", "CONFIG_FILE", "BrainNotFoundError", "resolve_root"]
 
 
 class BrainNotFoundError(Exception):
@@ -21,10 +22,9 @@ def resolve_root() -> Path:
     """
     if not CONFIG_FILE.exists():
         raise BrainNotFoundError("No brain configured. Run: brain-sync init <path>")
-    try:
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        raise BrainNotFoundError(f"Cannot read {CONFIG_FILE}: {e}") from e
+    data = load_config()
+    if not data:
+        raise BrainNotFoundError(f"Cannot read {CONFIG_FILE}")
     brains = data.get("brains", [])
     if not brains:
         raise BrainNotFoundError("No brain roots registered in config")

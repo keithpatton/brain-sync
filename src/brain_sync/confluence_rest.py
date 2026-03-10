@@ -4,13 +4,12 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 
 import httpx
 
-log = logging.getLogger(__name__)
+from brain_sync.config import CONFIG_FILE
 
-_CONFIG_PATH = Path.home() / ".brain-sync" / "config.json"
+log = logging.getLogger(__name__)
 
 # Retry settings
 MAX_RETRIES = 3
@@ -54,7 +53,7 @@ class _AuthCache:
         with self._lock:
             self._auth = auth
         if auth is None:
-            log.warning("No Confluence REST auth available (checked %s and env vars)", _CONFIG_PATH)
+            log.warning("No Confluence REST auth available (checked %s and env vars)", CONFIG_FILE)
         return auth
 
     def reset(self) -> None:
@@ -64,16 +63,16 @@ class _AuthCache:
 
     @staticmethod
     def _load_from_config() -> ConfluenceAuth | None:
-        if not _CONFIG_PATH.exists():
+        if not CONFIG_FILE.exists():
             return None
         try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             confluence = data.get("confluence", {})
             domain = confluence.get("domain")
             email = confluence.get("email")
             token = confluence.get("token")
             if domain and email and token:
-                log.debug("Loaded Confluence auth from %s", _CONFIG_PATH)
+                log.debug("Loaded Confluence auth from %s", CONFIG_FILE)
                 return ConfluenceAuth(domain=domain, email=email, token=token)
         except Exception as e:
             log.debug("Failed to read brain-sync config: %s", e)

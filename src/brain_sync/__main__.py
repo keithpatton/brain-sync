@@ -175,16 +175,9 @@ def main() -> None:
     # Resolve log level: CLI arg > config.json > default "INFO"
     log_level = args.log_level
     if log_level is None:
-        try:
-            from brain_sync.commands.context import CONFIG_FILE
+        from brain_sync.config import load_config
 
-            if CONFIG_FILE.exists():
-                import json
-
-                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-                log_level = data.get("log_level")
-        except (json.JSONDecodeError, OSError):
-            pass
+        log_level = load_config().get("log_level")
     setup_logging(log_level or "INFO")
 
     handlers = {

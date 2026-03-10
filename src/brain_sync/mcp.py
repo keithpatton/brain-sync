@@ -12,7 +12,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
@@ -773,17 +772,9 @@ def brain_sync_open_file(
 
 
 if __name__ == "__main__":
-    import json
-
-    from brain_sync.commands.context import CONFIG_FILE
+    from brain_sync.config import load_config
     from brain_sync.logging_config import setup_logging
 
-    log_level = "INFO"
-    try:
-        if CONFIG_FILE.exists():
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            log_level = data.get("log_level", log_level)
-    except (json.JSONDecodeError, OSError):
-        pass
+    log_level = load_config().get("log_level", "INFO")
     setup_logging(log_level)
     server.run(transport="stdio")

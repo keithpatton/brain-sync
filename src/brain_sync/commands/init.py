@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
-from brain_sync.commands.context import CONFIG_DIR, CONFIG_FILE
+from brain_sync.config import CONFIG_FILE, load_config, save_config
 
 log = logging.getLogger(__name__)
 
@@ -63,15 +62,7 @@ def _register_brain_root(
         log.info("[dry-run] Would register brain root in %s", CONFIG_FILE)
         return
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-    config: dict = {}
-    if CONFIG_FILE.exists():
-        try:
-            config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            config = {}
-
+    config = load_config()
     changed = False
 
     brains = config.get("brains", [])
@@ -88,7 +79,7 @@ def _register_brain_root(
         changed = True
 
     if changed:
-        CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        save_config(config)
         log.info("Updated config in %s", CONFIG_FILE)
 
 

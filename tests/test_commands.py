@@ -61,14 +61,14 @@ class TestResolveRoot:
             json.dumps({"brains": [str(brain_root)]}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         result = resolve_root()
         assert result == brain_root
 
     def test_raises_when_no_config(self, tmp_path, monkeypatch):
         config_file = tmp_path / "nonexistent" / "config.json"
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         with pytest.raises(BrainNotFoundError):
             resolve_root()
@@ -76,7 +76,7 @@ class TestResolveRoot:
     def test_raises_when_empty_brains(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"brains": []}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         with pytest.raises(BrainNotFoundError):
             resolve_root()
@@ -92,7 +92,7 @@ class TestResolveRoot:
             json.dumps({"brains": [str(tmp_path / "other")]}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         result = _require_root(explicit)
         assert result == explicit.resolve()
@@ -140,7 +140,7 @@ class TestAddSource:
             json.dumps({"brains": [str(brain)]}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         result = add_source(url=CONFLUENCE_URL, target_path="project")
         assert result.canonical_id == CONFLUENCE_CID
@@ -306,8 +306,8 @@ class TestInitBrain:
         config_dir = tmp_path / "fake-config"
         config_dir.mkdir()
         config_file = config_dir / "config.json"
-        monkeypatch.setattr("brain_sync.commands.init.CONFIG_DIR", config_dir)
-        monkeypatch.setattr("brain_sync.commands.init.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
         skill_dir = tmp_path / "fake-skills" / "brain-sync"
         monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", skill_dir)
 
@@ -421,7 +421,7 @@ class TestSkillSmoke:
             json.dumps({"brains": [str(brain)]}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         # Add a source first (with explicit root)
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
@@ -438,7 +438,7 @@ class TestSkillSmoke:
             json.dumps({"brains": [str(brain)]}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("brain_sync.commands.context.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
 
         result = add_source(url=CONFLUENCE_URL, target_path="project")
         assert result.canonical_id == CONFLUENCE_CID
