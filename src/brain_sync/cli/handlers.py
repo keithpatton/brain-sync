@@ -220,6 +220,30 @@ def handle_update(args) -> None:
     )
 
 
+def handle_reconcile(args) -> None:
+    from brain_sync.commands.sources import reconcile_sources
+
+    try:
+        result = reconcile_sources(root=_get_root(args))
+    except BrainNotFoundError:
+        log.exception("Cannot resolve brain root")
+        sys.exit(1)
+
+    if not result.updated and not result.not_found:
+        log.info("All sources are at their expected paths. Nothing to reconcile.")
+        return
+
+    for entry in result.updated:
+        log.info("Updated %s: knowledge/%s -> knowledge/%s", entry.canonical_id, entry.old_path, entry.new_path)
+
+    if result.not_found:
+        log.warning("%d source(s) could not be found on disk:", len(result.not_found))
+        for cid in result.not_found:
+            log.warning("  %s", cid)
+
+    log.info("Reconciled %d source(s).", len(result.updated))
+
+
 def handle_status(args) -> None:
     log.info("Status not yet implemented")
 

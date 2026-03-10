@@ -94,6 +94,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_update.add_argument("--include-children", action=BooleanOptionalAction, default=None, help="Discover and sync child pages")
     p_update.add_argument("--include-attachments", action=BooleanOptionalAction, default=None, help="Discover and sync attachments")
 
+    # --- reconcile ---
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Update DB target paths to match where files actually are on disk",
+    )
+    p_reconcile.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+
     # --- status ---
     p_status = sub.add_parser("status", help="Show daemon and sync status")
     p_status.add_argument(

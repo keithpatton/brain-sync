@@ -10,6 +10,7 @@ from brain_sync.commands.init import InitResult, init_brain, update_skill
 from brain_sync.commands.sources import (
     AddResult,
     MoveResult,
+    ReconcileResult,
     RemoveResult,
     SourceAlreadyExistsError,
     SourceInfo,
@@ -18,6 +19,7 @@ from brain_sync.commands.sources import (
     add_source,
     list_sources,
     move_source,
+    reconcile_sources,
     remove_source,
     update_source,
 )
@@ -27,6 +29,7 @@ __all__ = [
     "BrainNotFoundError",
     "InitResult",
     "MoveResult",
+    "ReconcileResult",
     "RemoveResult",
     "SourceAlreadyExistsError",
     "SourceInfo",
@@ -36,6 +39,7 @@ __all__ = [
     "init_brain",
     "list_sources",
     "move_source",
+    "reconcile_sources",
     "remove_source",
     "resolve_root",
     "update_skill",

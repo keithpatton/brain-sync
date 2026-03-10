@@ -57,7 +57,20 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
+    from brain_sync.commands.sources import reconcile_sources
     from brain_sync.regen_lifecycle import regen_session
+
+    # Reconcile target_paths with filesystem before loading state for sync.
+    # This handles files moved while the daemon was not running.
+    result = reconcile_sources(root)
+    if result.updated:
+        for entry in result.updated:
+            log.info(
+                "Reconciled %s: knowledge/%s -> knowledge/%s",
+                entry.canonical_id,
+                entry.old_path,
+                entry.new_path,
+            )
 
     state = load_state(root)
     scheduler = Scheduler()
@@ -162,6 +175,7 @@ def main() -> None:
         handle_init,
         handle_list,
         handle_move,
+        handle_reconcile,
         handle_regen,
         handle_remove,
         handle_run,
@@ -193,6 +207,7 @@ def main() -> None:
         "list": handle_list,
         "move": handle_move,
         "update": handle_update,
+        "reconcile": handle_reconcile,
         "status": handle_status,
         "regen": handle_regen,
         "config": handle_config,
