@@ -253,7 +253,7 @@ def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
 
         stype = SourceType(source_type)
         return canonical_id(stype, source_url)
-    except Exception:
+    except (ValueError, KeyError):
         return f"unknown:{source_url}"
 
 

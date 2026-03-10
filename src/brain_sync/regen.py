@@ -448,8 +448,8 @@ def _collect_global_context(root: Path, current_path: str) -> str:
                     rel = p.relative_to(core_dir)
                     parts.append(f"### {rel}\n```\n{content}\n```")
                     count += 1
-                except (OSError, UnicodeDecodeError):
-                    pass
+                except (OSError, UnicodeDecodeError) as exc:
+                    log.debug("Skipping unreadable file %s: %s", p, exc)
         if parts:
             sections.append("## Global Context: knowledge/_core\n" + "\n\n".join(parts))
             log.debug("Global context: %d files from knowledge/_core", count)
@@ -465,8 +465,8 @@ def _collect_global_context(root: Path, current_path: str) -> str:
                     rel = p.relative_to(schemas_dir)
                     parts.append(f"### {rel}\n```\n{content}\n```")
                     count += 1
-                except (OSError, UnicodeDecodeError):
-                    pass
+                except (OSError, UnicodeDecodeError) as exc:
+                    log.debug("Skipping unreadable file %s: %s", p, exc)
         if parts:
             sections.append("## Global Context: schemas\n" + "\n\n".join(parts))
             log.debug("Global context: %d files from schemas", count)
@@ -488,8 +488,8 @@ def _collect_global_context(root: Path, current_path: str) -> str:
                     content = p.read_text(encoding="utf-8")
                     parts.append(f"### {rel}\n```\n{content}\n```")
                     count += 1
-                except (OSError, UnicodeDecodeError):
-                    pass
+                except (OSError, UnicodeDecodeError) as exc:
+                    log.debug("Skipping unreadable file %s: %s", p, exc)
         if parts:
             sections.append("## Global Context: insights/_core\n" + "\n\n".join(parts))
             log.debug("Global context: %d files from insights/_core", count)

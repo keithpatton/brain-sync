@@ -98,7 +98,8 @@ def _read_file_safe(path: Path, max_chars: int | None = None) -> str:
         if max_chars is not None:
             return _truncate(text, max_chars)
         return text
-    except OSError:
+    except OSError as exc:
+        log.debug("Failed to read %s: %s", path, exc)
         return ""
 
 

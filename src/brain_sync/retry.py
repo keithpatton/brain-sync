@@ -131,8 +131,8 @@ async def async_retry(
 
         except CircuitOpenError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Attempt %d/%d failed: %s", attempt + 1, max_retries + 1, exc)
 
         # Record failure
         if breaker:

@@ -42,8 +42,8 @@ async def _resolve_auto_filename(
         if auth:
             try:
                 _, title, _ = await fetch_page_body(page_id, auth, http_client)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Failed to fetch page title for filename: %s", exc)
         return canonical_filename(source_type, page_id, title)
 
     if source_type == SourceType.GOOGLE_DOCS:
