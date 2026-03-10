@@ -17,7 +17,8 @@ def normalize_path(p: str | Path) -> str:
     Use this for any path that will be stored in the DB or compared across
     modules. Converts backslashes (Windows Path artefacts) to forward slashes.
     """
-    return str(p).replace("\\", "/")
+    result = str(p).replace("\\", "/")
+    return "" if result == "." else result
 
 
 def is_readable_file(p: Path) -> bool:
