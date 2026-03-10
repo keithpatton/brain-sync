@@ -28,6 +28,7 @@ from brain_sync.commands import (
     move_source,
     remove_source,
     resolve_root,
+    update_source,
 )
 from brain_sync.fileops import TEXT_EXTENSIONS
 from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
@@ -404,6 +405,38 @@ def brain_sync_remove(source: str, delete_files: bool = False) -> dict:
             root=_root,
             source=source,
             delete_files=delete_files,
+        )
+        return {"status": "ok", **asdict(result)}
+    except SourceNotFoundError:
+        return {
+            "status": "error",
+            "error": "source_not_found",
+            "source": source,
+        }
+
+
+@server.tool(
+    name="brain_sync_update",
+    description=(
+        "Update settings for a registered source. "
+        "Pass only the flags you want to change — omitted flags are left unchanged. "
+        "Use --include-links / --no-include-links style toggles."
+    ),
+)
+def brain_sync_update(
+    source: str,
+    include_links: bool | None = None,
+    include_children: bool | None = None,
+    include_attachments: bool | None = None,
+) -> dict:
+    """Update config flags for an existing sync source."""
+    try:
+        result = update_source(
+            root=_root,
+            source=source,
+            include_links=include_links,
+            include_children=include_children,
+            include_attachments=include_attachments,
         )
         return {"status": "ok", **asdict(result)}
     except SourceNotFoundError:

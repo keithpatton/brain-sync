@@ -14,10 +14,12 @@ from brain_sync.commands.sources import (
     SourceAlreadyExistsError,
     SourceInfo,
     SourceNotFoundError,
+    UpdateResult,
     add_source,
     list_sources,
     move_source,
     remove_source,
+    update_source,
 )
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "SourceAlreadyExistsError",
     "SourceInfo",
     "SourceNotFoundError",
+    "UpdateResult",
     "add_source",
     "init_brain",
     "list_sources",
@@ -36,4 +39,5 @@ __all__ = [
     "remove_source",
     "resolve_root",
     "update_skill",
+    "update_source",
 ]

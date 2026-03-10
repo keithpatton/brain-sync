@@ -161,6 +161,7 @@ def main() -> None:
         handle_remove,
         handle_run,
         handle_status,
+        handle_update,
         handle_update_skill,
     )
 
@@ -193,6 +194,7 @@ def main() -> None:
         "remove": handle_remove,
         "list": handle_list,
         "move": handle_move,
+        "update": handle_update,
         "status": handle_status,
         "regen": handle_regen,
         "config": handle_config,

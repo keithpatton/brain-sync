@@ -54,6 +54,15 @@ class MoveResult:
     files_moved: bool
 
 
+@dataclass
+class UpdateResult:
+    canonical_id: str
+    source_url: str
+    include_links: bool
+    include_children: bool
+    include_attachments: bool
+
+
 class SourceAlreadyExistsError(Exception):
     """Raised when a source is already registered."""
 
@@ -256,4 +265,64 @@ def move_source(
         old_path=old_path,
         new_path=to_path,
         files_moved=files_moved,
+    )
+
+
+def update_source(
+    root: Path | None = None,
+    *,
+    source: str,
+    include_links: bool | None = None,
+    include_children: bool | None = None,
+    include_attachments: bool | None = None,
+) -> UpdateResult:
+    """Update config flags for an existing sync source.
+
+    Only the flags that are explicitly provided (not None) are changed.
+
+    Raises:
+        SourceNotFoundError: If the source is not found.
+    """
+    root = _require_root(root)
+    state = load_state(root)
+
+    cid = _resolve_source(state, source)
+    if cid is None:
+        raise SourceNotFoundError(source)
+
+    ss = state.sources[cid]
+
+    # Build SET clauses for only the flags that were provided
+    updates: list[tuple[str, bool]] = []
+    if include_links is not None:
+        ss.include_links = include_links
+        updates.append(("include_links", include_links))
+    if include_children is not None:
+        ss.include_children = include_children
+        updates.append(("include_children", include_children))
+    if include_attachments is not None:
+        ss.include_attachments = include_attachments
+        updates.append(("include_attachments", include_attachments))
+
+    # Write directly to DB — save_state skips config fields on UPDATE
+    if updates:
+        set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
+        values = [int(v) for _, v in updates]
+        values.append(cid)  # type: ignore[arg-type]
+        conn = _connect(root)
+        try:
+            conn.execute(
+                f"UPDATE sources SET {set_clause} WHERE canonical_id = ?",
+                values,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    return UpdateResult(
+        canonical_id=cid,
+        source_url=ss.source_url,
+        include_links=ss.include_links,
+        include_children=ss.include_children,
+        include_attachments=ss.include_attachments,
     )

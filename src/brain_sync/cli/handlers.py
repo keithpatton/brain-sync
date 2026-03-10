@@ -193,6 +193,33 @@ def handle_move(args) -> None:
     log.info("Source %s moved to knowledge/%s", result.canonical_id, result.new_path)
 
 
+def handle_update(args) -> None:
+    from brain_sync.commands.sources import SourceNotFoundError, update_source
+
+    try:
+        result = update_source(
+            root=_get_root(args),
+            source=args.source,
+            include_links=args.include_links,
+            include_children=args.include_children,
+            include_attachments=args.include_attachments,
+        )
+    except SourceNotFoundError as e:
+        log.warning("Source not found: %s", e.source)
+        return
+    except BrainNotFoundError:
+        log.exception("Cannot resolve brain root")
+        sys.exit(1)
+
+    log.info("Updated source: %s", result.canonical_id)
+    log.info(
+        "  Links: %s, Children: %s, Attachments: %s",
+        result.include_links,
+        result.include_children,
+        result.include_attachments,
+    )
+
+
 def handle_status(args) -> None:
     log.info("Status not yet implemented")
 

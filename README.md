@@ -170,6 +170,7 @@ Restart Claude Code/Desktop. The following tools become available:
 |------|-------------|
 | `brain_sync_list` | List registered sources (optional `filter_path`) |
 | `brain_sync_add` | Register a URL for syncing |
+| `brain_sync_update` | Update settings for a source (pass only the flags to change) |
 | `brain_sync_remove` | Unregister a source |
 | `brain_sync_move` | Move a source to a new path |
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
@@ -196,6 +197,7 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
+| `brain-sync update <canonical-id-or-url> [--include-links\|--no-include-links] [--include-children\|--no-include-children] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
 | `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
 | `brain-sync convert <file> [--comments-from <docx>]` | Convert .docx to markdown, or append comments from .docx to .md |
@@ -349,7 +351,7 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-359 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, and integration tests.
+432 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, and integration tests.
 
 ## Supported sources
 

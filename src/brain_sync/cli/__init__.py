@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from argparse import BooleanOptionalAction
 from pathlib import Path
 
 
@@ -79,6 +80,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_move.add_argument("source", help="Canonical ID of the source to move")
     p_move.add_argument("--to", dest="to_path", required=True, help="New target path relative to knowledge/")
+
+    # --- update ---
+    p_update = sub.add_parser("update", help="Update settings for a registered source")
+    p_update.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_update.add_argument("source", help="Canonical ID or URL of the source to update")
+    p_update.add_argument("--include-links", action=BooleanOptionalAction, default=None, help="Discover and sync linked pages")
+    p_update.add_argument("--include-children", action=BooleanOptionalAction, default=None, help="Discover and sync child pages")
+    p_update.add_argument("--include-attachments", action=BooleanOptionalAction, default=None, help="Discover and sync attachments")
 
     # --- status ---
     p_status = sub.add_parser("status", help="Show daemon and sync status")

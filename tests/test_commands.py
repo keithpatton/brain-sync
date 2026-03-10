@@ -14,6 +14,7 @@ from brain_sync.commands import (
     SourceAlreadyExistsError,
     SourceInfo,
     SourceNotFoundError,
+    UpdateResult,
     add_source,
     init_brain,
     list_sources,
@@ -21,6 +22,7 @@ from brain_sync.commands import (
     remove_source,
     resolve_root,
     update_skill,
+    update_source,
 )
 from brain_sync.commands.context import _require_root
 from brain_sync.state import _connect
@@ -231,6 +233,68 @@ class TestMoveSource:
 
         sources = list_sources(root=brain)
         assert sources[0].target_path == "new-path"
+
+
+class TestUpdateSource:
+    def test_update_source_flags(self, brain):
+        """Update include_links from False to True, verify DB."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+
+        result = update_source(root=brain, source=CONFLUENCE_CID, include_links=True)
+
+        assert isinstance(result, UpdateResult)
+        assert result.canonical_id == CONFLUENCE_CID
+        assert result.include_links is True
+        assert result.include_children is False
+        assert result.include_attachments is False
+
+        # Verify persisted in DB by reloading
+        sources = list_sources(root=brain)
+        assert sources[0].include_links is True
+        assert sources[0].include_children is False
+
+    def test_update_source_partial(self, brain):
+        """Update only one flag, others unchanged."""
+        add_source(
+            root=brain,
+            url=CONFLUENCE_URL,
+            target_path="project",
+            include_links=True,
+            include_children=True,
+            include_attachments=True,
+        )
+
+        result = update_source(root=brain, source=CONFLUENCE_CID, include_children=False)
+
+        assert result.include_links is True
+        assert result.include_children is False
+        assert result.include_attachments is True
+
+        # Verify persisted
+        sources = list_sources(root=brain)
+        assert sources[0].include_links is True
+        assert sources[0].include_children is False
+        assert sources[0].include_attachments is True
+
+    def test_update_source_not_found(self, brain):
+        """Raises SourceNotFoundError for unknown source."""
+        with pytest.raises(SourceNotFoundError):
+            update_source(root=brain, source="nonexistent", include_links=True)
+
+    def test_update_source_by_url(self, brain):
+        """Can resolve source by URL."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+
+        result = update_source(root=brain, source=CONFLUENCE_URL, include_attachments=True)
+        assert result.canonical_id == CONFLUENCE_CID
+        assert result.include_attachments is True
+
+    def test_update_source_no_changes(self, brain):
+        """Calling with no flags is a no-op but succeeds."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_links=True)
+
+        result = update_source(root=brain, source=CONFLUENCE_CID)
+        assert result.include_links is True
 
 
 class TestInitBrain:

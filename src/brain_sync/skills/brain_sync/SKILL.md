@@ -43,6 +43,7 @@ artifacts do not answer the question. Stop once the question can be answered.
 |------|---------|
 | `brain_sync_list` | List registered sources (optional `filter_path`). |
 | `brain_sync_add` | Register a URL for syncing (`url`, `target_path`, optional flags). |
+| `brain_sync_update` | Update settings for a source — pass only the flags to change (`include_links`, `include_children`, `include_attachments`). |
 | `brain_sync_remove` | Unregister a source (`source` = canonical ID or URL). |
 | `brain_sync_move` | Move a source to a new path (`source`, `to_path`). |
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all). |
