@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass, field
+from os import PathLike
 from pathlib import Path
+
+from brain_sync.fs_utils import normalize_path
 
 log = logging.getLogger(__name__)
 
@@ -153,8 +156,25 @@ CREATE TABLE IF NOT EXISTS source_bindings (
 """
 
 
+class _PathNormalized:
+    """Mixin that auto-normalizes path fields on assignment.
+
+    Subclasses declare which fields are path fields via _PATH_FIELDS.
+    Works on both construction and mutation.
+    """
+
+    _PATH_FIELDS: set[str] = set()
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in self._PATH_FIELDS and isinstance(value, (str, PathLike)):
+            value = normalize_path(value)
+        super().__setattr__(name, value)
+
+
 @dataclass
-class SourceState:
+class SourceState(_PathNormalized):
+    _PATH_FIELDS = {"target_path"}
+
     canonical_id: str
     source_url: str
     source_type: str
@@ -191,7 +211,9 @@ class DocumentState:
 
 
 @dataclass
-class InsightState:
+class InsightState(_PathNormalized):
+    _PATH_FIELDS = {"knowledge_path"}
+
     knowledge_path: str
     content_hash: str | None = None
     summary_hash: str | None = None
@@ -207,7 +229,9 @@ class InsightState:
 
 
 @dataclass
-class Relationship:
+class Relationship(_PathNormalized):
+    _PATH_FIELDS = {"local_path"}
+
     parent_canonical_id: str
     canonical_id: str
     relationship_type: str
@@ -478,7 +502,9 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         from_version = 9
 
     if from_version < 10:
-        # v9 → v10: Normalize all path separators (backslash → forward slash)
+        # v9 → v10: Normalize all path separators (backslash → forward slash).
+        # Use OR IGNORE on updates because multiple rows can collide after
+        # normalisation; cleanup steps remove any leftover stale rows.
         bs = "\\"
 
         # insight_state: delete backslash duplicates that clash with existing
@@ -490,13 +516,21 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             (f"%{bs}%", bs, f"%{bs}%"),
         )
         conn.execute(
-            "UPDATE insight_state SET knowledge_path = REPLACE(knowledge_path, ?, '/')",
+            "UPDATE OR IGNORE insight_state SET knowledge_path = REPLACE(knowledge_path, ?, '/')",
             (bs,),
+        )
+        # Delete rows whose backslash form was skipped by OR IGNORE
+        conn.execute(
+            "DELETE FROM insight_state WHERE knowledge_path LIKE ?",
+            (f"%{bs}%",),
         )
         # Strip accidental 'knowledge/' prefix
         conn.execute(
-            "UPDATE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
+            "UPDATE OR IGNORE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
             "WHERE knowledge_path LIKE 'knowledge/%'"
+        )
+        conn.execute(
+            "DELETE FROM insight_state WHERE knowledge_path LIKE 'knowledge/%'"
         )
         # Deduplicate any remaining collisions
         conn.execute("""
@@ -537,7 +571,11 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         from_version = 11
 
     if from_version < 12:
-        # v11 → v12: Re-run backslash normalization for paths that escaped v10
+        # v11 → v12: Re-run backslash normalization for paths that escaped v10.
+        # Use OR IGNORE on updates because multiple rows can collide after
+        # normalisation (e.g. 'knowledge/a\b' → 'knowledge/a/b' → 'a/b'
+        # may clash with an existing 'a/b').  The dedup step at the end
+        # removes any leftover duplicates.
         bs = "\\"
         conn.execute(
             "DELETE FROM insight_state WHERE knowledge_path LIKE ? "
@@ -546,12 +584,22 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             (f"%{bs}%", bs, f"%{bs}%"),
         )
         conn.execute(
-            "UPDATE insight_state SET knowledge_path = REPLACE(knowledge_path, ?, '/')",
+            "UPDATE OR IGNORE insight_state SET knowledge_path = REPLACE(knowledge_path, ?, '/')",
             (bs,),
         )
+        # Delete rows whose backslash form was skipped by OR IGNORE (they are
+        # now duplicates of the already-existing forward-slash row).
         conn.execute(
-            "UPDATE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
+            "DELETE FROM insight_state WHERE knowledge_path LIKE ?",
+            (f"%{bs}%",),
+        )
+        conn.execute(
+            "UPDATE OR IGNORE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
             "WHERE knowledge_path LIKE 'knowledge/%'"
+        )
+        # Remove any rows still carrying the prefix (collided with existing row)
+        conn.execute(
+            "DELETE FROM insight_state WHERE knowledge_path LIKE 'knowledge/%'"
         )
         conn.execute("""
             DELETE FROM insight_state WHERE rowid NOT IN (
@@ -654,8 +702,6 @@ def save_state(root: Path, state: SyncState) -> None:
     (target_path, include_links, include_children, include_attachments).
     Only inserts if the source doesn't exist yet.
     """
-    from brain_sync.fs_utils import normalize_path
-
     conn = _connect(root)
     try:
         for key, ss in state.sources.items():
@@ -711,8 +757,6 @@ def save_state(root: Path, state: SyncState) -> None:
 
 def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:
     """Update a source's target_path directly in the DB."""
-    from brain_sync.fs_utils import normalize_path
-
     new_target_path = normalize_path(new_target_path)
     conn = _connect(root)
     try:
@@ -811,8 +855,6 @@ def load_document(root: Path, canonical_id: str) -> DocumentState | None:
 
 def save_relationship(root: Path, rel: Relationship) -> None:
     """UPSERT a relationship record."""
-    from brain_sync.fs_utils import normalize_path
-
     local_path = normalize_path(rel.local_path)
     conn = _connect(root)
     try:
@@ -873,8 +915,6 @@ def update_relationship_path(
     new_local_path: str,
 ) -> None:
     """Update the local_path for a relationship after file rediscovery."""
-    from brain_sync.fs_utils import normalize_path
-
     new_local_path = normalize_path(new_local_path)
     conn = _connect(root)
     try:
@@ -947,8 +987,6 @@ def _clamp_error_reason(reason: str | None) -> str | None:
 
 def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     """Load insight state for a knowledge path."""
-    from brain_sync.fs_utils import normalize_path
-
     knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
@@ -982,8 +1020,6 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
 
 def save_insight_state(root: Path, istate: InsightState) -> None:
     """UPSERT insight state for a knowledge path."""
-    from brain_sync.fs_utils import normalize_path
-
     kp = normalize_path(istate.knowledge_path)
     error_reason = _clamp_error_reason(istate.error_reason)
     conn = _connect(root)
@@ -1061,14 +1097,12 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
 
 def delete_insight_state(root: Path, knowledge_path: str) -> None:
     """Delete an insight_state entry."""
-    from brain_sync.fs_utils import normalize_path
-
-    normalized = normalize_path(knowledge_path)
+    knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
         conn.execute(
-            "DELETE FROM insight_state WHERE knowledge_path = ? OR knowledge_path = ?",
-            (knowledge_path, normalized),
+            "DELETE FROM insight_state WHERE knowledge_path = ?",
+            (knowledge_path,),
         )
         conn.commit()
     finally:
@@ -1195,8 +1229,6 @@ def get_regen_health(
 
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
     """Update a knowledge_path in insight_state (for folder renames)."""
-    from brain_sync.fs_utils import normalize_path
-
     old_path = normalize_path(old_path)
     new_path = normalize_path(new_path)
     conn = _connect(root)

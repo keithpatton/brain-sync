@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
+from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import SourceState, _connect, load_state, save_state
 
@@ -236,7 +237,7 @@ def move_source(
     try:
         conn.execute(
             "UPDATE sources SET target_path = ? WHERE canonical_id = ?",
-            (to_path, cid),
+            (normalize_path(to_path), cid),
         )
         conn.commit()
     finally:

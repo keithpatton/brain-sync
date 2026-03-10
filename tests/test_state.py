@@ -653,3 +653,68 @@ class TestInsightStatePathNormalization:
         update_insight_path(tmp_path, "old\\path", "new\\path")
         assert load_insight_state(tmp_path, "old/path") is None
         assert load_insight_state(tmp_path, "new/path") is not None
+
+
+class TestDataclassPathNormalization:
+    """Verify _PathNormalized mixin normalizes on construction and mutation."""
+
+    def test_insight_state_normalizes_on_construction(self):
+        s = InsightState(knowledge_path="a\\b\\c")
+        assert s.knowledge_path == "a/b/c"
+
+    def test_insight_state_normalizes_on_mutation(self):
+        s = InsightState(knowledge_path="a/b")
+        s.knowledge_path = "x\\y\\z"
+        assert s.knowledge_path == "x/y/z"
+
+    def test_source_state_normalizes_target_path(self):
+        s = SourceState(
+            canonical_id="x", source_url="u", source_type="t", target_path="a\\b"
+        )
+        assert s.target_path == "a/b"
+
+    def test_source_state_normalizes_on_mutation(self):
+        s = SourceState(
+            canonical_id="x", source_url="u", source_type="t", target_path="a/b"
+        )
+        s.target_path = "c\\d"
+        assert s.target_path == "c/d"
+
+    def test_relationship_normalizes_local_path(self):
+        r = Relationship(
+            parent_canonical_id="p",
+            canonical_id="c",
+            relationship_type="link",
+            local_path="a\\b\\c.md",
+            source_type="confluence",
+        )
+        assert r.local_path == "a/b/c.md"
+
+    def test_mixed_separators(self):
+        s = InsightState(knowledge_path="a\\b/c\\d")
+        assert s.knowledge_path == "a/b/c/d"
+
+    def test_already_normalized_is_noop(self):
+        s = InsightState(knowledge_path="a/b/c")
+        assert s.knowledge_path == "a/b/c"
+
+    def test_idempotent(self):
+        s = InsightState(knowledge_path="a\\b/c")
+        s.knowledge_path = s.knowledge_path
+        assert s.knowledge_path == "a/b/c"
+
+    def test_path_object_on_construction(self):
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        s = InsightState(knowledge_path=PureWindowsPath("a\\b\\c"))
+        assert s.knowledge_path == "a/b/c"
+
+        s2 = InsightState(knowledge_path=PurePosixPath("a/b/c"))
+        assert s2.knowledge_path == "a/b/c"
+
+    def test_path_object_on_mutation(self):
+        from pathlib import PureWindowsPath
+
+        s = InsightState(knowledge_path="x/y")
+        s.knowledge_path = PureWindowsPath("a\\b")
+        assert s.knowledge_path == "a/b"
