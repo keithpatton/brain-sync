@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,20 +32,40 @@ class ConfluenceAuth:
         return (self.email, self.token)
 
 
-_cached_auth: ConfluenceAuth | None = None
-_auth_checked: bool = False
+class _AuthCache:
+    """Thread-safe cache for Confluence authentication credentials."""
 
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._auth: ConfluenceAuth | None = None
+        self._checked: bool = False
 
-def get_confluence_auth() -> ConfluenceAuth | None:
-    """Read credentials from brain-sync config, falling back to env vars."""
-    global _cached_auth, _auth_checked
-    if _auth_checked:
-        return _cached_auth
+    def get(self) -> ConfluenceAuth | None:
+        with self._lock:
+            if self._checked:
+                return self._auth
+            self._checked = True
 
-    _auth_checked = True
+        # Try brain-sync config file (~/.brain-sync/config.json)
+        auth = self._load_from_config()
+        if auth is None:
+            auth = self._load_from_env()
 
-    # Try brain-sync config file (~/.brain-sync/config.json)
-    if _CONFIG_PATH.exists():
+        with self._lock:
+            self._auth = auth
+        if auth is None:
+            log.warning("No Confluence REST auth available (checked %s and env vars)", _CONFIG_PATH)
+        return auth
+
+    def reset(self) -> None:
+        with self._lock:
+            self._auth = None
+            self._checked = False
+
+    @staticmethod
+    def _load_from_config() -> ConfluenceAuth | None:
+        if not _CONFIG_PATH.exists():
+            return None
         try:
             data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
             confluence = data.get("confluence", {})
@@ -52,32 +73,36 @@ def get_confluence_auth() -> ConfluenceAuth | None:
             email = confluence.get("email")
             token = confluence.get("token")
             if domain and email and token:
-                _cached_auth = ConfluenceAuth(domain=domain, email=email, token=token)
                 log.debug("Loaded Confluence auth from %s", _CONFIG_PATH)
-                return _cached_auth
+                return ConfluenceAuth(domain=domain, email=email, token=token)
         except Exception as e:
             log.debug("Failed to read brain-sync config: %s", e)
+        return None
 
-    # Fallback to env vars
-    import os
+    @staticmethod
+    def _load_from_env() -> ConfluenceAuth | None:
+        import os
 
-    domain = os.environ.get("CONFLUENCE_DOMAIN")
-    email = os.environ.get("CONFLUENCE_EMAIL")
-    token = os.environ.get("CONFLUENCE_TOKEN")
-    if domain and email and token:
-        _cached_auth = ConfluenceAuth(domain=domain, email=email, token=token)
-        log.debug("Loaded Confluence auth from environment variables")
-        return _cached_auth
+        domain = os.environ.get("CONFLUENCE_DOMAIN")
+        email = os.environ.get("CONFLUENCE_EMAIL")
+        token = os.environ.get("CONFLUENCE_TOKEN")
+        if domain and email and token:
+            log.debug("Loaded Confluence auth from environment variables")
+            return ConfluenceAuth(domain=domain, email=email, token=token)
+        return None
 
-    log.warning("No Confluence REST auth available (checked %s and env vars)", _CONFIG_PATH)
-    return None
+
+_auth_cache = _AuthCache()
+
+
+def get_confluence_auth() -> ConfluenceAuth | None:
+    """Read credentials from brain-sync config, falling back to env vars."""
+    return _auth_cache.get()
 
 
 def reset_auth_cache() -> None:
     """Reset the cached auth (for testing)."""
-    global _cached_auth, _auth_checked
-    _cached_auth = None
-    _auth_checked = False
+    _auth_cache.reset()
 
 
 async def _request(
@@ -225,7 +250,9 @@ async def fetch_attachments(
 
 
 async def fetch_comments(
-    page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient,
+    page_id: str,
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
 ) -> str | None:
     """Fetch page comments via REST API. Returns markdown string, or None."""
     results: list[dict] = []
@@ -234,7 +261,9 @@ async def fetch_comments(
     try:
         while True:
             resp = await _request(
-                client, auth, "GET",
+                client,
+                auth,
+                "GET",
                 f"/content/{page_id}/child/comment",
                 params={
                     "expand": "body.storage,version",
@@ -249,12 +278,14 @@ async def fetch_comments(
                 version = item.get("version", {})
                 author = version.get("by", {}).get("displayName", "Unknown")
                 when = version.get("when", "")
-                results.append({
-                    "author": author,
-                    "date": when,
-                    "title": title,
-                    "body": body_html,
-                })
+                results.append(
+                    {
+                        "author": author,
+                        "date": when,
+                        "title": title,
+                        "body": body_html,
+                    }
+                )
             if data.get("size", 0) < limit:
                 break
             start += limit

@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -27,7 +28,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from brain_sync.commands.context import CONFIG_FILE
-from brain_sync.fileops import TEXT_EXTENSIONS
+from brain_sync.fileops import TEXT_EXTENSIONS, atomic_write_bytes
 from brain_sync.fs_utils import (
     find_all_content_paths,
     get_child_dirs,
@@ -168,9 +169,7 @@ def _assemble_files_text(
     for name, content in inlined:
         inlined_parts.append(f"### {name}\n```\n{content}\n```")
     for name in oversized_names:
-        inlined_parts.append(
-            f"### {name}\n(This file will be summarized in chunks — too large to inline)"
-        )
+        inlined_parts.append(f"### {name}\n(This file will be summarized in chunks — too large to inline)")
     if inlined_parts:
         parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
     if binary_names:
@@ -389,12 +388,14 @@ class _GlobalContextCache:
 
 
 _global_context_cache: _GlobalContextCache | None = None
+_context_cache_lock = threading.Lock()
 
 
 def invalidate_global_context_cache() -> None:
     """Invalidate the cached global context. Called by the watcher."""
     global _global_context_cache
-    _global_context_cache = None
+    with _context_cache_lock:
+        _global_context_cache = None
     log.debug("Global context cache invalidated")
 
 
@@ -428,9 +429,10 @@ def _collect_global_context(root: Path, current_path: str) -> str:
     combined.update(_hash_directory(insights_core_dir).encode())
     content_hash = combined.hexdigest()
 
-    if _global_context_cache and _global_context_cache.content_hash == content_hash:
-        log.debug("Global context cache hit")
-        return _global_context_cache.compiled_text
+    with _context_cache_lock:
+        if _global_context_cache and _global_context_cache.content_hash == content_hash:
+            log.debug("Global context cache hit")
+            return _global_context_cache.compiled_text
 
     log.debug("Global context cache miss, rebuilding")
     sections: list[str] = []
@@ -493,7 +495,8 @@ def _collect_global_context(root: Path, current_path: str) -> str:
             log.debug("Global context: %d files from insights/_core", count)
 
     compiled = "\n\n".join(sections)
-    _global_context_cache = _GlobalContextCache(content_hash=content_hash, compiled_text=compiled)
+    with _context_cache_lock:
+        _global_context_cache = _GlobalContextCache(content_hash=content_hash, compiled_text=compiled)
 
     total_chars = len(compiled)
     log.debug("Global context compiled: %d chars (~%d tokens est.)", total_chars, total_chars // 3)
@@ -721,9 +724,7 @@ def _build_prompt_from_chunks(
 
     display_path = knowledge_path or "(root)"
 
-    prompt = _assemble_prompt(
-        instructions, global_context, files_text, children_text, existing_summary, display_path
-    )
+    prompt = _assemble_prompt(instructions, global_context, files_text, children_text, existing_summary, display_path)
 
     estimated_tokens = len(prompt) // 3
     log.debug(
@@ -809,10 +810,16 @@ def _build_prompt(
 
     # 5. Compute overhead (prompt with no files) to determine file budget
     empty_files_text = _assemble_files_text([], [], binary_names)
-    overhead_chars = len(_assemble_prompt(
-        instructions, global_context, empty_files_text,
-        children_text, existing_summary, display_path,
-    ))
+    overhead_chars = len(
+        _assemble_prompt(
+            instructions,
+            global_context,
+            empty_files_text,
+            children_text,
+            existing_summary,
+            display_path,
+        )
+    )
     remaining_chars = (MAX_PROMPT_TOKENS * 3) - overhead_chars
 
     # 6. Greedy packing — largest files first (biases toward keeping most
@@ -827,10 +834,12 @@ def _build_prompt(
             else:
                 entry.inline = False
                 log.info(
-                    "Deferred %s (%d chars) to chunking for %s "
-                    "(remaining=%d budget=%d)",
-                    entry.name, entry.size, display_path,
-                    remaining_chars, MAX_PROMPT_TOKENS * 3,
+                    "Deferred %s (%d chars) to chunking for %s " "(remaining=%d budget=%d)",
+                    entry.name,
+                    entry.size,
+                    display_path,
+                    remaining_chars,
+                    MAX_PROMPT_TOKENS * 3,
                 )
 
     # 7. Restore original file order for deterministic prompts
@@ -839,28 +848,29 @@ def _build_prompt(
     inlined = [(e.name, e.content) for e in sorted(entries, key=order_key) if e.inline]
     oversized_names = [e.name for e in sorted(entries, key=order_key) if not e.inline]
     oversized_files: dict[str, str] | None = {
-        e.name: e.content
-        for e in sorted(entries, key=order_key)
-        if not e.inline
+        e.name: e.content for e in sorted(entries, key=order_key) if not e.inline
     } or None
 
     # 8. Assemble final prompt
     files_text = _assemble_files_text(inlined, oversized_names, binary_names)
-    prompt = _assemble_prompt(
-        instructions, global_context, files_text, children_text, existing_summary, display_path
-    )
+    prompt = _assemble_prompt(instructions, global_context, files_text, children_text, existing_summary, display_path)
 
     # 9. Defensive assertion + instrumentation
     estimated_tokens = len(prompt) // 3
     if estimated_tokens > MAX_PROMPT_TOKENS:
         log.warning(
             "Prompt still exceeds budget after packing for %s: ~%d tokens",
-            display_path, estimated_tokens,
+            display_path,
+            estimated_tokens,
         )
 
     log.debug(
         "Prompt build for %s: inlined=%d deferred=%d total_files=%d ~%d tokens",
-        display_path, len(inlined), len(oversized_names), len(entries), estimated_tokens,
+        display_path,
+        len(inlined),
+        len(oversized_names),
+        len(entries),
+        estimated_tokens,
     )
 
     return PromptResult(text=prompt, oversized_files=oversized_files)
@@ -1207,8 +1217,8 @@ async def regen_path(
             # Summary unchanged → stop walking up
             break
 
-        # Summary changed — Python writes the file
-        summary_path.write_text(new_summary, encoding="utf-8")
+        # Summary changed — Python writes the file atomically
+        atomic_write_bytes(summary_path, new_summary.encode("utf-8"))
         summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
         save_insight_state(
             root,

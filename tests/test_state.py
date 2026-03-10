@@ -6,6 +6,7 @@ from brain_sync.state import (
     Relationship,
     SourceState,
     SyncState,
+    acquire_regen_ownership,
     count_relationships_for_doc,
     delete_insight_state,
     load_document,
@@ -718,3 +719,90 @@ class TestDataclassPathNormalization:
         s = InsightState(knowledge_path="x/y")
         s.knowledge_path = PureWindowsPath("a\\b")
         assert s.knowledge_path == "a/b"
+
+
+class TestAcquireRegenOwnership:
+    """Tests for transactional regen ownership acquisition."""
+
+    def test_acquire_fresh_path(self, tmp_path):
+        """Acquiring ownership on a new path should succeed."""
+        save_state(tmp_path, SyncState())  # ensure DB
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-1") is True
+        loaded = load_insight_state(tmp_path, "area/foo")
+        assert loaded is not None
+        assert loaded.owner_id == "owner-1"
+        assert loaded.regen_status == "running"
+
+    def test_acquire_already_owned_by_same_owner(self, tmp_path):
+        """Re-acquiring ownership by the same owner should succeed."""
+        save_state(tmp_path, SyncState())
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-1") is True
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-1") is True
+
+    def test_acquire_owned_by_other_fails(self, tmp_path):
+        """Acquiring ownership already held by another owner should fail."""
+        save_state(tmp_path, SyncState())
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-1") is True
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-2") is False
+
+    def test_acquire_stale_ownership_reclaimed(self, tmp_path):
+        """Stale ownership from a crashed process should be reclaimed."""
+        from datetime import UTC, datetime, timedelta
+
+        save_state(tmp_path, SyncState())
+        # Insert a row that appears stale (started long ago)
+        stale_time = (datetime.now(UTC) - timedelta(seconds=1200)).isoformat()
+        save_insight_state(
+            tmp_path,
+            InsightState(
+                knowledge_path="area/foo",
+                regen_status="running",
+                regen_started_utc=stale_time,
+                owner_id="crashed-owner",
+            ),
+        )
+        # New owner should be able to reclaim it (stale_threshold_secs=600)
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-2", stale_threshold_secs=600.0) is True
+        loaded = load_insight_state(tmp_path, "area/foo")
+        assert loaded.owner_id == "owner-2"
+
+    def test_acquire_idle_path_with_existing_state(self, tmp_path):
+        """Acquiring ownership on an idle path with existing state should succeed."""
+        save_state(tmp_path, SyncState())
+        save_insight_state(
+            tmp_path,
+            InsightState(knowledge_path="area/foo", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "area/foo", "owner-1") is True
+
+
+class TestPathNormalizationOnLoad:
+    """Verify that load paths are normalized end-to-end."""
+
+    def test_backslash_row_normalizes_via_load_all(self, tmp_path):
+        """Raw SQL insert with backslashes is found by load_all and normalized."""
+        from brain_sync.state import _connect, load_all_insight_states
+
+        conn = _connect(tmp_path)
+        conn.execute(
+            "INSERT INTO insight_state (knowledge_path, regen_status) VALUES (?, 'idle')",
+            ("initiatives\\B4B\\Platform PRD",),
+        )
+        conn.commit()
+        conn.close()
+
+        # load_all doesn't filter by path, so it returns the row.
+        # The _PathNormalized mixin normalizes on construction.
+        all_states = load_all_insight_states(tmp_path)
+        matching = [s for s in all_states if s.knowledge_path == "initiatives/B4B/Platform PRD"]
+        assert len(matching) == 1
+
+    def test_save_with_backslashes_loads_with_forward_slashes(self, tmp_path):
+        """Insert with backslashes via save API, load with forward slashes."""
+        save_insight_state(
+            tmp_path,
+            InsightState(knowledge_path="a\\b\\c", regen_status="idle"),
+        )
+        loaded = load_insight_state(tmp_path, "a/b/c")
+        assert loaded is not None
+        assert loaded.knowledge_path == "a/b/c"

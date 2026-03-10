@@ -1106,6 +1106,45 @@ def delete_insight_state(root: Path, knowledge_path: str) -> None:
         conn.close()
 
 
+def acquire_regen_ownership(
+    root: Path, knowledge_path: str, owner_id: str, stale_threshold_secs: float = 600.0
+) -> bool:
+    """Atomically acquire ownership of a regen slot for a knowledge path.
+
+    Returns True if ownership was acquired, False if another process owns it.
+    Uses INSERT OR IGNORE + UPDATE pattern to handle missing rows.
+    Reclaims stale ownership from crashed processes.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    knowledge_path = normalize_path(knowledge_path)
+    now = datetime.now(UTC).isoformat()
+    stale_cutoff = (datetime.now(UTC) - timedelta(seconds=stale_threshold_secs)).isoformat()
+
+    conn = _connect(root)
+    try:
+        # Ensure row exists (no-op if already present)
+        conn.execute(
+            "INSERT OR IGNORE INTO insight_state (knowledge_path, regen_status) VALUES (?, 'idle')",
+            (knowledge_path,),
+        )
+        # Atomically claim ownership if available, already ours, or stale
+        cur = conn.execute(
+            "UPDATE insight_state "
+            "SET owner_id = ?, regen_status = 'running', regen_started_utc = ? "
+            "WHERE knowledge_path = ? "
+            "  AND (owner_id IS NULL "
+            "       OR owner_id = ? "
+            "       OR (regen_status = 'running' "
+            "           AND regen_started_utc < ?))",
+            (owner_id, now, knowledge_path, owner_id, stale_cutoff),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
 def reclaim_stale_running_states(root: Path, stale_threshold_secs: float = 600.0) -> int:
     """Reclaim 'running' insight states older than threshold (startup recovery).
 

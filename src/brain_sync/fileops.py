@@ -30,9 +30,21 @@ def atomic_write_bytes(target: Path, data: bytes) -> None:
     )
     try:
         os.write(fd, data)
+        os.fsync(fd)
         os.close(fd)
         fd = -1
         os.replace(tmp_path, target)
+        # Fsync parent directory to ensure the rename is durable.
+        # On Windows, os.open on directories may fail — NTFS journaling
+        # provides metadata durability anyway.
+        try:
+            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
     except BaseException:
         if fd >= 0:
             os.close(fd)

@@ -15,7 +15,7 @@ from datetime import UTC
 from pathlib import Path
 
 from brain_sync.regen import regen_path
-from brain_sync.state import InsightState, load_insight_state, save_insight_state
+from brain_sync.state import InsightState, acquire_regen_ownership, load_insight_state, save_insight_state
 
 log = logging.getLogger(__name__)
 
@@ -117,23 +117,13 @@ class RegenQueue:
         total = 0
         async with self._lock:
             for knowledge_path in ready:
-                # Check DB state for running status
-                istate = load_insight_state(self.root, knowledge_path)
-                if istate and istate.regen_status == "running":
-                    # Check if it's stale (>5 min)
-                    if istate.last_regen_utc:
-                        from datetime import datetime
-
-                        try:
-                            started = datetime.fromisoformat(istate.last_regen_utc)
-                            age = (datetime.now(UTC) - started).total_seconds()
-                            if age < self.cooldown_secs:
-                                log.debug("Regen already running for %s, skipping", knowledge_path)
-                                continue
-                        except (ValueError, TypeError):
-                            pass
-
-                # Queue owns retry budgeting via _retry_counts (see re-enqueue below)
+                # Transactional ownership: acquire DB-level lock or skip.
+                # This is the cross-process safety model — only one process
+                # can own a regen slot at a time. Stale slots from crashed
+                # processes are reclaimed after CLAUDE_TIMEOUT * 2.
+                if not acquire_regen_ownership(self.root, knowledge_path, self.owner_id or "", self.cooldown_secs * 2):
+                    log.debug("Could not acquire regen ownership for %s, skipping", knowledge_path)
+                    continue
 
                 try:
                     count = await regen_path(self.root, knowledge_path, owner_id=self.owner_id)
