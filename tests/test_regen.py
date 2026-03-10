@@ -11,6 +11,7 @@ import pytest
 from brain_sync.regen import (
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
+    MAX_PROMPT_TOKENS,
     PROMPT_VERSION,
     ClaudeResult,
     PromptResult,
@@ -1446,3 +1447,138 @@ class TestChunkedRegenFlow:
         # Total tokens should be > single call (chunks + merge)
         assert istate.input_tokens is not None
         assert istate.input_tokens > 500  # more than one call
+
+
+class TestTokenBudgetEnforcement:
+    """Tests for total token budget enforcement in _build_prompt()."""
+
+    def test_many_files_triggers_chunking(self, brain):
+        """20 files × ~25K chars collectively exceed budget → some deferred."""
+        kdir = brain / "knowledge" / "many"
+        kdir.mkdir(parents=True)
+        for i in range(20):
+            (kdir / f"doc{i:02d}.md").write_text(f"# Doc {i}\n" + "x" * 25_000, encoding="utf-8")
+        idir = brain / "insights" / "many"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("many", kdir, {}, idir, brain)
+        assert result.oversized_files is not None
+        assert len(result.oversized_files) > 0
+        assert len(result.text) // 3 <= MAX_PROMPT_TOKENS
+
+    def test_largest_files_deferred_first(self, brain):
+        """With a low budget, largest files get deferred first."""
+        kdir = brain / "knowledge" / "vary"
+        kdir.mkdir(parents=True)
+        (kdir / "small.md").write_text("# Small\n" + "a" * 5_000, encoding="utf-8")
+        (kdir / "medium.md").write_text("# Medium\n" + "b" * 10_000, encoding="utf-8")
+        (kdir / "large.md").write_text("# Large\n" + "c" * 50_000, encoding="utf-8")
+        (kdir / "huge.md").write_text("# Huge\n" + "d" * 80_000, encoding="utf-8")
+        idir = brain / "insights" / "vary"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        # Set budget low enough that huge + large can't fit alongside overhead
+        with patch("brain_sync.regen.MAX_PROMPT_TOKENS", 10_000):
+            result = _build_prompt("vary", kdir, {}, idir, brain)
+
+        assert result.oversized_files is not None
+        assert "huge.md" in result.oversized_files
+        assert "large.md" in result.oversized_files
+
+    def test_under_budget_no_deferral(self, brain):
+        """Small files totaling well under budget → no deferral."""
+        kdir = brain / "knowledge" / "tiny"
+        kdir.mkdir(parents=True)
+        for i in range(5):
+            (kdir / f"f{i}.md").write_text(f"# File {i}\nShort content.", encoding="utf-8")
+        idir = brain / "insights" / "tiny"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("tiny", kdir, {}, idir, brain)
+        assert result.oversized_files is None
+
+    def test_deferred_files_have_placeholder(self, brain):
+        """Deferred files show placeholder text in the prompt."""
+        kdir = brain / "knowledge" / "defer"
+        kdir.mkdir(parents=True)
+        (kdir / "big.md").write_text("# Big\n" + "x" * 50_000, encoding="utf-8")
+        idir = brain / "insights" / "defer"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        # Budget so low the file can't fit
+        with patch("brain_sync.regen.MAX_PROMPT_TOKENS", 5_000):
+            result = _build_prompt("defer", kdir, {}, idir, brain)
+
+        assert result.oversized_files is not None
+        assert "big.md" in result.oversized_files
+        assert "too large to inline" in result.text
+
+    def test_exact_budget_fit(self, brain):
+        """File that exactly fits the remaining budget is not deferred."""
+        kdir = brain / "knowledge" / "exact"
+        kdir.mkdir(parents=True)
+        # Create a small file that fits easily
+        (kdir / "fits.md").write_text("# Fits\nok", encoding="utf-8")
+        idir = brain / "insights" / "exact"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt("exact", kdir, {}, idir, brain)
+        assert result.oversized_files is None
+        assert "fits.md" in result.text
+
+    def test_all_files_deferred(self, brain):
+        """All files exceed remaining budget after overhead → 0 inlined."""
+        kdir = brain / "knowledge" / "allbig"
+        kdir.mkdir(parents=True)
+        for i in range(3):
+            (kdir / f"big{i}.md").write_text(f"# Big {i}\n" + "z" * 30_000, encoding="utf-8")
+        idir = brain / "insights" / "allbig"
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        # Budget so low nothing fits
+        with patch("brain_sync.regen.MAX_PROMPT_TOKENS", 3_000):
+            result = _build_prompt("allbig", kdir, {}, idir, brain)
+
+        assert result.oversized_files is not None
+        assert len(result.oversized_files) == 3
+        # No file content blocks in prompt (only placeholders)
+        assert "```\n" not in result.text.split("---")[-1]
+
+    def test_end_to_end_many_files(self, brain):
+        """Integration: many files with low budget triggers chunk-and-merge."""
+        kdir = brain / "knowledge" / "e2e"
+        kdir.mkdir(parents=True)
+        for i in range(10):
+            (kdir / f"file{i:02d}.md").write_text(
+                f"# File {i}\n" + "content " * 500, encoding="utf-8"
+            )
+
+        call_count = 0
+
+        async def mock_invoke(prompt, cwd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ClaudeResult(
+                success=True,
+                output="# Summary\n\nThis is a thorough summary of the content.",
+                input_tokens=1000,
+                output_tokens=500,
+            )
+
+        with (
+            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.MAX_PROMPT_TOKENS", 5_000),
+        ):
+            count = asyncio.run(regen_path(brain, "e2e"))
+
+        assert count >= 1
+        # Multiple calls: chunk calls for deferred files + final merge
+        assert call_count > 1
+        summary_path = brain / "insights" / "e2e" / "summary.md"
+        assert summary_path.exists()

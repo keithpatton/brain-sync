@@ -148,6 +148,62 @@ def _preprocess_content(content: str, filename: str) -> str:
     return content
 
 
+@dataclass
+class _FileEntry:
+    """A file read from the knowledge folder, pending inline/defer decision."""
+
+    name: str
+    content: str
+    size: int
+    inline: bool = True
+
+
+def _assemble_files_text(
+    inlined: list[tuple[str, str]],  # (filename, content) in display order
+    oversized_names: list[str],
+    binary_names: list[str],
+) -> str:
+    """Build the files section of the prompt."""
+    parts: list[str] = []
+    inlined_parts: list[str] = []
+    for name, content in inlined:
+        inlined_parts.append(f"### {name}\n```\n{content}\n```")
+    for name in oversized_names:
+        inlined_parts.append(
+            f"### {name}\n(This file will be summarized in chunks — too large to inline)"
+        )
+    if inlined_parts:
+        parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
+    if binary_names:
+        file_list = "\n".join(f"- {n}" for n in binary_names)
+        parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
+    return "\n\n".join(parts) + "\n" if parts else ""
+
+
+def _assemble_prompt(
+    instructions: str,
+    global_context: str,
+    files_text: str,
+    children_text: str,
+    existing_summary: str,
+    display_path: str,
+) -> str:
+    """Assemble the full regen prompt. Single source of truth for template."""
+    return f"""{instructions}
+
+---
+
+{global_context}
+
+---
+
+You are regenerating the insight summary for knowledge area: {display_path}
+{files_text}{children_text}
+{"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
+
+Output the updated summary now."""
+
+
 def _split_markdown_chunks(
     content: str,
     target_chars: int = CHUNK_TARGET_CHARS,
@@ -666,19 +722,9 @@ def _build_prompt_from_chunks(
 
     display_path = knowledge_path or "(root)"
 
-    prompt = f"""{instructions}
-
----
-
-{global_context}
-
----
-
-You are regenerating the insight summary for knowledge area: {display_path}
-{files_text}{children_text}
-{"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
-
-Output the updated summary now."""
+    prompt = _assemble_prompt(
+        instructions, global_context, files_text, children_text, existing_summary, display_path
+    )
 
     estimated_tokens = len(prompt) // 3
     log.debug(
@@ -707,6 +753,9 @@ def _build_prompt(
     3. Node content (knowledge files for leaf, child summaries for parent)
     4. Existing summary
     5. Output path(s)
+
+    Files are packed greedily under a total token budget (MAX_PROMPT_TOKENS).
+    Files that don't fit are deferred to chunk-and-merge.
     """
     # 1. Instructions
     instructions = _REGEN_INSTRUCTIONS
@@ -714,40 +763,21 @@ def _build_prompt(
     # 2. Global context (inlined by Python, not discovered by agent)
     global_context = _collect_global_context(root, knowledge_path)
 
-    # 3a. Direct files section — inline text files, note binary ones
-    files_text = ""
-    oversized_files: dict[str, str] | None = None
+    # 3a. Read and preprocess all files into _FileEntry list
+    entries: list[_FileEntry] = []
+    binary_names: list[str] = []
     files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
     if files:
-        inlined_parts: list[str] = []
-        binary_names: list[str] = []
         for f in files:
             if f.suffix.lower() in TEXT_EXTENSIONS:
                 try:
                     content = f.read_text(encoding="utf-8")
                     content = _preprocess_content(content, f.name)
-                    if len(content) > CHUNK_TARGET_CHARS:
-                        # Oversized after preprocessing — defer to chunking
-                        if oversized_files is None:
-                            oversized_files = {}
-                        oversized_files[f.name] = content
-                        inlined_parts.append(
-                            f"### {f.name}\n(This file will be summarized in chunks — too large to inline)"
-                        )
-                    else:
-                        inlined_parts.append(f"### {f.name}\n```\n{content}\n```")
+                    entries.append(_FileEntry(name=f.name, content=content, size=len(content)))
                 except (OSError, UnicodeDecodeError):
                     binary_names.append(f.name)
             else:
                 binary_names.append(f.name)
-
-        parts: list[str] = []
-        if inlined_parts:
-            parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
-        if binary_names:
-            file_list = "\n".join(f"- {n}" for n in binary_names)
-            parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
-        files_text = "\n\n".join(parts) + "\n" if parts else ""
 
     # 3b. Child summaries section — adaptive loading with token budget
     children_text = ""
@@ -755,7 +785,7 @@ def _build_prompt(
         loaded_parts: list[str] = []
         skipped = 0
         total = len(child_summaries)
-        current_tokens = len(instructions + global_context + files_text) // 3
+        current_tokens = len(instructions + global_context) // 3
         for i, (name, content) in enumerate(sorted(child_summaries.items())):
             child_tokens = len(content) // 3
             if i >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
@@ -778,34 +808,61 @@ def _build_prompt(
 
     display_path = knowledge_path or "(root)"
 
-    prompt = f"""{instructions}
+    # 5. Compute overhead (prompt with no files) to determine file budget
+    empty_files_text = _assemble_files_text([], [], binary_names)
+    overhead_chars = len(_assemble_prompt(
+        instructions, global_context, empty_files_text,
+        children_text, existing_summary, display_path,
+    ))
+    remaining_chars = (MAX_PROMPT_TOKENS * 3) - overhead_chars
 
----
+    # 6. Greedy packing — largest files first (biases toward keeping most
+    #    informative files in full context rather than lossy chunked summaries)
+    for entry in sorted(entries, key=lambda e: e.size, reverse=True):
+        if entry.size > CHUNK_TARGET_CHARS:
+            entry.inline = False
+        else:
+            formatted_size = len(f"### {entry.name}\n```\n{entry.content}\n```\n\n")
+            if formatted_size <= remaining_chars:
+                remaining_chars -= formatted_size
+            else:
+                entry.inline = False
+                log.info(
+                    "Deferred %s (%d chars) to chunking for %s "
+                    "(remaining=%d budget=%d)",
+                    entry.name, entry.size, display_path,
+                    remaining_chars, MAX_PROMPT_TOKENS * 3,
+                )
 
-{global_context}
+    # 7. Restore original file order for deterministic prompts
+    original_order = {e.name: i for i, e in enumerate(entries)}
+    order_key = lambda e: original_order[e.name]  # noqa: E731
+    inlined = [(e.name, e.content) for e in sorted(entries, key=order_key) if e.inline]
+    oversized_names = [e.name for e in sorted(entries, key=order_key) if not e.inline]
+    oversized_files: dict[str, str] | None = {
+        e.name: e.content
+        for e in sorted(entries, key=order_key)
+        if not e.inline
+    } or None
 
----
-
-You are regenerating the insight summary for knowledge area: {display_path}
-{files_text}{children_text}
-{"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
-
-Output the updated summary now."""
-
-    # Token estimate and guardrail warning
-    estimated_tokens = len(prompt) // 3
-    text_file_count = len([f for f in files if f.suffix.lower() in TEXT_EXTENSIONS]) if files else 0
-    binary_count = len(binary_names) if files else 0
-    log.debug(
-        "Prompt for %s: ~%d tokens est., %d text files, %d binary files, %d child summaries",
-        display_path,
-        estimated_tokens,
-        text_file_count,
-        binary_count,
-        len(child_summaries),
+    # 8. Assemble final prompt
+    files_text = _assemble_files_text(inlined, oversized_names, binary_names)
+    prompt = _assemble_prompt(
+        instructions, global_context, files_text, children_text, existing_summary, display_path
     )
-    if estimated_tokens > 100_000:
-        log.warning("Large prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
+
+    # 9. Defensive assertion + instrumentation
+    estimated_tokens = len(prompt) // 3
+    if estimated_tokens > MAX_PROMPT_TOKENS:
+        log.warning(
+            "Prompt still exceeds budget after packing for %s: ~%d tokens",
+            display_path, estimated_tokens,
+        )
+
+    log.debug(
+        "Prompt build for %s: inlined=%d deferred=%d total_files=%d ~%d tokens",
+        display_path, len(inlined), len(oversized_names), len(entries), estimated_tokens,
+    )
 
     return PromptResult(text=prompt, oversized_files=oversized_files)
 
