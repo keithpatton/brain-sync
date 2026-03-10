@@ -120,6 +120,19 @@ core
 
 ---
 
+## Architecture
+
+Agents must update `docs/architecture/ARCHITECTURE.md` whenever a change modifies:
+
+- module responsibilities
+- dependency direction
+- architectural phases
+- structural constraints
+
+The document must remain concise and represent the current architecture and intended direction.
+
+---
+
 # CLAUDE.md Governance
 
 `CLAUDE.md` may only be modified to introduce **persistent repository rules**.
