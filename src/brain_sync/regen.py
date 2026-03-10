@@ -422,17 +422,17 @@ def _collect_global_context(root: Path, current_path: str) -> str:
     schemas_dir = root / "schemas"
     insights_core_dir = root / "insights" / "_core"
 
-    # Compute combined hash for cache validation
-    combined = hashlib.sha256()
-    combined.update(_hash_directory(core_dir).encode())
-    combined.update(_hash_directory(schemas_dir).encode())
-    combined.update(_hash_directory(insights_core_dir).encode())
-    content_hash = combined.hexdigest()
-
+    # Fast path: if cache exists, validate via content hash before rebuilding
     with _context_cache_lock:
-        if _global_context_cache and _global_context_cache.content_hash == content_hash:
-            log.debug("Global context cache hit")
-            return _global_context_cache.compiled_text
+        if _global_context_cache is not None:
+            combined = hashlib.sha256()
+            combined.update(_hash_directory(core_dir).encode())
+            combined.update(_hash_directory(schemas_dir).encode())
+            combined.update(_hash_directory(insights_core_dir).encode())
+            content_hash = combined.hexdigest()
+            if _global_context_cache.content_hash == content_hash:
+                log.debug("Global context cache hit")
+                return _global_context_cache.compiled_text
 
     log.debug("Global context cache miss, rebuilding")
     sections: list[str] = []
@@ -495,6 +495,14 @@ def _collect_global_context(root: Path, current_path: str) -> str:
             log.debug("Global context: %d files from insights/_core", count)
 
     compiled = "\n\n".join(sections)
+
+    # Compute hash for the freshly-built content to store in cache
+    combined = hashlib.sha256()
+    combined.update(_hash_directory(core_dir).encode())
+    combined.update(_hash_directory(schemas_dir).encode())
+    combined.update(_hash_directory(insights_core_dir).encode())
+    content_hash = combined.hexdigest()
+
     with _context_cache_lock:
         _global_context_cache = _GlobalContextCache(content_hash=content_hash, compiled_text=compiled)
 

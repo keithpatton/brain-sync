@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -84,7 +85,7 @@ class TestRateLimiting:
     def test_rate_limit_blocks_excess(self, brain):
         q = RegenQueue(root=brain, debounce_secs=0.0, max_regens_per_hour=2)
         # Fill up the rate limit
-        q._regen_times = [time.monotonic(), time.monotonic()]
+        q._regen_times = deque([time.monotonic(), time.monotonic()])
         q.enqueue("project")
         ready = q.pop_ready()
         assert ready == []  # Rate limited
@@ -93,7 +94,7 @@ class TestRateLimiting:
         q = RegenQueue(root=brain, debounce_secs=0.0, max_regens_per_hour=2)
         # Old timestamps (>1 hour ago) shouldn't count
         old = time.monotonic() - 3700
-        q._regen_times = [old, old]
+        q._regen_times = deque([old, old])
         q.enqueue("project")
         ready = q.pop_ready()
         assert "project" in ready

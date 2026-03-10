@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
@@ -48,7 +49,7 @@ class RegenQueue:
     _pending: dict[str, _PendingRegen] = field(default_factory=dict)
     _retry_counts: dict[str, int] = field(default_factory=dict)  # queue-level retry tracking
     _last_regen: dict[str, float] = field(default_factory=dict)  # monotonic time
-    _regen_times: list[float] = field(default_factory=list)  # timestamps for rate limiting
+    _regen_times: deque[float] = field(default_factory=deque)  # timestamps for rate limiting
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def enqueue(self, knowledge_path: str) -> None:
@@ -68,9 +69,9 @@ class RegenQueue:
 
     def _is_rate_limited(self) -> bool:
         """Check if we've exceeded the hourly regen limit."""
-        now = time.monotonic()
-        cutoff = now - 3600.0
-        self._regen_times = [t for t in self._regen_times if t > cutoff]
+        cutoff = time.monotonic() - 3600.0
+        while self._regen_times and self._regen_times[0] <= cutoff:
+            self._regen_times.popleft()
         return len(self._regen_times) >= self.max_regens_per_hour
 
     def _is_on_cooldown(self, knowledge_path: str) -> bool:
