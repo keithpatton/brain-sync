@@ -43,6 +43,8 @@ from brain_sync.state import (
     save_insight_state,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(autouse=True)
 def _reset_breaker():
@@ -1453,7 +1455,7 @@ class TestTokenBudgetEnforcement:
     """Tests for total token budget enforcement in _build_prompt()."""
 
     def test_many_files_triggers_chunking(self, brain):
-        """20 files × ~25K chars collectively exceed budget → some deferred."""
+        """20 files x ~25K chars collectively exceed budget -> some deferred."""
         kdir = brain / "knowledge" / "many"
         kdir.mkdir(parents=True)
         for i in range(20):
@@ -1555,9 +1557,7 @@ class TestTokenBudgetEnforcement:
         kdir = brain / "knowledge" / "e2e"
         kdir.mkdir(parents=True)
         for i in range(10):
-            (kdir / f"file{i:02d}.md").write_text(
-                f"# File {i}\n" + "content " * 500, encoding="utf-8"
-            )
+            (kdir / f"file{i:02d}.md").write_text(f"# File {i}\n" + "content " * 500, encoding="utf-8")
 
         call_count = 0
 

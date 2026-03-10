@@ -1,4 +1,8 @@
+import pytest
+
 from brain_sync.converter import html_to_markdown
+
+pytestmark = pytest.mark.unit
 
 
 class TestHtmlToMarkdown:

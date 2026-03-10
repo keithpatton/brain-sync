@@ -1,6 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from brain_sync.scheduler import BASE_INTERVAL, Scheduler, _jittered, compute_interval
+
+pytestmark = pytest.mark.unit
 
 
 class TestComputeInterval:

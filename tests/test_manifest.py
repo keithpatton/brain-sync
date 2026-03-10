@@ -4,6 +4,8 @@ import pytest
 
 from brain_sync.manifest import ManifestError, discover_manifests, load_manifest
 
+pytestmark = pytest.mark.unit
+
 
 def _write_manifest(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)

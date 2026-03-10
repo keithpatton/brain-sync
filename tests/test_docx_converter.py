@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from docx import Document
 from lxml import etree
 
@@ -13,6 +14,8 @@ from brain_sync.docx_converter import (
     extract_comments,
     extract_comments_from_bytes,
 )
+
+pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # Helpers for creating .docx fixtures with comments

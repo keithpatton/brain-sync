@@ -30,6 +30,6 @@ page titles, or content from production systems into test files.
 ## Project conventions
 
 - Python 3.11+, formatted with **ruff**, type-checked with **pyright**
-- Tests: `pytest` with `asyncio_mode = "auto"`
+- Tests: `pytest` with `asyncio_mode = "auto"`. Every test file must set `pytestmark = pytest.mark.<tier>` after imports (`unit`, `integration`, `external`, or `mcp`)
 - Line length: 120
 - Entry point: `brain-sync` CLI via `brain_sync.__main__:main`

@@ -13,6 +13,8 @@ from brain_sync.sources import (
     try_extract_confluence_page_id,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestDetectSourceType:
     def test_confluence(self):

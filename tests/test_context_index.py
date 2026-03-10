@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from brain_sync.context import CONTEXT_DIR
 from brain_sync.context_index import INDEX_FILENAME, generate_context_index
 from brain_sync.state import Relationship, SyncState, save_relationship, save_state
+
+pytestmark = pytest.mark.unit
 
 
 def _setup_db(tmp_path):

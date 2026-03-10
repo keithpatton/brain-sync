@@ -17,6 +17,8 @@ from brain_sync.confluence_rest import (
     reset_auth_cache,
 )
 
+pytestmark = pytest.mark.external
+
 AUTH = ConfluenceAuth(domain="test.atlassian.net", email="a@b.com", token="tok")
 
 

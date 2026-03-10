@@ -14,6 +14,8 @@ from brain_sync.regen_queue import (
 )
 from brain_sync.state import _connect
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def brain(tmp_path):

@@ -1,3 +1,5 @@
+import pytest
+
 from brain_sync.state import (
     DocumentState,
     InsightState,
@@ -23,6 +25,8 @@ from brain_sync.state import (
     update_insight_path,
     update_relationship_path,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class TestSourceKeyForEntry:
@@ -668,15 +672,11 @@ class TestDataclassPathNormalization:
         assert s.knowledge_path == "x/y/z"
 
     def test_source_state_normalizes_target_path(self):
-        s = SourceState(
-            canonical_id="x", source_url="u", source_type="t", target_path="a\\b"
-        )
+        s = SourceState(canonical_id="x", source_url="u", source_type="t", target_path="a\\b")
         assert s.target_path == "a/b"
 
     def test_source_state_normalizes_on_mutation(self):
-        s = SourceState(
-            canonical_id="x", source_url="u", source_type="t", target_path="a/b"
-        )
+        s = SourceState(canonical_id="x", source_url="u", source_type="t", target_path="a/b")
         s.target_path = "c\\d"
         assert s.target_path == "c/d"
 

@@ -16,6 +16,8 @@ from brain_sync.state import (
 )
 from brain_sync.watcher import FolderMove, mirror_folder_move
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def brain(tmp_path):

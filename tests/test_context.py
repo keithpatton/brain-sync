@@ -21,6 +21,8 @@ from brain_sync.state import (
     save_state,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestDiscoverLinksFromHtml:
     def test_extracts_confluence_links(self):

@@ -42,3 +42,10 @@ known-first-party = ["brain_sync"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-ra"
+markers = [
+    "integration: full pipeline flow tests with mocked externals",
+    "external: tests that mock external REST API interactions",
+    "mcp: MCP server tool handler tests",
+    "unit: fast isolated unit tests",
+]

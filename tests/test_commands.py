@@ -27,6 +27,8 @@ from brain_sync.commands import (
 from brain_sync.commands.context import _require_root
 from brain_sync.state import _connect
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def brain(tmp_path):

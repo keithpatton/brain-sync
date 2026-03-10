@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
+import pytest
+
 from brain_sync.fs_utils import normalize_path
+
+pytestmark = pytest.mark.unit
 
 
 def test_normalize_path_dot_path_returns_empty():

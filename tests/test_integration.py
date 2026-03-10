@@ -32,15 +32,14 @@ from brain_sync.state import (
     source_key_for_entry,
 )
 
+pytestmark = pytest.mark.integration
+
 FAKE_PAGE_ID = "12345"
 FAKE_URL = f"https://test.atlassian.net/wiki/spaces/X/pages/{FAKE_PAGE_ID}/TestPage"
 
 FAKE_HTML_V1 = "<h1>Test Page</h1><p>Version one content.</p>"
 FAKE_HTML_V2 = "<h1>Test Page</h1><p>Version two content with changes.</p>"
-FAKE_COMMENTS_MD = (
-    "**Alice** (2026-01-01T00:00:00Z)\nGreat work!\n\n"
-    "**Bob** (2026-01-02T00:00:00Z)\nNeeds review."
-)
+FAKE_COMMENTS_MD = "**Alice** (2026-01-01T00:00:00Z)\nGreat work!\n\n" "**Bob** (2026-01-02T00:00:00Z)\nNeeds review."
 
 FAKE_AUTH = ConfluenceAuth(
     domain="test.atlassian.net",
@@ -90,9 +89,7 @@ class TestFullSyncFlow:
     def _run_with_mocks(self, source_state, root, html, version=1, comments=FAKE_COMMENTS_MD):
         mocks = _mock_rest(html, version=version, comments=comments)
         with patch.multiple("brain_sync.pipeline", **mocks):
-            return asyncio.run(
-                process_source(source_state, httpx.AsyncClient(), root)
-            )
+            return asyncio.run(process_source(source_state, httpx.AsyncClient(), root))
 
     def test_first_sync_creates_output(self, root):
         """Register source, run pipeline, verify file + state."""
@@ -262,9 +259,7 @@ class TestStatePersistenceRoundTrip:
 
         mocks = _mock_rest(FAKE_HTML_V1)
         with patch.multiple("brain_sync.pipeline", **mocks):
-            asyncio.run(
-                process_source(state.sources[key], httpx.AsyncClient(), root)
-            )
+            asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         # Save state
         save_state(root, state)

@@ -1,8 +1,12 @@
+import pytest
+
 from brain_sync.fileops import (
     content_hash,
     rediscover_local_path,
     write_if_changed,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class TestContentHash:

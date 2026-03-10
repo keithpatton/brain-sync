@@ -1,4 +1,8 @@
+import pytest
+
 from brain_sync.link_rewriter import rewrite_links
+
+pytestmark = pytest.mark.unit
 
 
 class TestRewriteLinks:

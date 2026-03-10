@@ -24,6 +24,8 @@ from brain_sync.commands import (
 )
 from brain_sync.sources import UnsupportedSourceError
 
+pytestmark = pytest.mark.mcp
+
 # ---------------------------------------------------------------------------
 # Fixtures: sample data for source management tests
 # ---------------------------------------------------------------------------
