@@ -72,12 +72,9 @@ my-brain/                               ← you choose the name
     _core/                              ← global context you maintain
   insights/                             ← agent-generated, don't edit
     _core/
-  schemas/                              ← editable — you can modify or add schemas
+  schemas/                              ← managed by brain-sync
     insights/
       summary.md
-      decisions.md
-      glossary.md
-      status.md
 ```
 
 Init also installs the Claude Code skill to `~/.claude/skills/brain-sync/` and registers the brain in `~/.brain-sync/config.json`.
@@ -116,17 +113,14 @@ acme-brain/
               2026-03-07.md
   schemas/
     insights/
-      summary.md                        ← deployed by init, editable
-      decisions.md
-      glossary.md
-      status.md
+      summary.md                        ← deployed by init
 ```
 
 **`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually.
 
 **`insights/`** is agent-owned. brain-sync triggers regeneration; the insights agent writes summaries and journal entries. Mirrors `knowledge/` 1:1.
 
-**`schemas/`** defines the structure of insight artifacts. Deployed by `brain-sync init` — you can edit existing schemas or add new ones.
+**`schemas/`** defines the structure of insight artifacts. Currently only `summary.md` is used. Deployed by `brain-sync init`.
 
 ## MCP server
 
