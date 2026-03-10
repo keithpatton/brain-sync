@@ -753,6 +753,58 @@ def update_source_target_path(root: Path, canonical_id: str, new_target_path: st
         conn.close()
 
 
+def delete_source(root: Path, canonical_id: str) -> None:
+    """Delete a source row from the DB by canonical ID."""
+    conn = _connect(root)
+    try:
+        conn.execute("DELETE FROM sources WHERE canonical_id = ?", (canonical_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_source_flags(
+    root: Path,
+    canonical_id: str,
+    *,
+    include_children: bool | None = None,
+    include_attachments: bool | None = None,
+    include_links: bool | None = None,
+) -> None:
+    """Update config flags for a source directly in the DB.
+
+    Only the flags that are explicitly provided (not None) are changed.
+    """
+    updates: list[tuple[str, bool]] = []
+    if include_links is not None:
+        updates.append(("include_links", include_links))
+    if include_children is not None:
+        updates.append(("include_children", include_children))
+    if include_attachments is not None:
+        updates.append(("include_attachments", include_attachments))
+    if not updates:
+        return
+
+    set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
+    values: list[int | str] = [int(v) for _, v in updates]
+    values.append(canonical_id)
+    conn = _connect(root)
+    try:
+        conn.execute(
+            f"UPDATE sources SET {set_clause} WHERE canonical_id = ?",
+            values,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_db(root: Path) -> None:
+    """Ensure the SQLite state database exists with the current schema applied."""
+    conn = _connect(root)
+    conn.close()
+
+
 def prune_db(root: Path, active_keys: set[str]) -> None:
     """Remove rows from the DB that are no longer active."""
     conn = _connect(root)

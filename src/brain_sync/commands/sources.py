@@ -8,9 +8,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
-from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import canonical_id, detect_source_type
-from brain_sync.state import SourceState, _connect, load_state, save_state
+from brain_sync.state import (
+    SourceState,
+    load_state,
+    save_state,
+    update_source_flags,
+    update_source_target_path,
+)
+from brain_sync.state import (
+    delete_source as db_delete_source,
+)
 
 log = logging.getLogger(__name__)
 
@@ -172,12 +180,7 @@ def remove_source(
     del state.sources[cid]
     save_state(root, state)
 
-    conn = _connect(root)
-    try:
-        conn.execute("DELETE FROM sources WHERE canonical_id = ?", (cid,))
-        conn.commit()
-    finally:
-        conn.close()
+    db_delete_source(root, cid)
 
     return RemoveResult(
         canonical_id=cid,
@@ -242,15 +245,7 @@ def move_source(
     save_state(root, state)
 
     # save_state UPDATE doesn't touch target_path (by design), so update directly
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "UPDATE sources SET target_path = ? WHERE canonical_id = ?",
-            (normalize_path(to_path), cid),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    update_source_target_path(root, cid, to_path)
 
     files_moved = False
     old_dir = root / "knowledge" / old_path
@@ -292,32 +287,22 @@ def update_source(
 
     ss = state.sources[cid]
 
-    # Build SET clauses for only the flags that were provided
-    updates: list[tuple[str, bool]] = []
+    # Apply provided flags to in-memory state
     if include_links is not None:
         ss.include_links = include_links
-        updates.append(("include_links", include_links))
     if include_children is not None:
         ss.include_children = include_children
-        updates.append(("include_children", include_children))
     if include_attachments is not None:
         ss.include_attachments = include_attachments
-        updates.append(("include_attachments", include_attachments))
 
     # Write directly to DB — save_state skips config fields on UPDATE
-    if updates:
-        set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
-        values = [int(v) for _, v in updates]
-        values.append(cid)  # type: ignore[arg-type]
-        conn = _connect(root)
-        try:
-            conn.execute(
-                f"UPDATE sources SET {set_clause} WHERE canonical_id = ?",
-                values,
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    update_source_flags(
+        root,
+        cid,
+        include_links=include_links,
+        include_children=include_children,
+        include_attachments=include_attachments,
+    )
 
     return UpdateResult(
         canonical_id=cid,

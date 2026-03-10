@@ -7,10 +7,11 @@ filesystem via tmp_path fixtures.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -64,6 +65,25 @@ SAMPLE_MOVE_RESULT = MoveResult(
     new_path="initiatives/moved",
     files_moved=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# Fixture: mock MCP Context backed by BrainRuntime
+# ---------------------------------------------------------------------------
+
+
+def _make_ctx(root: Path) -> MagicMock:
+    """Create a mock Context whose request_context.lifespan_context is a BrainRuntime."""
+    from brain_sync.mcp import AreaIndex, BrainRuntime
+
+    rt = BrainRuntime(
+        root=root,
+        area_index=AreaIndex.build(root),
+        regen_lock=asyncio.Lock(),
+    )
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = rt
+    return ctx
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +167,44 @@ def brain_with_many_children(brain_root: Path) -> Path:
     return brain_root
 
 
+@pytest.fixture
+def _dummy_root(tmp_path: Path) -> Path:
+    """Minimal root for source management tests (no brain structure needed)."""
+    root = tmp_path / "dummy"
+    root.mkdir()
+    return root
+
+
+# ---------------------------------------------------------------------------
+# Import-purity regression test (Phase 2 gate)
+# ---------------------------------------------------------------------------
+
+
+class TestImportPurity:
+    def test_import_does_not_call_resolve_root(self):
+        """Importing brain_sync.mcp must not call resolve_root()."""
+        import importlib
+        import sys
+
+        # Remove cached module so we can re-import
+        mod_name = "brain_sync.mcp"
+        saved = sys.modules.pop(mod_name, None)
+        try:
+            with patch("brain_sync.commands.context.resolve_root", side_effect=RuntimeError("should not be called")):
+                # The module imports resolve_root from commands (re-export),
+                # but must not *call* it at import time.
+                # We patch the underlying function that resolve_root delegates to.
+                # Since the module references resolve_root by name after import,
+                # we verify it doesn't execute during import.
+                importlib.import_module(mod_name)
+        except RuntimeError:
+            pytest.fail("resolve_root() was called at import time")
+        finally:
+            # Restore original module
+            if saved is not None:
+                sys.modules[mod_name] = saved
+
+
 # ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
@@ -154,27 +212,30 @@ def brain_with_many_children(brain_root: Path) -> Path:
 
 class TestBrainSyncList:
     @patch("brain_sync.mcp.list_sources", return_value=[])
-    def test_list_empty(self, mock_list):
+    def test_list_empty(self, mock_list, _dummy_root):
         from brain_sync.mcp import brain_sync_list
 
-        result = brain_sync_list()
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_list(ctx)
         assert result == {"status": "ok", "sources": [], "count": 0}
         mock_list.assert_called_once()
 
     @patch("brain_sync.mcp.list_sources", return_value=[SAMPLE_SOURCE])
-    def test_list_with_sources(self, mock_list):
+    def test_list_with_sources(self, mock_list, _dummy_root):
         from brain_sync.mcp import brain_sync_list
 
-        result = brain_sync_list()
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_list(ctx)
         assert result["status"] == "ok"
         assert result["count"] == 1
         assert result["sources"] == [asdict(SAMPLE_SOURCE)]
 
     @patch("brain_sync.mcp.list_sources", return_value=[SAMPLE_SOURCE])
-    def test_list_filter(self, mock_list):
+    def test_list_filter(self, mock_list, _dummy_root):
         from brain_sync.mcp import brain_sync_list
 
-        result = brain_sync_list(filter_path="initiatives")
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_list(ctx, filter_path="initiatives")
         assert result["status"] == "ok"
         mock_list.assert_called_once()
         call_kwargs = mock_list.call_args
@@ -188,10 +249,12 @@ class TestBrainSyncList:
 
 class TestBrainSyncAdd:
     @patch("brain_sync.mcp.add_source", return_value=SAMPLE_ADD_RESULT)
-    def test_add_success(self, mock_add):
+    def test_add_success(self, mock_add, _dummy_root):
         from brain_sync.mcp import brain_sync_add
 
+        ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
+            ctx,
             url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
             target_path="initiatives/test",
         )
@@ -203,10 +266,12 @@ class TestBrainSyncAdd:
         "brain_sync.mcp.add_source",
         side_effect=SourceAlreadyExistsError("confluence:12345", "https://example.com", "initiatives/test"),
     )
-    def test_add_duplicate(self, mock_add):
+    def test_add_duplicate(self, mock_add, _dummy_root):
         from brain_sync.mcp import brain_sync_add
 
+        ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
+            ctx,
             url="https://example.com",
             target_path="initiatives/test",
         )
@@ -218,10 +283,12 @@ class TestBrainSyncAdd:
         "brain_sync.mcp.add_source",
         side_effect=UnsupportedSourceError("https://bad-url.example.com"),
     )
-    def test_add_invalid_url(self, mock_add):
+    def test_add_invalid_url(self, mock_add, _dummy_root):
         from brain_sync.mcp import brain_sync_add
 
+        ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
+            ctx,
             url="https://bad-url.example.com",
             target_path="test",
         )
@@ -237,10 +304,11 @@ class TestBrainSyncAdd:
 
 class TestBrainSyncRemove:
     @patch("brain_sync.mcp.remove_source", return_value=SAMPLE_REMOVE_RESULT)
-    def test_remove_success(self, mock_remove):
+    def test_remove_success(self, mock_remove, _dummy_root):
         from brain_sync.mcp import brain_sync_remove
 
-        result = brain_sync_remove(source="confluence:12345")
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_remove(ctx, source="confluence:12345")
         assert result["status"] == "ok"
         assert result["canonical_id"] == "confluence:12345"
 
@@ -248,10 +316,11 @@ class TestBrainSyncRemove:
         "brain_sync.mcp.remove_source",
         side_effect=SourceNotFoundError("confluence:99999"),
     )
-    def test_remove_not_found(self, mock_remove):
+    def test_remove_not_found(self, mock_remove, _dummy_root):
         from brain_sync.mcp import brain_sync_remove
 
-        result = brain_sync_remove(source="confluence:99999")
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_remove(ctx, source="confluence:99999")
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
         assert result["source"] == "confluence:99999"
@@ -264,10 +333,11 @@ class TestBrainSyncRemove:
 
 class TestBrainSyncMove:
     @patch("brain_sync.mcp.move_source", return_value=SAMPLE_MOVE_RESULT)
-    def test_move_success(self, mock_move):
+    def test_move_success(self, mock_move, _dummy_root):
         from brain_sync.mcp import brain_sync_move
 
-        result = brain_sync_move(source="confluence:12345", to_path="initiatives/moved")
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_move(ctx, source="confluence:12345", to_path="initiatives/moved")
         assert result["status"] == "ok"
         assert result["new_path"] == "initiatives/moved"
         assert result["files_moved"] is True
@@ -276,10 +346,11 @@ class TestBrainSyncMove:
         "brain_sync.mcp.move_source",
         side_effect=SourceNotFoundError("confluence:99999"),
     )
-    def test_move_not_found(self, mock_move):
+    def test_move_not_found(self, mock_move, _dummy_root):
         from brain_sync.mcp import brain_sync_move
 
-        result = brain_sync_move(source="confluence:99999", to_path="x")
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_move(ctx, source="confluence:99999", to_path="x")
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
 
@@ -291,21 +362,23 @@ class TestBrainSyncMove:
 
 class TestBrainSyncRegen:
     @pytest.mark.asyncio
-    async def test_regen_path(self):
+    async def test_regen_path(self, _dummy_root):
         with patch("brain_sync.mcp.regen_path", new_callable=AsyncMock, return_value=3):
             from brain_sync.mcp import brain_sync_regen
 
-            result = await brain_sync_regen(path="initiatives/test")
+            ctx = _make_ctx(_dummy_root)
+            result = await brain_sync_regen(ctx, path="initiatives/test")
             assert result["status"] == "ok"
             assert result["summaries_regenerated"] == 3
             assert result["path"] == "initiatives/test"
 
     @pytest.mark.asyncio
-    async def test_regen_all(self):
+    async def test_regen_all(self, _dummy_root):
         with patch("brain_sync.mcp.regen_all", new_callable=AsyncMock, return_value=7):
             from brain_sync.mcp import brain_sync_regen
 
-            result = await brain_sync_regen()
+            ctx = _make_ctx(_dummy_root)
+            result = await brain_sync_regen(ctx)
             assert result["status"] == "ok"
             assert result["summaries_regenerated"] == 7
             assert result["path"] == "all"
@@ -318,13 +391,10 @@ class TestBrainSyncRegen:
 
 class TestBrainSyncQuery:
     def test_query_with_match(self, brain_root):
-        from brain_sync.mcp import AreaIndex, brain_sync_query
+        from brain_sync.mcp import brain_sync_query
 
-        with (
-            patch("brain_sync.mcp._root", brain_root),
-            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
-        ):
-            result = brain_sync_query(query="AAA")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_query(ctx, query="AAA")
 
         assert result["status"] == "ok"
         assert len(result["matches"]) >= 1
@@ -333,13 +403,10 @@ class TestBrainSyncQuery:
         assert result["total_areas"] > 0
 
     def test_query_with_global(self, brain_root):
-        from brain_sync.mcp import AreaIndex, brain_sync_query
+        from brain_sync.mcp import brain_sync_query
 
-        with (
-            patch("brain_sync.mcp._root", brain_root),
-            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
-        ):
-            result = brain_sync_query(query="AAA", include_global=True)
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_query(ctx, query="AAA", include_global=True)
 
         assert result["status"] == "ok"
         assert "global_context" in result
@@ -351,39 +418,30 @@ class TestBrainSyncQuery:
         assert not any("journal" in k for k in gc["insights_core"])
 
     def test_query_no_match(self, brain_root):
-        from brain_sync.mcp import AreaIndex, brain_sync_query
+        from brain_sync.mcp import brain_sync_query
 
-        with (
-            patch("brain_sync.mcp._root", brain_root),
-            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
-        ):
-            result = brain_sync_query(query="nonexistent")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_query(ctx, query="nonexistent")
 
         assert result["status"] == "ok"
         assert result["matches"] == []
 
     def test_query_max_results(self, brain_root):
-        from brain_sync.mcp import AreaIndex, brain_sync_query
+        from brain_sync.mcp import brain_sync_query
 
-        with (
-            patch("brain_sync.mcp._root", brain_root),
-            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
-        ):
-            result = brain_sync_query(query="initiatives", max_results=1)
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_query(ctx, query="initiatives", max_results=1)
 
         assert result["status"] == "ok"
         assert len(result["matches"]) == 1
 
     def test_query_searches_summary_content(self, brain_root):
         """Matches against summary.md content, not just folder names."""
-        from brain_sync.mcp import AreaIndex, brain_sync_query
+        from brain_sync.mcp import brain_sync_query
 
-        with (
-            patch("brain_sync.mcp._root", brain_root),
-            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
-        ):
-            # "billing" appears only in BBB's summary, not in path
-            result = brain_sync_query(query="billing")
+        ctx = _make_ctx(brain_root)
+        # "billing" appears only in BBB's summary, not in path
+        result = brain_sync_query(ctx, query="billing")
 
         assert result["status"] == "ok"
         assert len(result["matches"]) >= 1
@@ -391,13 +449,10 @@ class TestBrainSyncQuery:
 
     def test_query_path_weighted_higher(self, brain_root):
         """Path matches score higher than body matches."""
-        from brain_sync.mcp import AreaIndex, brain_sync_query
+        from brain_sync.mcp import brain_sync_query
 
-        with (
-            patch("brain_sync.mcp._root", brain_root),
-            patch("brain_sync.mcp._area_index", AreaIndex.build(brain_root)),
-        ):
-            result = brain_sync_query(query="AAA")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_query(ctx, query="AAA")
 
         assert result["status"] == "ok"
         # AAA should be first because "AAA" is in the path (x3)
@@ -405,7 +460,7 @@ class TestBrainSyncQuery:
 
     def test_query_areas_capped(self, tmp_path):
         """Areas listing respects MAX_AREAS_LISTED cap."""
-        from brain_sync.mcp import MAX_AREAS_LISTED, AreaIndex, brain_sync_query
+        from brain_sync.mcp import MAX_AREAS_LISTED, brain_sync_query
 
         root = tmp_path / "big-brain"
         (root / "knowledge" / "_core").mkdir(parents=True)
@@ -417,8 +472,8 @@ class TestBrainSyncQuery:
             area.mkdir(parents=True)
             (area / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", root), patch("brain_sync.mcp._area_index", AreaIndex.build(root)):
-            result = brain_sync_query(query="area")
+        ctx = _make_ctx(root)
+        result = brain_sync_query(ctx, query="area")
 
         assert result["status"] == "ok"
         assert len(result["areas"]) == MAX_AREAS_LISTED
@@ -430,8 +485,8 @@ class TestBrainSyncGetContext:
     def test_get_context(self, brain_root):
         from brain_sync.mcp import brain_sync_get_context
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_get_context()
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_get_context(ctx)
 
         assert result["status"] == "ok"
         gc = result["global_context"]
@@ -448,8 +503,8 @@ class TestBrainSyncGetContext:
         root = tmp_path / "empty-brain"
         root.mkdir()
 
-        with patch("brain_sync.mcp._root", root):
-            result = brain_sync_get_context()
+        ctx = _make_ctx(root)
+        result = brain_sync_get_context(ctx)
 
         assert result["status"] == "ok"
         assert result["global_context"]["knowledge_core"] == {}
@@ -462,8 +517,8 @@ class TestBrainSyncOpenArea:
     def test_open_area(self, brain_root):
         from brain_sync.mcp import brain_sync_open_area
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_area(path="initiatives/AAA")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_area(ctx, path="initiatives/AAA")
 
         assert result["status"] == "ok"
         assert result["path"] == "initiatives/AAA"
@@ -477,8 +532,8 @@ class TestBrainSyncOpenArea:
     def test_open_area_with_children(self, brain_root):
         from brain_sync.mcp import brain_sync_open_area
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_area(path="initiatives/AAA", include_children=True)
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_area(ctx, path="initiatives/AAA", include_children=True)
 
         assert result["status"] == "ok"
         assert "child_summaries" in result
@@ -488,8 +543,8 @@ class TestBrainSyncOpenArea:
     def test_open_area_with_knowledge_list(self, brain_root):
         from brain_sync.mcp import brain_sync_open_area
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_area(path="initiatives/AAA", include_knowledge_list=True)
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_area(ctx, path="initiatives/AAA", include_knowledge_list=True)
 
         assert result["status"] == "ok"
         assert "knowledge_files" in result
@@ -498,8 +553,8 @@ class TestBrainSyncOpenArea:
     def test_open_area_not_found(self, brain_root):
         from brain_sync.mcp import brain_sync_open_area
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_area(path="nonexistent/area")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_area(ctx, path="nonexistent/area")
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
@@ -515,8 +570,8 @@ class TestBrainSyncOpenArea:
             encoding="utf-8",
         )
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_area(path="initiatives/AAA")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_area(ctx, path="initiatives/AAA")
 
         assert result["status"] == "ok"
         summary = result["insights"]["summary.md"]
@@ -527,8 +582,8 @@ class TestBrainSyncOpenArea:
         """Area with many children respects MAX_CHILDREN cap."""
         from brain_sync.mcp import MAX_CHILDREN, brain_sync_open_area
 
-        with patch("brain_sync.mcp._root", brain_with_many_children):
-            result = brain_sync_open_area(path="initiatives/AAA", include_children=True)
+        ctx = _make_ctx(brain_with_many_children)
+        result = brain_sync_open_area(ctx, path="initiatives/AAA", include_children=True)
 
         assert result["status"] == "ok"
         assert len(result["child_summaries"]) <= MAX_CHILDREN
@@ -545,8 +600,8 @@ class TestBrainSyncOpenArea:
         for i in range(5):
             (insights_dir / f"artifact-{i}.md").write_text("a" * 8000, encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_area(path="initiatives/AAA")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_area(ctx, path="initiatives/AAA")
 
         assert result["status"] == "ok"
         # Artifacts should have been replaced with truncation marker
@@ -559,8 +614,8 @@ class TestBrainSyncOpenFile:
     def test_open_file(self, brain_root):
         from brain_sync.mcp import brain_sync_open_file
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="insights/_core/summary.md")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="insights/_core/summary.md")
 
         assert result["status"] == "ok"
         assert "Core Summary" in result["content"]
@@ -571,8 +626,8 @@ class TestBrainSyncOpenFile:
     def test_open_file_not_found(self, brain_root):
         from brain_sync.mcp import brain_sync_open_file
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="nonexistent/file.md")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="nonexistent/file.md")
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
@@ -583,8 +638,8 @@ class TestBrainSyncOpenFile:
         # Create a file outside brain root
         (brain_root.parent / "secret.md").write_text("secret!", encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="../secret.md")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="../secret.md")
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
@@ -592,8 +647,8 @@ class TestBrainSyncOpenFile:
     def test_open_file_directory_rejected(self, brain_root):
         from brain_sync.mcp import brain_sync_open_file
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="insights/_core")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="insights/_core")
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
@@ -604,8 +659,8 @@ class TestBrainSyncOpenFile:
 
         (brain_root / "test.pdf").write_bytes(b"fake pdf")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="test.pdf")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="test.pdf")
 
         assert result["status"] == "error"
         assert result["error"] == "unsupported_type"
@@ -616,8 +671,8 @@ class TestBrainSyncOpenFile:
 
         (brain_root / "data.json").write_text('{"key": "value"}', encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="data.json")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="data.json")
 
         assert result["status"] == "ok"
         assert '"key"' in result["content"]
@@ -632,8 +687,8 @@ class TestBrainSyncOpenFile:
         link = brain_root / "link.md"
         link.symlink_to(outside)
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="link.md")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="link.md")
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
@@ -648,8 +703,8 @@ class TestBrainSyncOpenFile:
         assert len(large_content) > DEFAULT_FILE_CHARS
         (brain_root / "large.md").write_text(large_content, encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="large.md")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="large.md")
 
         assert result["status"] == "ok"
         assert result["truncated"] is True
@@ -666,13 +721,13 @@ class TestBrainSyncOpenFile:
         large_content = "\n".join(lines)
         (brain_root / "large.md").write_text(large_content, encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            # First call
-            r1 = brain_sync_open_file(path="large.md")
-            assert r1["truncated"] is True
+        ctx = _make_ctx(brain_root)
+        # First call
+        r1 = brain_sync_open_file(ctx, path="large.md")
+        assert r1["truncated"] is True
 
-            # Second call at next_offset
-            r2 = brain_sync_open_file(path="large.md", offset=r1["next_offset"])
+        # Second call at next_offset
+        r2 = brain_sync_open_file(ctx, path="large.md", offset=r1["next_offset"])
 
         # Content should be contiguous
         combined = r1["content"] + r2["content"]
@@ -682,11 +737,12 @@ class TestBrainSyncOpenFile:
         """Offset past end of file returns empty content."""
         from brain_sync.mcp import brain_sync_open_file
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(
-                path="insights/_core/summary.md",
-                offset=999999,
-            )
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(
+            ctx,
+            path="insights/_core/summary.md",
+            offset=999999,
+        )
 
         assert result["status"] == "ok"
         assert result["content"] == ""
@@ -696,11 +752,12 @@ class TestBrainSyncOpenFile:
         """Limit larger than MAX_FILE_CHARS is clamped."""
         from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(
-                path="insights/_core/summary.md",
-                limit=MAX_FILE_CHARS + 100,
-            )
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(
+            ctx,
+            path="insights/_core/summary.md",
+            limit=MAX_FILE_CHARS + 100,
+        )
 
         assert result["status"] == "ok"
         assert result["limit"] == MAX_FILE_CHARS
@@ -714,8 +771,8 @@ class TestBrainSyncOpenFile:
         large_content = "\n".join(lines)
         (brain_root / "aligned.md").write_text(large_content, encoding="utf-8")
 
-        with patch("brain_sync.mcp._root", brain_root):
-            result = brain_sync_open_file(path="aligned.md")
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_open_file(ctx, path="aligned.md")
 
         if result["truncated"]:
             # Content should end at a newline

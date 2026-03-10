@@ -1361,9 +1361,6 @@ async def regen_path(
     return regen_count
 
 
-_find_all_content_paths = find_all_content_paths
-
-
 async def regen_all(
     root: Path,
     *,
@@ -1378,7 +1375,7 @@ async def regen_all(
         config = RegenConfig.load()
 
     knowledge_root = root / "knowledge"
-    content_paths = _find_all_content_paths(knowledge_root)
+    content_paths = find_all_content_paths(knowledge_root)
 
     if not content_paths:
         log.info("No knowledge paths found")

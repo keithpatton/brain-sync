@@ -41,21 +41,28 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 **Entry points** — `__main__` runs the daemon loop; `mcp` runs the FastMCP stdio server. Both wire together commands, scheduling, and interfaces.
 
+### Architectural Principles
+
+**Import purity** — Modules may define behavior at import time, but must not resolve environment-dependent runtime state at import time. Filesystem access, config resolution, and index construction must be deferred to explicit startup/lifespan hooks.
+
+**MCP runtime ownership** — `BrainRuntime` is the single owner of MCP process state (root path, area index, concurrency locks). Module-level variables in `mcp.py` must remain pure definitions (constants, helper functions, tool registrations). Any variable whose value depends on filesystem state, configuration, or runtime execution must live in `BrainRuntime`. Future contributors adding new runtime state (connections, caches, locks) must add it to `BrainRuntime`, not as a new module global.
+
 ---
 
 ## 3. Known Technical Debt
-
-**Private cross-module imports** — several modules access underscore-prefixed internals across module boundaries. See §5 for the full inventory.
-
-**Path normalisation spread** — path cleaning and resolution logic is distributed across `fileops`, `fs_utils`, `pipeline`, and `watcher` rather than consolidated.
-
-**State persistence coupling** — `state._connect` is called directly by command modules instead of going through a service boundary.
 
 **Watcher edge cases** — Windows symlink handling and rapid sequential move events are not fully robust.
 
 **Regen complexity** — `regen.py` is the largest module with many private helpers; candidates for extraction exist.
 
-**Module-level side effects in `mcp.py`** — `resolve_root()` and `AreaIndex.build(_root)` execute at import time, coupling module loading to filesystem state.
+**AreaIndex staleness model** — `AreaIndex.is_stale()` only checks `insights/**/summary.md` mtimes, but the index depends on more: knowledge file presence, directory structure, children changes. The index can be stale without `is_stale()` detecting it. This is a performance hint, not an authoritative freshness contract. Next MCP correctness debt item.
+
+### Derived State Inventory
+
+| View | Source of Truth | Owner | Refresh Trigger | Correctness Role |
+|---|---|---|---|---|
+| Global context cache | `knowledge/_core/`, `schemas/`, `insights/_core/` files | `regen.py` | `invalidate_global_context_cache()` — called by watcher on `_core/` changes and by daemon on `_core/` sync | Correctness-critical (stale cache → regen uses wrong context) |
+| AreaIndex | `insights/**/summary.md` + `knowledge/` structure | `BrainRuntime` (MCP) | `is_stale()` mtime check before each query | Performance-only (stale index → search misses, not data corruption) |
 
 ### Resolved (2026-03)
 
@@ -65,6 +72,10 @@ Dependency direction rules are defined in `CLAUDE.md`.
 - **Silent exception swallowing** — retry, pipeline, regen, and MCP modules now log at debug level instead of silently passing (Phase G)
 - **Atomic file writes** — `fileops.atomic_write_bytes` uses `os.fsync()` and directory fsync for crash safety (Phase A)
 - **Thread-safe config** — `config.py` uses `threading.Lock` for concurrent access from watcher thread (Phase A/B)
+- **Module-level side effects in `mcp.py`** — `resolve_root()` and `AreaIndex.build()` moved from import-time to server lifespan via `BrainRuntime` dataclass
+- **State persistence coupling** — `state._connect` no longer imported by command modules; replaced with public API (`delete_source`, `update_source_flags`, `ensure_db`, `update_source_target_path`)
+- **Cache invalidation race** — `process_source()` in daemon loop now invalidates global context cache when `_core/` sources change, closing the race between sync writes and regen reads
+- **Dead alias** — `_find_all_content_paths` alias removed from `regen.py`; callers use `find_all_content_paths` from `fs_utils` directly
 
 ---
 
@@ -72,12 +83,10 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 Planned architecture evolution, in order:
 
-1. **Path consolidation** — unify path normalisation into a single module
-2. **State modularisation** — expose state access through a public API, eliminating `_connect` imports
-3. **Service layer introduction** — insert a service boundary between commands and core modules
-4. **MCP modularisation** — move tool definitions out of `mcp.py`, defer side effects to startup
-5. **Regen modularisation** — extract private helpers into focused sub-modules
-6. **Watcher robustness** — harden filesystem event handling for platform edge cases
+1. **AreaIndex staleness model** — make `is_stale()` aware of knowledge file presence and directory structure changes
+2. **Regen modularisation** — extract private helpers from `regen.py` into focused sub-modules
+3. **Watcher robustness** — harden filesystem event handling for platform edge cases
+4. **Exception narrowing** — replace broad `except Exception` handlers with specific exception types
 
 This roadmap is informational and guides future refactors.
 
@@ -89,8 +98,6 @@ This roadmap is informational and guides future refactors.
 
 | Symbol | Consumer | Notes |
 |---|---|---|
-| `state._connect` | `commands/sources.py` | Top-level import |
-| `state._connect` | `commands/init.py` | Deferred import inside function |
 | `scheduler._scheduled_keys` | `__main__.py` | Attribute access, not import |
 | `commands.context._require_root` | `commands/sources.py` | Intra-package (both in `commands/`) |
 

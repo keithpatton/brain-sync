@@ -132,10 +132,9 @@ def init_brain(
     )
 
     if not dry_run:
-        from brain_sync.state import _connect
+        from brain_sync.state import ensure_db
 
-        conn = _connect(root)
-        conn.close()
+        ensure_db(root)
         log.info("SQLite state database ready at %s", root / ".sync-state.sqlite")
 
     _register_brain_root(root, model=model, dry_run=dry_run)

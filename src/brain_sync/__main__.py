@@ -112,6 +112,11 @@ async def run(root: Path) -> None:
                             # Enqueue regen if content changed
                             if changed and ss.target_path:
                                 regen_queue.enqueue(ss.target_path)
+                                # Invalidate global context cache if source targets _core/
+                                if ss.target_path == "_core" or ss.target_path.startswith("_core/"):
+                                    from brain_sync.regen import invalidate_global_context_cache
+
+                                    invalidate_global_context_cache()
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)
                             ss.current_interval_secs = min(

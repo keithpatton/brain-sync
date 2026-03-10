@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain_sync.fs_utils import find_all_content_paths as _find_all_content_paths
 from brain_sync.regen import (
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
@@ -22,7 +23,6 @@ from brain_sync.regen import (
     _collect_child_summaries,
     _collect_global_context,
     _compute_hash,
-    _find_all_content_paths,
     _first_heading,
     _get_child_dirs,
     _is_content_dir,

@@ -5,6 +5,10 @@ Desktop can interact with the brain without filesystem access.
 
 Architecture: SKILL.md (WHAT/WHEN) → MCP tools (HOW) → brain_sync library
 
+Runtime state ownership: All environment-dependent state (root path, area index,
+concurrency locks) lives in BrainRuntime, initialised via the server lifespan.
+Module-level definitions must remain pure (constants, helpers, tool registrations).
+
 Usage:
     python -m brain_sync.mcp
 """
@@ -14,10 +18,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from brain_sync.commands import (
     SourceAlreadyExistsError,
@@ -36,14 +42,6 @@ from brain_sync.regen_lifecycle import regen_session
 from brain_sync.sources import UnsupportedSourceError
 
 log = logging.getLogger(__name__)
-
-server = FastMCP("brain-sync")
-
-# Resolve once at startup — all tools use this root
-_root = resolve_root()
-
-# Prevent concurrent regeneration
-_regen_lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Constants — token budget enforcement
@@ -316,21 +314,52 @@ class AreaIndex:
         return results
 
 
-# Module-level index — built once at startup
-_area_index = AreaIndex.build(_root)
+# ---------------------------------------------------------------------------
+# Runtime state — initialised at server startup, not at import time
+# ---------------------------------------------------------------------------
 
 
-def _get_index() -> AreaIndex:
+@dataclass
+class BrainRuntime:
+    """Single owner of MCP process state.
+
+    All variables whose values depend on filesystem state, configuration,
+    or runtime execution live here. Module-level variables in mcp.py must
+    remain pure definitions (constants, helper functions, tool registrations).
+    """
+
+    root: Path
+    area_index: AreaIndex
+    regen_lock: asyncio.Lock
+
+
+@asynccontextmanager
+async def _brain_lifespan(_app: FastMCP) -> AsyncIterator[BrainRuntime]:
+    root = resolve_root()
+    area_index = AreaIndex.build(root)
+    regen_lock = asyncio.Lock()
+    log.info("brain-sync MCP started, root=%s", root)
+    yield BrainRuntime(root=root, area_index=area_index, regen_lock=regen_lock)
+
+
+server = FastMCP("brain-sync", lifespan=_brain_lifespan)
+
+
+def _runtime(ctx: Context) -> BrainRuntime:
+    """Extract BrainRuntime from the MCP request context."""
+    return ctx.request_context.lifespan_context  # type: ignore[return-value]
+
+
+def _get_index(rt: BrainRuntime) -> AreaIndex:
     """Get the area index, rebuilding if stale."""
-    global _area_index
-    if _area_index.is_stale(_root):
+    if rt.area_index.is_stale(rt.root):
         log.debug("Area index stale, rebuilding")
-        _area_index = AreaIndex.build(_root)
-    return _area_index
+        rt.area_index = AreaIndex.build(rt.root)
+    return rt.area_index
 
 
 # ---------------------------------------------------------------------------
-# Source management tools (existing)
+# Source management tools
 # ---------------------------------------------------------------------------
 
 
@@ -338,9 +367,10 @@ def _get_index() -> AreaIndex:
     name="brain_sync_list",
     description="List registered brain-sync sources. Optionally filter by path prefix.",
 )
-def brain_sync_list(filter_path: str | None = None) -> dict:
+def brain_sync_list(ctx: Context, filter_path: str | None = None) -> dict:
     """List registered sync sources."""
-    sources = list_sources(root=_root, filter_path=filter_path)
+    rt = _runtime(ctx)
+    sources = list_sources(root=rt.root, filter_path=filter_path)
     result = {
         "status": "ok",
         "sources": [asdict(s) for s in sources],
@@ -359,6 +389,7 @@ def brain_sync_list(filter_path: str | None = None) -> dict:
     ),
 )
 def brain_sync_add(
+    ctx: Context,
     url: str,
     target_path: str,
     include_links: bool = False,
@@ -366,9 +397,10 @@ def brain_sync_add(
     include_attachments: bool = False,
 ) -> dict:
     """Register a source URL for syncing."""
+    rt = _runtime(ctx)
     try:
         result = add_source(
-            root=_root,
+            root=rt.root,
             url=url,
             target_path=target_path,
             include_links=include_links,
@@ -398,11 +430,12 @@ def brain_sync_add(
         "Unregister a sync source by canonical ID or URL. Set delete_files=true to also remove the knowledge folder."
     ),
 )
-def brain_sync_remove(source: str, delete_files: bool = False) -> dict:
+def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> dict:
     """Unregister a sync source."""
+    rt = _runtime(ctx)
     try:
         result = remove_source(
-            root=_root,
+            root=rt.root,
             source=source,
             delete_files=delete_files,
         )
@@ -424,15 +457,17 @@ def brain_sync_remove(source: str, delete_files: bool = False) -> dict:
     ),
 )
 def brain_sync_update(
+    ctx: Context,
     source: str,
     include_links: bool | None = None,
     include_children: bool | None = None,
     include_attachments: bool | None = None,
 ) -> dict:
     """Update config flags for an existing sync source."""
+    rt = _runtime(ctx)
     try:
         result = update_source(
-            root=_root,
+            root=rt.root,
             source=source,
             include_links=include_links,
             include_children=include_children,
@@ -451,11 +486,12 @@ def brain_sync_update(
     name="brain_sync_move",
     description="Move a sync source to a new knowledge path.",
 )
-def brain_sync_move(source: str, to_path: str) -> dict:
+def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
     """Move a sync source to a new knowledge path."""
+    rt = _runtime(ctx)
     try:
         result = move_source(
-            root=_root,
+            root=rt.root,
             source=source,
             to_path=to_path,
         )
@@ -476,16 +512,17 @@ def brain_sync_move(source: str, to_path: str) -> dict:
         "or omit path to regenerate all areas."
     ),
 )
-async def brain_sync_regen(path: str | None = None) -> dict:
+async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
     """Regenerate insight summaries."""
-    async with _regen_lock:
-        async with regen_session(_root) as session:
+    rt = _runtime(ctx)
+    async with rt.regen_lock:
+        async with regen_session(rt.root) as session:
             try:
                 if path:
                     path = normalize_path(path)
-                    count = await regen_path(_root, path, owner_id=session.owner_id)
+                    count = await regen_path(rt.root, path, owner_id=session.owner_id)
                 else:
-                    count = await regen_all(_root, owner_id=session.owner_id)
+                    count = await regen_all(rt.root, owner_id=session.owner_id)
                 return {
                     "status": "ok",
                     "summaries_regenerated": count,
@@ -506,7 +543,7 @@ async def brain_sync_regen(path: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Brain query tools (new)
+# Brain query tools
 # ---------------------------------------------------------------------------
 
 
@@ -519,12 +556,14 @@ async def brain_sync_regen(path: str | None = None) -> dict:
     ),
 )
 def brain_sync_query(
+    ctx: Context,
     query: str,
     include_global: bool = False,
     max_results: int = 5,
 ) -> dict:
     """Search the brain for areas matching a query."""
-    index = _get_index()
+    rt = _runtime(ctx)
+    index = _get_index(rt)
     matches = index.search(query, max_results=max_results)
 
     result: dict = {
@@ -533,10 +572,10 @@ def brain_sync_query(
     }
 
     if include_global:
-        result["global_context"] = _collect_global_context_structured(_root)
+        result["global_context"] = _collect_global_context_structured(rt.root)
 
     # Areas listing (capped)
-    all_areas = _collect_areas(_root)
+    all_areas = _collect_areas(rt.root)
     total = len(all_areas)
     truncated = total > MAX_AREAS_LISTED
     result["areas"] = all_areas[:MAX_AREAS_LISTED]
@@ -561,10 +600,11 @@ def brain_sync_query(
         "use brain_sync_query instead."
     ),
 )
-def brain_sync_get_context() -> dict:
+def brain_sync_get_context(ctx: Context) -> dict:
     """Load global brain context for orientation."""
-    global_context = _collect_global_context_structured(_root)
-    all_areas = _collect_areas(_root)
+    rt = _runtime(ctx)
+    global_context = _collect_global_context_structured(rt.root)
+    all_areas = _collect_areas(rt.root)
     total = len(all_areas)
     truncated = total > MAX_AREAS_LISTED
 
@@ -587,16 +627,18 @@ def brain_sync_get_context() -> dict:
     ),
 )
 def brain_sync_open_area(
+    ctx: Context,
     path: str,
     include_children: bool = False,
     include_knowledge_list: bool = False,
 ) -> dict:
     """Load full insight context for a brain area."""
-    insights_dir = _safe_resolve(_root, "insights/" + path)
+    rt = _runtime(ctx)
+    insights_dir = _safe_resolve(rt.root, "insights/" + path)
     if insights_dir is None or not insights_dir.is_dir():
         return {"status": "error", "error": "not_found", "path": path}
 
-    knowledge_dir = _safe_resolve(_root, "knowledge/" + path)
+    knowledge_dir = _safe_resolve(rt.root, "knowledge/" + path)
     payload_size = 0
 
     # Read insight files (excluding journal/)
@@ -709,12 +751,14 @@ def brain_sync_open_area(
     ),
 )
 def brain_sync_open_file(
+    ctx: Context,
     path: str,
     offset: int = 0,
     limit: int = DEFAULT_FILE_CHARS,
 ) -> dict:
     """Read a specific file from the brain with pagination support."""
-    resolved = _safe_resolve(_root, path)
+    rt = _runtime(ctx)
+    resolved = _safe_resolve(rt.root, path)
     if resolved is None:
         return {"status": "error", "error": "not_found", "path": path}
 
