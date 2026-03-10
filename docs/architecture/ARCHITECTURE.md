@@ -33,7 +33,7 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 **Utilities** — stateless helpers: path operations, logging setup, retry logic, scheduling. No domain knowledge. `config` is the canonical source for `CONFIG_DIR`, `CONFIG_FILE`, `load_config()`, and `save_config()` — all config access must go through this module.
 
-**Core modules** — domain logic: sync pipeline fetches and converts sources; regen produces insights from knowledge; state persists all sync and regen metadata in SQLite.
+**Core modules** — domain logic: sync pipeline fetches and converts sources; regen produces insights from knowledge; state persists all sync and regen metadata in SQLite. Journal entries are generated alongside summaries via structured XML output. Journal writing is independent of the summary similarity guard — temporal events are recorded even when the summary abstraction doesn't change. Controlled by `write_journal` config flag.
 
 **Interfaces** — MCP server exposes brain operations as tools over stdio; watcher monitors the filesystem and queues regen work.
 
@@ -99,7 +99,7 @@ This roadmap is informational and guides future refactors.
 | Symbol(s) | Consumer |
 |---|---|
 | `state._connect` | `test_commands`, `test_regen_queue`, `test_watcher_moves` |
-| `regen._preprocess_content`, `_split_markdown_chunks`, `_build_chunk_prompt`, `_first_heading`, `_REGEN_INSTRUCTIONS` | `test_regen` |
+| `regen._preprocess_content`, `_split_markdown_chunks`, `_build_chunk_prompt`, `_first_heading`, `_REGEN_INSTRUCTIONS`, `_parse_structured_output`, `_write_journal_entry` | `test_regen` |
 
 Tests may access private helpers for direct validation.
 Production modules should avoid this coupling — each entry above is a candidate for future refactoring.

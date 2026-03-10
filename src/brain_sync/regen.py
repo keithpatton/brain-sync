@@ -68,14 +68,16 @@ _REGEN_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
 _JOURNAL_INSTRUCTIONS = """
 ## Journal Entry
 
-Write a journal entry capturing what changed and any significant observations.
+After the summary, include a journal entry if this regeneration reflects a
+meaningful event: meeting notes added, decision made, direction changed,
+milestone reached, new risk discovered, or significant status update.
 
-Write the journal entry to the path given at the end of this prompt.
 Keep entries concise. Distinguish between facts, interpretations, and open
-questions. Use `## YYYY-MM-DD` headings.
+questions.
 
-Do not write a journal entry if the knowledge change is trivial (formatting,
-minor wording). Only journal when something meaningful shifted.
+Do NOT write a journal entry for trivial changes (typo fixes, formatting,
+minor wording edits, small clarifications). If nothing meaningful happened,
+leave the journal section empty.
 """
 
 log = logging.getLogger(__name__)
@@ -185,8 +187,25 @@ def _assemble_prompt(
     children_text: str,
     existing_summary: str,
     display_path: str,
+    *,
+    write_journal: bool = False,
 ) -> str:
     """Assemble the full regen prompt. Single source of truth for template."""
+    if write_journal:
+        output_directive = """Wrap your output in XML tags as shown below.
+If nothing is journal-worthy, leave the journal section empty.
+Return only the XML sections. Do not include any text outside the tags.
+
+<summary>
+…the updated summary…
+</summary>
+
+<journal>
+…journal entry, or empty if nothing meaningful changed…
+</journal>"""
+    else:
+        output_directive = "Output the updated summary now."
+
     return f"""{instructions}
 
 ---
@@ -199,7 +218,54 @@ You are regenerating the insight summary for knowledge area: {display_path}
 {files_text}{children_text}
 {"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
 
-Output the updated summary now."""
+{output_directive}"""
+
+
+# Structured output parsing for journal support
+_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
+_JOURNAL_RE = re.compile(r"<journal>(.*?)</journal>", re.DOTALL)
+
+
+def _parse_structured_output(raw: str, write_journal: bool) -> tuple[str, str | None]:
+    """Extract summary and optional journal from Claude's structured output."""
+    raw = raw.strip()
+    if not write_journal:
+        return raw, None
+
+    summary_match = _SUMMARY_RE.search(raw)
+    journal_match = _JOURNAL_RE.search(raw)
+
+    if not summary_match:
+        log.warning("Structured output missing <summary> tags, treating entire output as summary")
+        return raw, None
+
+    summary = summary_match.group(1).strip()
+    journal = journal_match.group(1).strip() if journal_match else None
+
+    # Empty journal = no journal
+    if not journal:
+        journal = None
+
+    return summary, journal
+
+
+def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, display_path: str) -> None:
+    """Append a timestamped journal entry to the daily journal file."""
+    now = datetime.now()  # local time for timestamps
+    journal_dir = insights_dir / "journal" / now.strftime("%Y-%m")
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    journal_path = journal_dir / f"{now.strftime('%Y-%m-%d')}.md"
+
+    timestamped = f"## {now.strftime('%H:%M')}\n\n{journal_text}"
+
+    if journal_path.exists():
+        existing = journal_path.read_text(encoding="utf-8")
+        combined = existing.rstrip() + "\n\n" + timestamped
+        atomic_write_bytes(journal_path, combined.encode("utf-8"))
+    else:
+        atomic_write_bytes(journal_path, timestamped.encode("utf-8"))
+
+    log.info("[%s] Wrote journal entry for %s at %s", regen_id, display_path, journal_path)
 
 
 def _split_markdown_chunks(
@@ -674,6 +740,8 @@ def _build_prompt_from_chunks(
     insights_dir: Path,
     root: Path,
     binary_names: list[str],
+    *,
+    write_journal: bool = False,
 ) -> PromptResult:
     """Build a merge prompt using chunk summaries instead of raw file content.
 
@@ -682,6 +750,8 @@ def _build_prompt_from_chunks(
     summary, output instruction. Not a new prompt style.
     """
     instructions = _REGEN_INSTRUCTIONS
+    if write_journal:
+        instructions += _JOURNAL_INSTRUCTIONS
     global_context = _collect_global_context(root, knowledge_path)
 
     # Build files section from chunk summaries (sorted for determinism)
@@ -732,7 +802,15 @@ def _build_prompt_from_chunks(
 
     display_path = knowledge_path or "(root)"
 
-    prompt = _assemble_prompt(instructions, global_context, files_text, children_text, existing_summary, display_path)
+    prompt = _assemble_prompt(
+        instructions,
+        global_context,
+        files_text,
+        children_text,
+        existing_summary,
+        display_path,
+        write_journal=write_journal,
+    )
 
     estimated_tokens = len(prompt) // 3
     log.debug(
@@ -765,8 +843,10 @@ def _build_prompt(
     Files are packed greedily under a total token budget (MAX_PROMPT_TOKENS).
     Files that don't fit are deferred to chunk-and-merge.
     """
-    # 1. Instructions
+    # 1. Instructions (conditionally append journal instructions)
     instructions = _REGEN_INSTRUCTIONS
+    if write_journal:
+        instructions += _JOURNAL_INSTRUCTIONS
 
     # 2. Global context (inlined by Python, not discovered by agent)
     global_context = _collect_global_context(root, knowledge_path)
@@ -826,6 +906,7 @@ def _build_prompt(
             children_text,
             existing_summary,
             display_path,
+            write_journal=write_journal,
         )
     )
     remaining_chars = (MAX_PROMPT_TOKENS * 3) - overhead_chars
@@ -861,7 +942,15 @@ def _build_prompt(
 
     # 8. Assemble final prompt
     files_text = _assemble_files_text(inlined, oversized_names, binary_names)
-    prompt = _assemble_prompt(instructions, global_context, files_text, children_text, existing_summary, display_path)
+    prompt = _assemble_prompt(
+        instructions,
+        global_context,
+        files_text,
+        children_text,
+        existing_summary,
+        display_path,
+        write_journal=write_journal,
+    )
 
     # 9. Defensive assertion + instrumentation
     estimated_tokens = len(prompt) // 3
@@ -1108,6 +1197,7 @@ async def regen_path(
                     insights_dir,
                     root,
                     binary_names,
+                    write_journal=config.write_journal,
                 )
 
             # Invoke Claude in inference mode (minimal system prompt, no tools)
@@ -1164,8 +1254,10 @@ async def regen_path(
                 num_turns=result.num_turns,
             )
 
-        # Validate output — Claude returns summary text directly
-        new_summary = result.output.strip() if result.output else ""
+        # Parse structured output (summary + optional journal)
+        new_summary, journal_text = _parse_structured_output(
+            result.output.strip() if result.output else "", config.write_journal
+        )
         if len(new_summary) < 20:
             log.warning(
                 "[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
@@ -1222,11 +1314,16 @@ async def regen_path(
                     owner_id=None,
                 ),
             )
+            # Journal is independent of summary similarity — temporal events matter
+            if journal_text:
+                _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
             # Summary unchanged → stop walking up
             break
 
         # Summary changed — Python writes the file atomically
         atomic_write_bytes(summary_path, new_summary.encode("utf-8"))
+        if journal_text:
+            _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
         summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
         save_insight_state(
             root,

@@ -89,15 +89,22 @@ Summaries are **stable architectural abstractions**, not document inventories.
 
 ## Journal Entries
 
-When regeneration reflects a meaningful change in understanding, write a
-journal entry at `insights/<area>/journal/YYYY-MM/YYYY-MM-DD.md`.
+When regeneration reflects a meaningful event, include a journal entry.
+
+Events that warrant a journal entry:
+- Meeting notes added
+- Decision made or clarified
+- Initiative direction changed
+- Milestone reached
+- New risk discovered
+- Meaningful status update
+
+Do NOT journal trivial changes (formatting, typos, minor wording).
 
 Capture:
 - What knowledge changed
 - Any shift in understanding
 - Emerging risks, decisions, or open questions
-
-Do not write a journal entry for trivial changes (formatting, wording).
 
 ## Conventions
 

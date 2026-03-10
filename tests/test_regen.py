@@ -26,8 +26,10 @@ from brain_sync.regen import (
     _first_heading,
     _get_child_dirs,
     _is_content_dir,
+    _parse_structured_output,
     _preprocess_content,
     _split_markdown_chunks,
+    _write_journal_entry,
     folder_content_hash,
     invalidate_global_context_cache,
     regen_all,
@@ -1110,7 +1112,7 @@ class TestPromptResult:
 
 class TestJournalOptIn:
     def test_journal_absent_by_default(self, brain):
-        """With default config, journal write path is not in prompt."""
+        """With default config, no XML output directive or journal instructions in prompt."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1119,10 +1121,12 @@ class TestJournalOptIn:
 
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=False)
-        assert "Write the journal entry to:" not in result.text
+        assert "<summary>" not in result.text
+        assert "<journal>" not in result.text
+        assert "Output the updated summary now." in result.text
 
     def test_journal_instructions_in_prompt(self, brain):
-        """Journal instructions are included in the prompt via INSIGHT_INSTRUCTIONS."""
+        """Journal instructions and XML output format are included when write_journal=True."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1132,6 +1136,9 @@ class TestJournalOptIn:
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=True)
         assert "journal entry" in result.text.lower()
+        assert "<summary>" in result.text
+        assert "<journal>" in result.text
+        assert "Do not include any text outside the tags" in result.text
 
 
 class TestPromptVersionAndContent:
@@ -1582,3 +1589,151 @@ class TestTokenBudgetEnforcement:
         assert call_count > 1
         summary_path = brain / "insights" / "e2e" / "summary.md"
         assert summary_path.exists()
+
+
+class TestParseStructuredOutput:
+    def test_both_sections(self):
+        """Valid XML with summary + journal returns both."""
+        raw = "<summary>\n# Summary\nHello world\n</summary>\n\n<journal>\nMeeting notes added.\n</journal>"
+        summary, journal = _parse_structured_output(raw, write_journal=True)
+        assert summary == "# Summary\nHello world"
+        assert journal == "Meeting notes added."
+
+    def test_empty_journal(self):
+        """Empty <journal> tag returns (summary, None)."""
+        raw = "<summary>\n# Summary\n</summary>\n\n<journal>\n</journal>"
+        summary, journal = _parse_structured_output(raw, write_journal=True)
+        assert summary == "# Summary"
+        assert journal is None
+
+    def test_whitespace_only_journal(self):
+        """Whitespace-only journal returns None."""
+        raw = "<summary>\n# Summary\n</summary>\n\n<journal>\n   \n</journal>"
+        summary, journal = _parse_structured_output(raw, write_journal=True)
+        assert summary == "# Summary"
+        assert journal is None
+
+    def test_no_tags_fallback(self):
+        """Raw text without XML tags falls back to entire output as summary."""
+        raw = "# Summary\nJust plain text"
+        summary, journal = _parse_structured_output(raw, write_journal=True)
+        assert summary == raw
+        assert journal is None
+
+    def test_journal_disabled(self):
+        """write_journal=False returns (raw, None), no parsing."""
+        raw = "<summary>stuff</summary><journal>entry</journal>"
+        summary, journal = _parse_structured_output(raw, write_journal=False)
+        assert summary == raw
+        assert journal is None
+
+    def test_leading_whitespace_stripped(self):
+        """Leading/trailing whitespace on raw input is stripped before parsing."""
+        raw = "\n\n  <summary>\nContent\n</summary>\n\n<journal>\nEntry\n</journal>  \n"
+        summary, journal = _parse_structured_output(raw, write_journal=True)
+        assert summary == "Content"
+        assert journal == "Entry"
+
+
+class TestJournalWriting:
+    def test_journal_written_on_summary_change(self, brain):
+        """Journal file is created when Claude returns structured output with journal."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Meeting Notes\nDecided to use MCP.", encoding="utf-8")
+
+        structured_output = (
+            "<summary>\n# Project Summary\nNew summary with MCP decision.\n</summary>\n\n"
+            "<journal>\nMeeting notes added. Decision: adopt MCP for all services.\n</journal>"
+        )
+
+        async def mock_invoke(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output=structured_output)
+
+        config = RegenConfig(write_journal=True)
+        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke):
+            asyncio.run(regen_path(brain, "project", config=config))
+
+        # Summary written
+        summary_path = brain / "insights" / "project" / "summary.md"
+        assert summary_path.exists()
+        assert "MCP decision" in summary_path.read_text(encoding="utf-8")
+
+        # Journal written
+        journal_dir = brain / "insights" / "project" / "journal"
+        assert journal_dir.exists()
+        journal_files = list(journal_dir.rglob("*.md"))
+        assert len(journal_files) == 1
+        journal_content = journal_files[0].read_text(encoding="utf-8")
+        assert "## " in journal_content  # has timestamp heading
+        assert "adopt MCP" in journal_content
+
+    def test_journal_written_when_similarity_guard_blocks_summary(self, brain):
+        """Journal is written even when the similarity guard discards the summary rewrite."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\nSome content here.", encoding="utf-8")
+        idir = brain / "insights" / "project"
+        idir.mkdir(parents=True)
+        # Write an existing summary that will be near-identical to Claude's output
+        existing = "# Project Summary\nThis is the existing summary."
+        (idir / "summary.md").write_text(existing, encoding="utf-8")
+
+        # Claude returns near-identical summary but with a journal entry
+        structured_output = (
+            f"<summary>\n{existing}\n</summary>\n\n" "<journal>\nMinor context update noted.\n</journal>"
+        )
+
+        async def mock_invoke(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output=structured_output)
+
+        config = RegenConfig(write_journal=True, similarity_threshold=0.97)
+        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke):
+            count = asyncio.run(regen_path(brain, "project", config=config))
+
+        # Summary NOT rewritten (similarity guard blocked it)
+        assert count == 0
+        assert (idir / "summary.md").read_text(encoding="utf-8") == existing
+
+        # Journal IS written
+        journal_files = list((idir / "journal").rglob("*.md"))
+        assert len(journal_files) == 1
+        assert "Minor context update" in journal_files[0].read_text(encoding="utf-8")
+
+    def test_journal_append_same_day(self, tmp_path):
+        """Two journal writes on the same day append to the same file."""
+        insights_dir = tmp_path / "insights" / "area"
+        insights_dir.mkdir(parents=True)
+
+        _write_journal_entry(insights_dir, "First entry.", "abc123", "area")
+        _write_journal_entry(insights_dir, "Second entry.", "def456", "area")
+
+        journal_files = list((insights_dir / "journal").rglob("*.md"))
+        assert len(journal_files) == 1
+        content = journal_files[0].read_text(encoding="utf-8")
+        assert "First entry." in content
+        assert "Second entry." in content
+        # Two timestamped headings
+        assert content.count("## ") == 2
+
+    def test_no_journal_when_empty(self, brain):
+        """Empty journal section does not create a journal file."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\nContent.", encoding="utf-8")
+
+        structured_output = "<summary>\n# Project Summary\nA valid summary.\n</summary>\n\n<journal>\n</journal>"
+
+        async def mock_invoke(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output=structured_output)
+
+        config = RegenConfig(write_journal=True)
+        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke):
+            asyncio.run(regen_path(brain, "project", config=config))
+
+        # Summary written
+        assert (brain / "insights" / "project" / "summary.md").exists()
+
+        # No journal directory created
+        journal_dir = brain / "insights" / "project" / "journal"
+        assert not journal_dir.exists()
