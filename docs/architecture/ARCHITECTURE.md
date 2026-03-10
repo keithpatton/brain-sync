@@ -22,7 +22,7 @@ All source lives under `src/brain_sync/`.
 | State | `state` | SQLite WAL persistence (sources, documents, relationships, insight state) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
 | Context | `context`, `context_index`, `link_rewriter` | Context discovery, area indexing, link rewriting |
-| Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `manifest`, `retry`, `scheduler` | Shared helpers with no domain coupling |
+| Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
 | Watcher | `watcher` | Filesystem event monitoring, insight folder mirroring |
 
 Dependency direction rules are defined in `CLAUDE.md`.
@@ -31,7 +31,7 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 ## 2. Module Responsibilities
 
-**Utilities** — stateless helpers: path operations, logging setup, retry logic, scheduling, configuration loading. No domain knowledge.
+**Utilities** — stateless helpers: path operations, logging setup, retry logic, scheduling. No domain knowledge. `config` is the canonical source for `CONFIG_DIR`, `CONFIG_FILE`, `load_config()`, and `save_config()` — all config access must go through this module.
 
 **Core modules** — domain logic: sync pipeline fetches and converts sources; regen produces insights from knowledge; state persists all sync and regen metadata in SQLite.
 
@@ -56,6 +56,15 @@ Dependency direction rules are defined in `CLAUDE.md`.
 **Regen complexity** — `regen.py` is the largest module with many private helpers; candidates for extraction exist.
 
 **Module-level side effects in `mcp.py`** — `resolve_root()` and `AreaIndex.build(_root)` execute at import time, coupling module loading to filesystem state.
+
+### Resolved (2026-03)
+
+- **Config duplication** — all config constants and I/O centralised in `config.py`; consumers import from there (Phase B)
+- **Dependency direction violations** — `regen.py` no longer imports from `commands.context` (Phase B/C)
+- **Dead v1 manifest system** — `manifest.py` and related test code removed; v2 uses SQLite state exclusively (Phase E)
+- **Silent exception swallowing** — retry, pipeline, regen, and MCP modules now log at debug level instead of silently passing (Phase G)
+- **Atomic file writes** — `fileops.atomic_write_bytes` uses `os.fsync()` and directory fsync for crash safety (Phase A)
+- **Thread-safe config** — `config.py` uses `threading.Lock` for concurrent access from watcher thread (Phase A/B)
 
 ---
 
