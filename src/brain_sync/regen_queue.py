@@ -15,7 +15,7 @@ from datetime import UTC
 from pathlib import Path
 
 from brain_sync.regen import regen_path
-from brain_sync.state import load_insight_state
+from brain_sync.state import InsightState, load_insight_state, save_insight_state
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class RegenQueue:
     """Manages regen events with debounce, cooldown, and rate limiting."""
 
     root: Path
+    owner_id: str | None = None
     debounce_secs: float = DEFAULT_DEBOUNCE_SECS
     cooldown_secs: float = DEFAULT_COOLDOWN_SECS
     max_regens_per_hour: int = DEFAULT_MAX_REGENS_PER_HOUR
@@ -135,7 +136,7 @@ class RegenQueue:
                 # Queue owns retry budgeting via _retry_counts (see re-enqueue below)
 
                 try:
-                    count = await regen_path(self.root, knowledge_path)
+                    count = await regen_path(self.root, knowledge_path, owner_id=self.owner_id)
                     self._last_regen[knowledge_path] = time.monotonic()
                     self._regen_times.append(time.monotonic())
                     self._retry_counts.pop(knowledge_path, None)
@@ -156,6 +157,37 @@ class RegenQueue:
                             fire_at=time.monotonic() + backoff,
                             retry_count=retry + 1,
                         )
+                    else:
+                        log.error(
+                            "Regen retries exhausted for %s after %d attempts: %s",
+                            knowledge_path,
+                            MAX_RETRIES,
+                            e,
+                        )
+                        try:
+                            from datetime import datetime
+
+                            cur_istate = load_insight_state(self.root, knowledge_path)
+                            save_insight_state(
+                                self.root,
+                                InsightState(
+                                    knowledge_path=knowledge_path,
+                                    content_hash=cur_istate.content_hash if cur_istate else None,
+                                    summary_hash=cur_istate.summary_hash if cur_istate else None,
+                                    regen_started_utc=cur_istate.regen_started_utc if cur_istate else None,
+                                    last_regen_utc=datetime.now(UTC).isoformat(),
+                                    regen_status="failed",
+                                    error_reason=f"Retries exhausted ({MAX_RETRIES}): {e}",
+                                    owner_id=self.owner_id,
+                                ),
+                            )
+                        except Exception as db_err:
+                            log.error(
+                                "Failed to persist 'failed' state for %s: %s (original: %s)",
+                                knowledge_path,
+                                db_err,
+                                e,
+                            )
 
         return total
 

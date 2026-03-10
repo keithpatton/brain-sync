@@ -211,36 +211,37 @@ def handle_regen(args) -> None:
     knowledge_path = args.knowledge_path or ""
 
     if knowledge_path:
-        from brain_sync.regen import regen_path
-
         knowledge_dir = root / "knowledge" / knowledge_path
         if not knowledge_dir.is_dir():
             log.error("Knowledge path '%s' does not exist", knowledge_path)
             sys.exit(1)
 
-        log.info("Regenerating insights for: %s", knowledge_path)
-        loop = asyncio.new_event_loop()
-        try:
-            count = loop.run_until_complete(regen_path(root, knowledge_path))
-            log.info("Done. %d insight file%s regenerated.", count, "s" if count != 1 else "")
-        except Exception:
-            log.exception("Regen failed for %s", knowledge_path)
-            sys.exit(1)
-        finally:
-            loop.close()
-    else:
-        from brain_sync.regen import regen_all
+    log.info(
+        "Regenerating insights for: %s",
+        knowledge_path or "all knowledge paths",
+    )
 
-        log.info("Regenerating insights for all knowledge paths...")
-        loop = asyncio.new_event_loop()
-        try:
-            count = loop.run_until_complete(regen_all(root))
-            log.info("Done. %d insight file%s regenerated.", count, "s" if count != 1 else "")
-        except Exception:
-            log.exception("Regen failed")
-            sys.exit(1)
-        finally:
-            loop.close()
+    async def _do_regen() -> int:
+        from brain_sync.regen import regen_all, regen_path
+        from brain_sync.regen_lifecycle import regen_session
+
+        # reclaim_stale only for full regen — single-path callers should not
+        # implicitly clean up unrelated stale rows from prior crashes.
+        async with regen_session(root, reclaim_stale=not knowledge_path) as session:
+            if knowledge_path:
+                return await regen_path(root, knowledge_path, owner_id=session.owner_id)
+            else:
+                return await regen_all(root, owner_id=session.owner_id)
+
+    loop = asyncio.new_event_loop()
+    try:
+        count = loop.run_until_complete(_do_regen())
+        log.info("Done. %d insight file%s regenerated.", count, "s" if count != 1 else "")
+    except Exception:
+        log.exception("Regen failed for %s", knowledge_path or "all")
+        sys.exit(1)
+    finally:
+        loop.close()
 
 
 def handle_convert(args) -> None:

@@ -31,7 +31,8 @@ from brain_sync.commands import (
 )
 from brain_sync.fileops import TEXT_EXTENSIONS
 from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
-from brain_sync.regen import regen_all, regen_path
+from brain_sync.regen import RegenFailed, regen_all, regen_path
+from brain_sync.regen_lifecycle import regen_session
 from brain_sync.sources import UnsupportedSourceError
 
 log = logging.getLogger(__name__)
@@ -445,17 +446,30 @@ def brain_sync_move(source: str, to_path: str) -> dict:
 async def brain_sync_regen(path: str | None = None) -> dict:
     """Regenerate insight summaries."""
     async with _regen_lock:
-        if path:
-            path = normalize_path(path)
-            count = await regen_path(_root, path)
-        else:
-            count = await regen_all(_root)
-
-        return {
-            "status": "ok",
-            "summaries_regenerated": count,
-            "path": path or "all",
-        }
+        async with regen_session(_root) as session:
+            try:
+                if path:
+                    path = normalize_path(path)
+                    count = await regen_path(_root, path, owner_id=session.owner_id)
+                else:
+                    count = await regen_all(_root, owner_id=session.owner_id)
+                return {
+                    "status": "ok",
+                    "summaries_regenerated": count,
+                    "path": path or "all",
+                }
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                    "path": path or "all",
+                    # v1 heuristic: RegenFailed (exhausted retries, validation)
+                    # is treated as non-retryable. In practice a RegenFailed
+                    # from a transient upstream issue could be retryable, and
+                    # some non-RegenFailed errors may not be.
+                    "retryable": not isinstance(e, RegenFailed),
+                }
 
 
 # ---------------------------------------------------------------------------

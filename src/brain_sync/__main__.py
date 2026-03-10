@@ -57,10 +57,11 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
+    from brain_sync.regen_lifecycle import regen_session
+
     state = load_state(root)
     scheduler = Scheduler()
     watcher = KnowledgeWatcher(root)
-    regen_queue = RegenQueue(root=root)
 
     _ensure_source_states(state, scheduler)
     save_state(root, state)
@@ -69,76 +70,82 @@ async def run(root: Path) -> None:
 
     last_rescan = time.monotonic()
 
-    async with httpx.AsyncClient() as http_client:
-        try:
-            while True:
-                # 1a. Handle folder moves (mirror to insights/)
-                for move in watcher.drain_moves():
-                    mirror_folder_move(root, move)
+    async with regen_session(root, reclaim_stale=True) as session:
+        regen_queue = RegenQueue(root=root, owner_id=session.owner_id)
 
-                # 1b. Handle watcher events (knowledge/ changes)
-                changed_paths = watcher.drain_events()
-                if changed_paths:
-                    for folder in changed_paths:
-                        rel = _knowledge_rel_path(root, folder)
-                        log.info("Knowledge change detected: %s", rel or "(root)")
-                        regen_queue.enqueue(rel)
+        async with httpx.AsyncClient() as http_client:
+            try:
+                while True:
+                    # 1a. Handle folder moves (mirror to insights/)
+                    for move in watcher.drain_moves():
+                        mirror_folder_move(root, move)
 
-                # 2. Periodic state reload (pick up sources added via CLI)
-                now = time.monotonic()
-                if now - last_rescan >= RESCAN_INTERVAL:
-                    state = load_state(root)
-                    _ensure_source_states(state, scheduler)
-                    save_state(root, state)
-                    last_rescan = now
+                    # 1b. Handle watcher events (knowledge/ changes)
+                    changed_paths = watcher.drain_events()
+                    if changed_paths:
+                        for folder in changed_paths:
+                            rel = _knowledge_rel_path(root, folder)
+                            log.info("Knowledge change detected: %s", rel or "(root)")
+                            regen_queue.enqueue(rel)
 
-                # 3. Process due sources
-                due_keys = scheduler.pop_due()
-                for key in due_keys:
-                    if key not in state.sources:
-                        scheduler.remove(key)
-                        continue
+                    # 2. Periodic state reload (pick up sources added via CLI)
+                    now = time.monotonic()
+                    if now - last_rescan >= RESCAN_INTERVAL:
+                        state = load_state(root)
+                        _ensure_source_states(state, scheduler)
+                        save_state(root, state)
+                        last_rescan = now
 
-                    ss = state.sources[key]
+                    # 3. Process due sources
+                    due_keys = scheduler.pop_due()
+                    for key in due_keys:
+                        if key not in state.sources:
+                            scheduler.remove(key)
+                            continue
 
+                        ss = state.sources[key]
+
+                        try:
+                            changed = await process_source(ss, http_client, root=root)
+                            interval = compute_interval(ss.last_changed_utc)
+                            ss.current_interval_secs = interval
+                            # Enqueue regen if content changed
+                            if changed and ss.target_path:
+                                regen_queue.enqueue(ss.target_path)
+                        except Exception as e:
+                            log.warning("Error processing %s: %s", key, e)
+                            ss.current_interval_secs = min(
+                                ss.current_interval_secs * 2,
+                                MAX_ERROR_BACKOFF,
+                            )
+                            interval = ss.current_interval_secs
+
+                        scheduler.reschedule(key, interval)
+                        ss.interval_seconds = interval
+                        ss.next_check_utc = datetime.now(UTC).isoformat()
+                        save_state(root, state)
+
+                    # 4. Process regen events
                     try:
-                        changed = await process_source(ss, http_client, root=root)
-                        interval = compute_interval(ss.last_changed_utc)
-                        ss.current_interval_secs = interval
-                        # Enqueue regen if content changed
-                        if changed and ss.target_path:
-                            regen_queue.enqueue(ss.target_path)
-                    except Exception as e:
-                        log.warning("Error processing %s: %s", key, e)
-                        ss.current_interval_secs = min(
-                            ss.current_interval_secs * 2,
-                            MAX_ERROR_BACKOFF,
-                        )
-                        interval = ss.current_interval_secs
+                        await regen_queue.process_ready()
+                    except Exception:
+                        log.exception("Unexpected error in regen queue processing")
 
-                    scheduler.reschedule(key, interval)
-                    ss.interval_seconds = interval
-                    ss.next_check_utc = datetime.now(UTC).isoformat()
-                    save_state(root, state)
+                    # 5. Sleep until next event
+                    next_due = scheduler.next_due_in()
+                    next_regen = regen_queue.next_fire_in()
+                    candidates = [TICK_MAX_SLEEP]
+                    if next_due is not None:
+                        candidates.append(next_due)
+                    if next_regen is not None:
+                        candidates.append(next_regen)
+                    sleep_for = min(candidates)
+                    await asyncio.sleep(max(0.1, sleep_for))
 
-                # 4. Process regen events
-                await regen_queue.process_ready()
-
-                # 5. Sleep until next event
-                next_due = scheduler.next_due_in()
-                next_regen = regen_queue.next_fire_in()
-                candidates = [TICK_MAX_SLEEP]
-                if next_due is not None:
-                    candidates.append(next_due)
-                if next_regen is not None:
-                    candidates.append(next_regen)
-                sleep_for = min(candidates)
-                await asyncio.sleep(max(0.1, sleep_for))
-
-        finally:
-            watcher.stop()
-            save_state(root, state)
-            log.info("brain-sync stopped")
+            finally:
+                watcher.stop()
+                save_state(root, state)
+                log.info("brain-sync stopped")
 
 
 def main() -> None:

@@ -40,7 +40,6 @@ from brain_sync.state import (
     delete_insight_state,
     load_all_insight_states,
     load_insight_state,
-    reset_running_insight_states,
     save_insight_state,
 )
 
@@ -913,6 +912,7 @@ async def regen_path(
     *,
     max_depth: int = 10,
     config: RegenConfig | None = None,
+    owner_id: str | None = None,
 ) -> int:
     """Run the deterministic incremental regen loop for a knowledge path.
 
@@ -1026,6 +1026,7 @@ async def regen_path(
                 last_regen_utc=istate.last_regen_utc if istate else None,
                 regen_status="running",
                 model=config.model,
+                owner_id=owner_id,
             ),
         )
 
@@ -1113,19 +1114,25 @@ async def regen_path(
                 breaker=claude_breaker,
             )
         except Exception as e:
+            log.error("Regen failed for %s: %s", current_path or "(root)", e, exc_info=True)
             now = datetime.now(UTC).isoformat()
-            save_insight_state(
-                root,
-                InsightState(
-                    knowledge_path=current_path,
-                    content_hash=istate.content_hash if istate else None,
-                    summary_hash=istate.summary_hash if istate else None,
-                    regen_started_utc=started,
-                    last_regen_utc=now,
-                    regen_status="failed",
-                    model=config.model,
-                ),
-            )
+            try:
+                save_insight_state(
+                    root,
+                    InsightState(
+                        knowledge_path=current_path,
+                        content_hash=istate.content_hash if istate else None,
+                        summary_hash=istate.summary_hash if istate else None,
+                        regen_started_utc=started,
+                        last_regen_utc=now,
+                        regen_status="failed",
+                        model=config.model,
+                        owner_id=owner_id,
+                        error_reason=str(e),
+                    ),
+                )
+            except Exception as db_err:
+                log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
             raise RegenFailed(current_path or "(root)", str(e)) from e
         now = datetime.now(UTC).isoformat()
 
@@ -1149,22 +1156,28 @@ async def regen_path(
                 len(new_summary),
                 result.output[:500],
             )
-            save_insight_state(
-                root,
-                InsightState(
-                    knowledge_path=current_path,
-                    content_hash=istate.content_hash if istate else None,
-                    summary_hash=istate.summary_hash if istate else None,
-                    regen_started_utc=started,
-                    last_regen_utc=now,
-                    regen_status="failed",
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    num_turns=result.num_turns,
-                    model=config.model,
-                ),
-            )
-            raise RegenFailed(current_path or "(root)", "Claude returned empty or suspiciously small output")
+            err_msg = "Claude returned empty or suspiciously small output"
+            try:
+                save_insight_state(
+                    root,
+                    InsightState(
+                        knowledge_path=current_path,
+                        content_hash=istate.content_hash if istate else None,
+                        summary_hash=istate.summary_hash if istate else None,
+                        regen_started_utc=started,
+                        last_regen_utc=now,
+                        regen_status="failed",
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        num_turns=result.num_turns,
+                        model=config.model,
+                        owner_id=owner_id,
+                        error_reason=err_msg,
+                    ),
+                )
+            except Exception as db_err:
+                log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+            raise RegenFailed(current_path or "(root)", err_msg)
 
         # Similarity guard
         if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
@@ -1188,6 +1201,7 @@ async def regen_path(
                     output_tokens=result.output_tokens,
                     num_turns=result.num_turns,
                     model=config.model,
+                    owner_id=None,
                 ),
             )
             # Summary unchanged → stop walking up
@@ -1209,6 +1223,7 @@ async def regen_path(
                 output_tokens=result.output_tokens,
                 num_turns=result.num_turns,
                 model=config.model,
+                owner_id=None,
             ),
         )
         regen_count += 1
@@ -1234,15 +1249,18 @@ async def regen_path(
 _find_all_content_paths = find_all_content_paths
 
 
-async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
-    """Regenerate insights for all knowledge paths (bottom-up)."""
+async def regen_all(
+    root: Path,
+    *,
+    config: RegenConfig | None = None,
+    owner_id: str | None = None,
+) -> int:
+    """Regenerate insights for all knowledge paths (bottom-up).
+
+    Stale-state recovery is the caller's responsibility via ``regen_session``.
+    """
     if config is None:
         config = RegenConfig.load()
-
-    # Reset orphaned 'running' states from crashed/killed runs
-    reset_count = reset_running_insight_states(root)
-    if reset_count:
-        log.info("Reset %d orphaned 'running' insight states to 'idle'", reset_count)
 
     knowledge_root = root / "knowledge"
     content_paths = _find_all_content_paths(knowledge_root)
@@ -1253,13 +1271,28 @@ async def regen_all(root: Path, *, config: RegenConfig | None = None) -> int:
 
     log.info("Found %d knowledge paths to regenerate", len(content_paths))
     total = 0
+    failed_paths: list[tuple[str, str]] = []
     for path in content_paths:
         log.info("Assessing insights generation: %s", path)
         try:
-            count = await regen_path(root, path, config=config)
+            count = await regen_path(root, path, config=config, owner_id=owner_id)
             total += count
-        except RegenFailed as e:
-            log.warning("Skipping %s: %s", path, e.reason)
+        except KeyboardInterrupt:
+            log.info("Interrupted during regen of %s, stopping batch", path)
+            raise
+        except Exception as e:
+            reason = f"{type(e).__name__}: {e}"
+            log.warning("Skipping %s: %s", path, reason, exc_info=True)
+            failed_paths.append((path, reason))
+
+    if failed_paths:
+        # Terse summary only — full stack traces already emitted per-path above
+        log.warning(
+            "Batch completed with %d/%d failures: %s",
+            len(failed_paths),
+            len(content_paths),
+            ", ".join(fp for fp, _ in failed_paths),
+        )
 
     # Clean up orphaned insight states whose knowledge dirs no longer exist
     content_path_set = set(content_paths)

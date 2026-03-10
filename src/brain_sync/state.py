@@ -8,7 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS insight_state (
     input_tokens INTEGER,
     output_tokens INTEGER,
     num_turns INTEGER,
-    model TEXT
+    model TEXT,
+    owner_id TEXT,
+    error_reason TEXT
 );
 """
 
@@ -200,6 +202,8 @@ class InsightState:
     output_tokens: int | None = None
     num_turns: int | None = None
     model: str | None = None
+    owner_id: str | None = None
+    error_reason: str | None = None
 
 
 @dataclass
@@ -518,6 +522,19 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         )
         conn.commit()
         log.info("Normalized knowledge_path separators in insight_state")
+        from_version = 10
+
+    if from_version < 11:
+        # v10 → v11: Add owner_id and error_reason to insight_state
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
+        if "owner_id" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN owner_id TEXT")
+        if "error_reason" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN error_reason TEXT")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '11')",
+        )
+        conn.commit()
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -887,6 +904,19 @@ def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
 # --- Insight state operations ---
 
 
+_MAX_ERROR_REASON_LEN = 500
+
+
+def _clamp_error_reason(reason: str | None) -> str | None:
+    """Bound error_reason to prevent the state table becoming a log sink."""
+    if reason is None:
+        return None
+    cleaned = " ".join(reason.split())
+    if len(cleaned) > _MAX_ERROR_REASON_LEN:
+        return cleaned[: _MAX_ERROR_REASON_LEN - 3] + "..."
+    return cleaned
+
+
 def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     """Load insight state for a knowledge path."""
     from brain_sync.fs_utils import normalize_path
@@ -897,7 +927,8 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
         row = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
-            "input_tokens, output_tokens, num_turns, model "
+            "input_tokens, output_tokens, num_turns, model, "
+            "owner_id, error_reason "
             "FROM insight_state WHERE knowledge_path = ?",
             (knowledge_path,),
         ).fetchone()
@@ -914,6 +945,8 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
             output_tokens=row[7],
             num_turns=row[8],
             model=row[9],
+            owner_id=row[10],
+            error_reason=row[11],
         )
     finally:
         conn.close()
@@ -924,14 +957,16 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
     from brain_sync.fs_utils import normalize_path
 
     kp = normalize_path(istate.knowledge_path)
+    error_reason = _clamp_error_reason(istate.error_reason)
     conn = _connect(root)
     try:
         conn.execute(
             "INSERT INTO insight_state "
             "(knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
-            "input_tokens, output_tokens, num_turns, model) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "input_tokens, output_tokens, num_turns, model, "
+            "owner_id, error_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(knowledge_path) DO UPDATE SET "
             "content_hash=excluded.content_hash, "
             "summary_hash=excluded.summary_hash, "
@@ -941,7 +976,9 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
             "input_tokens=excluded.input_tokens, "
             "output_tokens=excluded.output_tokens, "
             "num_turns=excluded.num_turns, "
-            "model=excluded.model",
+            "model=excluded.model, "
+            "owner_id=excluded.owner_id, "
+            "error_reason=excluded.error_reason",
             (
                 kp,
                 istate.content_hash,
@@ -953,6 +990,8 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
                 istate.output_tokens,
                 istate.num_turns,
                 istate.model,
+                istate.owner_id,
+                error_reason,
             ),
         )
         conn.commit()
@@ -967,7 +1006,8 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
         rows = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
-            "input_tokens, output_tokens, num_turns, model "
+            "input_tokens, output_tokens, num_turns, model, "
+            "owner_id, error_reason "
             "FROM insight_state"
         ).fetchall()
         return [
@@ -982,6 +1022,8 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
                 output_tokens=r[7],
                 num_turns=r[8],
                 model=r[9],
+                owner_id=r[10],
+                error_reason=r[11],
             )
             for r in rows
         ]
@@ -1005,13 +1047,120 @@ def delete_insight_state(root: Path, knowledge_path: str) -> None:
         conn.close()
 
 
-def reset_running_insight_states(root: Path) -> int:
-    """Reset any 'running' insight states to 'idle' (orphaned from a crash)."""
+def reclaim_stale_running_states(
+    root: Path, stale_threshold_secs: float = 600.0
+) -> int:
+    """Reclaim 'running' insight states older than threshold (startup recovery).
+
+    Parses ``regen_started_utc`` in Python rather than relying on SQL lexical
+    comparison, to be robust against future timestamp format drift.  Rows with
+    malformed or missing timestamps are treated as stale and reclaimed — recovery
+    must not crash on bad historic data.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_threshold_secs)
     conn = _connect(root)
     try:
-        cur = conn.execute("UPDATE insight_state SET regen_status = 'idle' WHERE regen_status = 'running'")
+        rows = conn.execute(
+            "SELECT knowledge_path, regen_started_utc FROM insight_state "
+            "WHERE regen_status = 'running'"
+        ).fetchall()
+        stale_paths: list[str] = []
+        for kp, started_utc in rows:
+            if not started_utc:
+                # Missing timestamp — treat as stale
+                stale_paths.append(kp)
+                continue
+            try:
+                started = datetime.fromisoformat(started_utc)
+                if started < cutoff:
+                    stale_paths.append(kp)
+            except (ValueError, TypeError):
+                # Malformed timestamp — treat as stale, do not crash recovery
+                log.warning(
+                    "Malformed regen_started_utc for %s: %r, treating as stale",
+                    kp,
+                    started_utc,
+                )
+                stale_paths.append(kp)
+        if stale_paths:
+            conn.executemany(
+                "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL "
+                "WHERE knowledge_path = ?",
+                [(kp,) for kp in stale_paths],
+            )
+            conn.commit()
+        return len(stale_paths)
+    finally:
+        conn.close()
+
+
+def release_owned_running_states(root: Path, owner_id: str) -> int:
+    """Release 'running' insight states owned by the given session (finally-cleanup).
+
+    Only resets rows where ``owner_id`` matches, so concurrent sessions cannot
+    corrupt each other's in-flight work.
+
+    Note: This resets ALL running rows for the session.  This is correct for the
+    current single-sequential-invocation model.  If parallelism is later added
+    *within* a session, this function must be scoped more narrowly (e.g. by
+    knowledge_path).
+    """
+    conn = _connect(root)
+    try:
+        cur = conn.execute(
+            "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL "
+            "WHERE regen_status = 'running' AND owner_id = ?",
+            (owner_id,),
+        )
         conn.commit()
         return cur.rowcount
+    finally:
+        conn.close()
+
+
+def get_regen_health(
+    root: Path, stale_threshold_secs: float = 600.0
+) -> dict:
+    """Return observability metrics for regen pipeline health."""
+    from datetime import UTC, datetime, timedelta
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_threshold_secs)
+    conn = _connect(root)
+    try:
+        running_rows = conn.execute(
+            "SELECT knowledge_path, regen_started_utc FROM insight_state "
+            "WHERE regen_status = 'running'"
+        ).fetchall()
+        stale_running = 0
+        for _, started_utc in running_rows:
+            if not started_utc:
+                stale_running += 1
+                continue
+            try:
+                if datetime.fromisoformat(started_utc) < cutoff:
+                    stale_running += 1
+            except (ValueError, TypeError):
+                stale_running += 1
+
+        failed_rows = conn.execute(
+            "SELECT knowledge_path, error_reason, last_regen_utc FROM insight_state "
+            "WHERE regen_status = 'failed'"
+        ).fetchall()
+        return {
+            "stale_running": stale_running,
+            "running": len(running_rows),
+            "failed": len(failed_rows),
+            "failed_paths": [
+                {
+                    "knowledge_path": r[0],
+                    "error_reason": r[1],
+                    "last_regen_utc": r[2],
+                }
+                for r in failed_rows
+            ],
+        }
     finally:
         conn.close()
 
