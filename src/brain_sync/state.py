@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
+from typing import ClassVar
 
 from brain_sync.fs_utils import normalize_path
 
@@ -163,17 +164,17 @@ class _PathNormalized:
     Works on both construction and mutation.
     """
 
-    _PATH_FIELDS: set[str] = set()
+    _PATH_FIELDS: ClassVar[set[str]] = set()
 
     def __setattr__(self, name: str, value: object) -> None:
-        if name in self._PATH_FIELDS and isinstance(value, (str, PathLike)):
-            value = normalize_path(value)
+        if name in self._PATH_FIELDS and isinstance(value, str | PathLike):
+            value = normalize_path(str(value))
         super().__setattr__(name, value)
 
 
 @dataclass
 class SourceState(_PathNormalized):
-    _PATH_FIELDS = {"target_path"}
+    _PATH_FIELDS: ClassVar[set[str]] = {"target_path"}
 
     canonical_id: str
     source_url: str
@@ -212,7 +213,7 @@ class DocumentState:
 
 @dataclass
 class InsightState(_PathNormalized):
-    _PATH_FIELDS = {"knowledge_path"}
+    _PATH_FIELDS: ClassVar[set[str]] = {"knowledge_path"}
 
     knowledge_path: str
     content_hash: str | None = None
@@ -230,7 +231,7 @@ class InsightState(_PathNormalized):
 
 @dataclass
 class Relationship(_PathNormalized):
-    _PATH_FIELDS = {"local_path"}
+    _PATH_FIELDS: ClassVar[set[str]] = {"local_path"}
 
     parent_canonical_id: str
     canonical_id: str
@@ -529,9 +530,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             "UPDATE OR IGNORE insight_state SET knowledge_path = SUBSTR(knowledge_path, 11) "
             "WHERE knowledge_path LIKE 'knowledge/%'"
         )
-        conn.execute(
-            "DELETE FROM insight_state WHERE knowledge_path LIKE 'knowledge/%'"
-        )
+        conn.execute("DELETE FROM insight_state WHERE knowledge_path LIKE 'knowledge/%'")
         # Deduplicate any remaining collisions
         conn.execute("""
             DELETE FROM insight_state WHERE rowid NOT IN (
@@ -598,9 +597,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             "WHERE knowledge_path LIKE 'knowledge/%'"
         )
         # Remove any rows still carrying the prefix (collided with existing row)
-        conn.execute(
-            "DELETE FROM insight_state WHERE knowledge_path LIKE 'knowledge/%'"
-        )
+        conn.execute("DELETE FROM insight_state WHERE knowledge_path LIKE 'knowledge/%'")
         conn.execute("""
             DELETE FROM insight_state WHERE rowid NOT IN (
                 SELECT MAX(rowid) FROM insight_state GROUP BY knowledge_path
@@ -1109,9 +1106,7 @@ def delete_insight_state(root: Path, knowledge_path: str) -> None:
         conn.close()
 
 
-def reclaim_stale_running_states(
-    root: Path, stale_threshold_secs: float = 600.0
-) -> int:
+def reclaim_stale_running_states(root: Path, stale_threshold_secs: float = 600.0) -> int:
     """Reclaim 'running' insight states older than threshold (startup recovery).
 
     Parses ``regen_started_utc`` in Python rather than relying on SQL lexical
@@ -1125,8 +1120,7 @@ def reclaim_stale_running_states(
     conn = _connect(root)
     try:
         rows = conn.execute(
-            "SELECT knowledge_path, regen_started_utc FROM insight_state "
-            "WHERE regen_status = 'running'"
+            "SELECT knowledge_path, regen_started_utc FROM insight_state " "WHERE regen_status = 'running'"
         ).fetchall()
         stale_paths: list[str] = []
         for kp, started_utc in rows:
@@ -1148,8 +1142,7 @@ def reclaim_stale_running_states(
                 stale_paths.append(kp)
         if stale_paths:
             conn.executemany(
-                "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL "
-                "WHERE knowledge_path = ?",
+                "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL " "WHERE knowledge_path = ?",
                 [(kp,) for kp in stale_paths],
             )
             conn.commit()
@@ -1182,9 +1175,7 @@ def release_owned_running_states(root: Path, owner_id: str) -> int:
         conn.close()
 
 
-def get_regen_health(
-    root: Path, stale_threshold_secs: float = 600.0
-) -> dict:
+def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
     """Return observability metrics for regen pipeline health."""
     from datetime import UTC, datetime, timedelta
 
@@ -1192,8 +1183,7 @@ def get_regen_health(
     conn = _connect(root)
     try:
         running_rows = conn.execute(
-            "SELECT knowledge_path, regen_started_utc FROM insight_state "
-            "WHERE regen_status = 'running'"
+            "SELECT knowledge_path, regen_started_utc FROM insight_state " "WHERE regen_status = 'running'"
         ).fetchall()
         stale_running = 0
         for _, started_utc in running_rows:
@@ -1207,8 +1197,7 @@ def get_regen_health(
                 stale_running += 1
 
         failed_rows = conn.execute(
-            "SELECT knowledge_path, error_reason, last_regen_utc FROM insight_state "
-            "WHERE regen_status = 'failed'"
+            "SELECT knowledge_path, error_reason, last_regen_utc FROM insight_state " "WHERE regen_status = 'failed'"
         ).fetchall()
         return {
             "stale_running": stale_running,
