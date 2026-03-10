@@ -14,37 +14,17 @@ from brain_sync.state import (
     load_relationships_for_primary,
     load_state,
     prune_db,
-    prune_state,
     remove_document_if_orphaned,
     remove_relationship,
     save_document,
     save_insight_state,
     save_relationship,
     save_state,
-    source_key,
-    source_key_for_entry,
     update_insight_path,
     update_relationship_path,
 )
 
 pytestmark = pytest.mark.unit
-
-
-class TestSourceKeyForEntry:
-    def test_confluence_url(self):
-        url = "https://test.atlassian.net/wiki/spaces/X/pages/12345/TestPage"
-        result = source_key_for_entry(url)
-        assert result == "confluence:12345"
-
-    def test_google_doc_url(self):
-        url = "https://docs.google.com/document/d/abc123/edit"
-        result = source_key_for_entry(url)
-        assert result == "gdoc:abc123"
-
-
-class TestLegacySourceKey:
-    def test_format(self):
-        assert source_key("/a/manifest.yaml", "https://example.com") == "/a/manifest.yaml::https://example.com"
 
 
 class TestStatePersistence:
@@ -103,24 +83,6 @@ class TestStatePersistence:
         )
         save_state(tmp_path, state)
         assert (tmp_path / ".sync-state.sqlite").exists()
-
-
-class TestPruneState:
-    def test_removes_stale_keys(self):
-        state = SyncState()
-        state.sources["confluence:1"] = SourceState(
-            canonical_id="confluence:1",
-            source_url="u1",
-            source_type="confluence",
-        )
-        state.sources["confluence:2"] = SourceState(
-            canonical_id="confluence:2",
-            source_url="u2",
-            source_type="confluence",
-        )
-        prune_state(state, active_keys={"confluence:1"})
-        assert "confluence:1" in state.sources
-        assert "confluence:2" not in state.sources
 
 
 class TestSchemaV2Migration:

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from brain_sync.config import CONFIG_DIR, CONFIG_FILE, load_config
+from brain_sync.config import CONFIG_FILE, load_config
 
 # Re-export for backwards compatibility during migration
-__all__ = ["CONFIG_DIR", "CONFIG_FILE", "BrainNotFoundError", "resolve_root"]
+__all__ = ["CONFIG_FILE", "BrainNotFoundError", "resolve_root"]
 
 
 class BrainNotFoundError(Exception):

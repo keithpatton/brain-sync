@@ -242,19 +242,6 @@ class Relationship(_PathNormalized):
     last_seen_utc: str | None = None
 
 
-def source_key_for_entry(entry_url: str) -> str:
-    """Compute canonical_id from a source URL. This is the source identity key."""
-    from brain_sync.sources import canonical_id, detect_source_type
-
-    stype = detect_source_type(entry_url)
-    return canonical_id(stype, entry_url)
-
-
-# Keep old source_key for migration compatibility
-def source_key(manifest_path: str, source_url: str) -> str:
-    return f"{manifest_path}::{source_url}"
-
-
 def _db_path(root: Path) -> Path:
     return root / STATE_FILENAME
 
@@ -764,13 +751,6 @@ def update_source_target_path(root: Path, canonical_id: str, new_target_path: st
         conn.commit()
     finally:
         conn.close()
-
-
-def prune_state(state: SyncState, active_keys: set[str]) -> None:
-    stale = [k for k in state.sources if k not in active_keys]
-    for k in stale:
-        del state.sources[k]
-        log.info("Pruned state for removed source: %s", k)
 
 
 def prune_db(root: Path, active_keys: set[str]) -> None:

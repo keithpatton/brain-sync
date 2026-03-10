@@ -14,25 +14,28 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 from brain_sync.confluence_rest import ConfluenceAuth
-from brain_sync.manifest import discover_manifests
 from brain_sync.pipeline import process_source
-from brain_sync.scheduler import Scheduler, compute_interval
+from brain_sync.scheduler import compute_interval
+from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import (
     SourceState,
     SyncState,
     load_state,
     save_state,
-    source_key_for_entry,
 )
 
 pytestmark = pytest.mark.integration
+
+
+def _source_key(url: str) -> str:
+    return canonical_id(detect_source_type(url), url)
+
 
 FAKE_PAGE_ID = "12345"
 FAKE_URL = f"https://test.atlassian.net/wiki/spaces/X/pages/{FAKE_PAGE_ID}/TestPage"
@@ -46,22 +49,6 @@ FAKE_AUTH = ConfluenceAuth(
     email="test@example.com",
     token="fake-token",
 )
-
-
-def _write_manifest(root: Path, rel_dir: str = "project") -> Path:
-    manifest_dir = root / rel_dir
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / "sync-manifest.yaml"
-    manifest_path.write_text(
-        f"""
-touch_dirty_relative_path: ../.dirty
-sources:
-  - url: {FAKE_URL}
-    file: test-page.md
-""",
-        encoding="utf-8",
-    )
-    return manifest_path
 
 
 def _mock_rest(
@@ -96,7 +83,7 @@ class TestFullSyncFlow:
         root.mkdir()
         target_path = "project"
 
-        key = source_key_for_entry(FAKE_URL)
+        key = _source_key(FAKE_URL)
         state = SyncState()
         state.sources[key] = SourceState(
             canonical_id=key,
@@ -131,7 +118,7 @@ class TestFullSyncFlow:
         root.mkdir()
         target_path = "project"
 
-        key = source_key_for_entry(FAKE_URL)
+        key = _source_key(FAKE_URL)
         state = SyncState()
         state.sources[key] = SourceState(
             canonical_id=key,
@@ -158,7 +145,7 @@ class TestFullSyncFlow:
         root.mkdir()
         target_path = "project"
 
-        key = source_key_for_entry(FAKE_URL)
+        key = _source_key(FAKE_URL)
         state = SyncState()
         state.sources[key] = SourceState(
             canonical_id=key,
@@ -189,57 +176,6 @@ class TestFullSyncFlow:
         assert state.sources[key].content_hash != first_hash
 
 
-class TestManifestDiscoveryAndScheduling:
-    """Test that manifest discovery feeds the scheduler correctly."""
-
-    def test_new_manifest_schedules_sources_immediately(self, tmp_path):
-        root = tmp_path / "root"
-        root.mkdir()
-        _write_manifest(root, "proj-a")
-        _write_manifest(root, "proj-b")
-
-        manifests = discover_manifests(root)
-        assert len(manifests) == 2
-
-        scheduler = Scheduler()
-        for manifest in manifests.values():
-            for entry in manifest.sources:
-                key = source_key_for_entry(entry.url)
-                scheduler.schedule_immediate(key)
-
-        due = scheduler.pop_due()
-        # Both manifests reference the same URL, so only 1 canonical key
-        assert len(due) == 1
-
-    def test_removed_manifest_source_can_be_pruned(self, tmp_path):
-        root = tmp_path / "root"
-        _write_manifest(root, "proj")
-
-        manifests = discover_manifests(root)
-        state = SyncState()
-        for manifest in manifests.values():
-            for entry in manifest.sources:
-                key = source_key_for_entry(entry.url)
-                state.sources[key] = SourceState(
-                    canonical_id=key,
-                    source_url=entry.url,
-                    source_type="confluence",
-                )
-
-        # Add a stale entry that no longer exists in any manifest
-        state.sources["stale:key"] = SourceState(
-            canonical_id="stale:key",
-            source_url="gone",
-            source_type="confluence",
-        )
-
-        from brain_sync.state import prune_state
-
-        active = {source_key_for_entry(e.url) for m in manifests.values() for e in m.sources}
-        prune_state(state, active)
-        assert "stale:key" not in state.sources
-
-
 class TestStatePersistenceRoundTrip:
     """Test that state survives save/load cycle after a full pipeline run."""
 
@@ -248,7 +184,7 @@ class TestStatePersistenceRoundTrip:
         root.mkdir()
         target_path = "project"
 
-        key = source_key_for_entry(FAKE_URL)
+        key = _source_key(FAKE_URL)
         state = SyncState()
         state.sources[key] = SourceState(
             canonical_id=key,
