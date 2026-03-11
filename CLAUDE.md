@@ -120,6 +120,19 @@ core
 
 ---
 
+## Source Adapter Architecture
+
+Synced sources (Confluence, Google Docs, etc.) are a core extensibility feature. New source types will be added over time.
+
+All code that operates on sources must use the adapter/plugin pattern:
+
+- Source-specific logic belongs **only** in adapter modules under `src/brain_sync/sources/<type>/`.
+- Commands, pipeline, state, fileops, and other shared modules must be **source-type-agnostic**. They must not branch on source type strings (e.g., `if confluence:` / `if gdoc:`).
+- Use existing abstractions for source-type dispatch: `canonical_prefix()`, `canonical_filename()`, `SourceType` enum, adapter capabilities.
+- When new per-source behaviour is needed, extend the adapter interface (`SourceCapabilities`, adapter methods) rather than adding conditionals in shared code.
+
+---
+
 ## Architecture
 
 Agents must update `docs/architecture/ARCHITECTURE.md` whenever a change modifies:

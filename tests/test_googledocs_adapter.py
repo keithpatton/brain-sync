@@ -90,6 +90,41 @@ class TestFetch:
         assert result.metadata_fingerprint is None
         assert result.source_html is None
 
+    async def test_fetch_falls_back_to_api_title_when_html_title_missing(self, adapter):
+        from brain_sync.state import SourceState
+
+        ss = SourceState(
+            canonical_id="gdoc:abc123",
+            source_url="https://docs.google.com/document/d/abc123/edit",
+            source_type="googledocs",
+        )
+        # HTML with no <title> tag
+        fake_html = "<html><head></head><body><p>Content</p></body></html>"
+        with (
+            patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html),
+            patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock, return_value="API Title"),
+        ):
+            result = await adapter.fetch(ss, Mock(), AsyncMock())
+
+        assert result.title == "API Title"
+
+    async def test_fetch_title_none_when_both_sources_fail(self, adapter):
+        from brain_sync.state import SourceState
+
+        ss = SourceState(
+            canonical_id="gdoc:abc123",
+            source_url="https://docs.google.com/document/d/abc123/edit",
+            source_type="googledocs",
+        )
+        fake_html = "<html><head></head><body><p>Content</p></body></html>"
+        with (
+            patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html),
+            patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock, return_value=None),
+        ):
+            result = await adapter.fetch(ss, Mock(), AsyncMock())
+
+        assert result.title is None
+
     async def test_fetch_propagates_error(self, adapter):
         from brain_sync.state import SourceState
 

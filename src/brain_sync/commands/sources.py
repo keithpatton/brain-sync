@@ -8,12 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
-from brain_sync.fileops import _canonical_prefix, rediscover_local_path
+from brain_sync.fileops import canonical_prefix, rediscover_local_path
 from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import (
     SourceState,
+    count_relationships_for_doc,
+    load_relationships_for_primary,
     load_state,
+    remove_document_if_orphaned,
+    remove_relationship,
     save_state,
     update_source_flags,
     update_source_target_path,
@@ -187,12 +191,41 @@ def remove_source(
     target_path = ss.target_path
     source_url = ss.source_url
 
+    # --- Scoped file deletion (only files owned by this source) ---
     files_deleted = False
     if delete_files:
         target_dir = root / "knowledge" / target_path
         if target_dir.exists():
-            shutil.rmtree(str(target_dir))
-            files_deleted = True
+            # Delete main document file(s) matching the canonical prefix
+            prefix = canonical_prefix(cid)
+            for f in target_dir.iterdir():
+                if f.is_file() and f.name.startswith(prefix):
+                    f.unlink()
+                    files_deleted = True
+
+            # Delete relationship files (_sync-context children, attachments, links)
+            rels = load_relationships_for_primary(root, cid)
+            for rel in rels:
+                rel_file = target_dir / rel.local_path
+                if rel_file.is_file():
+                    rel_file.unlink(missing_ok=True)
+                    files_deleted = True
+
+            # Clean up empty directories bottom-up (but only remove target_dir
+            # and its subdirs if they're now empty — never delete other content)
+            for dirpath in sorted(target_dir.rglob("*"), reverse=True):
+                if dirpath.is_dir() and not any(dirpath.iterdir()):
+                    dirpath.rmdir()
+            if target_dir.exists() and not any(target_dir.iterdir()):
+                target_dir.rmdir()
+
+    # --- DB cleanup: relationships and orphaned documents ---
+    rels = load_relationships_for_primary(root, cid)
+    for rel in rels:
+        remove_relationship(root, cid, rel.canonical_id)
+        if count_relationships_for_doc(root, rel.canonical_id) == 0:
+            remove_document_if_orphaned(root, rel.canonical_id)
+    remove_document_if_orphaned(root, cid)
 
     del state.sources[cid]
     save_state(root, state)
@@ -360,7 +393,7 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     unchanged_count = 0
 
     for cid, ss in state.sources.items():
-        prefix = _canonical_prefix(cid)
+        prefix = canonical_prefix(cid)
         expected_dir = knowledge_root / ss.target_path if ss.target_path else knowledge_root
 
         # Check if a file with this prefix exists at the expected location

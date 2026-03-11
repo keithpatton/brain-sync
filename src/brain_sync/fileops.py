@@ -65,7 +65,7 @@ def write_if_changed(target: Path, markdown: str) -> bool:
     return True
 
 
-def _canonical_prefix(canonical_id: str) -> str:
+def canonical_prefix(canonical_id: str) -> str:
     """Convert a canonical_id to the filename prefix used for rediscovery."""
     if canonical_id.startswith("confluence-attachment:"):
         return f"a{canonical_id.split(':', 1)[1]}-"
@@ -82,7 +82,7 @@ def rediscover_local_path(root: Path, canonical_id: str) -> Path | None:
     Returns the first matching path relative to root, or None.
     Only called when the stored local_path no longer exists.
     """
-    prefix = _canonical_prefix(canonical_id)
+    prefix = canonical_prefix(canonical_id)
     resolved_root = root.resolve()
     for path in resolved_root.rglob(f"{prefix}*"):
         if path.is_file():

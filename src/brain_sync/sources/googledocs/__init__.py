@@ -17,7 +17,7 @@ from brain_sync.sources.base import (
     UpdateStatus,
 )
 from brain_sync.sources.googledocs.auth import GoogleDocsAuthProvider
-from brain_sync.sources.googledocs.rest import extract_title_from_html, fetch_doc_html
+from brain_sync.sources.googledocs.rest import extract_title_from_html, fetch_doc_html, fetch_doc_title
 from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
@@ -60,6 +60,8 @@ class GoogleDocsAdapter:
         doc_id = extract_google_doc_id(source_state.source_url)
         html = await fetch_doc_html(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         title = extract_title_from_html(html)
+        if not title:
+            title = await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         markdown = html_to_markdown(html)
         return SourceFetchResult(
             body_markdown=markdown,

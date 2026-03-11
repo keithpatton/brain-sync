@@ -28,7 +28,15 @@ from brain_sync.commands import (
     update_source,
 )
 from brain_sync.commands.context import _require_root
-from brain_sync.state import _connect
+from brain_sync.state import (
+    DocumentState,
+    Relationship,
+    _connect,
+    load_document,
+    load_relationships_for_primary,
+    save_document,
+    save_relationship,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -53,6 +61,9 @@ CONFLUENCE_CID_2 = "confluence:67890"
 
 CONFLUENCE_URL_3 = "https://example.atlassian.net/wiki/spaces/TEAM/pages/11111/Third-Page"
 CONFLUENCE_CID_3 = "confluence:11111"
+
+GDOC_URL = "https://docs.google.com/document/d/abc123def/edit"
+GDOC_CID = "gdoc:abc123def"
 
 
 class TestResolveRoot:
@@ -183,19 +194,179 @@ class TestRemoveSource:
             remove_source(root=brain, source="nonexistent")
         assert exc_info.value.source == "nonexistent"
 
-    def test_deletes_files_when_requested(self, brain):
+    def test_deletes_only_source_file(self, brain):
+        """delete_files removes only the source's canonical file, not siblings."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
-        (brain / "knowledge" / "project" / "doc.md").write_text("content", encoding="utf-8")
+        target_dir = brain / "knowledge" / "project"
+        (target_dir / "c12345-test-page.md").write_text("synced content", encoding="utf-8")
+        (target_dir / "unrelated-doc.md").write_text("keep me", encoding="utf-8")
 
         result = remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
         assert result.files_deleted is True
-        assert not (brain / "knowledge" / "project").exists()
+        assert not (target_dir / "c12345-test-page.md").exists()
+        # Unrelated file must survive
+        assert (target_dir / "unrelated-doc.md").exists()
+        assert (target_dir / "unrelated-doc.md").read_text(encoding="utf-8") == "keep me"
+
+    def test_deletes_relationship_files(self, brain):
+        """delete_files cleans up _sync-context relationship files."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        target_dir = brain / "knowledge" / "project"
+        (target_dir / "c12345-test-page.md").write_text("content", encoding="utf-8")
+        ctx_dir = target_dir / "_sync-context" / "children"
+        ctx_dir.mkdir(parents=True)
+        (ctx_dir / "c99999-child-page.md").write_text("child", encoding="utf-8")
+
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID,
+                canonical_id="confluence:99999",
+                relationship_type="child",
+                local_path="_sync-context/children/c99999-child-page.md",
+                source_type="confluence",
+            ),
+        )
+
+        result = remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
+        assert result.files_deleted is True
+        assert not (ctx_dir / "c99999-child-page.md").exists()
+
+    def test_empty_dir_cleaned_up(self, brain):
+        """Target dir is removed when it becomes empty after file deletion."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        target_dir = brain / "knowledge" / "project"
+        (target_dir / "c12345-test-page.md").write_text("content", encoding="utf-8")
+
+        remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
+        assert not target_dir.exists()
+
+    def test_partial_dir_preserved(self, brain):
+        """Target dir is preserved when other files remain."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        target_dir = brain / "knowledge" / "project"
+        (target_dir / "c12345-test-page.md").write_text("synced", encoding="utf-8")
+        emails_dir = target_dir / "emails"
+        emails_dir.mkdir()
+        (emails_dir / "message.md").write_text("email content", encoding="utf-8")
+
+        remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
+        assert target_dir.exists()
+        assert (emails_dir / "message.md").exists()
+
+    def test_missing_files_no_error(self, brain):
+        """Removal succeeds even when source files are already gone."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        # Don't create any files — they may have been manually deleted
+
+        result = remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
+        assert result.files_deleted is False
+
+    def test_db_relationships_cleaned(self, brain):
+        """Removing a source cleans up its relationship rows from the DB."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID,
+                canonical_id="confluence:99999",
+                relationship_type="child",
+                local_path="_sync-context/children/c99999-child.md",
+                source_type="confluence",
+            ),
+        )
+
+        remove_source(root=brain, source=CONFLUENCE_CID)
+        assert load_relationships_for_primary(brain, CONFLUENCE_CID) == []
+
+    def test_orphaned_documents_cleaned(self, brain):
+        """Document only referenced by removed source is deleted from DB."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        save_document(
+            brain,
+            DocumentState(
+                canonical_id="confluence:99999",
+                source_type="confluence",
+                url="https://example.atlassian.net/wiki/spaces/TEAM/pages/99999/Child",
+            ),
+        )
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID,
+                canonical_id="confluence:99999",
+                relationship_type="child",
+                local_path="_sync-context/children/c99999-child.md",
+                source_type="confluence",
+            ),
+        )
+
+        remove_source(root=brain, source=CONFLUENCE_CID)
+        assert load_document(brain, "confluence:99999") is None
+
+    def test_shared_documents_preserved(self, brain):
+        """Document referenced by another source's relationships is kept."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project-a")
+        add_source(root=brain, url=CONFLUENCE_URL_2, target_path="project-b")
+
+        # Both sources reference the same child document
+        shared_child_cid = "confluence:99999"
+        save_document(
+            brain,
+            DocumentState(
+                canonical_id=shared_child_cid,
+                source_type="confluence",
+                url="https://example.atlassian.net/wiki/spaces/TEAM/pages/99999/Shared",
+            ),
+        )
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID,
+                canonical_id=shared_child_cid,
+                relationship_type="child",
+                local_path="_sync-context/children/c99999-shared.md",
+                source_type="confluence",
+            ),
+        )
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID_2,
+                canonical_id=shared_child_cid,
+                relationship_type="child",
+                local_path="_sync-context/children/c99999-shared.md",
+                source_type="confluence",
+            ),
+        )
+
+        # Remove only the first source
+        remove_source(root=brain, source=CONFLUENCE_CID)
+
+        # Shared document must still exist (referenced by second source)
+        assert load_document(brain, shared_child_cid) is not None
+        # Second source's relationship must be intact
+        rels = load_relationships_for_primary(brain, CONFLUENCE_CID_2)
+        assert len(rels) == 1
+        assert rels[0].canonical_id == shared_child_cid
 
     def test_remove_by_url(self, brain):
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
 
         result = remove_source(root=brain, source=CONFLUENCE_URL)
         assert result.canonical_id == CONFLUENCE_CID
+
+    def test_scoped_deletion_gdoc(self, brain):
+        """Scoped deletion works for Google Docs sources too."""
+        add_source(root=brain, url=GDOC_URL, target_path="docs")
+        target_dir = brain / "knowledge" / "docs"
+        (target_dir / "gabc123def-my-doc.md").write_text("gdoc content", encoding="utf-8")
+        (target_dir / "other-file.md").write_text("keep", encoding="utf-8")
+
+        result = remove_source(root=brain, source=GDOC_CID, delete_files=True)
+        assert result.files_deleted is True
+        assert not (target_dir / "gabc123def-my-doc.md").exists()
+        assert (target_dir / "other-file.md").exists()
 
 
 class TestListSources:
