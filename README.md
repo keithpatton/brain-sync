@@ -417,4 +417,4 @@ python -m pytest
 | Source | Status | Auth |
 |---|---|---|
 | Confluence | Working | REST API (basic auth via config or env vars) |
-| Google Docs | Working | Native OAuth2 (`--client-secrets`), gcloud CLI fallback |
+| Google Docs | Working | Native OAuth2 (browser consent via `brain-sync config google`) |

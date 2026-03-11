@@ -1,4 +1,4 @@
-"""Google Docs authentication — native OAuth2 with gcloud CLI fallback."""
+"""Google Docs authentication — native OAuth2 via browser consent."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
 
 from brain_sync.config import CONFIG_DIR, load_config, save_config
-from brain_sync.sources.googledocs.rest import FetchError, _gcloud_cmd, _get_access_token
+from brain_sync.sources.googledocs.rest import FetchError
 
 log = logging.getLogger(__name__)
 
@@ -69,37 +69,17 @@ class GoogleOAuthCredentials:
         return self._credentials.token
 
 
-class _GcloudFallbackCredentials:
-    """Fallback: shells out to gcloud auth print-access-token."""
-
-    async def get_token(self) -> str:
-        return await _get_access_token()
-
-
 class GoogleDocsAuthProvider:
-    def load_auth(self) -> GoogleOAuthCredentials | _GcloudFallbackCredentials | None:
-        """Load auth credentials, trying native OAuth2 first, then gcloud fallback."""
-        # 1. Cached token (valid or refreshable)
+    def load_auth(self) -> GoogleOAuthCredentials | None:
+        """Load cached OAuth credentials if available."""
         creds = _load_cached_token()
         if creds is not None:
             return GoogleOAuthCredentials(creds)
-
-        # 2. Fallback to gcloud
-        try:
-            _gcloud_cmd()
-            return _GcloudFallbackCredentials()
-        except FileNotFoundError:
-            return None
+        return None
 
     def validate_config(self) -> bool:
-        """Check if auth COULD work. Does NOT trigger OAuth or open a browser."""
-        if _load_cached_token() is not None:
-            return True
-        try:
-            _gcloud_cmd()
-            return True
-        except FileNotFoundError:
-            return False
+        """Check if OAuth token is cached. Does NOT trigger OAuth or open a browser."""
+        return _load_cached_token() is not None
 
     def configure(self, **kwargs: str) -> None:
         raise NotImplementedError("Use: brain-sync config google")

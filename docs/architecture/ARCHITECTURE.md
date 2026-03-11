@@ -79,14 +79,14 @@ The sync pipeline uses a `SourceAdapter` protocol (`sources/base.py`) to abstrac
 sources/base.py        — SourceAdapter protocol, AuthProvider protocol, shared dataclasses
 sources/registry.py    — Lazy dict registry: get_adapter(SourceType) → SourceAdapter
 sources/confluence/    — ConfluenceAdapter (wraps confluence_rest.py)
-sources/googledocs/    — GoogleDocsAdapter (native OAuth2, gcloud fallback, HTML export)
+sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent, HTML export)
 ```
 
 **Key abstractions:**
 - `SourceCapabilities` — declares what a source supports (version check, comments, context sync, etc.)
 - `UpdateCheckResult` — cheap pre-fetch check; `adapter_state` passes opaque data to `fetch()` to avoid duplicate API calls
 - `SourceFetchResult` — full fetch result with markdown, comments, title, optional source HTML
-- `AuthProvider` — per-source auth (Confluence: config/env credentials; Google Docs: native OAuth2 with gcloud fallback)
+- `AuthProvider` — per-source auth (Confluence: config/env credentials; Google Docs: native OAuth2 via browser consent)
 
 **Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Context sync and link rewriting remain in the pipeline (Confluence-specific, gated by `supports_context_sync`).
 

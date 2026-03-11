@@ -19,7 +19,6 @@ from brain_sync.sources.googledocs import GoogleDocsAdapter
 from brain_sync.sources.googledocs.auth import (
     GoogleDocsAuthProvider,
     GoogleOAuthCredentials,
-    _GcloudFallbackCredentials,
     _load_cached_token,
     _save_token,
     run_oauth_flow,
@@ -161,24 +160,6 @@ class TestExtractTitleFromHtml:
         assert extract_title_from_html(html) is None
 
 
-class TestGcloudCmd:
-    def test_resolves_when_on_path(self):
-        with patch("brain_sync.sources.googledocs.rest.shutil.which", return_value="/usr/bin/gcloud"):
-            from brain_sync.sources.googledocs.rest import _gcloud_cmd
-
-            assert _gcloud_cmd() == "/usr/bin/gcloud"
-
-    def test_raises_when_not_found(self):
-        with (
-            patch("brain_sync.sources.googledocs.rest.shutil.which", return_value=None),
-            patch("os.path.isfile", return_value=False),
-        ):
-            from brain_sync.sources.googledocs.rest import _gcloud_cmd
-
-            with pytest.raises(FileNotFoundError, match="gcloud not found"):
-                _gcloud_cmd()
-
-
 # --- OAuth2 auth tests ---
 
 
@@ -318,27 +299,15 @@ class TestValidateConfig:
         provider = GoogleDocsAuthProvider()
         assert provider.validate_config() is True
 
-    def test_returns_true_with_gcloud_available(self, monkeypatch):
+    def test_returns_false_when_no_token(self, monkeypatch):
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
             MagicMock(exists=lambda: False),
         )
 
-        with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", return_value="/usr/bin/gcloud"):
-            provider = GoogleDocsAuthProvider()
-            assert provider.validate_config() is True
-
-    def test_returns_false_when_nothing_available(self, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
-        monkeypatch.setattr(
-            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
-            MagicMock(exists=lambda: False),
-        )
-
-        with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", side_effect=FileNotFoundError):
-            provider = GoogleDocsAuthProvider()
-            assert provider.validate_config() is False
+        provider = GoogleDocsAuthProvider()
+        assert provider.validate_config() is False
 
 
 class TestLoadAuth:
@@ -362,29 +331,15 @@ class TestLoadAuth:
         auth = provider.load_auth()
         assert isinstance(auth, GoogleOAuthCredentials)
 
-    def test_no_token_with_gcloud_returns_fallback(self, monkeypatch):
+    def test_no_token_returns_none(self, monkeypatch):
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
             MagicMock(exists=lambda: False),
         )
 
-        with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", return_value="/usr/bin/gcloud"):
-            provider = GoogleDocsAuthProvider()
-            auth = provider.load_auth()
-
-        assert isinstance(auth, _GcloudFallbackCredentials)
-
-    def test_nothing_available_returns_none(self, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
-        monkeypatch.setattr(
-            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
-            MagicMock(exists=lambda: False),
-        )
-
-        with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", side_effect=FileNotFoundError):
-            provider = GoogleDocsAuthProvider()
-            assert provider.load_auth() is None
+        provider = GoogleDocsAuthProvider()
+        assert provider.load_auth() is None
 
 
 class TestGoogleOAuthCredentials:
@@ -451,7 +406,7 @@ class TestRunOAuthFlow:
         fake_flow.run_local_server.return_value = fake_creds
 
         with patch(
-            "brain_sync.sources.googledocs.auth.InstalledAppFlow.from_client_config",
+            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_config",
             return_value=fake_flow,
         ) as mock_from:
             result = run_oauth_flow()
@@ -464,18 +419,6 @@ class TestRunOAuthFlow:
         assert saved_configs[0]["google"]["token"] == {"token": "new"}
 
 
-class TestGcloudFallbackCredentials:
-    async def test_delegates_to_get_access_token(self):
-        with patch(
-            "brain_sync.sources.googledocs.auth._get_access_token",
-            new_callable=AsyncMock,
-            return_value="gcloud-token",
-        ):
-            fallback = _GcloudFallbackCredentials()
-            token = await fallback.get_token()
-            assert token == "gcloud-token"
-
-
 class TestConfigureGoogle:
     def test_runs_oauth_when_not_authenticated(self, monkeypatch):
         from brain_sync.commands.config import configure_google
@@ -486,10 +429,7 @@ class TestConfigureGoogle:
             MagicMock(exists=lambda: False),
         )
 
-        with (
-            patch("brain_sync.sources.googledocs.auth._gcloud_cmd", side_effect=FileNotFoundError),
-            patch("brain_sync.sources.googledocs.auth.run_oauth_flow") as mock_flow,
-        ):
+        with patch("brain_sync.sources.googledocs.auth.run_oauth_flow") as mock_flow:
             result = configure_google()
 
         assert result is True
