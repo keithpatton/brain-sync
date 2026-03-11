@@ -578,7 +578,7 @@ def handle_convert(args) -> None:
 
 def handle_config(args) -> None:
     if not args.config_source:
-        log.error("Specify a source to configure. Available: confluence, googledocs")
+        log.error("Specify a source to configure. Available: confluence, google")
         sys.exit(1)
 
     if args.config_source == "confluence":
@@ -589,11 +589,10 @@ def handle_config(args) -> None:
             email=args.email,
             token=args.token,
         )
-    elif args.config_source == "googledocs":
-        from brain_sync.commands.config import configure_googledocs
+    elif args.config_source == "google":
+        from brain_sync.commands.config import configure_google
 
-        if not configure_googledocs(
-            client_secrets=str(args.client_secrets) if getattr(args, "client_secrets", None) else None,
+        if not configure_google(
             reauth=getattr(args, "reauth", False),
         ):
             sys.exit(1)

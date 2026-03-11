@@ -165,9 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_config_confluence.add_argument("--email", required=True, help="Confluence account email")
     p_config_confluence.add_argument("--token", required=True, help="Confluence API token")
 
-    p_config_googledocs = config_sub.add_parser("googledocs", help="Configure Google Docs OAuth authentication")
-    p_config_googledocs.add_argument("--client-secrets", type=Path, help="Path to OAuth client secrets JSON")
-    p_config_googledocs.add_argument("--reauth", action="store_true", help="Force re-authentication")
+    p_config_google = config_sub.add_parser("google", help="Authenticate with Google for Google Docs syncing")
+    p_config_google.add_argument("--reauth", action="store_true", help="Force re-authentication")
 
     # --- update-skill ---
     p_skill = sub.add_parser("update-skill", help="Update the installed skill and instructions")

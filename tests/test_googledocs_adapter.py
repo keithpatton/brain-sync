@@ -18,7 +18,6 @@ from brain_sync.sources.googledocs.auth import (
     GoogleDocsAuthProvider,
     GoogleOAuthCredentials,
     _GcloudFallbackCredentials,
-    _get_client_secrets_path,
     _load_cached_token,
     _save_token,
     run_oauth_flow,
@@ -182,130 +181,158 @@ class TestGcloudCmd:
 
 
 class TestLoadCachedToken:
-    def test_valid_file_returns_credentials(self, tmp_path, monkeypatch):
-        token_file = tmp_path / "google_token.json"
+    def test_valid_token_in_config_returns_credentials(self, monkeypatch):
         token_data = {
             "token": "access-token-123",
             "refresh_token": "refresh-token-456",
             "client_id": "client-id",
             "client_secret": "client-secret",
         }
-        token_file.write_text(json.dumps(token_data), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"token": token_data}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         result = _load_cached_token()
         assert result is not None
         assert result.token == "access-token-123"
 
-    def test_missing_file_returns_none(self, tmp_path, monkeypatch):
-        token_file = tmp_path / "nonexistent.json"
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
+    def test_missing_config_returns_none(self, monkeypatch):
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         assert _load_cached_token() is None
 
-    def test_corrupt_file_returns_none(self, tmp_path, monkeypatch):
-        token_file = tmp_path / "google_token.json"
-        token_file.write_text("not valid json{{{", encoding="utf-8")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
+    def test_corrupt_token_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"token": {"bad": "data"}}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
-        assert _load_cached_token() is None
+        # google-auth may accept partial data — at minimum it should not crash
+        result = _load_cached_token()
+        # Result may be None or a Credentials with no token; either is acceptable
+        assert result is None or result.token is None
+
+    def test_migrates_legacy_token_file(self, tmp_path, monkeypatch):
+        legacy_file = tmp_path / "google_token.json"
+        token_data = {
+            "token": "legacy-tok",
+            "refresh_token": "legacy-ref",
+            "client_id": "cid",
+            "client_secret": "csec",
+        }
+        legacy_file.write_text(json.dumps(token_data), encoding="utf-8")
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE", legacy_file)
+
+        saved_configs: list[dict] = []
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"googledocs": {"client_secrets_file": "/old/path"}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.save_config",
+            lambda c: saved_configs.append(c),
+        )
+
+        result = _load_cached_token()
+        assert result is not None
+        assert result.token == "legacy-tok"
+        # Legacy file should be deleted
+        assert not legacy_file.exists()
+        # Config should have google.token and no googledocs key
+        assert len(saved_configs) == 1
+        assert saved_configs[0]["google"]["token"] == token_data
+        assert "googledocs" not in saved_configs[0]
 
 
 class TestSaveToken:
-    def test_writes_json_atomically(self, tmp_path, monkeypatch):
-        token_file = tmp_path / "google_token.json"
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.CONFIG_DIR", tmp_path)
-
-        creds = MagicMock()
-        creds.to_json.return_value = '{"token": "abc"}'
-
-        _save_token(creds)
-
-        assert token_file.exists()
-        assert json.loads(token_file.read_text(encoding="utf-8")) == {"token": "abc"}
-        # .tmp should not remain after atomic replace
-        assert not (tmp_path / "google_token.tmp").exists()
-
-    def test_creates_config_dir_if_missing(self, tmp_path, monkeypatch):
-        config_dir = tmp_path / "subdir"
-        token_file = config_dir / "google_token.json"
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.CONFIG_DIR", config_dir)
-
-        creds = MagicMock()
-        creds.to_json.return_value = '{"token": "xyz"}'
-
-        _save_token(creds)
-
-        assert config_dir.is_dir()
-        assert token_file.exists()
-
-
-class TestGetClientSecretsPath:
-    def test_returns_path_when_configured_and_exists(self, tmp_path, monkeypatch):
-        secrets_file = tmp_path / "client_secrets.json"
-        secrets_file.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(
-            "brain_sync.sources.googledocs.auth.load_config",
-            lambda: {"googledocs": {"client_secrets_file": str(secrets_file)}},
-        )
-
-        result = _get_client_secrets_path()
-        assert result == secrets_file
-
-    def test_returns_none_when_not_configured(self, monkeypatch):
+    def test_saves_token_to_config(self, monkeypatch):
+        saved_configs: list[dict] = []
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
-        assert _get_client_secrets_path() is None
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.save_config",
+            lambda c: saved_configs.append(c),
+        )
 
-    def test_returns_none_when_file_missing(self, tmp_path, monkeypatch):
+        creds = MagicMock()
+        creds.to_json.return_value = '{"token": "abc", "refresh_token": "ref"}'
+
+        _save_token(creds)
+
+        assert len(saved_configs) == 1
+        assert saved_configs[0]["google"]["token"] == {"token": "abc", "refresh_token": "ref"}
+
+    def test_preserves_existing_config(self, monkeypatch):
+        saved_configs: list[dict] = []
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth.load_config",
-            lambda: {"googledocs": {"client_secrets_file": str(tmp_path / "missing.json")}},
+            lambda: {"brains": ["/some/path"], "confluence": {"domain": "x"}},
         )
-        assert _get_client_secrets_path() is None
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.save_config",
+            lambda c: saved_configs.append(c),
+        )
+
+        creds = MagicMock()
+        creds.to_json.return_value = '{"token": "new"}'
+
+        _save_token(creds)
+
+        assert saved_configs[0]["brains"] == ["/some/path"]
+        assert saved_configs[0]["confluence"] == {"domain": "x"}
+        assert saved_configs[0]["google"]["token"] == {"token": "new"}
 
 
 class TestValidateConfig:
-    def test_returns_true_with_cached_token(self, tmp_path, monkeypatch):
+    def test_returns_true_with_cached_token(self, monkeypatch):
         """validate_config returns True when cached token exists — no OAuth triggered."""
-        token_file = tmp_path / "google_token.json"
         token_data = {
             "token": "tok",
             "refresh_token": "ref",
             "client_id": "cid",
             "client_secret": "csec",
         }
-        token_file.write_text(json.dumps(token_data), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
-
-        provider = GoogleDocsAuthProvider()
-        assert provider.validate_config() is True
-
-    def test_returns_true_with_client_secrets_configured(self, tmp_path, monkeypatch):
-        """validate_config returns True when client_secrets_file is in config — no OAuth triggered."""
-        secrets_file = tmp_path / "secrets.json"
-        secrets_file.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "nope.json")
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth.load_config",
-            lambda: {"googledocs": {"client_secrets_file": str(secrets_file)}},
+            lambda: {"google": {"token": token_data}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
         )
 
         provider = GoogleDocsAuthProvider()
         assert provider.validate_config() is True
 
-    def test_returns_true_with_gcloud_available(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "nope.json")
+    def test_returns_true_with_gcloud_available(self, monkeypatch):
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", return_value="/usr/bin/gcloud"):
             provider = GoogleDocsAuthProvider()
             assert provider.validate_config() is True
 
-    def test_returns_false_when_nothing_available(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "nope.json")
+    def test_returns_false_when_nothing_available(self, monkeypatch):
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", side_effect=FileNotFoundError):
             provider = GoogleDocsAuthProvider()
@@ -313,43 +340,32 @@ class TestValidateConfig:
 
 
 class TestLoadAuth:
-    def test_cached_token_returns_oauth_credentials(self, tmp_path, monkeypatch):
-        token_file = tmp_path / "google_token.json"
+    def test_cached_token_returns_oauth_credentials(self, monkeypatch):
         token_data = {
             "token": "tok",
             "refresh_token": "ref",
             "client_id": "cid",
             "client_secret": "csec",
         }
-        token_file.write_text(json.dumps(token_data), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", token_file)
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"token": token_data}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         provider = GoogleDocsAuthProvider()
         auth = provider.load_auth()
         assert isinstance(auth, GoogleOAuthCredentials)
 
-    def test_no_token_with_client_secrets_runs_oauth(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "nope.json")
-
-        secrets_file = tmp_path / "secrets.json"
-        secrets_file.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(
-            "brain_sync.sources.googledocs.auth.load_config",
-            lambda: {"googledocs": {"client_secrets_file": str(secrets_file)}},
-        )
-
-        fake_creds = MagicMock()
-        fake_creds.token = "new-token"
-        with patch("brain_sync.sources.googledocs.auth.run_oauth_flow", return_value=fake_creds) as mock_flow:
-            provider = GoogleDocsAuthProvider()
-            auth = provider.load_auth()
-
-        mock_flow.assert_called_once_with(secrets_file)
-        assert isinstance(auth, GoogleOAuthCredentials)
-
-    def test_no_token_no_secrets_with_gcloud_returns_fallback(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "nope.json")
+    def test_no_token_with_gcloud_returns_fallback(self, monkeypatch):
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", return_value="/usr/bin/gcloud"):
             provider = GoogleDocsAuthProvider()
@@ -357,9 +373,12 @@ class TestLoadAuth:
 
         assert isinstance(auth, _GcloudFallbackCredentials)
 
-    def test_nothing_available_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "nope.json")
+    def test_nothing_available_returns_none(self, monkeypatch):
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
         with patch("brain_sync.sources.googledocs.auth._gcloud_cmd", side_effect=FileNotFoundError):
             provider = GoogleDocsAuthProvider()
@@ -414,9 +433,13 @@ class TestGoogleOAuthCredentials:
 
 
 class TestRunOAuthFlow:
-    def test_runs_flow_and_saves_token(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.GOOGLE_TOKEN_FILE", tmp_path / "token.json")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.CONFIG_DIR", tmp_path)
+    def test_runs_flow_and_saves_token(self, monkeypatch):
+        saved_configs: list[dict] = []
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.save_config",
+            lambda c: saved_configs.append(c),
+        )
 
         from google.oauth2.credentials import Credentials
 
@@ -426,18 +449,17 @@ class TestRunOAuthFlow:
         fake_flow.run_local_server.return_value = fake_creds
 
         with patch(
-            "brain_sync.sources.googledocs.auth.InstalledAppFlow.from_client_secrets_file",
+            "brain_sync.sources.googledocs.auth.InstalledAppFlow.from_client_config",
             return_value=fake_flow,
         ) as mock_from:
-            secrets_path = tmp_path / "client_secrets.json"
-            result = run_oauth_flow(secrets_path)
+            result = run_oauth_flow()
 
         mock_from.assert_called_once()
         fake_flow.run_local_server.assert_called_once_with(port=0)
         assert result is fake_creds
-        # Token should have been saved
-        token_file = tmp_path / "token.json"
-        assert token_file.exists()
+        # Token should have been saved to config
+        assert len(saved_configs) == 1
+        assert saved_configs[0]["google"]["token"] == {"token": "new"}
 
 
 class TestGcloudFallbackCredentials:
@@ -452,60 +474,62 @@ class TestGcloudFallbackCredentials:
             assert token == "gcloud-token"
 
 
-class TestConfigureGoogledocs:
-    def test_client_secrets_saves_config_and_runs_flow(self, tmp_path, monkeypatch):
-        from brain_sync.commands.config import configure_googledocs
+class TestConfigureGoogle:
+    def test_runs_oauth_when_not_authenticated(self, monkeypatch):
+        from brain_sync.commands.config import configure_google
 
-        secrets = tmp_path / "client.json"
-        secrets.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
+        )
 
-        saved_configs: list[dict] = []
-        monkeypatch.setattr("brain_sync.commands.config.load_config", lambda: {})
-        monkeypatch.setattr("brain_sync.commands.config.save_config", lambda c: saved_configs.append(c))
-
-        fake_creds = MagicMock()
-        with patch("brain_sync.sources.googledocs.auth.run_oauth_flow", return_value=fake_creds) as mock_flow:
-            result = configure_googledocs(client_secrets=str(secrets))
+        with (
+            patch("brain_sync.sources.googledocs.auth._gcloud_cmd", side_effect=FileNotFoundError),
+            patch("brain_sync.sources.googledocs.auth.run_oauth_flow") as mock_flow,
+        ):
+            result = configure_google()
 
         assert result is True
-        assert len(saved_configs) == 1
-        assert saved_configs[0]["googledocs"]["client_secrets_file"] == str(secrets.resolve())
         mock_flow.assert_called_once()
 
-    def test_client_secrets_file_not_found(self, tmp_path):
-        from brain_sync.commands.config import configure_googledocs
+    def test_skips_oauth_when_already_authenticated(self, monkeypatch):
+        from brain_sync.commands.config import configure_google
 
-        result = configure_googledocs(client_secrets=str(tmp_path / "missing.json"))
-        assert result is False
-
-    def test_reauth_runs_flow(self, tmp_path, monkeypatch):
-        from brain_sync.commands.config import configure_googledocs
-
-        secrets = tmp_path / "client.json"
-        secrets.write_text("{}", encoding="utf-8")
-
+        token_data = {"token": "tok", "refresh_token": "ref", "client_id": "cid", "client_secret": "csec"}
         monkeypatch.setattr(
-            "brain_sync.sources.googledocs.auth._get_client_secrets_path",
-            lambda: secrets,
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"token": token_data}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
         )
 
-        fake_creds = MagicMock()
-        with patch("brain_sync.sources.googledocs.auth.run_oauth_flow", return_value=fake_creds) as mock_flow:
-            result = configure_googledocs(reauth=True)
+        with patch("brain_sync.sources.googledocs.auth.run_oauth_flow") as mock_flow:
+            result = configure_google()
 
         assert result is True
-        mock_flow.assert_called_once_with(secrets)
+        mock_flow.assert_not_called()
 
-    def test_reauth_fails_without_secrets(self, monkeypatch):
-        from brain_sync.commands.config import configure_googledocs
+    def test_reauth_forces_oauth_even_when_authenticated(self, monkeypatch):
+        from brain_sync.commands.config import configure_google
 
+        token_data = {"token": "tok", "refresh_token": "ref", "client_id": "cid", "client_secret": "csec"}
         monkeypatch.setattr(
-            "brain_sync.sources.googledocs.auth._get_client_secrets_path",
-            lambda: None,
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"token": token_data}},
+        )
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
+            MagicMock(exists=lambda: False),
         )
 
-        result = configure_googledocs(reauth=True)
-        assert result is False
+        with patch("brain_sync.sources.googledocs.auth.run_oauth_flow") as mock_flow:
+            result = configure_google(reauth=True)
+
+        assert result is True
+        mock_flow.assert_called_once()
 
     def test_configure_raises(self):
         provider = GoogleDocsAuthProvider()

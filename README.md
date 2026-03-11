@@ -39,21 +39,14 @@ brain-sync config confluence \
 
 This writes credentials to `~/.brain-sync/config.json`. Alternatively, set environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`.
 
-**Google Docs** — requires OAuth2 client credentials:
-
-1. Create an OAuth 2.0 "Desktop app" credential in [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Enable the Google Drive API for your project
-3. Download the client secrets JSON
-4. Run:
+**Google Docs** — authenticate with your Google account:
 
 ```bash
-brain-sync config googledocs --client-secrets path/to/client_secrets.json
+brain-sync config google
 ```
 
-This opens a browser for consent. The token is cached in `~/.brain-sync/google_token.json`.
-To re-authenticate: `brain-sync config googledocs --reauth`
-
-Alternatively, `gcloud auth login` works as a fallback if the [gcloud CLI](https://cloud.google.com/sdk) is installed.
+This opens a browser for consent. The token is cached in `~/.brain-sync/config.json`.
+To re-authenticate: `brain-sync config google --reauth`
 
 ### Add a source
 
@@ -226,7 +219,7 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 | `brain-sync reconcile [--root <path>]` | Update DB target paths to match where files actually are on disk |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
 | `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
-| `brain-sync config googledocs [--client-secrets <path>] [--reauth]` | Configure Google Docs OAuth authentication |
+| `brain-sync config google [--reauth]` | Authenticate with Google for Google Docs syncing |
 | `brain-sync convert <file> [--comments-from <docx>]` | Convert .docx to markdown, or append comments from .docx to .md |
 | `brain-sync update-skill` | Re-install skill and instruction files to `~/.claude/skills/brain-sync/` |
 
@@ -316,8 +309,8 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
     "email": "you@example.com",
     "token": "your-api-token"
   },
-  "googledocs": {
-    "client_secrets_file": "/absolute/path/to/client_secrets.json"
+  "google": {
+    "token": "<managed by brain-sync config google>"
   },
   "regen": {
     "model": "claude-sonnet-4-6",
@@ -329,7 +322,7 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 }
 ```
 
-The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `confluence` section stores Confluence REST API credentials (can also be set via `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` env vars). The `googledocs` section stores the path to your OAuth client secrets JSON (token cached separately in `~/.brain-sync/google_token.json`). The `regen` section is optional — defaults are used if omitted.
+The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `confluence` section stores Confluence REST API credentials (can also be set via `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` env vars). The `google` section stores the OAuth token managed by `brain-sync config google`. The `regen` section is optional — defaults are used if omitted.
 
 ## Converting .docx files
 
