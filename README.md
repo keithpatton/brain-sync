@@ -10,6 +10,12 @@ A brain engine that syncs external knowledge sources, watches for changes, and m
 pip install -e .
 ```
 
+For Google Docs syncing, include the `google` extra:
+
+```bash
+pip install -e ".[google]"
+```
+
 ### Prerequisites
 
 **Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
@@ -39,7 +45,7 @@ brain-sync config confluence \
 
 This writes credentials to `~/.brain-sync/config.json`. Alternatively, set environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`.
 
-**Google Docs** — authenticate with your Google account:
+**Google Docs** — requires the `google` extra (`pip install -e ".[google]"`). Then authenticate:
 
 ```bash
 brain-sync config google
@@ -400,7 +406,7 @@ If the state file is lost, the daemon starts fresh (one redundant fetch cycle, i
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,google]"
 python -m pytest
 ```
 

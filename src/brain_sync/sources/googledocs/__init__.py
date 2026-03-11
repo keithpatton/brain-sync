@@ -16,13 +16,10 @@ from brain_sync.sources.base import (
     UpdateCheckResult,
     UpdateStatus,
 )
-from brain_sync.sources.googledocs.auth import GoogleDocsAuthProvider
 from brain_sync.sources.googledocs.rest import extract_title_from_html, fetch_doc_html, fetch_doc_title
 from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
-
-_auth_provider = GoogleDocsAuthProvider()
 
 
 class GoogleDocsAdapter:
@@ -39,7 +36,11 @@ class GoogleDocsAdapter:
 
     @property
     def auth_provider(self) -> AuthProvider:
-        return _auth_provider
+        from brain_sync.sources.googledocs.auth import GoogleDocsAuthProvider
+
+        if not hasattr(self, "_auth_provider"):
+            self._auth_provider = GoogleDocsAuthProvider()
+        return self._auth_provider
 
     async def check_for_update(
         self,

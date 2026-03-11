@@ -6,11 +6,10 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from google.auth.exceptions import RefreshError
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+if TYPE_CHECKING:
+    from google.oauth2.credentials import Credentials
 
 from brain_sync.config import CONFIG_DIR, load_config, save_config
 from brain_sync.sources.googledocs.rest import FetchError, _gcloud_cmd, _get_access_token
@@ -37,6 +36,17 @@ _GOOGLE_CLIENT_CONFIG = {
 _LEGACY_TOKEN_FILE = CONFIG_DIR / "google_token.json"
 
 
+def _require_google() -> None:
+    """Raise a clear error if google-auth packages are not installed."""
+    try:
+        import google.auth  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "Google Docs support requires the 'google' extra.\n"
+            "Install with:  pip install brain-sync[google]"
+        ) from None
+
+
 @dataclass
 class GoogleOAuthCredentials:
     """Wraps google.oauth2.credentials.Credentials with async token access."""
@@ -44,6 +54,9 @@ class GoogleOAuthCredentials:
     _credentials: Credentials
 
     async def get_token(self) -> str:
+        from google.auth.exceptions import RefreshError
+        from google.auth.transport.requests import Request
+
         if self._credentials.expired and self._credentials.refresh_token:
             log.debug("Refreshing Google OAuth token")
             try:
@@ -97,6 +110,10 @@ class GoogleDocsAuthProvider:
 
 def run_oauth_flow() -> Credentials:
     """Run browser-based OAuth consent. Saves token to config.json."""
+    _require_google()
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
     log.info("Opening browser for Google OAuth consent...")
     flow = InstalledAppFlow.from_client_config(_GOOGLE_CLIENT_CONFIG, scopes=SCOPES)
     creds = flow.run_local_server(port=0)
@@ -110,6 +127,9 @@ def run_oauth_flow() -> Credentials:
 
 def _load_cached_token() -> Credentials | None:
     """Load token from config.json. Migrates legacy google_token.json if needed."""
+    _require_google()
+    from google.oauth2.credentials import Credentials
+
     config = load_config()
     token_dict = config.get("google", {}).get("token")
 

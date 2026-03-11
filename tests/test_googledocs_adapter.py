@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
+pytest.importorskip("google.auth", reason="google-auth not installed (install brain-sync[google])")
+
 from brain_sync.sources.base import (
     AuthProvider,
     SourceAdapter,

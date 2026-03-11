@@ -592,9 +592,14 @@ def handle_config(args) -> None:
     elif args.config_source == "google":
         from brain_sync.commands.config import configure_google
 
-        if not configure_google(
-            reauth=getattr(args, "reauth", False),
-        ):
+        try:
+            if not configure_google(
+                reauth=getattr(args, "reauth", False),
+            ):
+                sys.exit(1)
+        except ImportError as exc:
+            log.debug("Google import failed", exc_info=True)
+            log.error("%s", exc)
             sys.exit(1)
 
 
