@@ -120,7 +120,8 @@ acme-brain/
 
 Restrictions:
 - `_core/` is reserved for always-loaded global context (top-level only)
-- `_sync-context/` directories are managed by brain-sync — do not edit
+- `_sync-context/` directories are managed by brain-sync — do not edit or modify their contents
+- Do not rename synced source files — filenames are ID-anchored (e.g. `c12345-page-title.md`) and renaming breaks the link between the file and its sync source
 - Filenames starting with `_` or `.` are excluded from insight generation
 - Supported formats: `.md`, `.txt` (`.docx` via `brain-sync convert`)
 
@@ -194,7 +195,7 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 |---|---|
 | `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
 | `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <source> [--path <path>] [--include-links] [--include-children] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a URL or local file to the brain (suggests placement when `--path` omitted) |
+| `brain-sync add <source> [--path <path>] [--include-links] [--include-children] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
