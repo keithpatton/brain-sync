@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from brain_sync.area_index import AreaIndex
 from brain_sync.commands import (
     SourceAlreadyExistsError,
     SourceNotFoundError,
@@ -35,6 +35,7 @@ from brain_sync.commands import (
     resolve_root,
     update_source,
 )
+from brain_sync.commands.placement import suggest_placement
 from brain_sync.fileops import TEXT_EXTENSIONS
 from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
 from brain_sync.regen import RegenFailed, regen_all, regen_path
@@ -55,11 +56,8 @@ MAX_INSIGHT_FILE_CHARS = 8000  # other insight artifacts
 MAX_AREA_PAYLOAD = 40000  # total response chars — hard cap
 MAX_AREAS_LISTED = 50
 MAX_GLOBAL_CONTEXT_FILE_CHARS = 4000
-MAX_PREVIEW_CHARS = 500
-MAX_SEARCH_RESULTS = 10
 MAX_FILE_CHARS = 1_000_000
 DEFAULT_FILE_CHARS = 200_000
-SUMMARY_INDEX_CHARS = 2000
 ALLOWED_EXTENSIONS = frozenset({".md", ".txt", ".json", ".yaml", ".yml"})
 
 
@@ -165,156 +163,6 @@ def _collect_areas(root: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Search index — built at startup, rebuilt on staleness
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AreaIndexEntry:
-    """Index entry for a single brain area."""
-
-    path: str
-    path_parts: list[str]
-    summary_first_para: str = ""  # first paragraph (used for preview)
-    summary_body: str = ""  # full indexed text (used for search)
-    summary_headings: list[str] = field(default_factory=list)
-    children: list[str] = field(default_factory=list)
-    has_knowledge: bool = False
-    has_summary: bool = False
-
-
-class AreaIndex:
-    """In-memory search index over brain areas."""
-
-    def __init__(self) -> None:
-        self.entries: list[AreaIndexEntry] = []
-        self._max_mtime: float = 0.0
-
-    @classmethod
-    def build(cls, root: Path) -> AreaIndex:
-        """Build a fresh index by walking insights/ and knowledge/."""
-        index = cls()
-        insights_root = root / "insights"
-        knowledge_root = root / "knowledge"
-
-        if not insights_root.is_dir():
-            return index
-
-        max_mtime = 0.0
-
-        def _walk(directory: Path, prefix: str) -> None:
-            nonlocal max_mtime
-            for child in sorted(directory.iterdir()):
-                if not is_content_dir(child):
-                    continue
-                if child.name == "_core":
-                    continue
-                child_rel = prefix + "/" + child.name if prefix else child.name
-
-                # Build entry
-                entry = AreaIndexEntry(
-                    path=child_rel,
-                    path_parts=child_rel.split("/"),
-                )
-
-                # Summary — single pass: read file, extract first para + headings, track mtime
-                summary_path = child / "summary.md"
-                if summary_path.is_file():
-                    entry.has_summary = True
-                    try:
-                        mtime = summary_path.stat().st_mtime
-                        if mtime > max_mtime:
-                            max_mtime = mtime
-                    except OSError:
-                        pass
-                    text = _read_file_safe(summary_path, SUMMARY_INDEX_CHARS)
-                    if text:
-                        entry.summary_body = text
-                        # First paragraph: text up to first blank line (for preview)
-                        paras = re.split(r"\n\s*\n", text, maxsplit=1)
-                        entry.summary_first_para = paras[0][:MAX_PREVIEW_CHARS] if paras else ""
-                        # Headings
-                        entry.summary_headings = sorted(
-                            line.lstrip("#").strip() for line in text.splitlines() if line.startswith("##")
-                        )
-
-                # Children
-                child_content_dirs = get_child_dirs(child)
-                entry.children = sorted(d.name for d in child_content_dirs)
-
-                # Knowledge presence
-                knowledge_dir = knowledge_root / child_rel
-                if knowledge_dir.is_dir():
-                    entry.has_knowledge = any(is_readable_file(p) for p in knowledge_dir.iterdir())
-
-                index.entries.append(entry)
-                _walk(child, child_rel)
-
-        _walk(insights_root, "")
-        index._max_mtime = max_mtime
-        log.debug("AreaIndex built: %d entries, max_mtime=%.1f", len(index.entries), max_mtime)
-        return index
-
-    def is_stale(self, root: Path) -> bool:
-        """Check if the index needs rebuilding by scanning summary.md mtimes."""
-        insights_root = root / "insights"
-        if not insights_root.is_dir():
-            return bool(self.entries)  # stale if we have entries but no insights dir
-        max_mtime = 0.0
-        for p in insights_root.rglob("summary.md"):
-            if p.is_file():
-                try:
-                    mtime = p.stat().st_mtime
-                    if mtime > max_mtime:
-                        max_mtime = mtime
-                except OSError:
-                    pass
-        return max_mtime != self._max_mtime
-
-    def search(self, query: str, max_results: int = 5) -> list[dict]:
-        """Search the index, returning scored results."""
-        max_results = min(max_results, MAX_SEARCH_RESULTS)
-        query_lower = query.lower()
-        scored: list[tuple[int, str, AreaIndexEntry]] = []
-
-        for entry in self.entries:
-            score = 0
-            # Path segments — highest weight (x3)
-            for part in entry.path_parts:
-                if query_lower in part.lower():
-                    score += 3
-
-            # Summary body — medium weight (x2)
-            if query_lower in entry.summary_body.lower():
-                score += 2
-
-            # Headings — base weight (x1)
-            for heading in entry.summary_headings:
-                if query_lower in heading.lower():
-                    score += 1
-
-            if score > 0:
-                # Deterministic tie-break: (-score, path)
-                scored.append((score, entry.path, entry))
-
-        # Sort by (-score, path) for stable ordering
-        scored.sort(key=lambda x: (-x[0], x[1]))
-
-        results: list[dict] = []
-        for score, _, entry in scored[:max_results]:
-            results.append(
-                {
-                    "path": entry.path,
-                    "summary_preview": entry.summary_first_para[:MAX_PREVIEW_CHARS],
-                    "children": entry.children,
-                    "has_knowledge": entry.has_knowledge,
-                    "score": score,
-                }
-            )
-        return results
-
-
-# ---------------------------------------------------------------------------
 # Runtime state — initialised at server startup, not at import time
 # ---------------------------------------------------------------------------
 
@@ -383,45 +231,118 @@ def brain_sync_list(ctx: Context, filter_path: str | None = None) -> dict:
 @server.tool(
     name="brain_sync_add",
     description=(
-        "Register a URL for syncing to the brain. "
-        "Supports Confluence pages and Google Docs. "
-        "Set target_path to the knowledge subfolder (e.g. 'initiatives/my-project')."
+        "Register a URL for syncing or add a local file to the brain. "
+        "For URLs: supports Confluence pages and Google Docs — registers for ongoing sync. "
+        "For files: one-time placement into knowledge/. Save attachments to a temp file first. "
+        "target_path is required — call suggest_placement first to determine it, "
+        "present the candidates to the user, and use their chosen path. "
+        "copy defaults to true for files (safe for temp files)."
     ),
 )
 def brain_sync_add(
     ctx: Context,
-    url: str,
+    source: str,
     target_path: str,
     include_links: bool = False,
     include_children: bool = False,
     include_attachments: bool = False,
+    copy: bool = True,
 ) -> dict:
-    """Register a source URL for syncing."""
+    """Register a source URL for syncing or add a local file."""
+    import shutil
+
+    from brain_sync.commands.placement import SourceKind, classify_source
+
     rt = _runtime(ctx)
+
     try:
-        result = add_source(
-            root=rt.root,
-            url=url,
-            target_path=target_path,
-            include_links=include_links,
-            include_children=include_children,
-            include_attachments=include_attachments,
-        )
-        return {"status": "ok", **asdict(result)}
-    except SourceAlreadyExistsError as e:
-        return {
-            "status": "error",
-            "error": "source_already_exists",
-            "canonical_id": e.canonical_id,
-            "source_url": e.source_url,
-            "target_path": e.target_path,
-        }
+        source_kind = classify_source(source)
     except UnsupportedSourceError:
+        return {"status": "error", "error": "unsupported_source", "source": source}
+
+    # --- URL branch ---
+    if source_kind == SourceKind.URL:
+        if copy is not True:
+            # copy param is file-only but we silently ignore it for URLs
+            pass
+        try:
+            result = add_source(
+                root=rt.root,
+                url=source,
+                target_path=target_path,
+                include_links=include_links,
+                include_children=include_children,
+                include_attachments=include_attachments,
+            )
+            return {"status": "ok", **asdict(result)}
+        except SourceAlreadyExistsError as e:
+            return {
+                "status": "error",
+                "error": "source_already_exists",
+                "canonical_id": e.canonical_id,
+                "source_url": e.source_url,
+                "target_path": e.target_path,
+            }
+        except UnsupportedSourceError:
+            return {"status": "error", "error": "unsupported_url", "source": source}
+
+    # --- File branch ---
+    if include_links or include_children or include_attachments:
         return {
             "status": "error",
-            "error": "unsupported_url",
-            "url": url,
+            "error": "invalid_flags",
+            "message": "--include-links/children/attachments can only be used with URLs",
         }
+
+    file_path = Path(source).resolve()
+    if not file_path.exists():
+        return {"status": "error", "error": "file_not_found", "source": source}
+
+    if file_path.suffix.lower() == ".pdf":
+        return {
+            "status": "error",
+            "error": "unsupported_file_type",
+            "message": "Unsupported: .pdf — use brain-sync convert first",
+        }
+
+    supported = {".md", ".txt", ".docx"}
+    if file_path.suffix.lower() not in supported:
+        return {
+            "status": "error",
+            "error": "unsupported_file_type",
+            "message": f"Unsupported: {file_path.suffix} (supported: {', '.join(sorted(supported))})",
+        }
+
+    # Resolve destination with collision handling
+    dest_dir = rt.root / "knowledge" / target_path
+    dest = dest_dir / file_path.name
+    if dest.exists():
+        stem = dest.stem
+        suffix = dest.suffix
+        resolved = None
+        for i in range(2, 11):
+            candidate = dest_dir / f"{stem}-{i}{suffix}"
+            if not candidate.exists():
+                resolved = candidate
+                break
+        if resolved is None:
+            return {
+                "status": "error",
+                "error": "collision",
+                "message": f"File exists and all numeric suffixes taken: {file_path.name}",
+            }
+        dest = resolved
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if copy:
+        shutil.copy2(str(file_path), str(dest))
+        action = "copied"
+    else:
+        shutil.move(str(file_path), str(dest))
+        action = "moved"
+
+    rel = normalize_path(dest.relative_to(rt.root))
+    return {"status": "ok", "action": action, "path": rel}
 
 
 @server.tool(
@@ -540,6 +461,57 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
                     # some non-RegenFailed errors may not be.
                     "retryable": not isinstance(e, RegenFailed),
                 }
+
+
+# ---------------------------------------------------------------------------
+# Placement suggestion tool
+# ---------------------------------------------------------------------------
+
+
+@server.tool(
+    name="brain_sync_suggest_placement",
+    description=(
+        "Suggest brain areas for placing a new document. "
+        "Pass the document title (or filename) and optionally an excerpt. "
+        "Use subtree to restrict suggestions to a specific area. "
+        "Always present the returned candidates to the user as a numbered list "
+        "and let them choose before calling brain_sync_add."
+    ),
+)
+def brain_sync_suggest_placement(
+    ctx: Context,
+    document_title: str,
+    document_excerpt: str = "",
+    subtree: str | None = None,
+    max_results: int = 5,
+) -> dict:
+    """Suggest placement areas for a new document."""
+    rt = _runtime(ctx)
+    index = _get_index(rt)
+    result = suggest_placement(
+        index,
+        document_title=document_title,
+        document_excerpt=document_excerpt,
+        subtree=subtree,
+        max_results=max_results,
+    )
+
+    response: dict = {
+        "status": "ok",
+        "candidates": [{"path": c.path, "score": c.score, "reasoning": c.reasoning} for c in result.candidates],
+        "query_terms": result.query_terms,
+        "total_areas": result.total_areas,
+    }
+
+    if not result.candidates:
+        response["hint"] = "No matching areas. Consider creating a new area."
+
+    log.debug(
+        "brain_sync_suggest_placement(title=%r) → %d candidates",
+        document_title,
+        len(result.candidates),
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------

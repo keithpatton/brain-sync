@@ -16,6 +16,7 @@ from brain_sync.commands import (
     SourceNotFoundError,
     UpdateResult,
     add_source,
+    check_source_exists,
     init_brain,
     list_sources,
     move_source,
@@ -96,6 +97,19 @@ class TestResolveRoot:
 
         result = _require_root(explicit)
         assert result == explicit.resolve()
+
+
+class TestCheckSourceExists:
+    def test_found(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        err = check_source_exists(brain, CONFLUENCE_URL)
+        assert err is not None
+        assert isinstance(err, SourceAlreadyExistsError)
+        assert err.canonical_id == CONFLUENCE_CID
+
+    def test_not_found(self, brain):
+        result = check_source_exists(brain, CONFLUENCE_URL)
+        assert result is None
 
 
 class TestAddSource:

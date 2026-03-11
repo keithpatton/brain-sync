@@ -35,18 +35,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # --- add ---
-    p_add = sub.add_parser("add", help="Register a source URL for syncing")
+    p_add = sub.add_parser("add", help="Add a URL or local file to the brain")
     p_add.add_argument(
         "--root",
         type=Path,
         default=None,
         help="Brain root directory (auto-detected from config if omitted)",
     )
-    p_add.add_argument("url", help="Source URL (Confluence page, Google Doc)")
-    p_add.add_argument("--path", dest="target_path", required=True, help="Target path relative to knowledge/")
+    p_add.add_argument("source", help="Source URL or local file path")
+    p_add.add_argument("--path", dest="target_path", default=None, help="Target path relative to knowledge/")
     p_add.add_argument("--include-links", action="store_true", help="Discover and sync linked pages")
     p_add.add_argument("--include-children", action="store_true", help="Discover and sync child pages")
     p_add.add_argument("--include-attachments", action="store_true", help="Discover and sync attachments")
+    p_add.add_argument("--copy", action="store_true", help="Copy instead of move (local files only)")
+    p_add.add_argument("--dry-run", action="store_true", help="Show suggestions without making changes")
+    p_add.add_argument("--subtree", default=None, help="Restrict placement suggestions to this subtree")
 
     # --- remove ---
     p_remove = sub.add_parser("remove", help="Unregister a sync source")
@@ -90,9 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
     p_update.add_argument("source", help="Canonical ID or URL of the source to update")
-    p_update.add_argument("--include-links", action=BooleanOptionalAction, default=None, help="Discover and sync linked pages")
-    p_update.add_argument("--include-children", action=BooleanOptionalAction, default=None, help="Discover and sync child pages")
-    p_update.add_argument("--include-attachments", action=BooleanOptionalAction, default=None, help="Discover and sync attachments")
+    p_update.add_argument(
+        "--include-links",
+        action=BooleanOptionalAction,
+        default=None,
+        help="Discover and sync linked pages",
+    )
+    p_update.add_argument(
+        "--include-children",
+        action=BooleanOptionalAction,
+        default=None,
+        help="Discover and sync child pages",
+    )
+    p_update.add_argument(
+        "--include-attachments",
+        action=BooleanOptionalAction,
+        default=None,
+        help="Discover and sync attachments",
+    )
 
     # --- status ---
     p_status = sub.add_parser("status", help="Show daemon and sync status")
@@ -129,7 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub = p_config.add_subparsers(dest="config_source", help="Source to configure")
 
     p_config_confluence = config_sub.add_parser("confluence", help="Configure Confluence credentials")
-    p_config_confluence.add_argument("--domain", required=True, help="Confluence domain (e.g. yourcompany.atlassian.net)")
+    p_config_confluence.add_argument(
+        "--domain", required=True, help="Confluence domain (e.g. yourcompany.atlassian.net)"
+    )
     p_config_confluence.add_argument("--email", required=True, help="Confluence account email")
     p_config_confluence.add_argument("--token", required=True, help="Confluence API token")
 

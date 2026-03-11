@@ -21,7 +21,7 @@ All source lives under `src/brain_sync/`.
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
 | State | `state` | SQLite WAL persistence (sources, documents, relationships, insight state) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
-| Context | `context`, `context_index`, `link_rewriter` | Context discovery, area indexing, link rewriting |
+| Context | `context`, `context_index`, `link_rewriter`, `area_index` | Context discovery, area indexing, link rewriting |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
 | Watcher | `watcher` | Filesystem event monitoring, insight folder mirroring |
 
@@ -37,7 +37,7 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 **Interfaces** — MCP server exposes brain operations as tools over stdio; watcher monitors the filesystem and queues regen work.
 
-**Commands / CLI** — orchestrate core modules into user-facing operations. Commands are the public API consumed by both CLI handlers and MCP tools.
+**Commands / CLI** — orchestrate core modules into user-facing operations. Commands are the public API consumed by both CLI handlers and MCP tools. Includes `commands/placement.py` for source classification, document placement suggestions, and filename helpers (used by both `brain_sync_add`/`brain_sync_suggest_placement` MCP tools and `brain-sync add` CLI command).
 
 **Entry points** — `__main__` runs the daemon loop; `mcp` runs the FastMCP stdio server. Both wire together commands, scheduling, and interfaces.
 
@@ -73,6 +73,7 @@ Dependency direction rules are defined in `CLAUDE.md`.
 - **Atomic file writes** — `fileops.atomic_write_bytes` uses `os.fsync()` and directory fsync for crash safety (Phase A)
 - **Thread-safe config** — `config.py` uses `threading.Lock` for concurrent access from watcher thread (Phase A/B)
 - **Module-level side effects in `mcp.py`** — `resolve_root()` and `AreaIndex.build()` moved from import-time to server lifespan via `BrainRuntime` dataclass
+- **AreaIndex in entry point** — `AreaIndex` and `AreaIndexEntry` extracted from `mcp.py` (entry point) to `area_index.py` (core layer) so command modules can use the index without importing from an entry point
 - **State persistence coupling** — `state._connect` no longer imported by command modules; replaced with public API (`delete_source`, `update_source_flags`, `ensure_db`, `update_source_target_path`)
 - **Cache invalidation race** — `process_source()` in daemon loop now invalidates global context cache when `_core/` sources change, closing the race between sync writes and regen reads
 - **Dead alias** — `_find_all_content_paths` alias removed from `regen.py`; callers use `find_all_content_paths` from `fs_utils` directly

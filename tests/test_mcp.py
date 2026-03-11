@@ -159,6 +159,7 @@ def brain_with_many_children(brain_root: Path) -> Path:
     """Extend brain_root with 20+ child areas under initiatives/AAA."""
     for i in range(20):
         name = f"Child-{i:02d}"
+        (brain_root / "knowledge" / "initiatives" / "AAA" / name).mkdir(parents=True)
         (brain_root / "insights" / "initiatives" / "AAA" / name).mkdir(parents=True)
         (brain_root / "insights" / "initiatives" / "AAA" / name / "summary.md").write_text(
             f"# {name}\n\nSummary for {name}.",
@@ -249,13 +250,13 @@ class TestBrainSyncList:
 
 class TestBrainSyncAdd:
     @patch("brain_sync.mcp.add_source", return_value=SAMPLE_ADD_RESULT)
-    def test_add_success(self, mock_add, _dummy_root):
+    def test_add_url_success(self, mock_add, _dummy_root):
         from brain_sync.mcp import brain_sync_add
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
             ctx,
-            url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
+            source="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
             target_path="initiatives/test",
         )
         assert result["status"] == "ok"
@@ -266,13 +267,13 @@ class TestBrainSyncAdd:
         "brain_sync.mcp.add_source",
         side_effect=SourceAlreadyExistsError("confluence:12345", "https://example.com", "initiatives/test"),
     )
-    def test_add_duplicate(self, mock_add, _dummy_root):
+    def test_add_url_duplicate(self, mock_add, _dummy_root):
         from brain_sync.mcp import brain_sync_add
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
             ctx,
-            url="https://example.com",
+            source="https://example.com",
             target_path="initiatives/test",
         )
         assert result["status"] == "error"
@@ -283,18 +284,118 @@ class TestBrainSyncAdd:
         "brain_sync.mcp.add_source",
         side_effect=UnsupportedSourceError("https://bad-url.example.com"),
     )
-    def test_add_invalid_url(self, mock_add, _dummy_root):
+    def test_add_url_invalid(self, mock_add, _dummy_root):
         from brain_sync.mcp import brain_sync_add
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
             ctx,
-            url="https://bad-url.example.com",
+            source="https://bad-url.example.com",
             target_path="test",
         )
         assert result["status"] == "error"
         assert result["error"] == "unsupported_url"
-        assert result["url"] == "https://bad-url.example.com"
+
+
+class TestBrainSyncAddFile:
+    def test_add_file_copied(self, brain_root, tmp_path):
+        """File is copied to knowledge/ by default (MCP copy=True)."""
+        from brain_sync.mcp import brain_sync_add
+
+        src_file = tmp_path / "notes.md"
+        src_file.write_text("My notes content.", encoding="utf-8")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA")
+        assert result["status"] == "ok"
+        assert result["action"] == "copied"
+        assert "knowledge/initiatives/AAA/notes.md" in result["path"]
+        # Original file still exists (copy)
+        assert src_file.exists()
+        # Destination file exists
+        assert (brain_root / "knowledge" / "initiatives" / "AAA" / "notes.md").exists()
+
+    def test_add_file_moved(self, brain_root, tmp_path):
+        """File is moved when copy=False."""
+        from brain_sync.mcp import brain_sync_add
+
+        src_file = tmp_path / "notes.md"
+        src_file.write_text("My notes content.", encoding="utf-8")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA", copy=False)
+        assert result["status"] == "ok"
+        assert result["action"] == "moved"
+        # Original file gone
+        assert not src_file.exists()
+
+    def test_add_file_url_flags_rejected(self, brain_root, tmp_path):
+        """URL-only flags error when used with file source."""
+        from brain_sync.mcp import brain_sync_add
+
+        src_file = tmp_path / "notes.md"
+        src_file.write_text("content", encoding="utf-8")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(
+            ctx,
+            source=str(src_file),
+            target_path="test",
+            include_links=True,
+        )
+        assert result["status"] == "error"
+        assert result["error"] == "invalid_flags"
+
+    def test_add_file_pdf_rejected(self, brain_root, tmp_path):
+        """PDF files are explicitly rejected."""
+        from brain_sync.mcp import brain_sync_add
+
+        src_file = tmp_path / "doc.pdf"
+        src_file.write_bytes(b"fake pdf")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(ctx, source=str(src_file), target_path="test")
+        assert result["status"] == "error"
+        assert result["error"] == "unsupported_file_type"
+        assert ".pdf" in result["message"]
+
+    def test_add_file_collision_suffix(self, brain_root, tmp_path):
+        """Numeric suffix applied when destination exists."""
+        from brain_sync.mcp import brain_sync_add
+
+        # Create existing file at destination
+        dest_dir = brain_root / "knowledge" / "initiatives" / "AAA"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / "notes.md").write_text("existing", encoding="utf-8")
+
+        src_file = tmp_path / "notes.md"
+        src_file.write_text("new content", encoding="utf-8")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA")
+        assert result["status"] == "ok"
+        assert "notes-2.md" in result["path"]
+        assert (dest_dir / "notes-2.md").exists()
+
+    def test_add_file_not_found(self, brain_root):
+        """Non-existent file source returns error."""
+        from brain_sync.mcp import brain_sync_add
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(ctx, source="/nonexistent/path/doc.md", target_path="test")
+        assert result["status"] == "error"
+
+    def test_add_file_txt_supported(self, brain_root, tmp_path):
+        """Plain text files are supported."""
+        from brain_sync.mcp import brain_sync_add
+
+        src_file = tmp_path / "readme.txt"
+        src_file.write_text("plain text", encoding="utf-8")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA")
+        assert result["status"] == "ok"
+        assert (brain_root / "knowledge" / "initiatives" / "AAA" / "readme.txt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -466,8 +567,9 @@ class TestBrainSyncQuery:
         (root / "knowledge" / "_core").mkdir(parents=True)
         (root / "schemas").mkdir(parents=True)
         (root / "insights" / "_core").mkdir(parents=True)
-        # Create 60 areas
+        # Create 60 areas (both knowledge/ and insights/ so index + areas listing both work)
         for i in range(60):
+            (root / "knowledge" / f"area-{i:03d}").mkdir(parents=True)
             area = root / "insights" / f"area-{i:03d}"
             area.mkdir(parents=True)
             (area / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
@@ -809,14 +911,34 @@ class TestAreaIndex:
         from brain_sync.mcp import AreaIndex
 
         root = tmp_path / "brain"
-        (root / "insights" / "area-no-summary").mkdir(parents=True)
-        # No summary.md
+        (root / "knowledge" / "area-no-summary").mkdir(parents=True)
+        # No summary.md in insights/
 
         index = AreaIndex.build(root)
         assert len(index.entries) == 1
         entry = index.entries[0]
         assert entry.summary_first_para == ""
         assert entry.summary_headings == []
+
+    def test_journal_dirs_excluded(self, tmp_path):
+        """Journal directories (insights-only) are not indexed since AreaIndex walks knowledge/."""
+        from brain_sync.mcp import AreaIndex
+
+        root = tmp_path / "brain"
+        # Real knowledge area
+        (root / "knowledge" / "initiatives" / "project").mkdir(parents=True)
+        (root / "insights" / "initiatives" / "project").mkdir(parents=True)
+        (root / "insights" / "initiatives" / "project" / "summary.md").write_text("# Project", encoding="utf-8")
+        # Journal exists only in insights (not in knowledge)
+        (root / "insights" / "initiatives" / "project" / "journal" / "2026-03").mkdir(parents=True)
+        (root / "insights" / "initiatives" / "project" / "journal" / "2026-03" / "entry.md").write_text(
+            "Journal entry.", encoding="utf-8"
+        )
+
+        index = AreaIndex.build(root)
+        paths = [e.path for e in index.entries]
+        assert "initiatives/project" in paths
+        assert not any("journal" in p for p in paths)
 
     def test_staleness_detection(self, brain_root):
         """Index detects when summaries change."""
@@ -833,6 +955,84 @@ class TestAreaIndex:
         summary.write_text("# Updated\nNew content.", encoding="utf-8")
 
         assert index.is_stale(brain_root)
+
+
+# ---------------------------------------------------------------------------
+# Placement suggestion tool
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestPlacement:
+    def test_basic_suggestion(self, brain_root):
+        """Suggest placement returns candidates matching query terms."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(ctx, document_title="AAA platform architecture")
+        assert result["status"] == "ok"
+        assert len(result["candidates"]) > 0
+        assert result["query_terms"]
+        # AAA area should be in the top results
+        paths = [c["path"] for c in result["candidates"]]
+        assert any("AAA" in p for p in paths)
+
+    def test_no_matches(self, brain_root):
+        """Returns empty candidates with hint when nothing matches."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(ctx, document_title="zzzznonexistent")
+        assert result["status"] == "ok"
+        assert result["candidates"] == []
+        assert "hint" in result
+
+    def test_subtree_filter(self, brain_root):
+        """Subtree restricts results to paths under the prefix."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(
+            ctx,
+            document_title="AAA accounts",
+            subtree="initiatives/AAA",
+        )
+        assert result["status"] == "ok"
+        for c in result["candidates"]:
+            assert c["path"].startswith("initiatives/AAA")
+
+    def test_with_excerpt(self, brain_root):
+        """Excerpt provides additional search terms."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(
+            ctx,
+            document_title="meeting-notes",
+            document_excerpt="Discussion about the AAA platform microservices architecture",
+        )
+        assert result["status"] == "ok"
+        assert len(result["query_terms"]) > 1
+
+    def test_max_results_capped(self, brain_root):
+        """Max results is respected and capped at 10."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(ctx, document_title="AAA", max_results=1)
+        assert len(result["candidates"]) <= 1
+
+    def test_empty_brain(self, tmp_path):
+        """Empty brain returns no candidates."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        root = tmp_path / "empty-brain"
+        (root / "knowledge").mkdir(parents=True)
+        (root / "insights").mkdir(parents=True)
+        ctx = _make_ctx(root)
+        result = brain_sync_suggest_placement(ctx, document_title="anything")
+        assert result["status"] == "ok"
+        assert result["candidates"] == []
+        assert "hint" in result
 
 
 # ---------------------------------------------------------------------------

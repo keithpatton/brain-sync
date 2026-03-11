@@ -116,7 +116,13 @@ acme-brain/
       summary.md                        ← deployed by init
 ```
 
-**`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually.
+**`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually via `brain-sync add <file>`.
+
+Restrictions:
+- `_core/` is reserved for always-loaded global context (top-level only)
+- `_sync-context/` directories are managed by brain-sync — do not edit
+- Filenames starting with `_` or `.` are excluded from insight generation
+- Supported formats: `.md`, `.txt` (`.docx` via `brain-sync convert`)
 
 **`insights/`** is agent-owned. brain-sync triggers regeneration; the insights agent writes summaries and journal entries. Mirrors `knowledge/` 1:1.
 
@@ -163,7 +169,8 @@ Restart Claude Code/Desktop. The following tools become available:
 | Tool | Description |
 |------|-------------|
 | `brain_sync_list` | List registered sources (optional `filter_path`) |
-| `brain_sync_add` | Register a URL for syncing |
+| `brain_sync_add` | Register a URL for syncing or add a local file |
+| `brain_sync_suggest_placement` | Suggest brain areas for placing a new document |
 | `brain_sync_update` | Update settings for a source (pass only the flags to change) |
 | `brain_sync_remove` | Unregister a source |
 | `brain_sync_move` | Move a source to a new path |
@@ -187,7 +194,7 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 |---|---|
 | `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
 | `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <url> [--path <path>] [--include-links] [--include-children] [--include-attachments]` | Register a source for syncing |
+| `brain-sync add <source> [--path <path>] [--include-links] [--include-children] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a URL or local file to the brain (suggests placement when `--path` omitted) |
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |

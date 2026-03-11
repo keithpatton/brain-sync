@@ -99,6 +99,21 @@ def _resolve_source(state, source: str) -> str | None:
     return None
 
 
+def check_source_exists(root: Path, url: str) -> SourceAlreadyExistsError | None:
+    """Check if a source URL is already registered.
+
+    Returns a SourceAlreadyExistsError if the source exists, None otherwise.
+    Does not raise — caller decides how to handle the result.
+    """
+    stype = detect_source_type(url)
+    cid = canonical_id(stype, url)
+    state = load_state(root)
+    if cid in state.sources:
+        existing = state.sources[cid]
+        return SourceAlreadyExistsError(cid, existing.source_url, existing.target_path)
+    return None
+
+
 def add_source(
     root: Path | None = None,
     *,
@@ -116,13 +131,13 @@ def add_source(
     """
     root = _require_root(root)
 
+    existing = check_source_exists(root, url)
+    if existing is not None:
+        raise existing
+
     stype = detect_source_type(url)
     cid = canonical_id(stype, url)
-
     state = load_state(root)
-    if cid in state.sources:
-        existing = state.sources[cid]
-        raise SourceAlreadyExistsError(cid, existing.source_url, existing.target_path)
 
     state.sources[cid] = SourceState(
         canonical_id=cid,
