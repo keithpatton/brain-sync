@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -22,6 +23,20 @@ from brain_sync.sources.confluence.comments import fetch_structured_comments
 from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
+
+_AC_IMAGE_RE = re.compile(
+    r'<ac:image[^>]*>\s*<ri:attachment\s+ri:filename="([^"]+)"[^/]*/?\s*>\s*</ac:image>',
+    re.DOTALL,
+)
+
+
+def _preprocess_html(html: str) -> str:
+    """Convert Confluence-specific image tags to standard <img> before markdownify."""
+    return _AC_IMAGE_RE.sub(
+        lambda m: f'<img src="attachment-ref:{m.group(1)}" alt="{m.group(1)}">',
+        html,
+    )
+
 
 _auth_provider = ConfluenceAuthProvider()
 
@@ -72,6 +87,7 @@ class ConfluenceAdapter:
         page_id = extract_confluence_page_id(source_state.source_url)
         html, title, version = await fetch_page_body(page_id, auth, client)  # pyright: ignore[reportArgumentType]
         comments = await fetch_structured_comments(page_id, auth, client)  # pyright: ignore[reportArgumentType]
+        html = _preprocess_html(html)
         markdown = html_to_markdown(html)
 
         if version is not None:

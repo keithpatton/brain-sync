@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -87,12 +88,13 @@ async def process_source(
 
     # Context sync (capability-gated, stays in pipeline)
     rels = []
+    att_title_to_path: dict[str, str] = {}
     if caps.supports_context_sync and _has_context_flags(source_state) and root is not None and result.source_html:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
             from brain_sync.context import process_context
 
-            await process_context(
+            att_title_to_path = await process_context(
                 manifest_dir=target_dir,
                 entry_url=source_state.source_url,
                 primary_html=result.source_html,
@@ -119,6 +121,16 @@ async def process_source(
 
         cid_to_path = {r.canonical_id: f"./{r.local_path}" for r in rels}
         markdown = rewrite_links(markdown, cid_to_path)
+
+    # Resolve inline attachment image refs (attachment-ref:title → local path)
+    if att_title_to_path:
+
+        def _resolve_att(m: re.Match[str]) -> str:
+            title = m.group(2)
+            path = att_title_to_path.get(title)
+            return f"[{m.group(1)}](./{path})" if path else m.group(0)
+
+        markdown = re.sub(r"\[([^\]]*)\]\(attachment-ref:([^)]+)\)", _resolve_att, markdown)
 
     # Comments (generic, capability-gated)
     if caps.supports_comments and result.comments:

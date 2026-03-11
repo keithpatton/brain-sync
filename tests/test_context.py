@@ -135,6 +135,26 @@ class TestLocalPathForDoc:
         path = _local_path_for_doc(doc, tmp_path)
         assert path == "_sync-context/attachments/a789"
 
+    def test_attachment_with_query_params(self, tmp_path):
+        doc = DiscoveredDoc(
+            "confluence-attachment:111",
+            "url",
+            "GetClipboardImage.ashx?Id=aa01b5ea&DC=GAU3&pkey=test",
+            RelType.ATTACHMENT,
+        )
+        path = _local_path_for_doc(doc, tmp_path)
+        assert path == "_sync-context/attachments/a111-getclipboardimage.ashx"
+
+    def test_attachment_with_spaces(self, tmp_path):
+        doc = DiscoveredDoc(
+            "confluence-attachment:222",
+            "url",
+            "My Document (v2).pdf",
+            RelType.ATTACHMENT,
+        )
+        path = _local_path_for_doc(doc, tmp_path)
+        assert path == "_sync-context/attachments/a222-my-document-v2.pdf"
+
 
 class TestEnsureContextDirs:
     def test_creates_dirs(self, tmp_path):

@@ -22,6 +22,7 @@ from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import (
     SourceType,
     canonical_filename,
+    slugify,
     try_extract_confluence_page_id,
 )
 from brain_sync.state import (
@@ -279,7 +280,13 @@ def _local_path_for_doc(
     folder = RELTYPE_FOLDER[doc.relationship_type]
     if doc.relationship_type == RelType.ATTACHMENT:
         att_id = doc.canonical_id.split(":", 1)[1]
-        filename = f"a{att_id}-{doc.title}" if doc.title else f"a{att_id}"
+        if doc.title:
+            clean = doc.title.split("?")[0]  # strip query params
+            stem = Path(clean).stem
+            ext = Path(clean).suffix  # e.g. ".png", ".ashx"
+            filename = f"a{att_id}-{slugify(stem)}{ext}"
+        else:
+            filename = f"a{att_id}"
     else:
         page_id = doc.canonical_id.split(":", 1)[1]
         filename = canonical_filename(SourceType.CONFLUENCE, page_id, doc.title)
@@ -373,15 +380,17 @@ async def process_context(
     include_links: bool = False,
     include_children: bool = False,
     include_attachments: bool = False,
-) -> None:
+) -> dict[str, str]:
     """Run full discovery → reconciliation → sync cycle for context documents.
 
     Only called for primary sources declared in the manifest.
+    Returns a mapping of original attachment title → local_path for inline image resolution.
     """
     from brain_sync.context_index import generate_context_index
 
     now = datetime.now(UTC).isoformat()
     page_id = primary_canonical_id.split(":", 1)[1]
+    att_title_to_path: dict[str, str] = {}
 
     # Discover
     discovered: list[DiscoveredDoc] = []
@@ -449,6 +458,8 @@ async def process_context(
                     last_seen_utc=now,
                 ),
             )
+            if doc.relationship_type == RelType.ATTACHMENT and doc.title:
+                att_title_to_path[doc.title] = local_path
             log.info("Added context doc: %s → %s", doc.canonical_id, local_path)
         except Exception as e:
             log.warning("Failed to sync context doc %s: %s", doc.canonical_id, e)
@@ -471,6 +482,9 @@ async def process_context(
                     last_seen_utc=now,
                 ),
             )
+
+            if doc.relationship_type == RelType.ATTACHMENT and doc.title:
+                att_title_to_path[doc.title] = rel.local_path
 
             # Version check
             existing_doc = load_document(root, doc.canonical_id)
@@ -540,3 +554,5 @@ async def process_context(
         manifest_dir=manifest_dir,
         root=root,
     )
+
+    return att_title_to_path
