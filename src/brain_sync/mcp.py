@@ -494,6 +494,7 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
     description=(
         "Suggest brain areas for placing a new document. "
         "Pass the document title (or filename) and optionally an excerpt. "
+        "Alternatively pass source_url to auto-resolve the title (works for Google Docs). "
         "Use subtree to restrict suggestions to a specific area. "
         "Always present the returned candidates to the user as a numbered list "
         "and let them choose before calling brain_sync_add."
@@ -501,12 +502,22 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
 )
 def brain_sync_suggest_placement(
     ctx: Context,
-    document_title: str,
+    document_title: str = "",
     document_excerpt: str = "",
+    source_url: str | None = None,
     subtree: str | None = None,
     max_results: int = 5,
 ) -> dict:
     """Suggest placement areas for a new document."""
+    # Title resolution: explicit title wins, else resolve from URL
+    if not document_title and source_url:
+        from brain_sync.sources.title_resolution import resolve_source_title_sync
+
+        document_title = resolve_source_title_sync(source_url) or ""
+
+    if not document_title:
+        return {"status": "error", "error": "no_title", "message": "Provide document_title or source_url"}
+
     rt = _runtime(ctx)
     index = _get_index(rt)
     result = suggest_placement(
@@ -517,11 +528,24 @@ def brain_sync_suggest_placement(
         max_results=max_results,
     )
 
+    # Compute canonical filename when source_url is available
+    suggested_filename: str | None = None
+    if source_url:
+        try:
+            from brain_sync.sources import canonical_filename, detect_source_type, extract_id
+
+            st = detect_source_type(source_url)
+            did = extract_id(st, source_url)
+            suggested_filename = canonical_filename(st, did, document_title)
+        except Exception:
+            pass  # best-effort
+
     response: dict = {
         "status": "ok",
         "candidates": [{"path": c.path, "score": c.score, "reasoning": c.reasoning} for c in result.candidates],
         "query_terms": result.query_terms,
         "total_areas": result.total_areas,
+        "suggested_filename": suggested_filename,
     }
 
     if not result.candidates:

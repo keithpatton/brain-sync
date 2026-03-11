@@ -83,19 +83,6 @@ def extract_file_excerpt(path: Path, limit: int = 500) -> str:
     return ""
 
 
-def slugify_title(title: str) -> str:
-    """Generate a filename-safe slug from a title.
-
-    Lowercase, replace spaces/special chars with hyphens, collapse
-    repeated hyphens, strip leading/trailing hyphens.
-    """
-    slug = title.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = re.sub(r"-+", "-", slug)
-    slug = slug.strip("-")
-    return slug
-
-
 @dataclass
 class PlacementSelection:
     """Structured return from interactive placement."""

@@ -476,3 +476,57 @@ class TestConfigureGoogledocs:
         provider = GoogleDocsAuthProvider()
         with pytest.raises(NotImplementedError):
             provider.configure()
+
+
+class TestFetchDocTitle:
+    async def test_success_returns_title(self):
+        from brain_sync.sources.googledocs.rest import fetch_doc_title
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"title": "My Doc"}
+        mock_response.raise_for_status = MagicMock()
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_doc_title("abc123", auth, client)
+        assert result == "My Doc"
+        client.get.assert_called_once()
+        call_kwargs = client.get.call_args
+        assert "docs.googleapis.com/v1/documents/abc123" in call_kwargs.args[0]
+
+    async def test_404_returns_none(self):
+        import httpx
+
+        from brain_sync.sources.googledocs.rest import fetch_doc_title
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found", request=MagicMock(), response=mock_response
+        )
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_doc_title("missing123", auth, client)
+        assert result is None
+
+    async def test_network_error_returns_none(self):
+        import httpx
+
+        from brain_sync.sources.googledocs.rest import fetch_doc_title
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError("connection refused")
+
+        result = await fetch_doc_title("abc123", auth, client)
+        assert result is None

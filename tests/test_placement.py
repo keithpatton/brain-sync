@@ -20,7 +20,6 @@ from brain_sync.commands.placement import (
     classify_source,
     extract_file_excerpt,
     extract_title_from_url,
-    slugify_title,
     suggest_placement,
 )
 from brain_sync.sources import UnsupportedSourceError
@@ -351,28 +350,3 @@ class TestExtractFileExcerpt:
         f = tmp_path / "data.csv"
         f.write_text("a,b,c", encoding="utf-8")
         assert extract_file_excerpt(f) == ""
-
-
-# ---------------------------------------------------------------------------
-# slugify_title tests
-# ---------------------------------------------------------------------------
-
-
-class TestSlugifyTitle:
-    def test_spaces_to_hyphens(self):
-        assert slugify_title("API Gateway Design") == "api-gateway-design"
-
-    def test_special_chars_stripped(self):
-        assert slugify_title("API / Gateway -- Design!") == "api-gateway-design"
-
-    def test_lowercase(self):
-        assert slugify_title("HELLO WORLD") == "hello-world"
-
-    def test_repeated_hyphens_collapsed(self):
-        assert slugify_title("a --- b") == "a-b"
-
-    def test_leading_trailing_hyphens_stripped(self):
-        assert slugify_title("--hello--") == "hello"
-
-    def test_empty_string(self):
-        assert slugify_title("") == ""

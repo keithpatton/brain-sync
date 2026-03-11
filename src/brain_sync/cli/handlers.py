@@ -186,7 +186,6 @@ def handle_add(args) -> None:
         classify_source,
         extract_file_excerpt,
         extract_title_from_url,
-        slugify_title,
     )
     from brain_sync.commands.sources import SourceAlreadyExistsError, add_source
     from brain_sync.sources import UnsupportedSourceError
@@ -234,9 +233,14 @@ def handle_add(args) -> None:
     # --- URL branch ---
     if source_kind == SourceKind.URL:
         if args.target_path is None:
-            # Interactive placement for URLs
-            title = extract_title_from_url(args.source) or "Untitled"
-            filename = slugify_title(title) + ".md"
+            # Interactive placement for URLs — resolve real title for Google Docs
+            from brain_sync.sources import canonical_filename, detect_source_type, extract_id
+            from brain_sync.sources.title_resolution import resolve_source_title_sync
+
+            title = resolve_source_title_sync(args.source) or extract_title_from_url(args.source) or "Untitled"
+            source_type = detect_source_type(args.source)
+            doc_id = extract_id(source_type, args.source)
+            filename = canonical_filename(source_type, doc_id, title)
             subtree = args.subtree
             if subtree is None:
                 subtree = _detect_subtree(root)

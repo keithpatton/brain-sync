@@ -85,6 +85,34 @@ async def fetch_doc_html(
     return response.text
 
 
+async def fetch_doc_title(
+    doc_id: str, auth: GoogleOAuthCredentials | _GcloudFallbackCredentials, client: httpx.AsyncClient
+) -> str | None:
+    """Fetch Google Doc title via Docs API v1 (lightweight metadata only).
+
+    Uses the Docs API rather than Drive API because shared docs that haven't
+    been added to "My Drive" are invisible to the Drive API but accessible
+    via the Docs API with documents.readonly scope.
+    """
+    token = await auth.get_token()
+    url = f"https://docs.googleapis.com/v1/documents/{doc_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"fields": "title"}
+    try:
+        response = await client.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        return response.json().get("title")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            log.debug("Google Doc not found (no access?): %s", doc_id)
+        else:
+            log.debug("Docs API title fetch failed for %s: %s", doc_id, e)
+        return None
+    except httpx.HTTPError:
+        log.debug("Docs API title fetch failed for %s", doc_id, exc_info=True)
+        return None
+
+
 def extract_title_from_html(html: str) -> str | None:
     """Extract <title> from Google Docs HTML export."""
     from selectolax.parser import HTMLParser

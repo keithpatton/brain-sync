@@ -15,7 +15,6 @@ from brain_sync.commands.placement import (
     classify_source,
     extract_file_excerpt,
     extract_title_from_url,
-    slugify_title,
     suggest_placement,
 )
 from brain_sync.commands.sources import (
@@ -62,7 +61,6 @@ __all__ = [
     "reconcile_sources",
     "remove_source",
     "resolve_root",
-    "slugify_title",
     "suggest_placement",
     "update_skill",
     "update_source",

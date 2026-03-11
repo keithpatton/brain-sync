@@ -1077,6 +1077,102 @@ class TestSuggestPlacement:
         assert result["candidates"] == []
         assert "hint" in result
 
+    def test_source_url_resolves_title(self, brain_root):
+        """source_url without document_title triggers title resolution."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        with patch(
+            "brain_sync.sources.title_resolution.resolve_source_title_sync",
+            return_value="AAA platform architecture",
+        ) as mock_resolve:
+            result = brain_sync_suggest_placement(
+                ctx,
+                source_url="https://docs.google.com/document/d/abc123/edit",
+            )
+        mock_resolve.assert_called_once_with("https://docs.google.com/document/d/abc123/edit")
+        assert result["status"] == "ok"
+        assert len(result["candidates"]) > 0
+
+    def test_document_title_wins_over_source_url(self, brain_root):
+        """Explicit document_title takes precedence over source_url."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        with patch(
+            "brain_sync.sources.title_resolution.resolve_source_title_sync",
+        ) as mock_resolve:
+            result = brain_sync_suggest_placement(
+                ctx,
+                document_title="AAA platform",
+                source_url="https://docs.google.com/document/d/abc123/edit",
+            )
+        mock_resolve.assert_not_called()
+        assert result["status"] == "ok"
+
+    def test_no_title_no_url_returns_error(self, brain_root):
+        """Neither document_title nor source_url returns error."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(ctx)
+        assert result["status"] == "error"
+        assert result["error"] == "no_title"
+
+    def test_source_url_resolution_failure_returns_error(self, brain_root):
+        """source_url that can't be resolved returns error."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        with patch(
+            "brain_sync.sources.title_resolution.resolve_source_title_sync",
+            return_value=None,
+        ):
+            result = brain_sync_suggest_placement(
+                ctx,
+                source_url="https://docs.google.com/document/d/abc123/edit",
+            )
+        assert result["status"] == "error"
+        assert result["error"] == "no_title"
+
+    def test_suggested_filename_with_source_url(self, brain_root):
+        """source_url triggers canonical filename in response."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        with patch(
+            "brain_sync.sources.title_resolution.resolve_source_title_sync",
+            return_value="AAA platform architecture",
+        ):
+            result = brain_sync_suggest_placement(
+                ctx,
+                source_url="https://docs.google.com/document/d/abc123/edit",
+            )
+        assert result["status"] == "ok"
+        assert result["suggested_filename"] == "gabc123-aaa-platform-architecture.md"
+
+    def test_suggested_filename_none_without_source_url(self, brain_root):
+        """No source_url means suggested_filename is None."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(ctx, document_title="AAA platform")
+        assert result["status"] == "ok"
+        assert result["suggested_filename"] is None
+
+    def test_suggested_filename_confluence(self, brain_root):
+        """Confluence source_url produces c-prefixed filename."""
+        from brain_sync.mcp import brain_sync_suggest_placement
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_suggest_placement(
+            ctx,
+            document_title="AAA platform",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/12345/AAA+Platform",
+        )
+        assert result["status"] == "ok"
+        assert result["suggested_filename"] == "c12345-aaa-platform.md"
+
 
 # ---------------------------------------------------------------------------
 # fs_utils
