@@ -455,6 +455,30 @@ def handle_update(args) -> None:
     )
 
 
+def handle_reconcile(args) -> None:
+    from brain_sync.commands.sources import reconcile_sources
+
+    try:
+        result = reconcile_sources(root=_get_root(args))
+    except BrainNotFoundError:
+        log.exception("Cannot resolve brain root")
+        sys.exit(1)
+
+    if not result.updated and not result.not_found:
+        log.info("All sources are at their expected paths. Nothing to reconcile.")
+        return
+
+    for entry in result.updated:
+        log.info("Updated %s: knowledge/%s -> knowledge/%s", entry.canonical_id, entry.old_path, entry.new_path)
+
+    if result.not_found:
+        log.warning("%d source(s) could not be found on disk:", len(result.not_found))
+        for cid in result.not_found:
+            log.warning("  %s", cid)
+
+    log.info("Reconciled %d source(s). %d unchanged.", len(result.updated), result.unchanged)
+
+
 def handle_status(args) -> None:
     log.info("Status not yet implemented")
 
@@ -550,17 +574,25 @@ def handle_convert(args) -> None:
 
 def handle_config(args) -> None:
     if not args.config_source:
-        log.error("Specify a source to configure. Available: confluence")
+        log.error("Specify a source to configure. Available: confluence, googledocs")
         sys.exit(1)
 
-    from brain_sync.commands.config import configure_confluence
-
     if args.config_source == "confluence":
+        from brain_sync.commands.config import configure_confluence
+
         configure_confluence(
             domain=args.domain,
             email=args.email,
             token=args.token,
         )
+    elif args.config_source == "googledocs":
+        from brain_sync.commands.config import configure_googledocs
+
+        if not configure_googledocs(
+            client_secrets=str(args.client_secrets) if getattr(args, "client_secrets", None) else None,
+            reauth=getattr(args, "reauth", False),
+        ):
+            sys.exit(1)
 
 
 def handle_update_skill(args) -> None:

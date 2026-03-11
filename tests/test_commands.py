@@ -10,6 +10,7 @@ from brain_sync.commands import (
     AddResult,
     BrainNotFoundError,
     MoveResult,
+    ReconcileResult,
     RemoveResult,
     SourceAlreadyExistsError,
     SourceInfo,
@@ -20,6 +21,7 @@ from brain_sync.commands import (
     init_brain,
     list_sources,
     move_source,
+    reconcile_sources,
     remove_source,
     resolve_root,
     update_skill,
@@ -48,6 +50,9 @@ CONFLUENCE_CID = "confluence:12345"
 
 CONFLUENCE_URL_2 = "https://example.atlassian.net/wiki/spaces/TEAM/pages/67890/Other-Page"
 CONFLUENCE_CID_2 = "confluence:67890"
+
+CONFLUENCE_URL_3 = "https://example.atlassian.net/wiki/spaces/TEAM/pages/11111/Third-Page"
+CONFLUENCE_CID_3 = "confluence:11111"
 
 
 class TestResolveRoot:
@@ -311,6 +316,152 @@ class TestUpdateSource:
 
         result = update_source(root=brain, source=CONFLUENCE_CID)
         assert result.include_links is True
+
+
+class TestReconcileSources:
+    def test_no_changes_when_files_at_expected_path(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        (brain / "knowledge" / "project" / "c12345-test-page.md").write_text("content")
+
+        result = reconcile_sources(root=brain)
+        assert isinstance(result, ReconcileResult)
+        assert result.updated == []
+        assert result.not_found == []
+
+    def test_updates_path_when_file_moved(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old-path")
+        # Create file at old path, then move it
+        (brain / "knowledge" / "old-path" / "c12345-test-page.md").write_text("content")
+        (brain / "knowledge" / "new-path").mkdir(parents=True)
+        (brain / "knowledge" / "old-path" / "c12345-test-page.md").rename(
+            brain / "knowledge" / "new-path" / "c12345-test-page.md"
+        )
+
+        result = reconcile_sources(root=brain)
+        assert len(result.updated) == 1
+        assert result.updated[0].canonical_id == CONFLUENCE_CID
+        assert result.updated[0].old_path == "old-path"
+        assert result.updated[0].new_path == "new-path"
+
+        # DB should be updated
+        sources = list_sources(root=brain)
+        assert sources[0].target_path == "new-path"
+
+    def test_handles_move_to_nested_path(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="flat")
+        (brain / "knowledge" / "flat" / "c12345-test-page.md").write_text("content")
+        (brain / "knowledge" / "confluence" / "team").mkdir(parents=True)
+        (brain / "knowledge" / "flat" / "c12345-test-page.md").rename(
+            brain / "knowledge" / "confluence" / "team" / "c12345-test-page.md"
+        )
+
+        result = reconcile_sources(root=brain)
+        assert len(result.updated) == 1
+        assert result.updated[0].new_path == "confluence/team"
+
+    def test_not_found_when_file_missing(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        # Don't create any file — source has no file on disk
+
+        result = reconcile_sources(root=brain)
+        assert result.updated == []
+        assert result.not_found == [CONFLUENCE_CID]
+
+    def test_multiple_sources_mixed(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old-a")
+        add_source(root=brain, url=CONFLUENCE_URL_2, target_path="old-b")
+
+        # Move first source, leave second missing
+        (brain / "knowledge" / "old-a" / "c12345-test-page.md").write_text("content")
+        (brain / "knowledge" / "new-a").mkdir(parents=True)
+        (brain / "knowledge" / "old-a" / "c12345-test-page.md").rename(
+            brain / "knowledge" / "new-a" / "c12345-test-page.md"
+        )
+
+        result = reconcile_sources(root=brain)
+        assert len(result.updated) == 1
+        assert result.updated[0].canonical_id == CONFLUENCE_CID
+        assert CONFLUENCE_CID_2 in result.not_found
+
+    def test_noop_when_no_sources(self, brain):
+        result = reconcile_sources(root=brain)
+        assert result.updated == []
+        assert result.not_found == []
+
+    def test_bare_prefix_file_found(self, brain):
+        """Files without a title slug (e.g. c12345.md) are also discovered."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old")
+        (brain / "knowledge" / "moved").mkdir(parents=True)
+        (brain / "knowledge" / "moved" / "c12345.md").write_text("content")
+
+        result = reconcile_sources(root=brain)
+        assert len(result.updated) == 1
+        assert result.updated[0].new_path == "moved"
+
+    def test_no_update_when_same_path(self, brain):
+        """If the file is found in same dir as target_path, no update needed."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        # File is where it should be — just with a different name variant
+        (brain / "knowledge" / "project" / "c12345.md").write_text("content")
+
+        result = reconcile_sources(root=brain)
+        assert result.updated == []
+        assert result.not_found == []
+
+    def test_folder_rename_multiple_sources(self, brain):
+        """Renaming a folder updates all sources that shared the same target_path."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old-team")
+        add_source(root=brain, url=CONFLUENCE_URL_2, target_path="old-team")
+        add_source(root=brain, url=CONFLUENCE_URL_3, target_path="old-team")
+
+        # Create files in old-team, then rename the folder
+        old_dir = brain / "knowledge" / "old-team"
+        old_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "c12345-test-page.md").write_text("content a")
+        (old_dir / "c67890-other-page.md").write_text("content b")
+        (old_dir / "c11111-third-page.md").write_text("content c")
+
+        new_dir = brain / "knowledge" / "new-team"
+        old_dir.rename(new_dir)
+
+        result = reconcile_sources(root=brain)
+        assert len(result.updated) == 3
+        updated_cids = {e.canonical_id for e in result.updated}
+        assert updated_cids == {CONFLUENCE_CID, CONFLUENCE_CID_2, CONFLUENCE_CID_3}
+        for entry in result.updated:
+            assert entry.old_path == "old-team"
+            assert entry.new_path == "new-team"
+
+    def test_unchanged_count(self, brain):
+        """unchanged count reflects sources found at expected path."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        add_source(root=brain, url=CONFLUENCE_URL_2, target_path="project")
+        (brain / "knowledge" / "project" / "c12345-test-page.md").write_text("content")
+        (brain / "knowledge" / "project" / "c67890-other-page.md").write_text("content")
+
+        result = reconcile_sources(root=brain)
+        assert result.unchanged == 2
+        assert result.updated == []
+        assert result.not_found == []
+
+    def test_unchanged_count_with_mixed_results(self, brain):
+        """unchanged count works alongside updated and not_found."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="here")
+        add_source(root=brain, url=CONFLUENCE_URL_2, target_path="old")
+        add_source(root=brain, url=CONFLUENCE_URL_3, target_path="gone")
+
+        # First source at expected path (unchanged)
+        (brain / "knowledge" / "here" / "c12345-test-page.md").write_text("content")
+        # Second source moved (updated)
+        (brain / "knowledge" / "moved").mkdir(parents=True)
+        (brain / "knowledge" / "moved" / "c67890-other-page.md").write_text("content")
+        # Third source missing (not_found) — no file created
+
+        result = reconcile_sources(root=brain)
+        assert result.unchanged == 1
+        assert len(result.updated) == 1
+        assert result.updated[0].canonical_id == CONFLUENCE_CID_2
+        assert CONFLUENCE_CID_3 in result.not_found
 
 
 class TestInitBrain:

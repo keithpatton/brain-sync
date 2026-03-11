@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
+from brain_sync.fileops import _canonical_prefix, rediscover_local_path
+from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import (
     SourceState,
@@ -326,3 +328,80 @@ def update_source(
         include_children=ss.include_children,
         include_attachments=ss.include_attachments,
     )
+
+
+@dataclass
+class ReconcileEntry:
+    canonical_id: str
+    old_path: str
+    new_path: str
+
+
+@dataclass
+class ReconcileResult:
+    updated: list[ReconcileEntry]
+    not_found: list[str]
+    unchanged: int
+
+
+def reconcile_sources(root: Path | None = None) -> ReconcileResult:
+    """Update target_path for sources whose files have been moved on disk.
+
+    Scans knowledge/ for each source's canonical-prefix file.  If the file
+    is no longer at the expected target_path but is found elsewhere, the DB
+    is updated to match.
+    """
+    root = _require_root(root)
+    state = load_state(root)
+    knowledge_root = root / "knowledge"
+
+    updated: list[ReconcileEntry] = []
+    not_found: list[str] = []
+    unchanged_count = 0
+
+    for cid, ss in state.sources.items():
+        prefix = _canonical_prefix(cid)
+        expected_dir = knowledge_root / ss.target_path if ss.target_path else knowledge_root
+
+        # Check if a file with this prefix exists at the expected location
+        found_at_expected = False
+        if expected_dir.is_dir():
+            for p in expected_dir.iterdir():
+                if p.is_file() and p.name.startswith(prefix):
+                    found_at_expected = True
+                    break
+            # Also check bare prefix (titleless docs)
+            if not found_at_expected:
+                bare = prefix.rstrip("-")
+                if bare != prefix:
+                    for p in expected_dir.iterdir():
+                        if p.is_file() and p.name.startswith(bare):
+                            found_at_expected = True
+                            break
+
+        if found_at_expected:
+            unchanged_count += 1
+            continue
+
+        # File not at expected location — search all of knowledge/
+        found = rediscover_local_path(knowledge_root, cid)
+        if found is None:
+            not_found.append(cid)
+            continue
+
+        # Compute new target_path relative to knowledge/
+        new_target = normalize_path(found.parent.relative_to(knowledge_root))
+        old_target = ss.target_path
+
+        if new_target != old_target:
+            update_source_target_path(root, cid, new_target)
+            ss.target_path = new_target
+            updated.append(
+                ReconcileEntry(
+                    canonical_id=cid,
+                    old_path=old_target,
+                    new_path=new_target,
+                )
+            )
+
+    return ReconcileResult(updated=updated, not_found=not_found, unchanged=unchanged_count)

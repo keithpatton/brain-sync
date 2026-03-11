@@ -1,11 +1,17 @@
+"""Google Docs REST client — fetch via HTML export with OAuth2 or gcloud auth."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import shutil
 import sys
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from brain_sync.sources.googledocs.auth import GoogleOAuthCredentials, _GcloudFallbackCredentials
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +28,6 @@ def _gcloud_cmd() -> str:
     if sys.platform == "win32":
         cmd = shutil.which("gcloud.cmd") or shutil.which("gcloud")
         if cmd is None:
-            # Check standard Windows install locations
             import os
 
             for base in [
@@ -65,12 +70,11 @@ async def _get_access_token() -> str:
     return token
 
 
-async def googledocs_fetch(doc_id: str, client: httpx.AsyncClient) -> str:
-    """Fetch Google Doc as HTML via the export endpoint with gcloud auth.
-
-    Returns raw HTML string.
-    """
-    token = await _get_access_token()
+async def fetch_doc_html(
+    doc_id: str, auth: GoogleOAuthCredentials | _GcloudFallbackCredentials, client: httpx.AsyncClient
+) -> str:
+    """Fetch Google Doc as HTML via export endpoint."""
+    token = await auth.get_token()
     url = f"https://docs.google.com/document/d/{doc_id}/export?format=html"
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -78,5 +82,16 @@ async def googledocs_fetch(doc_id: str, client: httpx.AsyncClient) -> str:
         response.raise_for_status()
     except httpx.HTTPError as e:
         raise FetchError(f"Google Docs fetch failed for {doc_id}: {e}") from e
-
     return response.text
+
+
+def extract_title_from_html(html: str) -> str | None:
+    """Extract <title> from Google Docs HTML export."""
+    from selectolax.parser import HTMLParser
+
+    tree = HTMLParser(html)
+    tag = tree.css_first("title")
+    if not tag or not tag.text():
+        return None
+    text = tag.text().strip()
+    return text or None

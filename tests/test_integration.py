@@ -1,9 +1,9 @@
-"""Integration test: full sync flow with mocked Confluence REST API.
+"""Integration test: full sync flow with mocked source adapter.
 
 Exercises:
 1. Start with empty root
 2. Register a source via SourceState
-3. Pipeline fetches content (mocked REST API)
+3. Pipeline fetches content (mocked adapter)
 4. Markdown file written to knowledge/<target_path>/
 5. State updated with correct fields
 6. Second run with unchanged content skips write
@@ -14,15 +14,22 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 import pytest
 
-from brain_sync.confluence_rest import ConfluenceAuth
+from brain_sync.converter import html_to_markdown
 from brain_sync.pipeline import process_source
 from brain_sync.scheduler import compute_interval
 from brain_sync.sources import canonical_id, detect_source_type
+from brain_sync.sources.base import (
+    Comment,
+    SourceCapabilities,
+    SourceFetchResult,
+    UpdateCheckResult,
+    UpdateStatus,
+)
 from brain_sync.state import (
     SourceState,
     SyncState,
@@ -42,28 +49,48 @@ FAKE_URL = f"https://test.atlassian.net/wiki/spaces/X/pages/{FAKE_PAGE_ID}/TestP
 
 FAKE_HTML_V1 = "<h1>Test Page</h1><p>Version one content.</p>"
 FAKE_HTML_V2 = "<h1>Test Page</h1><p>Version two content with changes.</p>"
-FAKE_COMMENTS_MD = "**Alice** (2026-01-01T00:00:00Z)\nGreat work!\n\n" "**Bob** (2026-01-02T00:00:00Z)\nNeeds review."
 
-FAKE_AUTH = ConfluenceAuth(
-    domain="test.atlassian.net",
-    email="test@example.com",
-    token="fake-token",
-)
+FAKE_AUTH = object()  # opaque auth behind adapter
 
 
-def _mock_rest(
-    html: str,
-    title: str = "TestPage",
-    version: int = 1,
-    comments: str | None = FAKE_COMMENTS_MD,
-):
-    """Create patches for REST API functions."""
-    return {
-        "get_confluence_auth": lambda: FAKE_AUTH,
-        "fetch_page_version": AsyncMock(return_value=version),
-        "fetch_page_body": AsyncMock(return_value=(html, title, version)),
-        "fetch_comments": AsyncMock(return_value=comments),
-    }
+def _mock_adapter(html, title="TestPage", version=1, comments=None):
+    """Create a mock adapter for integration tests."""
+    adapter = Mock()
+    adapter.capabilities = SourceCapabilities(
+        supports_version_check=True,
+        supports_comments=True,
+        supports_context_sync=True,
+        supports_children=True,
+        supports_links=True,
+        supports_attachments=True,
+    )
+    adapter.auth_provider = Mock()
+    adapter.auth_provider.load_auth.return_value = FAKE_AUTH
+
+    check_result = UpdateCheckResult(
+        status=UpdateStatus.CHANGED,
+        fingerprint=str(version),
+        title=title,
+        adapter_state={"version": str(version)},
+    )
+    adapter.check_for_update = AsyncMock(return_value=check_result)
+
+    comments_list = (
+        comments
+        if comments is not None
+        else [
+            Comment(author="Alice", created="2026-01-01T00:00:00Z", content="<p>Great work!</p>"),
+            Comment(author="Bob", created="2026-01-02T00:00:00Z", content="<p>Needs review.</p>"),
+        ]
+    )
+    fetch_result = SourceFetchResult(
+        body_markdown=html_to_markdown(html),
+        comments=comments_list,
+        metadata_fingerprint=str(version),
+        title=title,
+    )
+    adapter.fetch = AsyncMock(return_value=fetch_result)
+    return adapter
 
 
 class TestFullSyncFlow:
@@ -73,9 +100,9 @@ class TestFullSyncFlow:
     def root(self, tmp_path):
         return tmp_path / "sync-root"
 
-    def _run_with_mocks(self, source_state, root, html, version=1, comments=FAKE_COMMENTS_MD):
-        mocks = _mock_rest(html, version=version, comments=comments)
-        with patch.multiple("brain_sync.pipeline", **mocks):
+    def _run_with_mocks(self, source_state, root, html, version=1, comments=None):
+        adapter = _mock_adapter(html, version=version, comments=comments)
+        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
             return asyncio.run(process_source(source_state, httpx.AsyncClient(), root))
 
     def test_first_sync_creates_output(self, root):
@@ -193,8 +220,8 @@ class TestStatePersistenceRoundTrip:
             target_path=target_path,
         )
 
-        mocks = _mock_rest(FAKE_HTML_V1)
-        with patch.multiple("brain_sync.pipeline", **mocks):
+        adapter = _mock_adapter(FAKE_HTML_V1)
+        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
             asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         # Save state

@@ -17,7 +17,9 @@ All source lives under `src/brain_sync/`.
 |---|---|---|
 | Entry points | `__main__`, `mcp` | Daemon loop, MCP stdio server |
 | Commands / CLI | `commands/`, `cli/` | User-facing operations (add, remove, list, move, init) |
-| Sync pipeline | `pipeline`, `confluence_rest`, `converter`, `docx_converter`, `sources/` | Fetch, convert, and write knowledge files |
+| Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, and write knowledge files |
+| Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind `SourceAdapter` protocol |
+| REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + context) |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
 | State | `state` | SQLite WAL persistence (sources, documents, relationships, insight state) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
@@ -41,11 +43,54 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 **Entry points** — `__main__` runs the daemon loop; `mcp` runs the FastMCP stdio server. Both wire together commands, scheduling, and interfaces.
 
+### Startup Reconcile Lifecycle
+
+When `brain-sync run` starts, it reconciles offline filesystem changes before entering the sync loop:
+
+```
+reconcile_sources()  → scan knowledge/ for moved ID-anchored files, update sources.target_path
+load_state()         → read corrected DB state
+regen_session()      → acquire regen ownership
+RegenQueue()         → create queue, enqueue reconciled paths
+watcher.start()      → begin filesystem monitoring (after reconcile to avoid spurious events)
+sync loop            → normal operation
+```
+
+**Ownership model:**
+
+| Layer | Owner | Responsibility |
+|---|---|---|
+| `knowledge/` + `sources` table | sync / reconcile / watcher | Source-of-truth document locations |
+| `insights/` + `insight_state` table | regen | Derived artifacts from knowledge |
+
+Reconcile is a pure state-repair operation — it only updates `sources.target_path` in the DB. Regen detects path changes on its next run and rebuilds insights at the correct locations, cleaning up orphaned `insight_state` entries.
+
 ### Architectural Principles
 
 **Import purity** — Modules may define behavior at import time, but must not resolve environment-dependent runtime state at import time. Filesystem access, config resolution, and index construction must be deferred to explicit startup/lifespan hooks.
 
 **MCP runtime ownership** — `BrainRuntime` is the single owner of MCP process state (root path, area index, concurrency locks). Module-level variables in `mcp.py` must remain pure definitions (constants, helper functions, tool registrations). Any variable whose value depends on filesystem state, configuration, or runtime execution must live in `BrainRuntime`. Future contributors adding new runtime state (connections, caches, locks) must add it to `BrainRuntime`, not as a new module global.
+
+### Source Adapter Pattern
+
+The sync pipeline uses a `SourceAdapter` protocol (`sources/base.py`) to abstract per-source fetch logic. Each source type (Confluence, Google Docs) implements the protocol as a package under `sources/`.
+
+```
+sources/base.py        — SourceAdapter protocol, AuthProvider protocol, shared dataclasses
+sources/registry.py    — Lazy dict registry: get_adapter(SourceType) → SourceAdapter
+sources/confluence/    — ConfluenceAdapter (wraps confluence_rest.py)
+sources/googledocs/    — GoogleDocsAdapter (native OAuth2, gcloud fallback, HTML export)
+```
+
+**Key abstractions:**
+- `SourceCapabilities` — declares what a source supports (version check, comments, context sync, etc.)
+- `UpdateCheckResult` — cheap pre-fetch check; `adapter_state` passes opaque data to `fetch()` to avoid duplicate API calls
+- `SourceFetchResult` — full fetch result with markdown, comments, title, optional source HTML
+- `AuthProvider` — per-source auth (Confluence: config/env credentials; Google Docs: native OAuth2 with gcloud fallback)
+
+**Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Context sync and link rewriting remain in the pipeline (Confluence-specific, gated by `supports_context_sync`).
+
+**Registry:** Lazy instantiation with no startup wiring. Adapters are created on first access and cached. `reset_registry()` available for testing.
 
 ---
 
@@ -101,6 +146,7 @@ This roadmap is informational and guides future refactors.
 |---|---|---|
 | `scheduler._scheduled_keys` | `__main__.py` | Attribute access, not import |
 | `commands.context._require_root` | `commands/sources.py` | Intra-package (both in `commands/`) |
+| `confluence_rest._request` | `sources/confluence/comments.py` | Reuses REST client retry logic |
 
 ### Test code (acceptable)
 

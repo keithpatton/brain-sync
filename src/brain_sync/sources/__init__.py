@@ -80,6 +80,15 @@ def canonical_id(source_type: SourceType, url: str) -> str:
     raise UnsupportedSourceError(f"Cannot create canonical ID for: {url}")
 
 
+def extract_id(source_type: SourceType, url: str) -> str:
+    """Extract the document ID from a source URL."""
+    if source_type == SourceType.CONFLUENCE:
+        return extract_confluence_page_id(url)
+    if source_type == SourceType.GOOGLE_DOCS:
+        return extract_google_doc_id(url)
+    raise UnsupportedSourceError(f"Cannot extract ID for: {source_type}")
+
+
 def canonical_filename(source_type: SourceType, doc_id: str, title: str | None) -> str:
     """Generate an ID-anchored, title-decorated filename.
 

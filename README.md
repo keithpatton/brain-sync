@@ -26,7 +26,7 @@ Safe to run on an existing folder — only adds missing structure.
 
 ### Configure source credentials
 
-After initialising, configure credentials for each source type you want to sync from. Currently supported: Confluence.
+After initialising, configure credentials for each source type you want to sync from. Supported: Confluence and Google Docs.
 
 **Confluence** — create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then:
 
@@ -39,15 +39,37 @@ brain-sync config confluence \
 
 This writes credentials to `~/.brain-sync/config.json`. Alternatively, set environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`.
 
+**Google Docs** — requires OAuth2 client credentials:
+
+1. Create an OAuth 2.0 "Desktop app" credential in [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Enable the Google Drive API for your project
+3. Download the client secrets JSON
+4. Run:
+
+```bash
+brain-sync config googledocs --client-secrets path/to/client_secrets.json
+```
+
+This opens a browser for consent. The token is cached in `~/.brain-sync/google_token.json`.
+To re-authenticate: `brain-sync config googledocs --reauth`
+
+Alternatively, `gcloud auth login` works as a fallback if the [gcloud CLI](https://cloud.google.com/sdk) is installed.
+
 ### Add a source
 
 ```bash
+# Confluence page (with context discovery)
 brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
   --path initiatives/my-project \
   --include-links --include-children --include-attachments
+
+# Google Doc
+brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
 ```
 
 Sources are registered in SQLite — no manifest files needed.
+
+`--include-links`, `--include-children`, and `--include-attachments` are Confluence-only. Comments are synced for Confluence; Google Docs comments are not yet supported.
 
 ### Start the daemon
 
@@ -175,6 +197,7 @@ Restart Claude Code/Desktop. The following tools become available:
 | `brain_sync_update` | Update settings for a source (pass only the flags to change) |
 | `brain_sync_remove` | Unregister a source |
 | `brain_sync_move` | Move a source to a new path |
+| `brain_sync_reconcile` | Reconcile DB target paths with filesystem after offline moves |
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
 
 All tools return `{"status": "ok", ...}` on success or `{"status": "error", "error": "<type>", ...}` on failure.
@@ -200,8 +223,10 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
 | `brain-sync update <canonical-id-or-url> [--include-links\|--no-include-links] [--include-children\|--no-include-children] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
+| `brain-sync reconcile [--root <path>]` | Update DB target paths to match where files actually are on disk |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
 | `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
+| `brain-sync config googledocs [--client-secrets <path>] [--reauth]` | Configure Google Docs OAuth authentication |
 | `brain-sync convert <file> [--comments-from <docx>]` | Convert .docx to markdown, or append comments from .docx to .md |
 | `brain-sync update-skill` | Re-install skill and instruction files to `~/.claude/skills/brain-sync/` |
 
@@ -221,7 +246,7 @@ The daemon polls registered sources on an adaptive schedule:
 | 3+ weeks | 12 hours |
 | 3+ months | 24 hours |
 
-When content changes, the interval resets to 30 minutes. Each source gets a version check (REST API) before a full fetch, so unchanged pages are cheap.
+When content changes, the interval resets to 30 minutes. Confluence sources get a cheap version check (REST API) before a full fetch, so unchanged pages are fast. Google Docs does not support version checks — every sync does a full fetch via HTML export.
 
 ### Context discovery
 
@@ -291,6 +316,9 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
     "email": "you@example.com",
     "token": "your-api-token"
   },
+  "googledocs": {
+    "client_secrets_file": "/absolute/path/to/client_secrets.json"
+  },
   "regen": {
     "model": "claude-sonnet-4-6",
     "effort": "medium",
@@ -301,7 +329,7 @@ brain-sync stores configuration in `~/.brain-sync/config.json`:
 }
 ```
 
-The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `confluence` section stores Confluence REST API credentials (can also be set via `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` env vars). The `regen` section is optional — defaults are used if omitted.
+The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `confluence` section stores Confluence REST API credentials (can also be set via `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` env vars). The `googledocs` section stores the path to your OAuth client secrets JSON (token cached separately in `~/.brain-sync/google_token.json`). The `regen` section is optional — defaults are used if omitted.
 
 ## Converting .docx files
 
@@ -335,6 +363,36 @@ All synced files use ID-anchored filenames for stability across title changes:
 | Google Docs | `g{doc_id}-{slug}.md` | `g1A2B3C-product-prd.md` |
 | Attachments | `a{attachment_id}-{filename}` | `a456789-architecture-diagram.png` |
 
+## Offline knowledge management
+
+You own `knowledge/` — you can restructure it while the daemon is stopped and brain-sync will reconcile on next startup.
+
+### Safe offline operations
+
+| Action | Why it works |
+|---|---|
+| Move folders between areas | Reconcile detects files by ID-anchored filename |
+| Move individual files to different folders | Same — ID prefix enables rediscovery |
+| Delete synced files | Recreated on next sync (idempotent) |
+| Create your own files in `knowledge/` | Never touched by sync (no ID-anchor match) |
+| Rename files (keeping the ID prefix) | Rediscovery matches on prefix, e.g. `c12345-old.md` to `c12345-new-name.md` |
+
+### Operations that break things
+
+| Action | Why it breaks |
+|---|---|
+| Remove the ID prefix from a synced filename (e.g. `c12345-page.md` to `page.md`) | Reconcile cannot find it — file is orphaned, sync recreates a duplicate |
+| Edit synced file content | Synced files are managed artifacts — treat them as read-only. Next sync overwrites without merge or backup |
+| Move `_sync-context/` contents outside their parent folder | Relationship paths break, context is re-fetched from scratch |
+| Change the ID portion of a filename (e.g. `c12345` to `c99999`) | File becomes unfindable, orphaned |
+
+### How reconcile works
+
+- `brain-sync run` performs: reconcile, enqueue regen, sync, regen — so insights rebuild automatically in the same run after offline moves
+- `brain-sync reconcile` is available as a manual CLI command (updates the database only, does not trigger regen)
+- `brain_sync_reconcile` MCP tool is available from Claude (same — database only, no regen)
+- `insights/` is derived state managed by regen — reconcile updates source paths, then regen rebuilds insights at the correct locations and cleans up orphaned state
+
 ## State
 
 Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the brain root:
@@ -353,11 +411,11 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-432 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, and integration tests.
+593 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, source adapters, and integration tests.
 
 ## Supported sources
 
 | Source | Status | Auth |
 |---|---|---|
 | Confluence | Working | REST API (basic auth via config or env vars) |
-| Google Docs | Scaffolded | gcloud OAuth (pending setup) |
+| Google Docs | Working | Native OAuth2 (`--client-secrets`), gcloud CLI fallback |

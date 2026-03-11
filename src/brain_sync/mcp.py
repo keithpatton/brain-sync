@@ -31,6 +31,7 @@ from brain_sync.commands import (
     add_source,
     list_sources,
     move_source,
+    reconcile_sources,
     remove_source,
     resolve_root,
     update_source,
@@ -423,6 +424,26 @@ def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
             "error": "source_not_found",
             "source": source,
         }
+
+
+@server.tool(
+    name="brain_sync_reconcile",
+    description=(
+        "Reconcile DB target paths with the filesystem. "
+        "If files were moved manually in knowledge/, this updates the DB to match. "
+        "Also runs automatically on brain-sync run startup."
+    ),
+)
+def brain_sync_reconcile(ctx: Context) -> dict:
+    """Reconcile DB target paths with where files actually are on disk."""
+    rt = _runtime(ctx)
+    result = reconcile_sources(root=rt.root)
+    return {
+        "status": "ok",
+        "updated": [asdict(e) for e in result.updated],
+        "not_found": result.not_found,
+        "unchanged": result.unchanged,
+    }
 
 
 @server.tool(

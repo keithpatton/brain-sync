@@ -57,7 +57,23 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
+    from brain_sync.commands.sources import reconcile_sources
     from brain_sync.regen_lifecycle import regen_session
+
+    # Reconcile target_paths with filesystem before loading state for sync.
+    # This handles files moved while the daemon was not running.
+    # INVARIANT: reconcile must run before _ensure_source_states() because
+    # reconcile mutates sources.target_path in the DB and load_state() must
+    # read the corrected values.
+    reconcile_result = reconcile_sources(root)
+    if reconcile_result.updated:
+        for entry in reconcile_result.updated:
+            log.info(
+                "Reconciled %s: knowledge/%s -> knowledge/%s",
+                entry.canonical_id,
+                entry.old_path,
+                entry.new_path,
+            )
 
     state = load_state(root)
     scheduler = Scheduler()
@@ -66,12 +82,26 @@ async def run(root: Path) -> None:
     _ensure_source_states(state, scheduler)
     save_state(root, state)
 
-    watcher.start()
-
     last_rescan = time.monotonic()
 
     async with regen_session(root, reclaim_stale=True) as session:
         regen_queue = RegenQueue(root=root, owner_id=session.owner_id)
+
+        # Enqueue regen for paths updated by reconcile so insights rebuild
+        # automatically after offline moves.
+        if reconcile_result.updated:
+            for entry in reconcile_result.updated:
+                regen_queue.enqueue(entry.new_path)
+                # Invalidate global context cache if _core/ involved
+                for path in (entry.old_path, entry.new_path):
+                    if path == "_core" or path.startswith("_core/"):
+                        from brain_sync.regen import invalidate_global_context_cache
+
+                        invalidate_global_context_cache()
+                        break
+
+        # Start watcher after reconcile + enqueue to avoid spurious events
+        watcher.start()
 
         async with httpx.AsyncClient() as http_client:
             try:
@@ -162,6 +192,7 @@ def main() -> None:
         handle_init,
         handle_list,
         handle_move,
+        handle_reconcile,
         handle_regen,
         handle_remove,
         handle_run,
@@ -193,6 +224,7 @@ def main() -> None:
         "list": handle_list,
         "move": handle_move,
         "update": handle_update,
+        "reconcile": handle_reconcile,
         "status": handle_status,
         "regen": handle_regen,
         "config": handle_config,

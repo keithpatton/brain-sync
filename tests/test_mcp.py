@@ -18,11 +18,13 @@ import pytest
 from brain_sync.commands import (
     AddResult,
     MoveResult,
+    ReconcileResult,
     RemoveResult,
     SourceAlreadyExistsError,
     SourceInfo,
     SourceNotFoundError,
 )
+from brain_sync.commands.sources import ReconcileEntry
 from brain_sync.sources import UnsupportedSourceError
 
 pytestmark = pytest.mark.mcp
@@ -454,6 +456,47 @@ class TestBrainSyncMove:
         result = brain_sync_move(ctx, source="confluence:99999", to_path="x")
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Reconcile
+# ---------------------------------------------------------------------------
+
+SAMPLE_RECONCILE_RESULT = ReconcileResult(
+    updated=[ReconcileEntry(canonical_id="confluence:12345", old_path="old-team", new_path="new-team")],
+    not_found=["confluence:99999"],
+    unchanged=3,
+)
+
+
+class TestBrainSyncReconcile:
+    @patch("brain_sync.mcp.reconcile_sources", return_value=SAMPLE_RECONCILE_RESULT)
+    def test_reconcile_success(self, mock_reconcile, _dummy_root):
+        from brain_sync.mcp import brain_sync_reconcile
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_reconcile(ctx)
+        assert result["status"] == "ok"
+        assert len(result["updated"]) == 1
+        assert result["updated"][0]["canonical_id"] == "confluence:12345"
+        assert result["updated"][0]["old_path"] == "old-team"
+        assert result["updated"][0]["new_path"] == "new-team"
+        assert result["not_found"] == ["confluence:99999"]
+        assert result["unchanged"] == 3
+
+    @patch(
+        "brain_sync.mcp.reconcile_sources",
+        return_value=ReconcileResult(updated=[], not_found=[], unchanged=5),
+    )
+    def test_reconcile_noop(self, mock_reconcile, _dummy_root):
+        from brain_sync.mcp import brain_sync_reconcile
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_reconcile(ctx)
+        assert result["status"] == "ok"
+        assert result["updated"] == []
+        assert result["not_found"] == []
+        assert result["unchanged"] == 5
 
 
 # ---------------------------------------------------------------------------

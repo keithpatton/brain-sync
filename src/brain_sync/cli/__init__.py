@@ -112,6 +112,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Discover and sync attachments",
     )
 
+    # --- reconcile ---
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Update DB target paths to match where files actually are on disk",
+    )
+    p_reconcile.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+
     # --- status ---
     p_status = sub.add_parser("status", help="Show daemon and sync status")
     p_status.add_argument(
@@ -152,6 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_config_confluence.add_argument("--email", required=True, help="Confluence account email")
     p_config_confluence.add_argument("--token", required=True, help="Confluence API token")
+
+    p_config_googledocs = config_sub.add_parser("googledocs", help="Configure Google Docs OAuth authentication")
+    p_config_googledocs.add_argument("--client-secrets", type=Path, help="Path to OAuth client secrets JSON")
+    p_config_googledocs.add_argument("--reauth", action="store_true", help="Force re-authentication")
 
     # --- update-skill ---
     p_skill = sub.add_parser("update-skill", help="Update the installed skill and instructions")
