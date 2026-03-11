@@ -1,8 +1,13 @@
+import sys
+from pathlib import Path
+
 import pytest
 
 from brain_sync.fileops import (
+    atomic_write_bytes,
     content_hash,
     rediscover_local_path,
+    win_long_path,
     write_if_changed,
 )
 
@@ -94,3 +99,34 @@ class TestRediscoverLocalPath:
         d.mkdir()
         result = rediscover_local_path(tmp_path, "confluence:100")
         assert result is None
+
+
+class TestWinLongPath:
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_adds_prefix_on_windows(self, tmp_path):
+        p = tmp_path / "file.txt"
+        result = win_long_path(p)
+        assert str(result).startswith("\\\\?\\")
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_no_double_prefix(self, tmp_path):
+        p = tmp_path / "file.txt"
+        result = win_long_path(win_long_path(p))
+        assert str(result).count("\\\\?\\") == 1
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Non-Windows only")
+    def test_noop_on_non_windows(self, tmp_path):
+        p = tmp_path / "file.txt"
+        assert win_long_path(p) == p
+
+
+class TestAtomicWriteBytesLongPath:
+    def test_writes_to_deeply_nested_path(self, tmp_path):
+        """Ensure atomic_write_bytes works with long directory structures."""
+        # Build a path with many nested directories
+        deep = tmp_path
+        for i in range(15):
+            deep = deep / f"level-{i:02d}-with-a-longer-name"
+        target = deep / "output-file-with-a-very-long-descriptive-name.md"
+        atomic_write_bytes(target, b"hello world")
+        assert target.exists() or Path(str(win_long_path(target))).exists()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -17,14 +18,29 @@ KNOWLEDGE_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
 EXCLUDED_DIRS = frozenset({"_sync-context"})
 
 
+def win_long_path(p: Path) -> Path:
+    """On Windows, apply extended-length prefix to bypass MAX_PATH (260 chars).
+
+    Python's os.* functions support the ``\\\\?\\`` prefix natively.
+    On non-Windows platforms this is a no-op.
+    """
+    if sys.platform == "win32":
+        s = str(p.resolve())
+        if not s.startswith("\\\\?\\"):
+            return Path("\\\\?\\" + s)
+    return p
+
+
 def content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def atomic_write_bytes(target: Path, data: bytes) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
+    safe_parent = win_long_path(target.parent)
+    safe_target = win_long_path(target)
+    safe_parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        dir=target.parent,
+        dir=safe_parent,
         prefix=f".{target.name}.",
         suffix=".tmp",
     )
@@ -33,12 +49,12 @@ def atomic_write_bytes(target: Path, data: bytes) -> None:
         os.fsync(fd)
         os.close(fd)
         fd = -1
-        os.replace(tmp_path, target)
+        os.replace(tmp_path, safe_target)
         # Fsync parent directory to ensure the rename is durable.
         # On Windows, os.open on directories may fail — NTFS journaling
         # provides metadata durability anyway.
         try:
-            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+            dir_fd = os.open(str(safe_parent), os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
             finally:
@@ -56,8 +72,9 @@ def write_if_changed(target: Path, markdown: str) -> bool:
     encoded = markdown.encode("utf-8")
     new_hash = content_hash(encoded)
 
-    if target.exists():
-        old_hash = content_hash(target.read_bytes())
+    safe_target = win_long_path(target)
+    if safe_target.exists():
+        old_hash = content_hash(safe_target.read_bytes())
         if old_hash == new_hash:
             return False
 

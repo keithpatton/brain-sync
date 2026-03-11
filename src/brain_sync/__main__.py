@@ -158,7 +158,10 @@ async def run(root: Path) -> None:
                         scheduler.reschedule(key, interval)
                         ss.interval_seconds = interval
                         ss.next_check_utc = datetime.now(UTC).isoformat()
-                        save_state(root, state)
+                        try:
+                            save_state(root, state)
+                        except Exception:
+                            log.warning("Failed to save state (will retry next tick)", exc_info=True)
 
                     # 4. Process regen events
                     try:
@@ -179,7 +182,10 @@ async def run(root: Path) -> None:
 
             finally:
                 watcher.stop()
-                save_state(root, state)
+                try:
+                    save_state(root, state)
+                except Exception:
+                    log.error("Failed to save state on shutdown", exc_info=True)
                 log.info("brain-sync stopped")
 
 
