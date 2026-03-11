@@ -30,6 +30,7 @@ from brain_sync.regen import (
     _preprocess_content,
     _split_markdown_chunks,
     _write_journal_entry,
+    content_unchanged,
     folder_content_hash,
     invalidate_global_context_cache,
     regen_all,
@@ -142,6 +143,73 @@ class TestFolderContentHash:
         (folder / "b.md").write_text("new file", encoding="utf-8")
         h2 = folder_content_hash(folder)
         assert h1 != h2
+
+
+class TestContentUnchanged:
+    """Tests for the content_unchanged() guard used by the watcher."""
+
+    def test_false_when_no_insight_state(self, brain):
+        """Returns False when no prior insight state exists."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("hello", encoding="utf-8")
+        assert content_unchanged(brain, "area") is False
+
+    def test_false_when_dir_missing(self, brain):
+        """Returns False when knowledge directory doesn't exist."""
+        assert content_unchanged(brain, "nonexistent") is False
+
+    def test_true_when_hash_matches(self, brain):
+        """Returns True when content hash matches cached insight state."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("hello", encoding="utf-8")
+
+        # Compute hash the same way regen would
+        child_dirs = _get_child_dirs(kdir)
+        has_direct = True
+        child_summaries = _collect_child_summaries(brain, "area", child_dirs)
+        current_hash = _compute_hash(child_dirs, child_summaries, kdir, has_direct)
+
+        # Save insight state with that hash
+        istate = InsightState(knowledge_path="area", content_hash=current_hash)
+        save_insight_state(brain, istate)
+
+        assert content_unchanged(brain, "area") is True
+
+    def test_false_when_file_added(self, brain):
+        """Returns False when a new file is added after state was saved."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("hello", encoding="utf-8")
+
+        # Save state with current hash
+        child_dirs = _get_child_dirs(kdir)
+        child_summaries = _collect_child_summaries(brain, "area", child_dirs)
+        current_hash = _compute_hash(child_dirs, child_summaries, kdir, True)
+        istate = InsightState(knowledge_path="area", content_hash=current_hash)
+        save_insight_state(brain, istate)
+
+        # Add a new file — hash should differ
+        (kdir / "new.md").write_text("new content", encoding="utf-8")
+        assert content_unchanged(brain, "area") is False
+
+    def test_false_when_file_modified(self, brain):
+        """Returns False when file content changes after state was saved."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("original", encoding="utf-8")
+
+        # Save state with current hash
+        child_dirs = _get_child_dirs(kdir)
+        child_summaries = _collect_child_summaries(brain, "area", child_dirs)
+        current_hash = _compute_hash(child_dirs, child_summaries, kdir, True)
+        istate = InsightState(knowledge_path="area", content_hash=current_hash)
+        save_insight_state(brain, istate)
+
+        # Modify file content — hash should differ
+        (kdir / "doc.md").write_text("modified", encoding="utf-8")
+        assert content_unchanged(brain, "area") is False
 
 
 class TestTextSimilarity:

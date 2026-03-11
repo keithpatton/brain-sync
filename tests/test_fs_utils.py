@@ -31,6 +31,18 @@ class TestNormalizePath:
     def test_empty_string(self):
         assert normalize_path("") == ""
 
+    def test_trailing_slash_stripped(self):
+        assert normalize_path("some/path/") == "some/path"
+
+    def test_multiple_trailing_slashes(self):
+        assert normalize_path("some/path///") == "some/path"
+
+    def test_trailing_backslash_stripped(self):
+        assert normalize_path("some\\path\\") == "some/path"
+
+    def test_single_slash(self):
+        assert normalize_path("/") == ""
+
 
 class TestIsReadableFile:
     def test_markdown_file(self, tmp_path):

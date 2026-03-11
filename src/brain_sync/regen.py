@@ -1013,6 +1013,31 @@ def _compute_hash(
     return h.hexdigest()
 
 
+def content_unchanged(root: Path, knowledge_path: str) -> bool:
+    """Check if folder content hash matches cached insight state.
+
+    Used by the watcher to skip phantom filesystem events (e.g. Windows
+    Search Indexer touching access times without modifying content).
+    Reuses the same ``_compute_hash`` logic as :func:`regen_path`.
+    """
+    knowledge_dir = root / "knowledge" / knowledge_path if knowledge_path else root / "knowledge"
+    if not knowledge_dir.is_dir():
+        return False
+
+    istate = load_insight_state(root, knowledge_path)
+    if not istate or not istate.content_hash:
+        return False
+
+    child_dirs = _get_child_dirs(knowledge_dir)
+    has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
+    if not child_dirs and not has_direct_files:
+        return False
+
+    child_summaries = _collect_child_summaries(root, knowledge_path, child_dirs)
+    new_hash = _compute_hash(child_dirs, child_summaries, knowledge_dir, has_direct_files)
+    return istate.content_hash == new_hash
+
+
 async def regen_path(
     root: Path,
     knowledge_rel_path: str,

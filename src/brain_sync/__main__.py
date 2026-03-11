@@ -12,6 +12,7 @@ import httpx
 from brain_sync.fs_utils import normalize_path
 from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
+from brain_sync.regen import content_unchanged
 from brain_sync.regen_queue import RegenQueue
 from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval
 from brain_sync.state import (
@@ -115,6 +116,9 @@ async def run(root: Path) -> None:
                     if changed_paths:
                         for folder in changed_paths:
                             rel = _knowledge_rel_path(root, folder)
+                            if content_unchanged(root, rel):
+                                log.debug("Watcher event for %s ignored (content hash unchanged)", rel or "(root)")
+                                continue
                             log.info("Knowledge change detected: %s", rel or "(root)")
                             regen_queue.enqueue(rel)
 
