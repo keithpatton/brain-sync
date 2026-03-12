@@ -117,7 +117,7 @@ acme-brain/
         ERD/
           c123456-erd.md                ← synced from Confluence by brain-sync
           _attachments/                 ← auto-managed by brain-sync
-            123456/
+            c123456/
               a789-diagram.png
         Meetings/
           notes.md                      ← manually added by you
@@ -254,7 +254,7 @@ When a Confluence source has `--include-children` or `--include-attachments` ena
 | Flag | Discovers | Behaviour |
 |---|---|---|
 | `--include-children` | Direct child pages in the page tree | One-shot: children are added as independent primary sources on first sync, then the flag is cleared |
-| `--include-attachments` | Attached files (images, PDFs, etc.) | Stored in `_attachments/{page_id}/`, incrementally maintained |
+| `--include-attachments` | Attached files (images, PDFs, etc.) | Stored in `_attachments/{source_dir_id}/` (e.g. `c12345`), incrementally maintained |
 
 Use `--child-path` to control where discovered children are placed (default: a subfolder named after the parent page). Children become fully independent sources — they can be moved, removed, and have their own attachments.
 
