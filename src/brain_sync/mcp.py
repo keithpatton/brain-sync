@@ -299,14 +299,14 @@ def brain_sync_add(
     if not file_path.exists():
         return {"status": "error", "error": "file_not_found", "source": source}
 
-    if file_path.suffix.lower() == ".pdf":
+    if file_path.suffix.lower() in {".pdf", ".docx"}:
         return {
             "status": "error",
             "error": "unsupported_file_type",
-            "message": "Unsupported: .pdf — use brain-sync convert first",
+            "message": f"Unsupported: {file_path.suffix} — use brain-sync convert to produce markdown first",
         }
 
-    supported = {".md", ".txt", ".docx"}
+    supported = {".md", ".txt"}
     if file_path.suffix.lower() not in supported:
         return {
             "status": "error",

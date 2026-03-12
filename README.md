@@ -125,7 +125,7 @@ In Claude Desktop you can also attach a local document (drag-and-drop or the **+
 
 > "What gaps exist in the Project X documentation? What's been discussed but never written down?"
 
-**Examples — brain-augmented development (Claude Code's strength):**
+**Examples — brain-augmented development:**
 
 > "Compare the source code in src/ against the architectural standards and ERD in my brain — produce a compliance report with specific violations"
 
@@ -154,15 +154,25 @@ In Claude Desktop you can also attach a local document (drag-and-drop or the **+
 
 3. **Restart Claude Desktop.** Mention "brain" in conversation or paste URLs to sync.
 
+Claude Desktop adds project context and conversational memory on top of brain-sync, making interactions highly personalised. It also has the best UX for managing sources — paste URLs, attach files, or just describe what you want in natural language.
+
 **Examples — managing sources:**
 
 > "Add this to my brain in initiatives/platform" *(paste one or more URLs — brain-sync handles them together)*
 
 > "Sync this Google Doc and its attachments into the product area"
 
-> [Drag-and-drop a .docx or PDF] "Add this to my brain — suggest where it should go"
-
 > "Here are the five planning docs for Q3 — add them all under initiatives/q3-planning" *(attach multiple files at once)*
+
+**Examples — adding local files (Claude Desktop only):**
+
+Attach a `.md` or `.txt` file via the **+** button or drag-and-drop, then ask Claude to add it to your brain. Claude will suggest where to place it based on your existing folder structure.
+
+> [Attach meeting-notes.md] "Add this to my brain — suggest where it should go"
+
+> [Attach notes.txt] "Put this in initiatives/platform"
+
+Supported file types for local add: `.md`, `.txt`. Other formats (`.docx`, `.pdf`, images) are not currently supported — use `brain-sync convert` to produce markdown first. Images are synced automatically as attachments from Confluence and Google Docs sources.
 
 **Examples — conversational analysis:**
 
@@ -175,8 +185,6 @@ In Claude Desktop you can also attach a local document (drag-and-drop or the **+
 > "Compare the Q2 and Q3 planning docs in my brain — what commitments shifted and what's new?"
 
 > "Based on everything in my brain about the platform team, draft a stakeholder update email covering the last two weeks"
-
-> **Tip:** You can attach files or paste one or more URLs at once — brain-sync will handle them together, making it easy to add multiple sources in a single step.
 
 ## Folder structure
 

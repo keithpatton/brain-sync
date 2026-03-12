@@ -205,9 +205,9 @@ def handle_add(args) -> None:
         if not file_path.exists():
             log.error("File not found: %s", file_path)
             sys.exit(1)
-        supported = {".md", ".txt", ".docx"}
-        if file_path.suffix.lower() == ".pdf":
-            log.error("Unsupported: .pdf — use brain-sync convert first")
+        supported = {".md", ".txt"}
+        if file_path.suffix.lower() in {".pdf", ".docx"}:
+            log.error("Unsupported: %s — use brain-sync convert to produce markdown first", file_path.suffix)
             sys.exit(1)
         if file_path.suffix.lower() not in supported:
             log.error("Unsupported file type: %s (supported: %s)", file_path.suffix, ", ".join(sorted(supported)))
