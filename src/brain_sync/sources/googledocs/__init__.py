@@ -17,9 +17,10 @@ from brain_sync.sources.base import (
     UpdateStatus,
 )
 from brain_sync.sources.googledocs.rest import (
+    compute_semantic_fingerprint,
     extract_title_from_html,
+    fetch_doc_body,
     fetch_doc_html,
-    fetch_doc_metadata,
     fetch_doc_title,
 )
 from brain_sync.state import SourceState
@@ -54,19 +55,21 @@ class GoogleDocsAdapter:
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
         doc_id = extract_google_doc_id(source_state.source_url)
-        meta = await fetch_doc_metadata(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
-        if meta.revision_id is None:
-            return UpdateCheckResult(status=UpdateStatus.UNKNOWN)
-        status = (
-            UpdateStatus.UNCHANGED
-            if meta.revision_id == source_state.metadata_fingerprint
-            else UpdateStatus.CHANGED
-        )
+        title, text = await fetch_doc_body(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+        if text is None:
+            return UpdateCheckResult(status=UpdateStatus.UNKNOWN, title=title)
+        fingerprint = compute_semantic_fingerprint(text)
+        if fingerprint == source_state.metadata_fingerprint:
+            return UpdateCheckResult(
+                status=UpdateStatus.UNCHANGED,
+                fingerprint=fingerprint,
+                title=title,
+            )
         return UpdateCheckResult(
-            status=status,
-            fingerprint=meta.revision_id,
-            title=meta.title,
-            adapter_state={"revisionId": meta.revision_id},
+            status=UpdateStatus.CHANGED,
+            fingerprint=fingerprint,
+            title=title,
+            adapter_state={"semanticFingerprint": fingerprint, "title": title},
         )
 
     async def fetch(
@@ -81,12 +84,12 @@ class GoogleDocsAdapter:
         html = await fetch_doc_html(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         title = extract_title_from_html(html)
         if not title:
-            title = await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+            title = (prior_adapter_state or {}).get("title") or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         markdown = html_to_markdown(html)
-        rev_id = prior_adapter_state.get("revisionId") if prior_adapter_state else None
+        fingerprint = (prior_adapter_state or {}).get("semanticFingerprint")
         return SourceFetchResult(
             body_markdown=markdown,
             comments=[],
-            metadata_fingerprint=rev_id,
+            metadata_fingerprint=fingerprint,
             title=title,
         )

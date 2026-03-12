@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -14,6 +16,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 30.0
+
+SEMANTIC_FINGERPRINT_PREFIX = "gdocs:v1:"
 
 
 class FetchError(Exception):
@@ -61,6 +65,93 @@ async def fetch_doc_title(
     except httpx.HTTPError:
         log.debug("Docs API title fetch failed for %s", doc_id, exc_info=True)
         return None
+
+
+async def fetch_doc_body(
+    doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient
+) -> tuple[str | None, str | None]:
+    """Fetch Google Doc title and body text for semantic fingerprinting.
+
+    Returns (title, canonical_text) on success, (None, None) on any HTTP error.
+    Uses a tight field mask so only body content is returned (no rendered HTML).
+    """
+    token = await auth.get_token()
+    url = f"https://docs.googleapis.com/v1/documents/{doc_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {
+        "fields": (
+            "title,"
+            "body.content("
+            "paragraph(elements(textRun(content)),paragraphStyle(namedStyleType),bullet),"
+            "table(tableRows(tableCells(content(paragraph(elements(textRun(content)))))))"
+            ")"
+        )
+    }
+    try:
+        response = await client.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        doc = response.json()
+        title = doc.get("title")
+        canonical_text = extract_canonical_text(doc)
+        return title, canonical_text
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            log.debug("Google Doc not found (no access?): %s", doc_id)
+        else:
+            log.debug("Docs API body fetch failed for %s: %s", doc_id, e)
+        return None, None
+    except httpx.HTTPError:
+        log.debug("Docs API body fetch failed for %s", doc_id, exc_info=True)
+        return None, None
+
+
+def extract_canonical_text(doc: dict) -> str:
+    """Extract structured text from a Docs API document for semantic fingerprinting.
+
+    Walks body.content recursively, normalising whitespace.  Heading text is
+    prefixed with ``H:``, list items with ``LI:``, and table rows with ``T:``.
+    Formatting-only changes (bold, colour, font size) do not affect the output.
+    """
+    parts: list[str] = []
+    _walk_body(doc.get("body", {}).get("content", []), parts)
+    text = "\n".join(parts)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _walk_body(content: list[dict], parts: list[str]) -> None:
+    for element in content:
+        if "paragraph" in element:
+            para = element["paragraph"]
+            text = "".join(
+                e.get("textRun", {}).get("content", "") for e in para.get("elements", [])
+            ).strip()
+            if not text:
+                continue
+            style = para.get("paragraphStyle", {}).get("namedStyleType")
+            if style and style.startswith("HEADING"):
+                parts.append(f"H:{text}")
+            elif "bullet" in para:
+                parts.append(f"LI:{text}")
+            else:
+                parts.append(text)
+        elif "table" in element:
+            for row in element["table"].get("tableRows", []):
+                row_cells: list[str] = []
+                for cell in row.get("tableCells", []):
+                    cell_parts: list[str] = []
+                    _walk_body(cell.get("content", []), cell_parts)
+                    cell_text = " ".join(cell_parts).strip()
+                    if cell_text:
+                        row_cells.append(cell_text)
+                if row_cells:
+                    parts.append("T:" + "|".join(row_cells))
+
+
+def compute_semantic_fingerprint(text: str) -> str:
+    """Return a versioned SHA-256 fingerprint of canonical document text."""
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{SEMANTIC_FINGERPRINT_PREFIX}{digest}"
 
 
 @dataclass(frozen=True)

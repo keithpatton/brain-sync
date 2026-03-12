@@ -23,7 +23,13 @@ from brain_sync.sources.googledocs.auth import (
     _save_token,
     run_oauth_flow,
 )
-from brain_sync.sources.googledocs.rest import DocMetadata, FetchError, extract_title_from_html, fetch_doc_metadata
+from brain_sync.sources.googledocs.rest import (
+    FetchError,
+    compute_semantic_fingerprint,
+    extract_canonical_text,
+    extract_title_from_html,
+    fetch_doc_body,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -63,35 +69,55 @@ class TestCheckForUpdate:
             source_type="googledocs",
         )
 
-    async def test_returns_unchanged_when_revision_matches(self, adapter, source_state):
-        source_state.metadata_fingerprint = "rev-42"
-        meta = DocMetadata(title="My Doc", revision_id="rev-42")
-        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+    async def test_returns_unchanged_when_semantic_hash_matches(self, adapter, source_state):
+        text = "Hello world"
+        fingerprint = compute_semantic_fingerprint(text)
+        source_state.metadata_fingerprint = fingerprint
+        with patch(
+            "brain_sync.sources.googledocs.fetch_doc_body", new_callable=AsyncMock, return_value=("My Doc", text)
+        ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNCHANGED
-        assert result.fingerprint == "rev-42"
+        assert result.fingerprint == fingerprint
         assert result.title == "My Doc"
 
-    async def test_returns_changed_when_revision_differs(self, adapter, source_state):
-        source_state.metadata_fingerprint = "rev-41"
-        meta = DocMetadata(title="My Doc", revision_id="rev-42")
-        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+    async def test_returns_changed_when_semantic_hash_differs(self, adapter, source_state):
+        source_state.metadata_fingerprint = compute_semantic_fingerprint("old content")
+        with patch(
+            "brain_sync.sources.googledocs.fetch_doc_body",
+            new_callable=AsyncMock,
+            return_value=("My Doc", "new content"),
+        ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.CHANGED
-        assert result.fingerprint == "rev-42"
+        assert result.fingerprint == compute_semantic_fingerprint("new content")
 
     async def test_returns_changed_when_no_prior_fingerprint(self, adapter, source_state):
         source_state.metadata_fingerprint = None
-        meta = DocMetadata(title="My Doc", revision_id="rev-42")
-        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+        with patch(
+            "brain_sync.sources.googledocs.fetch_doc_body",
+            new_callable=AsyncMock,
+            return_value=("My Doc", "some content"),
+        ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.CHANGED
 
-    async def test_returns_unknown_when_revision_fetch_fails(self, adapter, source_state):
-        meta = DocMetadata(title=None, revision_id=None)
-        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+    async def test_returns_unknown_when_body_unavailable(self, adapter, source_state):
+        with patch("brain_sync.sources.googledocs.fetch_doc_body", new_callable=AsyncMock, return_value=(None, None)):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNKNOWN
+
+    async def test_adapter_state_contains_semantic_fingerprint(self, adapter, source_state):
+        source_state.metadata_fingerprint = None
+        with patch(
+            "brain_sync.sources.googledocs.fetch_doc_body",
+            new_callable=AsyncMock,
+            return_value=("My Doc", "content"),
+        ):
+            result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
+        assert result.adapter_state is not None
+        assert "semanticFingerprint" in result.adapter_state
+        assert result.adapter_state["semanticFingerprint"].startswith("gdocs:v1:")
 
 
 class TestFetch:
@@ -119,7 +145,7 @@ class TestFetch:
         assert result.metadata_fingerprint is None  # no prior_adapter_state
         assert result.source_html is None
 
-    async def test_fetch_returns_revision_as_fingerprint(self, adapter):
+    async def test_fetch_returns_semantic_fingerprint(self, adapter):
         from brain_sync.state import SourceState
 
         ss = SourceState(
@@ -129,11 +155,33 @@ class TestFetch:
         )
         fake_html = "<html><head><title>My Doc</title></head><body><p>Content</p></body></html>"
         with patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html):
-            result = await adapter.fetch(ss, Mock(), AsyncMock(), prior_adapter_state={"revisionId": "rev-42"})
+            result = await adapter.fetch(
+                ss, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v1:abc123"}
+            )
 
-        assert result.metadata_fingerprint == "rev-42"
+        assert result.metadata_fingerprint == "gdocs:v1:abc123"
 
-    async def test_fetch_falls_back_to_api_title_when_html_title_missing(self, adapter):
+    async def test_fetch_uses_title_from_adapter_state(self, adapter):
+        from brain_sync.state import SourceState
+
+        ss = SourceState(
+            canonical_id="gdoc:abc123",
+            source_url="https://docs.google.com/document/d/abc123/edit",
+            source_type="googledocs",
+        )
+        # HTML with no <title> tag — title should come from prior_adapter_state
+        fake_html = "<html><head></head><body><p>Content</p></body></html>"
+        with patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html):
+            result = await adapter.fetch(
+                ss,
+                Mock(),
+                AsyncMock(),
+                prior_adapter_state={"semanticFingerprint": "gdocs:v1:abc123", "title": "Adapter Title"},
+            )
+
+        assert result.title == "Adapter Title"
+
+    async def test_fetch_falls_back_to_api_title_when_no_adapter_state(self, adapter):
         from brain_sync.state import SourceState
 
         ss = SourceState(
@@ -183,6 +231,176 @@ class TestFetch:
         )
         with mock_fetch, pytest.raises(FetchError):
             await adapter.fetch(ss, Mock(), AsyncMock())
+
+
+class TestExtractCanonicalText:
+    def _make_doc(self, content: list[dict]) -> dict:
+        return {"body": {"content": content}}
+
+    def _para(self, text: str, style: str | None = None, bullet: bool = False) -> dict:
+        para: dict = {
+            "paragraph": {
+                "elements": [{"textRun": {"content": text}}],
+            }
+        }
+        if style:
+            para["paragraph"]["paragraphStyle"] = {"namedStyleType": style}
+        if bullet:
+            para["paragraph"]["bullet"] = {}
+        return para
+
+    def test_empty_body(self):
+        assert extract_canonical_text({}) == ""
+
+    def test_plain_paragraph(self):
+        doc = self._make_doc([self._para("Hello world")])
+        assert extract_canonical_text(doc) == "Hello world"
+
+    def test_heading_prefixed(self):
+        doc = self._make_doc([self._para("My Heading", style="HEADING_1")])
+        assert extract_canonical_text(doc) == "H:My Heading"
+
+    def test_list_item_prefixed(self):
+        doc = self._make_doc([self._para("List item", bullet=True)])
+        assert extract_canonical_text(doc) == "LI:List item"
+
+    def test_empty_paragraphs_skipped(self):
+        doc = self._make_doc([self._para("   "), self._para("Real content")])
+        assert extract_canonical_text(doc) == "Real content"
+
+    def test_table_row_prefixed(self):
+        doc = self._make_doc([
+            {
+                "table": {
+                    "tableRows": [
+                        {
+                            "tableCells": [
+                                {"content": [self._para("Cell A")]},
+                                {"content": [self._para("Cell B")]},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ])
+        assert extract_canonical_text(doc) == "T:Cell A|Cell B"
+
+    def test_whitespace_normalised(self):
+        doc = self._make_doc([self._para("Hello\n"), self._para("World\n")])
+        result = extract_canonical_text(doc)
+        assert "\n" not in result
+        assert "Hello" in result
+        assert "World" in result
+
+    def test_multiple_elements_in_paragraph(self):
+        para = {
+            "paragraph": {
+                "elements": [
+                    {"textRun": {"content": "Hello "}},
+                    {"textRun": {"content": "world"}},
+                ]
+            }
+        }
+        doc = self._make_doc([para])
+        assert extract_canonical_text(doc) == "Hello world"
+
+
+class TestComputeSemanticFingerprint:
+    def test_starts_with_version_prefix(self):
+        fp = compute_semantic_fingerprint("hello")
+        assert fp.startswith("gdocs:v1:")
+
+    def test_same_text_same_fingerprint(self):
+        assert compute_semantic_fingerprint("abc") == compute_semantic_fingerprint("abc")
+
+    def test_different_text_different_fingerprint(self):
+        assert compute_semantic_fingerprint("abc") != compute_semantic_fingerprint("xyz")
+
+    def test_fingerprint_is_deterministic(self):
+        import hashlib
+        text = "test content"
+        expected = "gdocs:v1:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        assert compute_semantic_fingerprint(text) == expected
+
+
+class TestFetchDocBody:
+    async def test_success_returns_title_and_text(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        doc = {
+            "title": "My Doc",
+            "body": {
+                "content": [
+                    {
+                        "paragraph": {
+                            "elements": [{"textRun": {"content": "Hello world"}}]
+                        }
+                    }
+                ]
+            },
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = doc
+        mock_response.raise_for_status = MagicMock()
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        title, text = await fetch_doc_body("abc123", auth, client)
+        assert title == "My Doc"
+        assert text is not None
+        assert "Hello world" in text
+        call_kwargs = client.get.call_args
+        assert "docs.googleapis.com/v1/documents/abc123" in call_kwargs.args[0]
+
+    async def test_404_returns_none_none(self):
+        import httpx
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found", request=MagicMock(), response=mock_response
+        )
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        title, text = await fetch_doc_body("missing123", auth, client)
+        assert title is None
+        assert text is None
+
+    async def test_network_error_returns_none_none(self):
+        import httpx
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError("connection refused")
+
+        title, text = await fetch_doc_body("abc123", auth, client)
+        assert title is None
+        assert text is None
+
+    async def test_field_mask_includes_body_content(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"title": "Doc", "body": {"content": []}}
+        mock_response.raise_for_status = MagicMock()
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        await fetch_doc_body("abc123", auth, client)
+        call_kwargs = client.get.call_args
+        params = call_kwargs.kwargs.get("params", {})
+        assert "body.content" in params.get("fields", "")
 
 
 class TestExtractTitleFromHtml:
@@ -574,54 +792,3 @@ class TestFetchDocTitle:
 
         result = await fetch_doc_title("abc123", auth, client)
         assert result is None
-
-
-class TestFetchDocMetadata:
-    async def test_success_returns_title_and_revision(self):
-        auth = AsyncMock()
-        auth.get_token.return_value = "test-token"
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"title": "My Doc", "revisionId": "rev-42"}
-        mock_response.raise_for_status = MagicMock()
-
-        client = AsyncMock()
-        client.get.return_value = mock_response
-
-        result = await fetch_doc_metadata("abc123", auth, client)
-        assert result.title == "My Doc"
-        assert result.revision_id == "rev-42"
-        client.get.assert_called_once()
-        call_kwargs = client.get.call_args
-        assert "docs.googleapis.com/v1/documents/abc123" in call_kwargs.args[0]
-
-    async def test_404_returns_none_fields(self):
-        import httpx
-
-        auth = AsyncMock()
-        auth.get_token.return_value = "test-token"
-
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Not Found", request=MagicMock(), response=mock_response
-        )
-
-        client = AsyncMock()
-        client.get.return_value = mock_response
-
-        result = await fetch_doc_metadata("missing123", auth, client)
-        assert result.title is None
-        assert result.revision_id is None
-
-    async def test_network_error_returns_none_fields(self):
-        import httpx
-
-        auth = AsyncMock()
-        auth.get_token.return_value = "test-token"
-
-        client = AsyncMock()
-        client.get.side_effect = httpx.ConnectError("connection refused")
-
-        result = await fetch_doc_metadata("abc123", auth, client)
-        assert result.title is None
-        assert result.revision_id is None
