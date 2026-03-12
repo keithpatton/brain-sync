@@ -25,10 +25,12 @@ from brain_sync.sources.googledocs.auth import (
 )
 from brain_sync.sources.googledocs.rest import (
     FetchError,
+    TabData,
+    TabsDocument,
     compute_semantic_fingerprint,
     extract_canonical_text,
     extract_title_from_html,
-    fetch_doc_body,
+    fetch_all_tabs,
 )
 
 pytestmark = pytest.mark.unit
@@ -69,12 +71,18 @@ class TestCheckForUpdate:
             source_type="googledocs",
         )
 
+    def _make_tabs_doc(self, title: str | None = "My Doc") -> TabsDocument:
+        return TabsDocument(
+            title=title,
+            tabs=[TabData(tab_id="t1", title="Main", body_content=[])],
+        )
+
     async def test_returns_unchanged_when_semantic_hash_matches(self, adapter, source_state):
-        text = "Hello world"
-        fingerprint = compute_semantic_fingerprint(text)
+        tabs_doc = self._make_tabs_doc()
+        fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
         source_state.metadata_fingerprint = fingerprint
         with patch(
-            "brain_sync.sources.googledocs.fetch_doc_body", new_callable=AsyncMock, return_value=("My Doc", text)
+            "brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNCHANGED
@@ -82,42 +90,54 @@ class TestCheckForUpdate:
         assert result.title == "My Doc"
 
     async def test_returns_changed_when_semantic_hash_differs(self, adapter, source_state):
-        source_state.metadata_fingerprint = compute_semantic_fingerprint("old content")
+        old_tabs_doc = TabsDocument(
+            title="My Doc",
+            tabs=[TabData(tab_id="t1", title="Main", body_content=[
+                {"paragraph": {"elements": [{"textRun": {"content": "old content"}}]}}
+            ])],
+        )
+        source_state.metadata_fingerprint = compute_semantic_fingerprint(extract_canonical_text(old_tabs_doc))
+        new_tabs_doc = TabsDocument(
+            title="My Doc",
+            tabs=[TabData(tab_id="t1", title="Main", body_content=[
+                {"paragraph": {"elements": [{"textRun": {"content": "new content"}}]}}
+            ])],
+        )
         with patch(
-            "brain_sync.sources.googledocs.fetch_doc_body",
+            "brain_sync.sources.googledocs.fetch_all_tabs",
             new_callable=AsyncMock,
-            return_value=("My Doc", "new content"),
+            return_value=new_tabs_doc,
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.CHANGED
-        assert result.fingerprint == compute_semantic_fingerprint("new content")
+        assert result.fingerprint == compute_semantic_fingerprint(extract_canonical_text(new_tabs_doc))
 
     async def test_returns_changed_when_no_prior_fingerprint(self, adapter, source_state):
         source_state.metadata_fingerprint = None
         with patch(
-            "brain_sync.sources.googledocs.fetch_doc_body",
+            "brain_sync.sources.googledocs.fetch_all_tabs",
             new_callable=AsyncMock,
-            return_value=("My Doc", "some content"),
+            return_value=self._make_tabs_doc(),
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.CHANGED
 
     async def test_returns_unknown_when_body_unavailable(self, adapter, source_state):
-        with patch("brain_sync.sources.googledocs.fetch_doc_body", new_callable=AsyncMock, return_value=(None, None)):
+        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=None):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNKNOWN
 
     async def test_adapter_state_contains_semantic_fingerprint(self, adapter, source_state):
         source_state.metadata_fingerprint = None
         with patch(
-            "brain_sync.sources.googledocs.fetch_doc_body",
+            "brain_sync.sources.googledocs.fetch_all_tabs",
             new_callable=AsyncMock,
-            return_value=("My Doc", "content"),
+            return_value=self._make_tabs_doc(),
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.adapter_state is not None
         assert "semanticFingerprint" in result.adapter_state
-        assert result.adapter_state["semanticFingerprint"].startswith("gdocs:v1:")
+        assert result.adapter_state["semanticFingerprint"].startswith("gdocs:v2:")
 
 
 class TestFetch:
@@ -125,17 +145,33 @@ class TestFetch:
     def adapter(self):
         return GoogleDocsAdapter()
 
-    async def test_fetch_returns_correct_result(self, adapter):
+    @pytest.fixture
+    def source_state(self):
         from brain_sync.state import SourceState
 
-        ss = SourceState(
+        return SourceState(
             canonical_id="gdoc:abc123",
             source_url="https://docs.google.com/document/d/abc123/edit",
             source_type="googledocs",
         )
-        fake_html = "<html><head><title>My Doc</title></head><body><h1>Hello</h1><p>World</p></body></html>"
-        with patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html):
-            result = await adapter.fetch(ss, Mock(), AsyncMock())
+
+    def _make_tabs_doc(self, title: str | None = "My Doc") -> TabsDocument:
+        return TabsDocument(
+            title=title,
+            tabs=[TabData(
+                tab_id="t1",
+                title="Main",
+                body_content=[
+                    {"paragraph": {"elements": [{"textRun": {"content": "Hello"}}]}},
+                    {"paragraph": {"elements": [{"textRun": {"content": "World"}}]}},
+                ],
+            )],
+        )
+
+    async def test_fetch_returns_correct_result(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc()
+        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
+            result = await adapter.fetch(source_state, Mock(), AsyncMock())
 
         assert isinstance(result, SourceFetchResult)
         assert "Hello" in result.body_markdown
@@ -145,97 +181,59 @@ class TestFetch:
         assert result.metadata_fingerprint is None  # no prior_adapter_state
         assert result.source_html is None
 
-    async def test_fetch_returns_semantic_fingerprint(self, adapter):
-        from brain_sync.state import SourceState
-
-        ss = SourceState(
-            canonical_id="gdoc:abc123",
-            source_url="https://docs.google.com/document/d/abc123/edit",
-            source_type="googledocs",
-        )
-        fake_html = "<html><head><title>My Doc</title></head><body><p>Content</p></body></html>"
-        with patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html):
+    async def test_fetch_returns_semantic_fingerprint(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc()
+        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
             result = await adapter.fetch(
-                ss, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v1:abc123"}
+                source_state, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v2:abc123"}
             )
 
-        assert result.metadata_fingerprint == "gdocs:v1:abc123"
+        assert result.metadata_fingerprint == "gdocs:v2:abc123"
 
-    async def test_fetch_uses_title_from_adapter_state(self, adapter):
-        from brain_sync.state import SourceState
-
-        ss = SourceState(
-            canonical_id="gdoc:abc123",
-            source_url="https://docs.google.com/document/d/abc123/edit",
-            source_type="googledocs",
-        )
-        # HTML with no <title> tag — title should come from prior_adapter_state
-        fake_html = "<html><head></head><body><p>Content</p></body></html>"
-        with patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html):
+    async def test_fetch_uses_title_from_adapter_state(self, adapter, source_state):
+        # tabs_doc.title is None — title should come from prior_adapter_state
+        tabs_doc = self._make_tabs_doc(title=None)
+        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
             result = await adapter.fetch(
-                ss,
+                source_state,
                 Mock(),
                 AsyncMock(),
-                prior_adapter_state={"semanticFingerprint": "gdocs:v1:abc123", "title": "Adapter Title"},
+                prior_adapter_state={"semanticFingerprint": "gdocs:v2:abc123", "title": "Adapter Title"},
             )
 
         assert result.title == "Adapter Title"
 
-    async def test_fetch_falls_back_to_api_title_when_no_adapter_state(self, adapter):
-        from brain_sync.state import SourceState
-
-        ss = SourceState(
-            canonical_id="gdoc:abc123",
-            source_url="https://docs.google.com/document/d/abc123/edit",
-            source_type="googledocs",
-        )
-        # HTML with no <title> tag
-        fake_html = "<html><head></head><body><p>Content</p></body></html>"
+    async def test_fetch_falls_back_to_api_title_when_no_adapter_state(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc(title=None)
         with (
-            patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html),
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
             patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock, return_value="API Title"),
         ):
-            result = await adapter.fetch(ss, Mock(), AsyncMock())
+            result = await adapter.fetch(source_state, Mock(), AsyncMock())
 
         assert result.title == "API Title"
 
-    async def test_fetch_title_none_when_both_sources_fail(self, adapter):
-        from brain_sync.state import SourceState
-
-        ss = SourceState(
-            canonical_id="gdoc:abc123",
-            source_url="https://docs.google.com/document/d/abc123/edit",
-            source_type="googledocs",
-        )
-        fake_html = "<html><head></head><body><p>Content</p></body></html>"
+    async def test_fetch_title_none_when_both_sources_fail(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc(title=None)
         with (
-            patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html),
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
             patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock, return_value=None),
         ):
-            result = await adapter.fetch(ss, Mock(), AsyncMock())
+            result = await adapter.fetch(source_state, Mock(), AsyncMock())
 
         assert result.title is None
 
-    async def test_fetch_propagates_error(self, adapter):
-        from brain_sync.state import SourceState
-
-        ss = SourceState(
-            canonical_id="gdoc:abc123",
-            source_url="https://docs.google.com/document/d/abc123/edit",
-            source_type="googledocs",
-        )
-        mock_fetch = patch(
-            "brain_sync.sources.googledocs.fetch_doc_html",
-            new_callable=AsyncMock,
-            side_effect=FetchError("fail"),
-        )
-        with mock_fetch, pytest.raises(FetchError):
-            await adapter.fetch(ss, Mock(), AsyncMock())
+    async def test_fetch_propagates_error(self, adapter, source_state):
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=None),
+            pytest.raises(FetchError),
+        ):
+            await adapter.fetch(source_state, Mock(), AsyncMock())
 
 
 class TestExtractCanonicalText:
-    def _make_doc(self, content: list[dict]) -> dict:
-        return {"body": {"content": content}}
+    def _make_tabs_doc(self, content: list[dict]) -> TabsDocument:
+        return TabsDocument(title=None, tabs=[TabData(tab_id="t1", title="Tab 1", body_content=content)])
 
     def _para(self, text: str, style: str | None = None, bullet: bool = False) -> dict:
         para: dict = {
@@ -250,26 +248,32 @@ class TestExtractCanonicalText:
         return para
 
     def test_empty_body(self):
-        assert extract_canonical_text({}) == ""
+        doc = self._make_tabs_doc([])
+        result = extract_canonical_text(doc)
+        assert result == "TAB:Tab 1"
 
     def test_plain_paragraph(self):
-        doc = self._make_doc([self._para("Hello world")])
-        assert extract_canonical_text(doc) == "Hello world"
+        doc = self._make_tabs_doc([self._para("Hello world")])
+        result = extract_canonical_text(doc)
+        assert "Hello world" in result
 
     def test_heading_prefixed(self):
-        doc = self._make_doc([self._para("My Heading", style="HEADING_1")])
-        assert extract_canonical_text(doc) == "H:My Heading"
+        doc = self._make_tabs_doc([self._para("My Heading", style="HEADING_1")])
+        result = extract_canonical_text(doc)
+        assert "H:My Heading" in result
 
     def test_list_item_prefixed(self):
-        doc = self._make_doc([self._para("List item", bullet=True)])
-        assert extract_canonical_text(doc) == "LI:List item"
+        doc = self._make_tabs_doc([self._para("List item", bullet=True)])
+        result = extract_canonical_text(doc)
+        assert "LI:List item" in result
 
     def test_empty_paragraphs_skipped(self):
-        doc = self._make_doc([self._para("   "), self._para("Real content")])
-        assert extract_canonical_text(doc) == "Real content"
+        doc = self._make_tabs_doc([self._para("   "), self._para("Real content")])
+        result = extract_canonical_text(doc)
+        assert "Real content" in result
 
     def test_table_row_prefixed(self):
-        doc = self._make_doc([
+        doc = self._make_tabs_doc([
             {
                 "table": {
                     "tableRows": [
@@ -283,10 +287,11 @@ class TestExtractCanonicalText:
                 }
             }
         ])
-        assert extract_canonical_text(doc) == "T:Cell A|Cell B"
+        result = extract_canonical_text(doc)
+        assert "T:Cell A|Cell B" in result
 
     def test_whitespace_normalised(self):
-        doc = self._make_doc([self._para("Hello\n"), self._para("World\n")])
+        doc = self._make_tabs_doc([self._para("Hello\n"), self._para("World\n")])
         result = extract_canonical_text(doc)
         assert "\n" not in result
         assert "Hello" in result
@@ -301,14 +306,29 @@ class TestExtractCanonicalText:
                 ]
             }
         }
-        doc = self._make_doc([para])
-        assert extract_canonical_text(doc) == "Hello world"
+        doc = self._make_tabs_doc([para])
+        result = extract_canonical_text(doc)
+        assert "Hello world" in result
+
+    def test_multi_tab_canonical_text_includes_tab_prefix(self):
+        tabs_doc = TabsDocument(
+            title=None,
+            tabs=[
+                TabData(tab_id="t1", title="Overview", body_content=[self._para("Intro text")]),
+                TabData(tab_id="t2", title="Details", body_content=[self._para("Detail text")]),
+            ],
+        )
+        result = extract_canonical_text(tabs_doc)
+        assert "TAB:Overview" in result
+        assert "TAB:Details" in result
+        assert "Intro text" in result
+        assert "Detail text" in result
 
 
 class TestComputeSemanticFingerprint:
     def test_starts_with_version_prefix(self):
         fp = compute_semantic_fingerprint("hello")
-        assert fp.startswith("gdocs:v1:")
+        assert fp.startswith("gdocs:v2:")
 
     def test_same_text_same_fingerprint(self):
         assert compute_semantic_fingerprint("abc") == compute_semantic_fingerprint("abc")
@@ -319,88 +339,202 @@ class TestComputeSemanticFingerprint:
     def test_fingerprint_is_deterministic(self):
         import hashlib
         text = "test content"
-        expected = "gdocs:v1:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        expected = "gdocs:v2:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert compute_semantic_fingerprint(text) == expected
 
 
-class TestFetchDocBody:
-    async def test_success_returns_title_and_text(self):
+class TestFetchAllTabs:
+    async def test_success_returns_tabs_document(self):
         auth = AsyncMock()
         auth.get_token.return_value = "test-token"
-
-        doc = {
+        data = {
             "title": "My Doc",
-            "body": {
-                "content": [
-                    {
-                        "paragraph": {
-                            "elements": [{"textRun": {"content": "Hello world"}}]
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t1", "title": "Introduction"},
+                    "documentTab": {
+                        "body": {
+                            "content": [
+                                {"paragraph": {"elements": [{"textRun": {"content": "Hello world"}}]}}
+                            ]
                         }
-                    }
-                ]
-            },
+                    },
+                }
+            ],
         }
         mock_response = MagicMock()
-        mock_response.json.return_value = doc
+        mock_response.json.return_value = data
         mock_response.raise_for_status = MagicMock()
-
         client = AsyncMock()
         client.get.return_value = mock_response
 
-        title, text = await fetch_doc_body("abc123", auth, client)
-        assert title == "My Doc"
-        assert text is not None
-        assert "Hello world" in text
-        call_kwargs = client.get.call_args
-        assert "docs.googleapis.com/v1/documents/abc123" in call_kwargs.args[0]
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is not None
+        assert result.title == "My Doc"
+        assert len(result.tabs) == 1
+        assert result.tabs[0].tab_id == "t1"
+        assert result.tabs[0].title == "Introduction"
+        assert len(result.tabs[0].body_content) == 1
+        call_args = client.get.call_args
+        assert "docs.googleapis.com/v1/documents/abc123" in call_args.args[0]
 
-    async def test_404_returns_none_none(self):
+    async def test_field_mask_and_include_tabs_content(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {
+            "title": "Doc",
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t1", "title": "Tab"},
+                    "documentTab": {"body": {"content": []}},
+                }
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        await fetch_all_tabs("abc123", auth, client)
+        params = client.get.call_args.kwargs.get("params", {})
+        assert "tabs" in params.get("fields", "")
+        assert params.get("includeTabsContent") == "true"
+
+    async def test_404_returns_none(self):
         import httpx
 
         auth = AsyncMock()
         auth.get_token.return_value = "test-token"
-
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Not Found", request=MagicMock(), response=mock_response
         )
-
         client = AsyncMock()
         client.get.return_value = mock_response
 
-        title, text = await fetch_doc_body("missing123", auth, client)
-        assert title is None
-        assert text is None
+        result = await fetch_all_tabs("missing123", auth, client)
+        assert result is None
 
-    async def test_network_error_returns_none_none(self):
+    async def test_network_error_returns_none(self):
         import httpx
 
         auth = AsyncMock()
         auth.get_token.return_value = "test-token"
-
         client = AsyncMock()
         client.get.side_effect = httpx.ConnectError("connection refused")
 
-        title, text = await fetch_doc_body("abc123", auth, client)
-        assert title is None
-        assert text is None
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is None
 
-    async def test_field_mask_includes_body_content(self):
+    async def test_multi_tab_document_all_tabs_present(self):
         auth = AsyncMock()
         auth.get_token.return_value = "test-token"
-
+        data = {
+            "title": "Multi-tab Doc",
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t1", "title": "Tab One"},
+                    "documentTab": {"body": {"content": []}},
+                },
+                {
+                    "tabProperties": {"tabId": "t2", "title": "Tab Two"},
+                    "documentTab": {"body": {"content": []}},
+                },
+            ],
+        }
         mock_response = MagicMock()
-        mock_response.json.return_value = {"title": "Doc", "body": {"content": []}}
+        mock_response.json.return_value = data
         mock_response.raise_for_status = MagicMock()
-
         client = AsyncMock()
         client.get.return_value = mock_response
 
-        await fetch_doc_body("abc123", auth, client)
-        call_kwargs = client.get.call_args
-        params = call_kwargs.kwargs.get("params", {})
-        assert "body.content" in params.get("fields", "")
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is not None
+        assert len(result.tabs) == 2
+        assert result.tabs[0].title == "Tab One"
+        assert result.tabs[1].title == "Tab Two"
+
+    async def test_empty_title_resolved_to_untitled(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {
+            "title": "Doc",
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t99", "title": ""},
+                    "documentTab": {"body": {"content": []}},
+                }
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is not None
+        assert result.tabs[0].title == "Untitled Tab (t99)"
+
+    async def test_non_document_tab_skipped(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {
+            "title": "Doc",
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t1", "title": "Real Tab"},
+                    "documentTab": {"body": {"content": []}},
+                },
+                {
+                    "tabProperties": {"tabId": "t2", "title": "Other Tab"},
+                    # no "documentTab" key — non-document tab type
+                },
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is not None
+        assert len(result.tabs) == 1
+        assert result.tabs[0].tab_id == "t1"
+
+    async def test_missing_tabs_key_returns_none(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {"title": "Doc"}  # no tabs key
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is None
+
+    async def test_all_non_document_tabs_returns_none(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {
+            "title": "Doc",
+            "tabs": [
+                {"tabProperties": {"tabId": "t1", "title": "Other"}},  # no documentTab
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is None
 
 
 class TestExtractTitleFromHtml:

@@ -7,7 +7,6 @@ from typing import Any
 
 import httpx
 
-from brain_sync.converter import html_to_markdown
 from brain_sync.sources import extract_google_doc_id
 from brain_sync.sources.base import (
     AuthProvider,
@@ -17,11 +16,12 @@ from brain_sync.sources.base import (
     UpdateStatus,
 )
 from brain_sync.sources.googledocs.rest import (
+    FetchError,
     compute_semantic_fingerprint,
-    extract_title_from_html,
-    fetch_doc_body,
-    fetch_doc_html,
+    extract_canonical_text,
+    fetch_all_tabs,
     fetch_doc_title,
+    generate_tabs_markdown,
 )
 from brain_sync.state import SourceState
 
@@ -55,10 +55,11 @@ class GoogleDocsAdapter:
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
         doc_id = extract_google_doc_id(source_state.source_url)
-        title, text = await fetch_doc_body(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
-        if text is None:
-            return UpdateCheckResult(status=UpdateStatus.UNKNOWN, title=title)
-        fingerprint = compute_semantic_fingerprint(text)
+        tabs_doc = await fetch_all_tabs(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+        if tabs_doc is None:
+            return UpdateCheckResult(status=UpdateStatus.UNKNOWN, title=None)
+        fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
+        title = tabs_doc.title
         if fingerprint == source_state.metadata_fingerprint:
             return UpdateCheckResult(
                 status=UpdateStatus.UNCHANGED,
@@ -81,14 +82,18 @@ class GoogleDocsAdapter:
         prior_adapter_state: dict[str, Any] | None = None,
     ) -> SourceFetchResult:
         doc_id = extract_google_doc_id(source_state.source_url)
-        html = await fetch_doc_html(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
-        title = extract_title_from_html(html)
-        if not title:
-            title = (prior_adapter_state or {}).get("title") or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
-        markdown = html_to_markdown(html)
+        tabs_doc = await fetch_all_tabs(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+        if tabs_doc is None:
+            raise FetchError(f"Failed to fetch tabs for {doc_id}")
+        title = (
+            tabs_doc.title
+            or (prior_adapter_state or {}).get("title")
+            or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+        )
+        body_markdown = generate_tabs_markdown(tabs_doc)
         fingerprint = (prior_adapter_state or {}).get("semanticFingerprint")
         return SourceFetchResult(
-            body_markdown=markdown,
+            body_markdown=body_markdown,
             comments=[],
             metadata_fingerprint=fingerprint,
             title=title,
