@@ -217,12 +217,14 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 |---|---|
 | `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
 | `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <source> [--path <path>] [--include-children] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
+| `brain-sync add <source> [--path <path>] [--include-children] [--child-path <path>] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
-| `brain-sync update <canonical-id-or-url> [--include-children\|--no-include-children] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
+| `brain-sync update <canonical-id-or-url> [--include-children\|--no-include-children] [--child-path <path>] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
 | `brain-sync reconcile [--root <path>]` | Update DB target paths to match where files actually are on disk |
+| `brain-sync migrate [--root <path>]` | Migrate legacy `_sync-context/` and bare-ID `_attachments/` dirs to the current layout |
+| `brain-sync status [--root <path>]` | Show daemon and sync status |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
 | `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
 | `brain-sync config google [--reauth]` | Authenticate with Google for Google Docs syncing |
