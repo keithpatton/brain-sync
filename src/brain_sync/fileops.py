@@ -14,8 +14,9 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 KNOWLEDGE_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
 
 # Directories excluded from content discovery, regen, and watching.
-# _sync-context/ contains relationship metadata managed by the sync engine.
-EXCLUDED_DIRS = frozenset({"_sync-context"})
+# _attachments/ contains binary attachments managed by the sync engine.
+# _sync-context/ is the legacy location (kept during transition period).
+EXCLUDED_DIRS = frozenset({"_attachments", "_sync-context"})
 
 
 def win_long_path(p: Path) -> Path:
@@ -93,21 +94,27 @@ def canonical_prefix(canonical_id: str) -> str:
     return canonical_id.split(":", 1)[1] + "-"
 
 
+def _in_excluded_dir(path: Path) -> bool:
+    """Check if any component of the path is an excluded directory."""
+    return any(part in EXCLUDED_DIRS for part in path.parts)
+
+
 def rediscover_local_path(root: Path, canonical_id: str) -> Path | None:
     """Search root recursively for a file matching the canonical_id prefix.
 
     Returns the first matching path relative to root, or None.
     Only called when the stored local_path no longer exists.
+    Skips paths containing EXCLUDED_DIRS components.
     """
     prefix = canonical_prefix(canonical_id)
     resolved_root = root.resolve()
     for path in resolved_root.rglob(f"{prefix}*"):
-        if path.is_file():
+        if path.is_file() and not _in_excluded_dir(path.relative_to(resolved_root)):
             return path
     # Also try without trailing content (e.g. "c123456.md" for titleless docs)
     bare_prefix = prefix.rstrip("-")
     if bare_prefix != prefix:
         for path in resolved_root.rglob(f"{bare_prefix}.*"):
-            if path.is_file():
+            if path.is_file() and not _in_excluded_dir(path.relative_to(resolved_root)):
                 return path
     return None

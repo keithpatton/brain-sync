@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,13 +18,22 @@ from brain_sync.sources import (
 )
 from brain_sync.sources.base import UpdateCheckResult, UpdateStatus
 from brain_sync.sources.registry import get_adapter
-from brain_sync.state import SourceState, load_relationships_for_primary
+from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
 
 
+@dataclass
+class ChildDiscoveryResult:
+    """A child page discovered during sync, to be added as a primary source."""
+
+    canonical_id: str
+    url: str
+    title: str | None
+
+
 def _has_context_flags(ss: SourceState) -> bool:
-    return ss.include_links or ss.include_children or ss.include_attachments
+    return ss.include_attachments
 
 
 def _resolve_target_dir(root: Path | None, source_state: SourceState) -> Path:
@@ -38,18 +48,19 @@ async def process_source(
     source_state: SourceState,
     http_client: httpx.AsyncClient,
     root: Path | None = None,
-) -> bool:
-    """Process a single source. Returns True if content changed."""
+) -> tuple[bool, list[ChildDiscoveryResult]]:
+    """Process a single source. Returns (content_changed, discovered_children)."""
     source_type = detect_source_type(source_state.source_url)
     adapter = get_adapter(source_type)
     caps = adapter.capabilities
     now = datetime.now(UTC).isoformat()
+    discovered_children: list[ChildDiscoveryResult] = []
 
     # Auth
     auth = adapter.auth_provider.load_auth()
     if auth is None:
         log.warning("No auth for %s, skipping %s", source_type.value, source_state.source_url)
-        return False
+        return False, []
 
     # Target directory
     target_dir = _resolve_target_dir(root, source_state)
@@ -67,8 +78,8 @@ async def process_source(
     target = target_dir / filename
 
     # Skip if unchanged
-    context_dir = target_dir / "_sync-context"
-    context_missing = _has_context_flags(source_state) and not context_dir.exists()
+    attachments_dir = target_dir / "_attachments"
+    context_missing = _has_context_flags(source_state) and not attachments_dir.exists()
     if root is not None:
         existing_file = rediscover_local_path(root, source_state.canonical_id)
     else:
@@ -86,7 +97,7 @@ async def process_source(
     if check and check.status == UpdateStatus.UNCHANGED and existing_file is not None and not context_missing:
         log.debug("Source %s unchanged (fingerprint %s)", doc_id, check.fingerprint)
         source_state.last_checked_utc = now
-        return False
+        return False, []
 
     # Full fetch
     prior_adapter_state = check.adapter_state if check else None
@@ -100,43 +111,45 @@ async def process_source(
             target = target_dir / new_filename
             filename = new_filename
 
-    # Context sync (capability-gated, stays in pipeline)
-    rels = []
-    att_title_to_path: dict[str, str] = {}
-    if caps.supports_context_sync and _has_context_flags(source_state) and root is not None and result.source_html:
+    # Child discovery (one-shot flag, capability-gated)
+    if source_state.include_children and caps.supports_children and root is not None:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
-            from brain_sync.context import process_context
+            from brain_sync.attachments import discover_children
 
-            att_title_to_path = await process_context(
-                manifest_dir=target_dir,
-                entry_url=source_state.source_url,
-                primary_html=result.source_html,
+            page_id = primary_cid.split(":", 1)[1]
+            children = await discover_children(page_id, auth, http_client)  # pyright: ignore[reportArgumentType]
+            for child in children:
+                discovered_children.append(
+                    ChildDiscoveryResult(
+                        canonical_id=child.canonical_id,
+                        url=child.url,
+                        title=child.title,
+                    )
+                )
+        except Exception as e:
+            log.warning("Child discovery failed for %s: %s", source_state.source_url, e)
+
+    # Attachment sync (capability-gated)
+    att_title_to_path: dict[str, str] = {}
+    if caps.supports_attachments and source_state.include_attachments and root is not None:
+        primary_cid = canonical_id(source_type, source_state.source_url)
+        try:
+            from brain_sync.attachments import process_attachments
+
+            att_title_to_path = await process_attachments(
+                target_dir=target_dir,
                 primary_canonical_id=primary_cid,
                 auth=auth,  # pyright: ignore[reportArgumentType]
                 client=http_client,
                 root=root,
-                include_links=source_state.include_links,
-                include_children=source_state.include_children,
                 include_attachments=source_state.include_attachments,
             )
         except Exception as e:
-            log.warning("Context processing failed for %s: %s", source_state.source_url, e)
-
-        try:
-            rels = load_relationships_for_primary(root, primary_cid)
-        except Exception as e:
-            log.debug("Link map build failed: %s", e)
-
-    # Link rewriting
-    markdown = result.body_markdown
-    if rels:
-        from brain_sync.link_rewriter import rewrite_links
-
-        cid_to_path = {r.canonical_id: f"./{r.local_path}" for r in rels}
-        markdown = rewrite_links(markdown, cid_to_path)
+            log.warning("Attachment processing failed for %s: %s", source_state.source_url, e)
 
     # Resolve inline attachment image refs (attachment-ref:title → local path)
+    markdown = result.body_markdown
     if att_title_to_path:
 
         def _resolve_att(m: re.Match[str]) -> str:
@@ -166,4 +179,4 @@ async def process_source(
     else:
         log.info("Fetched %s (no content change)", filename)
 
-    return changed
+    return changed, discovered_children

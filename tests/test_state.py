@@ -52,7 +52,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 12
+        assert state.version == 13
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -518,7 +518,15 @@ class TestSchemaV4Migration:
         )
         conn.execute(
             "INSERT INTO relationships VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("confluence:1", "confluence:100", "link", "linked/c100.md", "confluence", None, None),
+            (
+                "confluence:1",
+                "confluence-attachment:100",
+                "attachment",
+                "attachments/a100.png",
+                "confluence",
+                None,
+                None,
+            ),
         )
         conn.commit()
         conn.close()
@@ -529,12 +537,12 @@ class TestSchemaV4Migration:
         # Verify schema version after full migration chain
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "12"
+        assert version == "13"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
         assert len(rels) == 1
-        assert rels[0].canonical_id == "confluence:100"
+        assert rels[0].canonical_id == "confluence-attachment:100"
 
         doc = load_document(tmp_path, "confluence:100")
         assert doc is not None

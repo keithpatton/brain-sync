@@ -34,9 +34,9 @@ class AddResult:
     canonical_id: str
     source_url: str
     target_path: str
-    include_links: bool
     include_children: bool
     include_attachments: bool
+    child_path: str | None = None
 
 
 @dataclass
@@ -55,7 +55,6 @@ class SourceInfo:
     last_checked_utc: str | None
     last_changed_utc: str | None
     current_interval_secs: int
-    include_links: bool
     include_children: bool
     include_attachments: bool
 
@@ -72,9 +71,9 @@ class MoveResult:
 class UpdateResult:
     canonical_id: str
     source_url: str
-    include_links: bool
     include_children: bool
     include_attachments: bool
+    child_path: str | None = None
 
 
 class SourceAlreadyExistsError(Exception):
@@ -125,9 +124,9 @@ def add_source(
     *,
     url: str,
     target_path: str,
-    include_links: bool = False,
     include_children: bool = False,
     include_attachments: bool = False,
+    child_path: str | None = None,
 ) -> AddResult:
     """Register a source URL for syncing.
 
@@ -150,9 +149,9 @@ def add_source(
         source_url=url,
         source_type=stype.value,
         target_path=target_path,
-        include_links=include_links,
         include_children=include_children,
         include_attachments=include_attachments,
+        child_path=child_path,
     )
     save_state(root, state)
 
@@ -163,9 +162,9 @@ def add_source(
         canonical_id=cid,
         source_url=url,
         target_path=target_path,
-        include_links=include_links,
         include_children=include_children,
         include_attachments=include_attachments,
+        child_path=child_path,
     )
 
 
@@ -203,13 +202,25 @@ def remove_source(
                     f.unlink()
                     files_deleted = True
 
-            # Delete relationship files (_sync-context children, attachments, links)
+            # Delete relationship files (_sync-context or _attachments)
             rels = load_relationships_for_primary(root, cid)
             for rel in rels:
                 rel_file = target_dir / rel.local_path
                 if rel_file.is_file():
                     rel_file.unlink(missing_ok=True)
                     files_deleted = True
+
+            # Also clean up _attachments/{source_dir_id}/ for this source
+            source_dir_id = canonical_prefix(cid).rstrip("-")
+            att_dir = target_dir / "_attachments" / source_dir_id
+            if att_dir.is_dir():
+                shutil.rmtree(att_dir)
+                files_deleted = True
+            # Legacy _sync-context cleanup
+            legacy_ctx = target_dir / "_sync-context"
+            if legacy_ctx.is_dir():
+                shutil.rmtree(legacy_ctx)
+                files_deleted = True
 
             # Clean up empty directories bottom-up (but only remove target_dir
             # and its subdirs if they're now empty — never delete other content)
@@ -262,7 +273,6 @@ def list_sources(
                 last_checked_utc=ss.last_checked_utc,
                 last_changed_utc=ss.last_changed_utc,
                 current_interval_secs=ss.current_interval_secs,
-                include_links=getattr(ss, "include_links", False),
                 include_children=getattr(ss, "include_children", False),
                 include_attachments=getattr(ss, "include_attachments", False),
             )
@@ -305,6 +315,16 @@ def move_source(
         shutil.move(str(old_dir), str(new_dir))
         files_moved = True
 
+    # Move _attachments/{page_id}/ if it exists (already moved with parent dir above,
+    # but handle case where old_dir == new_dir or partial moves)
+    if not files_moved:
+        source_dir_id = canonical_prefix(cid).rstrip("-")
+        old_att = old_dir / "_attachments" / source_dir_id
+        new_att = new_dir / "_attachments" / source_dir_id
+        if old_att.is_dir() and not new_att.exists():
+            new_att.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_att), str(new_att))
+
     return MoveResult(
         canonical_id=cid,
         old_path=old_path,
@@ -317,13 +337,13 @@ def update_source(
     root: Path | None = None,
     *,
     source: str,
-    include_links: bool | None = None,
     include_children: bool | None = None,
     include_attachments: bool | None = None,
+    child_path: str | None = ...,  # type: ignore[assignment]  # sentinel
 ) -> UpdateResult:
     """Update config flags for an existing sync source.
 
-    Only the flags that are explicitly provided (not None) are changed.
+    Only the flags that are explicitly provided (not None / not sentinel) are changed.
 
     Raises:
         SourceNotFoundError: If the source is not found.
@@ -338,28 +358,28 @@ def update_source(
     ss = state.sources[cid]
 
     # Apply provided flags to in-memory state
-    if include_links is not None:
-        ss.include_links = include_links
     if include_children is not None:
         ss.include_children = include_children
     if include_attachments is not None:
         ss.include_attachments = include_attachments
+    if child_path is not ...:
+        ss.child_path = child_path  # type: ignore[assignment]
 
     # Write directly to DB — save_state skips config fields on UPDATE
     update_source_flags(
         root,
         cid,
-        include_links=include_links,
         include_children=include_children,
         include_attachments=include_attachments,
+        child_path=child_path,
     )
 
     return UpdateResult(
         canonical_id=cid,
         source_url=ss.source_url,
-        include_links=ss.include_links,
         include_children=ss.include_children,
         include_attachments=ss.include_attachments,
+        child_path=ss.child_path,
     )
 
 
@@ -438,3 +458,65 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
             )
 
     return ReconcileResult(updated=updated, not_found=not_found, unchanged=unchanged_count)
+
+
+@dataclass
+class MigrateResult:
+    sources_migrated: int
+    files_migrated: int
+    dirs_cleaned: int
+
+
+def migrate_sources(root: Path | None = None) -> MigrateResult:
+    """Migrate all sources to the current _attachments/{source_dir_id}/ layout.
+
+    Handles both legacy _sync-context/ dirs and bare-ID _attachments/{bare_id}/ dirs.
+    Also cleans up stale _sync-context/ directories in knowledge/ and insights/.
+    """
+    import shutil
+
+    from brain_sync.attachments import LEGACY_CONTEXT_DIR, migrate_legacy_context
+
+    root = _require_root(root)
+    state = load_state(root)
+    knowledge_root = root / "knowledge"
+
+    sources_migrated = 0
+    files_migrated = 0
+
+    # Migrate each source's legacy _sync-context/ and bare-ID _attachments/ dirs
+    for cid, ss in state.sources.items():
+        target_dir = knowledge_root / ss.target_path if ss.target_path else knowledge_root
+        source_dir_id = canonical_prefix(cid).rstrip("-")
+
+        # Check if there's anything to migrate: legacy dir or bare-ID attachment dir
+        legacy_dir = target_dir / LEGACY_CONTEXT_DIR
+        bare_id = cid.split(":", 1)[1]
+        bare_att_dir = target_dir / "_attachments" / bare_id
+        needs_migration = legacy_dir.is_dir() or (bare_att_dir.is_dir() and bare_id != source_dir_id)
+        if not needs_migration:
+            continue
+
+        count = migrate_legacy_context(target_dir, source_dir_id, cid, root)
+        if count > 0:
+            sources_migrated += 1
+            files_migrated += count
+        else:
+            sources_migrated += 1  # still cleaned up the empty dir
+
+    # Clean up any remaining _sync-context/ dirs (orphaned or in insights/)
+    dirs_cleaned = 0
+    for search_root in [knowledge_root, root / "insights"]:
+        if not search_root.is_dir():
+            continue
+        for legacy in list(search_root.rglob(LEGACY_CONTEXT_DIR)):
+            if legacy.is_dir():
+                shutil.rmtree(legacy)
+                dirs_cleaned += 1
+                log.info("Removed stale %s: %s", LEGACY_CONTEXT_DIR, legacy)
+
+    return MigrateResult(
+        sources_migrated=sources_migrated,
+        files_migrated=files_migrated,
+        dirs_cleaned=dirs_cleaned,
+    )

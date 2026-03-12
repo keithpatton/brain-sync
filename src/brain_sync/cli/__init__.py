@@ -44,9 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_add.add_argument("source", help="Source URL or local file path")
     p_add.add_argument("--path", dest="target_path", default=None, help="Target path relative to knowledge/")
-    p_add.add_argument("--include-links", action="store_true", help="Discover and sync linked pages")
-    p_add.add_argument("--include-children", action="store_true", help="Discover and sync child pages")
+    p_add.add_argument("--include-children", action="store_true", help="Discover and add child pages (one-shot)")
     p_add.add_argument("--include-attachments", action="store_true", help="Discover and sync attachments")
+    p_add.add_argument(
+        "--child-path", default=None, help="Override target path for children ('.' = same level as parent)"
+    )
     p_add.add_argument("--copy", action="store_true", help="Copy instead of move (local files only)")
     p_add.add_argument("--dry-run", action="store_true", help="Show suggestions without making changes")
     p_add.add_argument("--subtree", default=None, help="Restrict placement suggestions to this subtree")
@@ -94,22 +96,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_update.add_argument("source", help="Canonical ID or URL of the source to update")
     p_update.add_argument(
-        "--include-links",
-        action=BooleanOptionalAction,
-        default=None,
-        help="Discover and sync linked pages",
-    )
-    p_update.add_argument(
         "--include-children",
         action=BooleanOptionalAction,
         default=None,
-        help="Discover and sync child pages",
+        help="Discover and add child pages as independent sources (one-shot)",
     )
     p_update.add_argument(
         "--include-attachments",
         action=BooleanOptionalAction,
         default=None,
         help="Discover and sync attachments",
+    )
+    p_update.add_argument(
+        "--child-path",
+        default=None,
+        help="Override target path for discovered children (use '.' for same level as parent)",
     )
 
     # --- reconcile ---
@@ -167,6 +168,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_config_google = config_sub.add_parser("google", help="Authenticate with Google for Google Docs syncing")
     p_config_google.add_argument("--reauth", action="store_true", help="Force re-authentication")
+
+    # --- migrate ---
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="Migrate legacy _sync-context/ to _attachments/ layout",
+    )
+    p_migrate.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
 
     # --- update-skill ---
     p_skill = sub.add_parser("update-skill", help="Update the installed skill and instructions")

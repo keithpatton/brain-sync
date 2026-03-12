@@ -59,9 +59,7 @@ def _mock_adapter(html, title="TestPage", version=1, comments=None):
     adapter.capabilities = SourceCapabilities(
         supports_version_check=True,
         supports_comments=True,
-        supports_context_sync=True,
         supports_children=True,
-        supports_links=True,
         supports_attachments=True,
     )
     adapter.auth_provider = Mock()
@@ -103,7 +101,8 @@ class TestFullSyncFlow:
     def _run_with_mocks(self, source_state, root, html, version=1, comments=None):
         adapter = _mock_adapter(html, version=version, comments=comments)
         with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
-            return asyncio.run(process_source(source_state, httpx.AsyncClient(), root))
+            changed, _children = asyncio.run(process_source(source_state, httpx.AsyncClient(), root))
+            return changed
 
     def test_first_sync_creates_output(self, root):
         """Register source, run pipeline, verify file + state."""

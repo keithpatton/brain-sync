@@ -33,10 +33,8 @@ class TestCapabilities:
         caps = ConfluenceAdapter().capabilities
         assert caps.supports_version_check is True
         assert caps.supports_children is True
-        assert caps.supports_links is True
         assert caps.supports_attachments is True
         assert caps.supports_comments is True
-        assert caps.supports_context_sync is True
 
 
 class TestRegistry:

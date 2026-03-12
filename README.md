@@ -116,11 +116,9 @@ acme-brain/
       Platform - AAA/
         ERD/
           c123456-erd.md                ← synced from Confluence by brain-sync
-          _sync-context/                ← auto-managed by brain-sync
-            _index.md
-            linked/
-            children/
-            attachments/
+          _attachments/                 ← auto-managed by brain-sync
+            123456/
+              a789-diagram.png
         Meetings/
           notes.md                      ← manually added by you
   insights/                             ← all agent-generated, mirrors knowledge/
@@ -143,7 +141,7 @@ acme-brain/
 
 Restrictions:
 - `_core/` is reserved for always-loaded global context (top-level only)
-- `_sync-context/` directories are managed by brain-sync — do not edit or modify their contents
+- `_attachments/` directories are managed by brain-sync — do not edit or modify their contents
 - Do not rename synced source files — filenames are ID-anchored (e.g. `c12345-page-title.md`) and renaming breaks the link between the file and its sync source
 - Filenames starting with `_` or `.` are excluded from insight generation
 - Supported formats: `.md`, `.txt` (`.docx` via `brain-sync convert`)
@@ -249,24 +247,23 @@ The daemon polls registered sources on an adaptive schedule:
 
 When content changes, the interval resets to 30 minutes. Confluence sources get a cheap version check (REST API) before a full fetch, so unchanged pages are fast. Google Docs does not support version checks — every sync does a full fetch via HTML export.
 
-### Context discovery
+### Children and attachments
 
-When a source has `include_links`, `include_children`, or `include_attachments` enabled, the daemon discovers and syncs related documents into `_sync-context/` subdirectories:
+When a Confluence source has `--include-children` or `--include-attachments` enabled, the daemon discovers related content:
 
-| Flag | Discovers | Storage |
+| Flag | Discovers | Behaviour |
 |---|---|---|
-| `--include-links` | Pages linked from the primary document | `_sync-context/linked/` |
-| `--include-children` | Direct child pages in the page tree | `_sync-context/children/` |
-| `--include-attachments` | Attached files (images, PDFs, etc.) | `_sync-context/attachments/` |
+| `--include-children` | Direct child pages in the page tree | One-shot: children are added as independent primary sources on first sync, then the flag is cleared |
+| `--include-attachments` | Attached files (images, PDFs, etc.) | Stored in `_attachments/{page_id}/`, incrementally maintained |
 
-Context documents are incrementally maintained (added, updated, removed) and an auto-generated index at `_sync-context/_index.md` provides a navigable map.
+Use `--child-path` to control where discovered children are placed (default: a subfolder named after the parent page). Children become fully independent sources — they can be moved, removed, and have their own attachments.
 
 ### Knowledge watcher
 
 The daemon watches `knowledge/` recursively for file changes:
 
 - 30-second debounce window (batches rapid changes)
-- Ignores `_sync-context/`, temp files, and `insights/`
+- Ignores `_attachments/`, temp files, and `insights/`
 - On change: enqueues insight regeneration for the affected folder
 - On folder move: mirrors the move to `insights/` and updates source paths in the database
 
@@ -384,7 +381,7 @@ You own `knowledge/` — you can restructure it while the daemon is stopped and 
 |---|---|
 | Remove the ID prefix from a synced filename (e.g. `c12345-page.md` to `page.md`) | Reconcile cannot find it — file is orphaned, sync recreates a duplicate |
 | Edit synced file content | Synced files are managed artifacts — treat them as read-only. Next sync overwrites without merge or backup |
-| Move `_sync-context/` contents outside their parent folder | Relationship paths break, context is re-fetched from scratch |
+| Move `_attachments/` contents outside their parent folder | Relationship paths break, attachments are re-fetched from scratch |
 | Change the ID portion of a filename (e.g. `c12345` to `c99999`) | File becomes unfindable, orphaned |
 
 ### How reconcile works

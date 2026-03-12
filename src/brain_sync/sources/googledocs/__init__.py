@@ -34,10 +34,8 @@ class GoogleDocsAdapter:
         return SourceCapabilities(
             supports_version_check=True,
             supports_children=False,
-            supports_links=False,
             supports_attachments=False,
             supports_comments=False,
-            supports_context_sync=False,
         )
 
     @property
@@ -86,9 +84,7 @@ class GoogleDocsAdapter:
         if tabs_doc is None:
             raise FetchError(f"Failed to fetch tabs for {doc_id}")
         title = (
-            tabs_doc.title
-            or (prior_adapter_state or {}).get("title")
-            or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+            tabs_doc.title or (prior_adapter_state or {}).get("title") or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         )
         body_markdown = generate_tabs_markdown(tabs_doc)
         fingerprint = (prior_adapter_state or {}).get("semanticFingerprint")

@@ -140,7 +140,7 @@ async def run(root: Path) -> None:
                         ss = state.sources[key]
 
                         try:
-                            changed = await process_source(ss, http_client, root=root)
+                            changed, discovered_children = await process_source(ss, http_client, root=root)
                             interval = compute_interval(ss.last_changed_utc)
                             ss.current_interval_secs = interval
                             # Enqueue regen if content changed
@@ -151,6 +151,56 @@ async def run(root: Path) -> None:
                                     from brain_sync.regen import invalidate_global_context_cache
 
                                     invalidate_global_context_cache()
+
+                            # Process discovered children (one-shot pattern)
+                            if discovered_children:
+                                from brain_sync.commands.sources import SourceAlreadyExistsError, add_source
+                                from brain_sync.sources import slugify
+                                from brain_sync.state import clear_children_flag
+
+                                parent_target = ss.target_path
+
+                                # Compute child target path
+                                if ss.child_path == ".":
+                                    child_target_base = parent_target
+                                elif ss.child_path:
+                                    child_target_base = (
+                                        f"{parent_target}/{ss.child_path}" if parent_target else ss.child_path
+                                    )
+                                else:
+                                    # Default: {parent_target}/{parent_canonical_slug}/
+                                    parent_id = key.split(":", 1)[1]
+                                    slug = slugify(ss.source_url.rstrip("/").split("/")[-1] or parent_id)
+                                    suffix = f"c{parent_id}-{slug}"
+                                    child_target_base = f"{parent_target}/{suffix}" if parent_target else suffix
+
+                                for child in discovered_children:
+                                    try:
+                                        child_result = add_source(
+                                            root=root,
+                                            url=child.url,
+                                            target_path=child_target_base,
+                                            include_attachments=ss.include_attachments,
+                                        )
+                                        # Update in-memory state and schedule immediate sync
+                                        child_ss = load_state(root).sources.get(child_result.canonical_id)
+                                        if child_ss:
+                                            state.sources[child_result.canonical_id] = child_ss
+                                        scheduler.schedule_immediate(child_result.canonical_id)
+                                        log.info(
+                                            "Added child source %s → knowledge/%s",
+                                            child_result.canonical_id,
+                                            child_result.target_path,
+                                        )
+                                    except SourceAlreadyExistsError:
+                                        log.debug("Child %s already registered, skipping", child.canonical_id)
+                                    except Exception as child_err:
+                                        log.warning("Failed to add child %s: %s", child.canonical_id, child_err)
+
+                                # Clear the one-shot flag AFTER all children processed
+                                clear_children_flag(root, key)
+                                ss.include_children = False
+                                ss.child_path = None
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)
                             ss.current_interval_secs = min(
@@ -201,6 +251,7 @@ def main() -> None:
         handle_convert,
         handle_init,
         handle_list,
+        handle_migrate,
         handle_move,
         handle_reconcile,
         handle_regen,
@@ -237,6 +288,7 @@ def main() -> None:
         "reconcile": handle_reconcile,
         "status": handle_status,
         "regen": handle_regen,
+        "migrate": handle_migrate,
         "config": handle_config,
         "convert": handle_convert,
         "update-skill": handle_update_skill,

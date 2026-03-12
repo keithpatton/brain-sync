@@ -19,6 +19,7 @@ from brain_sync.commands.placement import (
 )
 from brain_sync.commands.sources import (
     AddResult,
+    MigrateResult,
     MoveResult,
     ReconcileResult,
     RemoveResult,
@@ -29,6 +30,7 @@ from brain_sync.commands.sources import (
     add_source,
     check_source_exists,
     list_sources,
+    migrate_sources,
     move_source,
     reconcile_sources,
     remove_source,
@@ -39,6 +41,7 @@ __all__ = [
     "AddResult",
     "BrainNotFoundError",
     "InitResult",
+    "MigrateResult",
     "MoveResult",
     "PlacementCandidate",
     "PlacementSelection",
@@ -57,6 +60,7 @@ __all__ = [
     "extract_title_from_url",
     "init_brain",
     "list_sources",
+    "migrate_sources",
     "move_source",
     "reconcile_sources",
     "remove_source",

@@ -9,21 +9,21 @@ import pytest
 
 pytest.importorskip("google.auth", reason="google-auth not installed (install brain-sync[google])")
 
-from brain_sync.sources.base import (
+from brain_sync.sources.base import (  # noqa: E402
     AuthProvider,
     SourceAdapter,
     SourceFetchResult,
     UpdateStatus,
 )
-from brain_sync.sources.googledocs import GoogleDocsAdapter
-from brain_sync.sources.googledocs.auth import (
+from brain_sync.sources.googledocs import GoogleDocsAdapter  # noqa: E402
+from brain_sync.sources.googledocs.auth import (  # noqa: E402
     GoogleDocsAuthProvider,
     GoogleOAuthCredentials,
     _load_cached_token,
     _save_token,
     run_oauth_flow,
 )
-from brain_sync.sources.googledocs.rest import (
+from brain_sync.sources.googledocs.rest import (  # noqa: E402
     FetchError,
     TabData,
     TabsDocument,
@@ -50,10 +50,8 @@ class TestCapabilities:
         caps = GoogleDocsAdapter().capabilities
         assert caps.supports_version_check is True
         assert caps.supports_children is False
-        assert caps.supports_links is False
         assert caps.supports_attachments is False
         assert caps.supports_comments is False
-        assert caps.supports_context_sync is False
 
 
 class TestCheckForUpdate:
@@ -81,9 +79,7 @@ class TestCheckForUpdate:
         tabs_doc = self._make_tabs_doc()
         fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
         source_state.metadata_fingerprint = fingerprint
-        with patch(
-            "brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc
-        ):
+        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNCHANGED
         assert result.fingerprint == fingerprint
@@ -92,16 +88,24 @@ class TestCheckForUpdate:
     async def test_returns_changed_when_semantic_hash_differs(self, adapter, source_state):
         old_tabs_doc = TabsDocument(
             title="My Doc",
-            tabs=[TabData(tab_id="t1", title="Main", body_content=[
-                {"paragraph": {"elements": [{"textRun": {"content": "old content"}}]}}
-            ])],
+            tabs=[
+                TabData(
+                    tab_id="t1",
+                    title="Main",
+                    body_content=[{"paragraph": {"elements": [{"textRun": {"content": "old content"}}]}}],
+                )
+            ],
         )
         source_state.metadata_fingerprint = compute_semantic_fingerprint(extract_canonical_text(old_tabs_doc))
         new_tabs_doc = TabsDocument(
             title="My Doc",
-            tabs=[TabData(tab_id="t1", title="Main", body_content=[
-                {"paragraph": {"elements": [{"textRun": {"content": "new content"}}]}}
-            ])],
+            tabs=[
+                TabData(
+                    tab_id="t1",
+                    title="Main",
+                    body_content=[{"paragraph": {"elements": [{"textRun": {"content": "new content"}}]}}],
+                )
+            ],
         )
         with patch(
             "brain_sync.sources.googledocs.fetch_all_tabs",
@@ -158,14 +162,16 @@ class TestFetch:
     def _make_tabs_doc(self, title: str | None = "My Doc") -> TabsDocument:
         return TabsDocument(
             title=title,
-            tabs=[TabData(
-                tab_id="t1",
-                title="Main",
-                body_content=[
-                    {"paragraph": {"elements": [{"textRun": {"content": "Hello"}}]}},
-                    {"paragraph": {"elements": [{"textRun": {"content": "World"}}]}},
-                ],
-            )],
+            tabs=[
+                TabData(
+                    tab_id="t1",
+                    title="Main",
+                    body_content=[
+                        {"paragraph": {"elements": [{"textRun": {"content": "Hello"}}]}},
+                        {"paragraph": {"elements": [{"textRun": {"content": "World"}}]}},
+                    ],
+                )
+            ],
         )
 
     async def test_fetch_returns_correct_result(self, adapter, source_state):
@@ -273,20 +279,22 @@ class TestExtractCanonicalText:
         assert "Real content" in result
 
     def test_table_row_prefixed(self):
-        doc = self._make_tabs_doc([
-            {
-                "table": {
-                    "tableRows": [
-                        {
-                            "tableCells": [
-                                {"content": [self._para("Cell A")]},
-                                {"content": [self._para("Cell B")]},
-                            ]
-                        }
-                    ]
+        doc = self._make_tabs_doc(
+            [
+                {
+                    "table": {
+                        "tableRows": [
+                            {
+                                "tableCells": [
+                                    {"content": [self._para("Cell A")]},
+                                    {"content": [self._para("Cell B")]},
+                                ]
+                            }
+                        ]
+                    }
                 }
-            }
-        ])
+            ]
+        )
         result = extract_canonical_text(doc)
         assert "T:Cell A|Cell B" in result
 
@@ -338,6 +346,7 @@ class TestComputeSemanticFingerprint:
 
     def test_fingerprint_is_deterministic(self):
         import hashlib
+
         text = "test content"
         expected = "gdocs:v2:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert compute_semantic_fingerprint(text) == expected
@@ -353,11 +362,7 @@ class TestFetchAllTabs:
                 {
                     "tabProperties": {"tabId": "t1", "title": "Introduction"},
                     "documentTab": {
-                        "body": {
-                            "content": [
-                                {"paragraph": {"elements": [{"textRun": {"content": "Hello world"}}]}}
-                            ]
-                        }
+                        "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "Hello world"}}]}}]}
                     },
                 }
             ],

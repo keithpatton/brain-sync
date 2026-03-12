@@ -9,6 +9,7 @@ import pytest
 from brain_sync.commands import (
     AddResult,
     BrainNotFoundError,
+    MigrateResult,
     MoveResult,
     ReconcileResult,
     RemoveResult,
@@ -20,6 +21,7 @@ from brain_sync.commands import (
     check_source_exists,
     init_brain,
     list_sources,
+    migrate_sources,
     move_source,
     reconcile_sources,
     remove_source,
@@ -155,11 +157,9 @@ class TestAddSource:
             root=brain,
             url=CONFLUENCE_URL,
             target_path="project",
-            include_links=True,
             include_children=True,
             include_attachments=True,
         )
-        assert result.include_links is True
         assert result.include_children is True
         assert result.include_attachments is True
 
@@ -429,21 +429,19 @@ class TestMoveSource:
 
 class TestUpdateSource:
     def test_update_source_flags(self, brain):
-        """Update include_links from False to True, verify DB."""
+        """Update include_children from False to True, verify DB."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
 
-        result = update_source(root=brain, source=CONFLUENCE_CID, include_links=True)
+        result = update_source(root=brain, source=CONFLUENCE_CID, include_children=True)
 
         assert isinstance(result, UpdateResult)
         assert result.canonical_id == CONFLUENCE_CID
-        assert result.include_links is True
-        assert result.include_children is False
+        assert result.include_children is True
         assert result.include_attachments is False
 
         # Verify persisted in DB by reloading
         sources = list_sources(root=brain)
-        assert sources[0].include_links is True
-        assert sources[0].include_children is False
+        assert sources[0].include_children is True
 
     def test_update_source_partial(self, brain):
         """Update only one flag, others unchanged."""
@@ -451,27 +449,24 @@ class TestUpdateSource:
             root=brain,
             url=CONFLUENCE_URL,
             target_path="project",
-            include_links=True,
             include_children=True,
             include_attachments=True,
         )
 
         result = update_source(root=brain, source=CONFLUENCE_CID, include_children=False)
 
-        assert result.include_links is True
         assert result.include_children is False
         assert result.include_attachments is True
 
         # Verify persisted
         sources = list_sources(root=brain)
-        assert sources[0].include_links is True
         assert sources[0].include_children is False
         assert sources[0].include_attachments is True
 
     def test_update_source_not_found(self, brain):
         """Raises SourceNotFoundError for unknown source."""
         with pytest.raises(SourceNotFoundError):
-            update_source(root=brain, source="nonexistent", include_links=True)
+            update_source(root=brain, source="nonexistent", include_children=True)
 
     def test_update_source_by_url(self, brain):
         """Can resolve source by URL."""
@@ -483,10 +478,10 @@ class TestUpdateSource:
 
     def test_update_source_no_changes(self, brain):
         """Calling with no flags is a no-op but succeeds."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_links=True)
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_children=True)
 
         result = update_source(root=brain, source=CONFLUENCE_CID)
-        assert result.include_links is True
+        assert result.include_children is True
 
 
 class TestReconcileSources:
@@ -633,6 +628,93 @@ class TestReconcileSources:
         assert len(result.updated) == 1
         assert result.updated[0].canonical_id == CONFLUENCE_CID_2
         assert CONFLUENCE_CID_3 in result.not_found
+
+
+class TestMigrateSources:
+    def test_migrates_legacy_attachments(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_attachments=True)
+        target_dir = brain / "knowledge" / "project"
+
+        # Create legacy _sync-context/attachments/ with a file
+        legacy_att = target_dir / "_sync-context" / "attachments"
+        legacy_att.mkdir(parents=True)
+        (legacy_att / "a789-diagram.png").write_bytes(b"png-data")
+
+        # Add relationship in DB
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID,
+                canonical_id="confluence-attachment:789",
+                relationship_type="attachment",
+                local_path="_sync-context/attachments/a789-diagram.png",
+                source_type="confluence",
+            ),
+        )
+
+        result = migrate_sources(root=brain)
+        assert isinstance(result, MigrateResult)
+        assert result.files_migrated == 1
+        assert result.sources_migrated == 1
+
+        # File at new location
+        assert (target_dir / "_attachments" / "c12345" / "a789-diagram.png").read_bytes() == b"png-data"
+        # Legacy dir gone
+        assert not (target_dir / "_sync-context").exists()
+        # DB updated
+        rels = load_relationships_for_primary(brain, CONFLUENCE_CID)
+        assert rels[0].local_path == "_attachments/c12345/a789-diagram.png"
+
+    def test_noop_when_nothing_to_migrate(self, brain):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+
+        result = migrate_sources(root=brain)
+        assert result.sources_migrated == 0
+        assert result.files_migrated == 0
+        assert result.dirs_cleaned == 0
+
+    def test_remigrates_bare_id_attachments(self, brain):
+        """Bare-ID _attachments/12345/ dirs are re-migrated to _attachments/c12345/."""
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_attachments=True)
+        target_dir = brain / "knowledge" / "project"
+
+        # Simulate earlier migration that used bare ID
+        bare_dir = target_dir / "_attachments" / "12345"
+        bare_dir.mkdir(parents=True)
+        (bare_dir / "a789-diagram.png").write_bytes(b"png-data")
+
+        save_relationship(
+            brain,
+            Relationship(
+                parent_canonical_id=CONFLUENCE_CID,
+                canonical_id="confluence-attachment:789",
+                relationship_type="attachment",
+                local_path="_attachments/12345/a789-diagram.png",
+                source_type="confluence",
+            ),
+        )
+
+        result = migrate_sources(root=brain)
+        assert result.sources_migrated == 1
+        assert result.files_migrated == 1
+
+        # File at prefixed location
+        assert (target_dir / "_attachments" / "c12345" / "a789-diagram.png").read_bytes() == b"png-data"
+        # Bare dir gone
+        assert not bare_dir.exists()
+        # DB updated
+        rels = load_relationships_for_primary(brain, CONFLUENCE_CID)
+        assert rels[0].local_path == "_attachments/c12345/a789-diagram.png"
+
+    def test_cleans_stale_insights_sync_context(self, brain):
+        """Stale _sync-context/ in insights/ (from old regen) is cleaned up."""
+        stale_dir = brain / "insights" / "area" / "_sync-context"
+        stale_dir.mkdir(parents=True)
+        (stale_dir / "summary.md").write_text("stale")
+
+        result = migrate_sources(root=brain)
+        assert result.dirs_cleaned >= 1
+        assert not stale_dir.exists()
 
 
 class TestInitBrain:

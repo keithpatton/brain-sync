@@ -47,10 +47,8 @@ class ConfluenceAdapter:
         return SourceCapabilities(
             supports_version_check=True,
             supports_children=True,
-            supports_links=True,
             supports_attachments=True,
             supports_comments=True,
-            supports_context_sync=True,
         )
 
     @property

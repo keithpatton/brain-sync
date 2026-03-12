@@ -19,11 +19,11 @@ All source lives under `src/brain_sync/`.
 | Commands / CLI | `commands/`, `cli/` | User-facing operations (add, remove, list, move, init) |
 | Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, and write knowledge files |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind `SourceAdapter` protocol |
-| REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + context) |
+| REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + attachments) |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
 | State | `state` | SQLite WAL persistence (sources, documents, relationships, insight state) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
-| Context | `context`, `context_index`, `link_rewriter`, `area_index` | Context discovery, area indexing, link rewriting |
+| Attachments | `attachments`, `area_index` | Attachment sync lifecycle, area indexing |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
 | Watcher | `watcher` | Filesystem event monitoring, insight folder mirroring |
 
@@ -65,6 +65,20 @@ sync loop            → normal operation
 
 Reconcile is a pure state-repair operation — it only updates `sources.target_path` in the DB. Regen detects path changes on its next run and rebuilds insights at the correct locations, cleaning up orphaned `insight_state` entries.
 
+### Attachment Storage
+
+Attachments (binary files downloaded alongside a synced source) are stored at area level under `_attachments/{page_id}/`. The `_attachments` directory is reserved — it is excluded from content discovery, regen, and watching (listed in `EXCLUDED_DIRS` alongside `_core`).
+
+```
+knowledge/area/
+  _attachments/
+    c12345/                    ← keyed by canonical prefix (stable, collision-safe)
+      a67890-diagram.png
+  c12345-gap-analysis.md
+```
+
+Path computation is centralised in `attachments.attachment_local_path()` — used by sync, remove, move, and inline `attachment-ref:` resolution.
+
 ### Architectural Principles
 
 **Import purity** — Modules may define behavior at import time, but must not resolve environment-dependent runtime state at import time. Filesystem access, config resolution, and index construction must be deferred to explicit startup/lifespan hooks.
@@ -83,12 +97,12 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 ```
 
 **Key abstractions:**
-- `SourceCapabilities` — declares what a source supports (version check, comments, context sync, etc.)
+- `SourceCapabilities` — declares what a source supports (version check, comments, attachments, children)
 - `UpdateCheckResult` — cheap pre-fetch check; `adapter_state` passes opaque data to `fetch()` to avoid duplicate API calls
 - `SourceFetchResult` — full fetch result with markdown, comments, title, optional source HTML
 - `AuthProvider` — per-source auth (Confluence: config/env credentials; Google Docs: native OAuth2 via browser consent)
 
-**Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Context sync and link rewriting remain in the pipeline (Confluence-specific, gated by `supports_context_sync`).
+**Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Attachment sync is gated by `supports_attachments`; child discovery by `supports_children`.
 
 **Registry:** Lazy instantiation with no startup wiring. Adapters are created on first access and cached. `reset_registry()` available for testing.
 

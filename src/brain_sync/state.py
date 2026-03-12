@@ -12,7 +12,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -49,9 +49,9 @@ CREATE TABLE IF NOT EXISTS sources (
     next_check_utc TEXT,
     interval_seconds INTEGER,
     target_path TEXT NOT NULL DEFAULT '',
-    include_links INTEGER NOT NULL DEFAULT 0,
     include_children INTEGER NOT NULL DEFAULT 0,
-    include_attachments INTEGER NOT NULL DEFAULT 0
+    include_attachments INTEGER NOT NULL DEFAULT 0,
+    child_path TEXT
 );
 """
 
@@ -187,9 +187,9 @@ class SourceState(_PathNormalized):
     next_check_utc: str | None = None
     interval_seconds: int | None = None
     target_path: str = ""
-    include_links: bool = False
     include_children: bool = False
     include_attachments: bool = False
+    child_path: str | None = None
 
 
 @dataclass
@@ -595,6 +595,32 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         )
         conn.commit()
         log.info("Re-normalized backslash paths in insight_state (v12)")
+        from_version = 12
+
+    if from_version < 13:
+        # v12 → v13: Remove include_links, add child_path, clean up link/child relationships
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+        if "include_links" in existing_cols:
+            conn.execute("ALTER TABLE sources DROP COLUMN include_links")
+        if "child_path" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN child_path TEXT")
+
+        # Delete link and child relationships + orphaned documents
+        link_child_docs = conn.execute(
+            "SELECT DISTINCT canonical_id FROM relationships " "WHERE relationship_type IN ('link', 'child')"
+        ).fetchall()
+        conn.execute("DELETE FROM relationships WHERE relationship_type IN ('link', 'child')")
+        # Remove documents that are now orphaned (no remaining relationships)
+        for (cid,) in link_child_docs:
+            remaining = conn.execute("SELECT COUNT(*) FROM relationships WHERE canonical_id = ?", (cid,)).fetchone()
+            if remaining and remaining[0] == 0:
+                conn.execute("DELETE FROM documents WHERE canonical_id = ?", (cid,))
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '13')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema from v%d to v13: removed links, added child_path", from_version)
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -650,7 +676,7 @@ def load_state(root: Path) -> SyncState:
             "SELECT canonical_id, source_url, source_type, "
             "last_checked_utc, last_changed_utc, current_interval_secs, "
             "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
-            "target_path, include_links, include_children, include_attachments "
+            "target_path, include_children, include_attachments, child_path "
             "FROM sources"
         ).fetchall()
         for row in rows:
@@ -666,9 +692,9 @@ def load_state(root: Path) -> SyncState:
                 next_check_utc=row[8],
                 interval_seconds=row[9],
                 target_path=row[10] or "",
-                include_links=bool(row[11]),
-                include_children=bool(row[12]),
-                include_attachments=bool(row[13]),
+                include_children=bool(row[11]),
+                include_attachments=bool(row[12]),
+                child_path=row[13],
             )
     except Exception as e:
         log.warning("Error reading sync state, starting fresh: %s", e)
@@ -683,7 +709,7 @@ def save_state(root: Path, state: SyncState) -> None:
     """Save sync progress for all sources.
 
     Uses UPDATE for existing rows to preserve CLI-managed config fields
-    (target_path, include_links, include_children, include_attachments).
+    (target_path, include_children, include_attachments, child_path).
     Only inserts if the source doesn't exist yet.
     """
     conn = _connect(root)
@@ -715,7 +741,7 @@ def save_state(root: Path, state: SyncState) -> None:
                     "(canonical_id, source_url, source_type, "
                     "last_checked_utc, last_changed_utc, current_interval_secs, "
                     "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
-                    "target_path, include_links, include_children, include_attachments) "
+                    "target_path, include_children, include_attachments, child_path) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
@@ -729,9 +755,9 @@ def save_state(root: Path, state: SyncState) -> None:
                         ss.next_check_utc,
                         ss.interval_seconds,
                         normalize_path(ss.target_path),
-                        int(ss.include_links),
                         int(ss.include_children),
                         int(ss.include_attachments),
+                        ss.child_path,
                     ),
                 )
         conn.commit()
@@ -769,30 +795,47 @@ def update_source_flags(
     *,
     include_children: bool | None = None,
     include_attachments: bool | None = None,
-    include_links: bool | None = None,
+    child_path: str | None = ...,  # type: ignore[assignment]  # sentinel
 ) -> None:
     """Update config flags for a source directly in the DB.
 
-    Only the flags that are explicitly provided (not None) are changed.
+    Only the flags that are explicitly provided (not None / not sentinel) are changed.
+    child_path uses ... as sentinel so None is a valid "clear" value.
     """
-    updates: list[tuple[str, bool]] = []
-    if include_links is not None:
-        updates.append(("include_links", include_links))
+    sets: list[str] = []
+    values: list[int | str | None] = []
     if include_children is not None:
-        updates.append(("include_children", include_children))
+        sets.append("include_children = ?")
+        values.append(int(include_children))
     if include_attachments is not None:
-        updates.append(("include_attachments", include_attachments))
-    if not updates:
+        sets.append("include_attachments = ?")
+        values.append(int(include_attachments))
+    if child_path is not ...:
+        sets.append("child_path = ?")
+        values.append(child_path)
+    if not sets:
         return
 
-    set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
-    values: list[int | str] = [int(v) for _, v in updates]
+    set_clause = ", ".join(sets)
     values.append(canonical_id)
     conn = _connect(root)
     try:
         conn.execute(
             f"UPDATE sources SET {set_clause} WHERE canonical_id = ?",
             values,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_children_flag(root: Path, canonical_id: str) -> None:
+    """Clear the one-shot include_children flag and child_path after processing."""
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "UPDATE sources SET include_children = 0, child_path = NULL WHERE canonical_id = ?",
+            (canonical_id,),
         )
         conn.commit()
     finally:

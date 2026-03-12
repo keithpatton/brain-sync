@@ -244,9 +244,9 @@ def brain_sync_add(
     ctx: Context,
     source: str,
     target_path: str,
-    include_links: bool = False,
     include_children: bool = False,
     include_attachments: bool = False,
+    child_path: str | None = None,
     copy: bool = True,
 ) -> dict:
     """Register a source URL for syncing or add a local file."""
@@ -271,9 +271,9 @@ def brain_sync_add(
                 root=rt.root,
                 url=source,
                 target_path=target_path,
-                include_links=include_links,
                 include_children=include_children,
                 include_attachments=include_attachments,
+                child_path=child_path,
             )
             return {"status": "ok", **asdict(result)}
         except SourceAlreadyExistsError as e:
@@ -288,11 +288,11 @@ def brain_sync_add(
             return {"status": "error", "error": "unsupported_url", "source": source}
 
     # --- File branch ---
-    if include_links or include_children or include_attachments:
+    if include_children or include_attachments:
         return {
             "status": "error",
             "error": "invalid_flags",
-            "message": "--include-links/children/attachments can only be used with URLs",
+            "message": "--include-children/attachments can only be used with URLs",
         }
 
     file_path = Path(source).resolve()
@@ -375,15 +375,16 @@ def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> 
     description=(
         "Update settings for a registered source. "
         "Pass only the flags you want to change — omitted flags are left unchanged. "
-        "Use --include-links / --no-include-links style toggles."
+        "Use --include-children / --no-include-children style toggles. "
+        "child_path controls where discovered children are placed."
     ),
 )
 def brain_sync_update(
     ctx: Context,
     source: str,
-    include_links: bool | None = None,
     include_children: bool | None = None,
     include_attachments: bool | None = None,
+    child_path: str | None = None,
 ) -> dict:
     """Update config flags for an existing sync source."""
     rt = _runtime(ctx)
@@ -391,9 +392,9 @@ def brain_sync_update(
         result = update_source(
             root=rt.root,
             source=source,
-            include_links=include_links,
             include_children=include_children,
             include_attachments=include_attachments,
+            child_path=child_path if child_path is not None else ...,  # type: ignore[arg-type]
         )
         return {"status": "ok", **asdict(result)}
     except SourceNotFoundError:

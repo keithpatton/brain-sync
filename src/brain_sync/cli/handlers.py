@@ -198,8 +198,8 @@ def handle_add(args) -> None:
 
     # Flag validation
     if source_kind == SourceKind.FILE:
-        if args.include_links or args.include_children or args.include_attachments:
-            log.error("--include-links/children/attachments can only be used with URLs")
+        if args.include_children or args.include_attachments:
+            log.error("--include-children/attachments can only be used with URLs")
             sys.exit(1)
         file_path = Path(args.source).resolve()
         if not file_path.exists():
@@ -266,9 +266,9 @@ def handle_add(args) -> None:
                 root=root,
                 url=args.source,
                 target_path=target_path,
-                include_links=args.include_links,
                 include_children=args.include_children,
                 include_attachments=args.include_attachments,
+                child_path=getattr(args, "child_path", None),
             )
         except UnsupportedSourceError:
             log.exception("Unsupported source")
@@ -286,8 +286,7 @@ def handle_add(args) -> None:
         log.info("  URL: %s", result.source_url)
         log.info("  Path: knowledge/%s", result.target_path)
         log.info(
-            "  Links: %s, Children: %s, Attachments: %s",
-            result.include_links,
+            "  Children: %s, Attachments: %s",
             result.include_children,
             result.include_attachments,
         )
@@ -401,8 +400,6 @@ def handle_list(args) -> None:
             log.info("  Last changed: %s", s.last_changed_utc or "never")
             log.info("  Interval: %ss", s.current_interval_secs)
             flags = []
-            if s.include_links:
-                flags.append("links")
             if s.include_children:
                 flags.append("children")
             if s.include_attachments:
@@ -436,12 +433,13 @@ def handle_update(args) -> None:
     from brain_sync.commands.sources import SourceNotFoundError, update_source
 
     try:
+        child_path_val = getattr(args, "child_path", None)
         result = update_source(
             root=_get_root(args),
             source=args.source,
-            include_links=args.include_links,
             include_children=args.include_children,
             include_attachments=args.include_attachments,
+            child_path=child_path_val if child_path_val is not None else ...,  # type: ignore[arg-type]
         )
     except SourceNotFoundError as e:
         log.warning("Source not found: %s", e.source)
@@ -452,8 +450,7 @@ def handle_update(args) -> None:
 
     log.info("Updated source: %s", result.canonical_id)
     log.info(
-        "  Links: %s, Children: %s, Attachments: %s",
-        result.include_links,
+        "  Children: %s, Attachments: %s",
         result.include_children,
         result.include_attachments,
     )
@@ -601,6 +598,30 @@ def handle_config(args) -> None:
             log.debug("Google import failed", exc_info=True)
             log.error("%s", exc)
             sys.exit(1)
+
+
+def handle_migrate(args) -> None:
+    from brain_sync.commands.sources import migrate_sources
+
+    try:
+        result = migrate_sources(root=_get_root(args))
+    except BrainNotFoundError:
+        log.exception("Cannot resolve brain root")
+        sys.exit(1)
+
+    if result.sources_migrated == 0 and result.dirs_cleaned == 0:
+        log.info("Nothing to migrate. All sources already use the new layout.")
+        return
+
+    if result.files_migrated:
+        log.info(
+            "Migrated %d attachment(s) across %d source(s).",
+            result.files_migrated,
+            result.sources_migrated,
+        )
+    if result.dirs_cleaned:
+        suffix = "y" if result.dirs_cleaned == 1 else "ies"
+        log.info("Cleaned up %d stale _sync-context/ director%s.", result.dirs_cleaned, suffix)
 
 
 def handle_update_skill(args) -> None:

@@ -24,10 +24,8 @@ class UpdateStatus(Enum):
 class SourceCapabilities:
     supports_version_check: bool = True
     supports_children: bool = False
-    supports_links: bool = False
     supports_attachments: bool = False
     supports_comments: bool = True
-    supports_context_sync: bool = False
 
 
 @dataclass(frozen=True)

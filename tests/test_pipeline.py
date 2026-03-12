@@ -54,7 +54,8 @@ def fetch_result() -> SourceFetchResult:
 def _make_adapter(check_result: UpdateCheckResult, fetch_result: SourceFetchResult | None = None) -> MagicMock:
     adapter = MagicMock()
     adapter.capabilities.supports_version_check = True
-    adapter.capabilities.supports_context_sync = False
+    adapter.capabilities.supports_children = False
+    adapter.capabilities.supports_attachments = False
     adapter.capabilities.supports_comments = False
     adapter.auth_provider.load_auth.return_value = MagicMock()
     adapter.check_for_update = AsyncMock(return_value=check_result)
@@ -74,9 +75,10 @@ class TestSkipGuardWithRoot:
             patch("brain_sync.pipeline.get_adapter", return_value=adapter),
             patch("brain_sync.pipeline.rediscover_local_path", return_value=discovered),
         ):
-            result = await process_source(source_state, AsyncMock(), root=tmp_path)
+            changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
-        assert result is False
+        assert changed is False
+        assert children == []
         adapter.fetch.assert_not_called()
 
     async def test_fetch_when_file_not_found_via_rediscover(
@@ -117,7 +119,7 @@ class TestSkipGuardWithRoot:
             patch("brain_sync.pipeline.get_adapter", return_value=adapter),
             patch("brain_sync.pipeline.rediscover_local_path", return_value=discovered),
         ):
-            changed = await process_source(source_state, AsyncMock(), root=tmp_path)
+            changed, _children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
         assert changed is True
         adapter.fetch.assert_called_once()
@@ -143,9 +145,10 @@ class TestSkipGuardWithoutRoot:
         adapter = _make_adapter(unchanged_check)
 
         with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
-            result = await process_source(source_state, AsyncMock(), root=None)
+            changed, children = await process_source(source_state, AsyncMock(), root=None)
 
-        assert result is False
+        assert changed is False
+        assert children == []
         adapter.fetch.assert_not_called()
 
     async def test_fetch_when_root_none_and_file_absent(

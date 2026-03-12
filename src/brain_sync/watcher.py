@@ -43,7 +43,7 @@ def _should_ignore(path: Path, knowledge_root: Path) -> bool:
     name = path.name
     if IGNORE_PATTERNS.search(name):
         return True
-    # Ignore excluded directories (e.g. _sync-context/ managed by sync engine)
+    # Ignore excluded directories (e.g. _attachments/ managed by sync engine)
     try:
         rel = path.relative_to(knowledge_root)
         parts = rel.parts
