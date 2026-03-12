@@ -66,9 +66,11 @@ brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/
 brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
 ```
 
-Sources are registered in SQLite — no manifest files needed.
+`--path` is optional. If omitted, brain-sync will analyse your brain structure and suggest a placement based on existing folders and context.
 
 `--include-links`, `--include-children`, and `--include-attachments` are Confluence-only. Comments are synced for Confluence; Google Docs comments are not yet supported.
+
+> **Tip (Claude Desktop):** You can attach files or paste one or more URLs at once when chatting in Claude Desktop — brain-sync will handle them together, making it easy to add multiple sources in a single step.
 
 ### Start the daemon
 
