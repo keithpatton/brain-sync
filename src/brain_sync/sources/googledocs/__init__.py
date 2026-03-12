@@ -16,7 +16,12 @@ from brain_sync.sources.base import (
     UpdateCheckResult,
     UpdateStatus,
 )
-from brain_sync.sources.googledocs.rest import extract_title_from_html, fetch_doc_html, fetch_doc_title
+from brain_sync.sources.googledocs.rest import (
+    extract_title_from_html,
+    fetch_doc_html,
+    fetch_doc_metadata,
+    fetch_doc_title,
+)
 from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
@@ -26,7 +31,7 @@ class GoogleDocsAdapter:
     @property
     def capabilities(self) -> SourceCapabilities:
         return SourceCapabilities(
-            supports_version_check=False,
+            supports_version_check=True,
             supports_children=False,
             supports_links=False,
             supports_attachments=False,
@@ -48,7 +53,21 @@ class GoogleDocsAdapter:
         auth: object,
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
-        return UpdateCheckResult(status=UpdateStatus.UNKNOWN)
+        doc_id = extract_google_doc_id(source_state.source_url)
+        meta = await fetch_doc_metadata(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+        if meta.revision_id is None:
+            return UpdateCheckResult(status=UpdateStatus.UNKNOWN)
+        status = (
+            UpdateStatus.UNCHANGED
+            if meta.revision_id == source_state.metadata_fingerprint
+            else UpdateStatus.CHANGED
+        )
+        return UpdateCheckResult(
+            status=status,
+            fingerprint=meta.revision_id,
+            title=meta.title,
+            adapter_state={"revisionId": meta.revision_id},
+        )
 
     async def fetch(
         self,
@@ -64,9 +83,10 @@ class GoogleDocsAdapter:
         if not title:
             title = await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         markdown = html_to_markdown(html)
+        rev_id = prior_adapter_state.get("revisionId") if prior_adapter_state else None
         return SourceFetchResult(
             body_markdown=markdown,
             comments=[],
-            metadata_fingerprint=None,
+            metadata_fingerprint=rev_id,
             title=title,
         )

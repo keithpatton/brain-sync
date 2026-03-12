@@ -23,7 +23,7 @@ from brain_sync.sources.googledocs.auth import (
     _save_token,
     run_oauth_flow,
 )
-from brain_sync.sources.googledocs.rest import FetchError, extract_title_from_html
+from brain_sync.sources.googledocs.rest import DocMetadata, FetchError, extract_title_from_html, fetch_doc_metadata
 
 pytestmark = pytest.mark.unit
 
@@ -40,7 +40,7 @@ class TestProtocolCompliance:
 class TestCapabilities:
     def test_all_capabilities_correct(self):
         caps = GoogleDocsAdapter().capabilities
-        assert caps.supports_version_check is False
+        assert caps.supports_version_check is True
         assert caps.supports_children is False
         assert caps.supports_links is False
         assert caps.supports_attachments is False
@@ -53,15 +53,44 @@ class TestCheckForUpdate:
     def adapter(self):
         return GoogleDocsAdapter()
 
-    async def test_always_returns_unknown(self, adapter):
+    @pytest.fixture
+    def source_state(self):
         from brain_sync.state import SourceState
 
-        ss = SourceState(
+        return SourceState(
             canonical_id="gdoc:abc123",
             source_url="https://docs.google.com/document/d/abc123/edit",
             source_type="googledocs",
         )
-        result = await adapter.check_for_update(ss, Mock(), AsyncMock())
+
+    async def test_returns_unchanged_when_revision_matches(self, adapter, source_state):
+        source_state.metadata_fingerprint = "rev-42"
+        meta = DocMetadata(title="My Doc", revision_id="rev-42")
+        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+            result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
+        assert result.status == UpdateStatus.UNCHANGED
+        assert result.fingerprint == "rev-42"
+        assert result.title == "My Doc"
+
+    async def test_returns_changed_when_revision_differs(self, adapter, source_state):
+        source_state.metadata_fingerprint = "rev-41"
+        meta = DocMetadata(title="My Doc", revision_id="rev-42")
+        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+            result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
+        assert result.status == UpdateStatus.CHANGED
+        assert result.fingerprint == "rev-42"
+
+    async def test_returns_changed_when_no_prior_fingerprint(self, adapter, source_state):
+        source_state.metadata_fingerprint = None
+        meta = DocMetadata(title="My Doc", revision_id="rev-42")
+        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+            result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
+        assert result.status == UpdateStatus.CHANGED
+
+    async def test_returns_unknown_when_revision_fetch_fails(self, adapter, source_state):
+        meta = DocMetadata(title=None, revision_id=None)
+        with patch("brain_sync.sources.googledocs.fetch_doc_metadata", new_callable=AsyncMock, return_value=meta):
+            result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNKNOWN
 
 
@@ -87,8 +116,22 @@ class TestFetch:
         assert "World" in result.body_markdown
         assert result.title == "My Doc"
         assert result.comments == []
-        assert result.metadata_fingerprint is None
+        assert result.metadata_fingerprint is None  # no prior_adapter_state
         assert result.source_html is None
+
+    async def test_fetch_returns_revision_as_fingerprint(self, adapter):
+        from brain_sync.state import SourceState
+
+        ss = SourceState(
+            canonical_id="gdoc:abc123",
+            source_url="https://docs.google.com/document/d/abc123/edit",
+            source_type="googledocs",
+        )
+        fake_html = "<html><head><title>My Doc</title></head><body><p>Content</p></body></html>"
+        with patch("brain_sync.sources.googledocs.fetch_doc_html", new_callable=AsyncMock, return_value=fake_html):
+            result = await adapter.fetch(ss, Mock(), AsyncMock(), prior_adapter_state={"revisionId": "rev-42"})
+
+        assert result.metadata_fingerprint == "rev-42"
 
     async def test_fetch_falls_back_to_api_title_when_html_title_missing(self, adapter):
         from brain_sync.state import SourceState
@@ -531,3 +574,54 @@ class TestFetchDocTitle:
 
         result = await fetch_doc_title("abc123", auth, client)
         assert result is None
+
+
+class TestFetchDocMetadata:
+    async def test_success_returns_title_and_revision(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"title": "My Doc", "revisionId": "rev-42"}
+        mock_response.raise_for_status = MagicMock()
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_doc_metadata("abc123", auth, client)
+        assert result.title == "My Doc"
+        assert result.revision_id == "rev-42"
+        client.get.assert_called_once()
+        call_kwargs = client.get.call_args
+        assert "docs.googleapis.com/v1/documents/abc123" in call_kwargs.args[0]
+
+    async def test_404_returns_none_fields(self):
+        import httpx
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found", request=MagicMock(), response=mock_response
+        )
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_doc_metadata("missing123", auth, client)
+        assert result.title is None
+        assert result.revision_id is None
+
+    async def test_network_error_returns_none_fields(self):
+        import httpx
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError("connection refused")
+
+        result = await fetch_doc_metadata("abc123", auth, client)
+        assert result.title is None
+        assert result.revision_id is None

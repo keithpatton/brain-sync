@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from brain_sync.converter import format_comments
-from brain_sync.fileops import content_hash, write_if_changed
+from brain_sync.fileops import content_hash, rediscover_local_path, write_if_changed
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
@@ -69,7 +69,21 @@ async def process_source(
     # Skip if unchanged
     context_dir = target_dir / "_sync-context"
     context_missing = _has_context_flags(source_state) and not context_dir.exists()
-    if check and check.status == UpdateStatus.UNCHANGED and target.exists() and not context_missing:
+    if root is not None:
+        existing_file = rediscover_local_path(root, source_state.canonical_id)
+    else:
+        existing_file = target if target.exists() else None
+    if check:
+        log.debug(
+            "Version check for %s: status=%s, fingerprint=%s, stored=%s, target=%s, found=%s",
+            doc_id,
+            check.status.name,
+            check.fingerprint,
+            source_state.metadata_fingerprint,
+            target,
+            existing_file,
+        )
+    if check and check.status == UpdateStatus.UNCHANGED and existing_file is not None and not context_missing:
         log.debug("Source %s unchanged (fingerprint %s)", doc_id, check.fingerprint)
         source_state.last_checked_utc = now
         return False
@@ -150,6 +164,6 @@ async def process_source(
         source_state.last_changed_utc = now
         log.info("Updated %s (content changed)", filename)
     else:
-        log.debug("Checked %s (no change)", filename)
+        log.info("Fetched %s (no content change)", filename)
 
     return changed
