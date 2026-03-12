@@ -107,6 +107,34 @@ In Claude Desktop you can also attach a local document (drag-and-drop or the **+
 
 2. **Restart Claude Code.** Invoke with `/brain-sync` or mention "brain" in conversation.
 
+**Examples — managing sources:**
+
+> "Add https://acme.atlassian.net/wiki/spaces/ENG/pages/123456 to my brain in initiatives/platform — fetch children and sync attachments"
+
+> "Remove the Platform ERD page from my brain"
+
+> "Update the product roadmap doc to sync attachments too"
+
+**Examples — querying and analysis:**
+
+> "What do my brain's insights say has changed across my initiatives in the last month?"
+
+> "Looking across the board meeting notes and company performance docs in my brain, based on my role what should I be focusing on for my upcoming presentation?"
+
+> "Prepare me for tomorrow's architecture review — pull together everything relevant from the Platform AAA area"
+
+> "What gaps exist in the Project X documentation? What's been discussed but never written down?"
+
+**Examples — brain-augmented development (Claude Code's strength):**
+
+> "Compare the source code in src/ against the architectural standards and ERD in my brain — produce a compliance report with specific violations"
+
+> "Based on the API contract docs in my brain, generate integration tests for the traveller profile service"
+
+> "Review this diff against the coding guidelines and ADRs in my brain before I open a PR"
+
+> "The deployment runbook in my brain is out of date — read the current Terraform configs and update the runbook to match"
+
 #### Claude Desktop
 
 1. **Install the skill:** Customize > Skills > **+** > Upload a skill, then select `src/brain_sync/skills/brain_sync/SKILL.md` from the brain-sync repo.
@@ -126,7 +154,29 @@ In Claude Desktop you can also attach a local document (drag-and-drop or the **+
 
 3. **Restart Claude Desktop.** Mention "brain" in conversation or paste URLs to sync.
 
-> **Tip (Claude Desktop):** You can attach files or paste one or more URLs at once — brain-sync will handle them together, making it easy to add multiple sources in a single step.
+**Examples — managing sources:**
+
+> "Add this to my brain in initiatives/platform" *(paste one or more URLs — brain-sync handles them together)*
+
+> "Sync this Google Doc and its attachments into the product area"
+
+> [Drag-and-drop a .docx or PDF] "Add this to my brain — suggest where it should go"
+
+> "Here are the five planning docs for Q3 — add them all under initiatives/q3-planning" *(attach multiple files at once)*
+
+**Examples — conversational analysis:**
+
+> "Looking across last half year's board meeting notes and the company performance docs, based on my role what should I be focusing on for my presentation?"
+
+> "Summarise everything my brain knows about Project X — what's the current state, what are the risks, and what decisions are pending?"
+
+> "I just came out of a meeting where they mentioned the 'Observer Pattern migration' — what does my brain know about that? Give me the full picture."
+
+> "Compare the Q2 and Q3 planning docs in my brain — what commitments shifted and what's new?"
+
+> "Based on everything in my brain about the platform team, draft a stakeholder update email covering the last two weeks"
+
+> **Tip:** You can attach files or paste one or more URLs at once — brain-sync will handle them together, making it easy to add multiple sources in a single step.
 
 ## Folder structure
 
