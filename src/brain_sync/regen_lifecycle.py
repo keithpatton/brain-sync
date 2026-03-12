@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class RegenSession:
     owner_id: str
+    session_id: str
     root: Path
 
 
@@ -46,7 +47,8 @@ async def regen_session(
           after cleanup.
     """
     owner_id = uuid4().hex
-    session = RegenSession(owner_id=owner_id, root=root)
+    session_id = uuid4().hex
+    session = RegenSession(owner_id=owner_id, session_id=session_id, root=root)
 
     if reclaim_stale:
         count = reclaim_stale_running_states(root, stale_threshold_secs)

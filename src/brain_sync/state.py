@@ -12,7 +12,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -63,13 +63,35 @@ CREATE TABLE IF NOT EXISTS insight_state (
     regen_started_utc TEXT,
     last_regen_utc TEXT,
     regen_status TEXT NOT NULL DEFAULT 'idle',
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    num_turns INTEGER,
-    model TEXT,
     owner_id TEXT,
     error_reason TEXT
 );
+"""
+
+_TOKEN_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS token_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL CHECK(operation_type IN ('regen','query','classify')),
+    resource_type TEXT,
+    resource_id TEXT,
+    is_chunk INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER,
+    duration_ms INTEGER,
+    num_turns INTEGER,
+    success INTEGER NOT NULL CHECK(success IN (0,1)),
+    created_utc TEXT NOT NULL
+);
+
+CREATE INDEX idx_token_events_session ON token_events(session_id);
+CREATE INDEX idx_token_events_resource ON token_events(resource_type, resource_id)
+    WHERE resource_type IS NOT NULL;
+CREATE INDEX idx_token_events_resource_session
+    ON token_events(resource_type, resource_id, session_id)
+    WHERE resource_type IS NOT NULL;
 """
 
 _DOCUMENTS_DDL = """
@@ -221,10 +243,6 @@ class InsightState(_PathNormalized):
     regen_started_utc: str | None = None
     last_regen_utc: str | None = None
     regen_status: str = "idle"
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    num_turns: int | None = None
-    model: str | None = None
     owner_id: str | None = None
     error_reason: str | None = None
 
@@ -635,6 +653,45 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         )
         conn.commit()
         log.info("Migrated DB schema from v%d to v14: renamed children/attachments flags", from_version)
+        from_version = 14
+
+    if from_version < 15:
+        # v14 → v15: Add token_events table for invocation-level telemetry
+        conn.executescript(_TOKEN_EVENTS_DDL)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '15')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v15: added token_events table")
+        from_version = 15
+
+    if from_version < 16:
+        # v15 → v16: Remove token columns from insight_state (now tracked in token_events)
+        conn.execute("ALTER TABLE insight_state RENAME TO insight_state_old")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS insight_state (
+                knowledge_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                summary_hash TEXT,
+                regen_started_utc TEXT,
+                last_regen_utc TEXT,
+                regen_status TEXT NOT NULL DEFAULT 'idle',
+                owner_id TEXT,
+                error_reason TEXT
+            );
+            INSERT INTO insight_state (knowledge_path, content_hash, summary_hash,
+                regen_started_utc, last_regen_utc, regen_status, owner_id, error_reason)
+            SELECT knowledge_path, content_hash, summary_hash,
+                regen_started_utc, last_regen_utc, regen_status, owner_id, error_reason
+            FROM insight_state_old;
+        """)
+        conn.execute("DROP TABLE insight_state_old")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '16')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v16: removed token columns from insight_state")
+        from_version = 16
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -662,6 +719,7 @@ def _connect(root: Path) -> sqlite3.Connection:
         conn.executescript(_DOCUMENTS_DDL)
         conn.executescript(_RELATIONSHIPS_DDL)
         conn.executescript(_INSIGHT_STATE_DDL)
+        conn.executescript(_TOKEN_EVENTS_DDL)
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -1079,7 +1137,6 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
         row = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
-            "input_tokens, output_tokens, num_turns, model, "
             "owner_id, error_reason "
             "FROM insight_state WHERE knowledge_path = ?",
             (knowledge_path,),
@@ -1093,12 +1150,8 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
             regen_started_utc=row[3],
             last_regen_utc=row[4],
             regen_status=row[5],
-            input_tokens=row[6],
-            output_tokens=row[7],
-            num_turns=row[8],
-            model=row[9],
-            owner_id=row[10],
-            error_reason=row[11],
+            owner_id=row[6],
+            error_reason=row[7],
         )
     finally:
         conn.close()
@@ -1114,19 +1167,14 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
             "INSERT INTO insight_state "
             "(knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
-            "input_tokens, output_tokens, num_turns, model, "
             "owner_id, error_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(knowledge_path) DO UPDATE SET "
             "content_hash=excluded.content_hash, "
             "summary_hash=excluded.summary_hash, "
             "regen_started_utc=excluded.regen_started_utc, "
             "last_regen_utc=excluded.last_regen_utc, "
             "regen_status=excluded.regen_status, "
-            "input_tokens=excluded.input_tokens, "
-            "output_tokens=excluded.output_tokens, "
-            "num_turns=excluded.num_turns, "
-            "model=excluded.model, "
             "owner_id=excluded.owner_id, "
             "error_reason=excluded.error_reason",
             (
@@ -1136,10 +1184,6 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
                 istate.regen_started_utc,
                 istate.last_regen_utc,
                 istate.regen_status,
-                istate.input_tokens,
-                istate.output_tokens,
-                istate.num_turns,
-                istate.model,
                 istate.owner_id,
                 error_reason,
             ),
@@ -1156,7 +1200,6 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
         rows = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
-            "input_tokens, output_tokens, num_turns, model, "
             "owner_id, error_reason "
             "FROM insight_state"
         ).fetchall()
@@ -1168,12 +1211,8 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
                 regen_started_utc=r[3],
                 last_regen_utc=r[4],
                 regen_status=r[5],
-                input_tokens=r[6],
-                output_tokens=r[7],
-                num_turns=r[8],
-                model=r[9],
-                owner_id=r[10],
-                error_reason=r[11],
+                owner_id=r[6],
+                error_reason=r[7],
             )
             for r in rows
         ]

@@ -1499,31 +1499,43 @@ class TestChunkedRegenFlow:
         assert summary_path.exists()
 
     def test_token_tracking_across_chunks(self, brain):
-        """Total tokens include chunk + merge calls."""
+        """Token telemetry params are passed through chunk + merge calls."""
         kdir = brain / "knowledge" / "tok"
         kdir.mkdir(parents=True)
         big_content = "\n\n".join(f"## Section {i}\n{'data ' * 100}" for i in range(20))
         (kdir / "tok.md").write_text(big_content, encoding="utf-8")
 
+        invocations: list[dict] = []
+
         async def mock_invoke(prompt, cwd, **kwargs):
+            invocations.append(kwargs)
             return ClaudeResult(
                 success=True,
                 output="# Summary\n\nDetailed summary of this section or merge.",
                 input_tokens=500,
                 output_tokens=200,
+                duration_ms=1000,
             )
 
         with (
             patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
             patch("brain_sync.regen.CHUNK_TARGET_CHARS", 1500),
         ):
-            asyncio.run(regen_path(brain, "tok"))
+            asyncio.run(regen_path(brain, "tok", session_id="test-session-1"))
 
         istate = load_insight_state(brain, "tok")
         assert istate is not None
-        # Total tokens should be > single call (chunks + merge)
-        assert istate.input_tokens is not None
-        assert istate.input_tokens > 500  # more than one call
+        # Verify session_id and telemetry params were passed to invoke_claude
+        assert len(invocations) > 1  # chunks + final
+        chunk_calls = [i for i in invocations if i.get("is_chunk") is True]
+        final_calls = [i for i in invocations if i.get("is_chunk") is False]
+        assert len(chunk_calls) >= 1
+        assert len(final_calls) >= 1
+        # All calls should have session_id and operation_type
+        for inv in invocations:
+            assert inv.get("session_id") == "test-session-1"
+            assert inv.get("operation_type") == "regen"
+            assert inv.get("resource_type") == "knowledge"
 
 
 class TestTokenBudgetEnforcement:

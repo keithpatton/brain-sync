@@ -86,7 +86,7 @@ async def run(root: Path) -> None:
     last_rescan = time.monotonic()
 
     async with regen_session(root, reclaim_stale=True) as session:
-        regen_queue = RegenQueue(root=root, owner_id=session.owner_id)
+        regen_queue = RegenQueue(root=root, owner_id=session.owner_id, session_id=session.session_id)
 
         # Enqueue regen for paths updated by reconcile so insights rebuild
         # automatically after offline moves.

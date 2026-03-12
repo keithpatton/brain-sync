@@ -52,7 +52,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 14
+        assert state.version == 16
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -537,7 +537,7 @@ class TestSchemaV4Migration:
         # Verify schema version after full migration chain
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "14"
+        assert version == "16"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
@@ -776,3 +776,154 @@ class TestPathNormalizationOnLoad:
         loaded = load_insight_state(tmp_path, "a/b/c")
         assert loaded is not None
         assert loaded.knowledge_path == "a/b/c"
+
+
+class TestSchemaV15V16Migration:
+    """Tests for token_events table (v15) and insight_state cleanup (v16)."""
+
+    def test_fresh_db_has_token_events_table(self, tmp_path):
+        """Fresh DB includes token_events with indexes."""
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "token_events" in tables
+
+        # Check indexes exist
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+        assert "idx_token_events_session" in indexes
+        assert "idx_token_events_resource" in indexes
+        assert "idx_token_events_resource_session" in indexes
+        conn.close()
+
+    def test_fresh_db_insight_state_no_token_columns(self, tmp_path):
+        """Fresh DB insight_state has no token columns."""
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
+        assert "input_tokens" not in cols
+        assert "output_tokens" not in cols
+        assert "num_turns" not in cols
+        assert "model" not in cols
+        # These should still exist
+        assert "knowledge_path" in cols
+        assert "content_hash" in cols
+        assert "regen_status" in cols
+        assert "owner_id" in cols
+        assert "error_reason" in cols
+        conn.close()
+
+    def test_v14_to_v16_migration(self, tmp_path):
+        """v14 DB migrates to v16: creates token_events, rebuilds insight_state."""
+        import sqlite3
+
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        # Create v14 schema with token columns in insight_state
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                canonical_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                next_check_utc TEXT,
+                interval_seconds INTEGER,
+                target_path TEXT NOT NULL DEFAULT '',
+                fetch_children INTEGER NOT NULL DEFAULT 0,
+                sync_attachments INTEGER NOT NULL DEFAULT 0,
+                child_path TEXT
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+            CREATE TABLE insight_state (
+                knowledge_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                summary_hash TEXT,
+                regen_started_utc TEXT,
+                last_regen_utc TEXT,
+                regen_status TEXT NOT NULL DEFAULT 'idle',
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                num_turns INTEGER,
+                model TEXT,
+                owner_id TEXT,
+                error_reason TEXT
+            );
+        """)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '14')")
+        # Insert test data to verify preservation
+        conn.execute(
+            "INSERT INTO insight_state "
+            "(knowledge_path, content_hash, regen_status, input_tokens, output_tokens, num_turns, model, owner_id) "
+            "VALUES ('area/foo', 'hash123', 'idle', 1000, 200, 3, 'claude-sonnet', NULL)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Trigger migration via _connect
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+
+        # Check version
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        assert version == "16"
+
+        # token_events table exists
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "token_events" in tables
+
+        # insight_state no longer has token columns
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
+        assert "input_tokens" not in cols
+        assert "output_tokens" not in cols
+        assert "num_turns" not in cols
+        assert "model" not in cols
+
+        # Data preserved (non-token fields)
+        row = conn.execute(
+            "SELECT knowledge_path, content_hash, regen_status FROM insight_state WHERE knowledge_path = 'area/foo'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "area/foo"
+        assert row[1] == "hash123"
+        assert row[2] == "idle"
+
+        conn.close()
+
+    def test_insight_state_dataclass_no_token_fields(self):
+        """InsightState dataclass has no token-related fields."""
+        import dataclasses
+
+        field_names = {f.name for f in dataclasses.fields(InsightState)}
+        assert "input_tokens" not in field_names
+        assert "output_tokens" not in field_names
+        assert "num_turns" not in field_names
+        assert "model" not in field_names

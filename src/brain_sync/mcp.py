@@ -463,9 +463,9 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
             try:
                 if path:
                     path = normalize_path(path)
-                    count = await regen_path(rt.root, path, owner_id=session.owner_id)
+                    count = await regen_path(rt.root, path, owner_id=session.owner_id, session_id=session.session_id)
                 else:
-                    count = await regen_all(rt.root, owner_id=session.owner_id)
+                    count = await regen_all(rt.root, owner_id=session.owner_id, session_id=session.session_id)
                 return {
                     "status": "ok",
                     "summaries_regenerated": count,
@@ -832,6 +832,31 @@ def brain_sync_open_file(
 
     log.debug("brain_sync_open_file(%r, offset=%d) → %d chars, truncated=%s", path, offset, len(chunk), has_more)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Token usage tool
+# ---------------------------------------------------------------------------
+
+
+@server.tool(
+    name="brain_sync_usage",
+    description=(
+        "Show token usage summary for LLM invocations. "
+        "Returns totals, per-operation breakdown, and per-day breakdown. "
+        "Defaults to the last 7 days."
+    ),
+)
+def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
+    """Return token usage telemetry summary."""
+    from brain_sync.token_tracking import get_usage_summary
+
+    rt = _runtime(ctx)
+    try:
+        summary = get_usage_summary(rt.root, days=days)
+        return {"status": "ok", "days": days, **summary}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 if __name__ == "__main__":

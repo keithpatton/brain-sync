@@ -42,6 +42,7 @@ class RegenQueue:
 
     root: Path
     owner_id: str | None = None
+    session_id: str | None = None
     debounce_secs: float = DEFAULT_DEBOUNCE_SECS
     cooldown_secs: float = DEFAULT_COOLDOWN_SECS
     max_regens_per_hour: int = DEFAULT_MAX_REGENS_PER_HOUR
@@ -127,7 +128,9 @@ class RegenQueue:
                     continue
 
                 try:
-                    count = await regen_path(self.root, knowledge_path, owner_id=self.owner_id)
+                    count = await regen_path(
+                        self.root, knowledge_path, owner_id=self.owner_id, session_id=self.session_id
+                    )
                     self._last_regen[knowledge_path] = time.monotonic()
                     self._regen_times.append(time.monotonic())
                     self._retry_counts.pop(knowledge_path, None)

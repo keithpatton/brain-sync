@@ -1224,3 +1224,42 @@ class TestFsUtils:
         result = get_child_dirs(tmp_path)
         names = [p.name for p in result]
         assert names == ["a-area", "b-area"]  # sorted, no hidden/excluded
+
+
+class TestBrainSyncUsage:
+    """Tests for brain_sync_usage MCP tool."""
+
+    def test_usage_returns_summary_structure(self, brain_root):
+        from brain_sync.mcp import brain_sync_usage
+        from brain_sync.state import _connect
+        from brain_sync.token_tracking import OP_REGEN, record_token_event
+
+        # Ensure DB exists
+        _connect(brain_root).close()
+
+        record_token_event(
+            root=brain_root,
+            session_id="mcp-test-sess",
+            operation_type=OP_REGEN,
+            resource_type="knowledge",
+            resource_id="initiatives/AAA",
+            is_chunk=False,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=200,
+            duration_ms=5000,
+            num_turns=3,
+            success=True,
+        )
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_usage(ctx, days=7)
+
+        assert result["status"] == "ok"
+        assert result["days"] == 7
+        assert result["total_invocations"] == 1
+        assert result["total_input"] == 1000
+        assert result["total_output"] == 200
+        assert result["total_tokens"] == 1200
+        assert len(result["by_operation"]) >= 1
+        assert len(result["by_day"]) >= 1

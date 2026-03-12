@@ -481,7 +481,42 @@ def handle_reconcile(args) -> None:
 
 
 def handle_status(args) -> None:
-    log.info("Status not yet implemented")
+    from brain_sync.commands.sources import list_sources
+    from brain_sync.state import load_all_insight_states
+    from brain_sync.token_tracking import get_usage_summary
+
+    root = _resolve_root_or_exit(args)
+
+    # Source count
+    try:
+        sources = list_sources(root=root)
+        log.info("Sources: %d registered", len(sources))
+    except Exception:
+        log.exception("Failed to load sources")
+
+    # Regen health
+    try:
+        states = load_all_insight_states(root)
+        by_status: dict[str, int] = {}
+        for s in states:
+            by_status[s.regen_status] = by_status.get(s.regen_status, 0) + 1
+        parts = [f"{status}={count}" for status, count in sorted(by_status.items())]
+        log.info("Insight states: %s", ", ".join(parts) if parts else "none")
+    except Exception:
+        log.exception("Failed to load insight states")
+
+    # Token usage
+    try:
+        usage = get_usage_summary(root, days=7)
+        log.info(
+            "Token usage (7d): %d invocations, %d input, %d output, %d total",
+            usage["total_invocations"],
+            usage["total_input"],
+            usage["total_output"],
+            usage["total_tokens"],
+        )
+    except Exception:
+        log.exception("Failed to load token usage")
 
 
 def handle_regen(args) -> None:
@@ -516,9 +551,9 @@ def handle_regen(args) -> None:
         # implicitly clean up unrelated stale rows from prior crashes.
         async with regen_session(root, reclaim_stale=not knowledge_path) as session:
             if knowledge_path:
-                return await regen_path(root, knowledge_path, owner_id=session.owner_id)
+                return await regen_path(root, knowledge_path, owner_id=session.owner_id, session_id=session.session_id)
             else:
-                return await regen_all(root, owner_id=session.owner_id)
+                return await regen_all(root, owner_id=session.owner_id, session_id=session.session_id)
 
     loop = asyncio.new_event_loop()
     try:

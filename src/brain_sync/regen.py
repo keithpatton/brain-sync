@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -43,6 +44,7 @@ from brain_sync.state import (
     load_insight_state,
     save_insight_state,
 )
+from brain_sync.token_tracking import OP_REGEN
 
 
 class RegenFailed(Exception):
@@ -408,6 +410,7 @@ class ClaudeResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     num_turns: int | None = None
+    duration_ms: int | None = None
 
 
 @dataclass
@@ -591,13 +594,22 @@ async def invoke_claude(
     max_turns: int = 6,
     system_prompt: str | None = None,
     tools: str | None = None,
+    session_id: str | None = None,
+    operation_type: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    is_chunk: bool = False,
 ) -> ClaudeResult:
     """Invoke Claude CLI in non-interactive mode.
 
     Prompt is delivered via stdin. When *system_prompt* and *tools* are set,
     the CLI's heavy agent system prompt (~130K tokens) is replaced with a
     minimal directive, turning it into a thin inference wrapper.
+
+    When *session_id* is provided, records a token_events row for telemetry.
     """
+    t0 = time.monotonic()
+
     cmd = [
         "claude",
         "--print",
@@ -623,6 +635,27 @@ async def invoke_claude(
 
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+    def _record(result: ClaudeResult) -> ClaudeResult:
+        """Record telemetry if session_id is set. Returns result unchanged."""
+        if session_id and operation_type:
+            from brain_sync.token_tracking import record_token_event
+
+            record_token_event(
+                root=cwd,
+                session_id=session_id,
+                operation_type=operation_type,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                is_chunk=is_chunk,
+                model=model or None,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                duration_ms=result.duration_ms,
+                num_turns=result.num_turns,
+                success=result.success,
+            )
+        return result
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(cwd),
@@ -640,8 +673,10 @@ async def invoke_claude(
         proc.kill()
         await proc.communicate()
         log.warning("Claude CLI timed out after %ds", timeout)
-        return ClaudeResult(success=False, output="")
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
 
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
     stderr_text = stderr.decode("utf-8", errors="replace").strip()
     stdout_text = stdout.decode("utf-8", errors="replace")
 
@@ -653,7 +688,7 @@ async def invoke_claude(
         log.warning("Claude CLI failed (rc=%d) stderr: %s", proc.returncode, stderr_text[:500])
         if stdout_text.strip():
             log.warning("Claude CLI failed stdout: %s", stdout_text[:1000])
-        return ClaudeResult(success=False, output="")
+        return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
 
     # Parse JSON output for token counts
     input_tokens = None
@@ -678,23 +713,29 @@ async def invoke_claude(
         )
         if data.get("is_error") or data.get("subtype", "").startswith("error"):
             log.warning("Claude CLI error subtype: %s", data.get("subtype"))
-            return ClaudeResult(
-                success=False,
-                output=result_text,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                num_turns=num_turns,
+            return _record(
+                ClaudeResult(
+                    success=False,
+                    output=result_text,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    num_turns=num_turns,
+                    duration_ms=elapsed_ms,
+                )
             )
     except (json.JSONDecodeError, TypeError):
         log.debug("Claude CLI output was not JSON, falling back to stderr parsing")
         input_tokens, output_tokens = _parse_token_counts(stderr_text)
 
-    return ClaudeResult(
-        success=True,
-        output=result_text,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        num_turns=num_turns,
+    return _record(
+        ClaudeResult(
+            success=True,
+            output=result_text,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            num_turns=num_turns,
+            duration_ms=elapsed_ms,
+        )
     )
 
 
@@ -1045,6 +1086,7 @@ async def regen_path(
     max_depth: int = 10,
     config: RegenConfig | None = None,
     owner_id: str | None = None,
+    session_id: str | None = None,
 ) -> int:
     """Run the deterministic incremental regen loop for a knowledge path.
 
@@ -1157,15 +1199,12 @@ async def regen_path(
                 regen_started_utc=started,
                 last_regen_utc=istate.last_regen_utc if istate else None,
                 regen_status="running",
-                model=config.model,
                 owner_id=owner_id,
             ),
         )
 
         # Chunk-and-merge + final invoke — unified exception handler
         # ensures "failed" state is always saved on any error.
-        chunk_input_tokens = 0
-        chunk_output_tokens = 0
         try:
             # Chunk-and-merge for oversized files
             if prompt_result.oversized_files:
@@ -1191,12 +1230,15 @@ async def regen_path(
                             max_turns=1,
                             system_prompt=MINIMAL_SYSTEM_PROMPT,
                             tools="",
+                            session_id=session_id,
+                            operation_type=OP_REGEN,
+                            resource_type="knowledge",
+                            resource_id=current_path,
+                            is_chunk=True,
                             is_success=lambda r: r.success,
                             breaker=claude_breaker,
                         )
                         file_summaries.append(chunk_result.output.strip())
-                        chunk_input_tokens += chunk_result.input_tokens or 0
-                        chunk_output_tokens += chunk_result.output_tokens or 0
                         log.debug(
                             "[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
                             regen_id,
@@ -1243,6 +1285,11 @@ async def regen_path(
                 max_turns=config.max_turns,
                 system_prompt=MINIMAL_SYSTEM_PROMPT,
                 tools="",
+                session_id=session_id,
+                operation_type=OP_REGEN,
+                resource_type="knowledge",
+                resource_id=current_path,
+                is_chunk=False,
                 is_success=lambda r: r.success,
                 breaker=claude_breaker,
             )
@@ -1259,7 +1306,6 @@ async def regen_path(
                         regen_started_utc=started,
                         last_regen_utc=now,
                         regen_status="failed",
-                        model=config.model,
                         owner_id=owner_id,
                         error_reason=str(e),
                     ),
@@ -1268,16 +1314,6 @@ async def regen_path(
                 log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
             raise RegenFailed(current_path or "(root)", str(e)) from e
         now = datetime.now(UTC).isoformat()
-
-        # Add chunk token totals to final result for unified tracking
-        if chunk_input_tokens or chunk_output_tokens:
-            result = ClaudeResult(
-                success=result.success,
-                output=result.output,
-                input_tokens=(result.input_tokens or 0) + chunk_input_tokens,
-                output_tokens=(result.output_tokens or 0) + chunk_output_tokens,
-                num_turns=result.num_turns,
-            )
 
         # Parse structured output (summary + optional journal)
         new_summary, journal_text = _parse_structured_output(
@@ -1302,10 +1338,6 @@ async def regen_path(
                         regen_started_utc=started,
                         last_regen_utc=now,
                         regen_status="failed",
-                        input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        num_turns=result.num_turns,
-                        model=config.model,
                         owner_id=owner_id,
                         error_reason=err_msg,
                     ),
@@ -1332,10 +1364,6 @@ async def regen_path(
                     regen_started_utc=started,
                     last_regen_utc=now,
                     regen_status="idle",
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    num_turns=result.num_turns,
-                    model=config.model,
                     owner_id=None,
                 ),
             )
@@ -1359,10 +1387,6 @@ async def regen_path(
                 regen_started_utc=started,
                 last_regen_utc=now,
                 regen_status="idle",
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                num_turns=result.num_turns,
-                model=config.model,
                 owner_id=None,
             ),
         )
@@ -1391,6 +1415,7 @@ async def regen_all(
     *,
     config: RegenConfig | None = None,
     owner_id: str | None = None,
+    session_id: str | None = None,
 ) -> int:
     """Regenerate insights for all knowledge paths (bottom-up).
 
@@ -1412,7 +1437,7 @@ async def regen_all(
     for path in content_paths:
         log.info("Assessing insights generation: %s", path)
         try:
-            count = await regen_path(root, path, config=config, owner_id=owner_id)
+            count = await regen_path(root, path, config=config, owner_id=owner_id, session_id=session_id)
             total += count
         except KeyboardInterrupt:
             log.info("Interrupted during regen of %s, stopping batch", path)

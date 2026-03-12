@@ -21,7 +21,7 @@ All source lives under `src/brain_sync/`.
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind `SourceAdapter` protocol |
 | REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + attachments) |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
-| State | `state` | SQLite WAL persistence (sources, documents, relationships, insight state) |
+| State | `state`, `token_tracking` | SQLite WAL persistence (sources, documents, relationships, insight state, token events) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
 | Attachments | `attachments`, `area_index` | Attachment sync lifecycle, area indexing |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
@@ -136,6 +136,45 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 - **State persistence coupling** — `state._connect` no longer imported by command modules; replaced with public API (`delete_source`, `update_source_flags`, `ensure_db`, `update_source_target_path`)
 - **Cache invalidation race** — `process_source()` in daemon loop now invalidates global context cache when `_core/` sources change, closing the race between sync writes and regen reads
 - **Dead alias** — `_find_all_content_paths` alias removed from `regen.py`; callers use `find_all_content_paths` from `fs_utils` directly
+
+---
+
+## 3.5. Telemetry
+
+### Three Independent State Systems
+
+| System | Table/Column | Purpose | Lifetime |
+|---|---|---|---|
+| Content state | `insight_state` | Content hashes, regen status, error tracking | Per-resource, updated each regen |
+| Concurrency lock | `insight_state.owner_id` | Regen ownership for crash recovery | Transient, cleared on completion |
+| Invocation telemetry | `token_events` | Append-only LLM cost accounting | Permanent history |
+
+Token usage is recorded exclusively in `token_events`. The `insight_state` table contains only content state and regen coordination fields — token columns were removed in schema v16.
+
+### Identity Model
+
+`session_id` and `owner_id` are generated independently in `regen_lifecycle.py`. `session_id` groups all LLM invocations within one regen session for cost aggregation. `owner_id` manages concurrent regen slot ownership. Their lifetimes currently align but they serve different purposes.
+
+### Resource Abstraction
+
+`token_events` uses `resource_type`/`resource_id` to remain workflow-agnostic:
+
+| Workflow | resource_type | resource_id |
+|---|---|---|
+| Regen (chunk or final) | `"knowledge"` | knowledge path |
+| Future query | `"query"` | query identifier |
+| Future classify | `"document"` | document ID |
+
+### Timing
+
+`duration_ms` measures provider invocation time for a single attempt. Retry backoff delays are excluded — each retry attempt gets its own `token_events` row with its own `duration_ms`.
+
+### Extension Model
+
+New LLM workflows should:
+1. Use operation type constants from `token_tracking.py` (`OP_REGEN`, `OP_QUERY`, `OP_CLASSIFY`)
+2. Pass `session_id`, `operation_type`, `resource_type`, `resource_id` to `invoke_claude()`
+3. Query via MCP `brain_sync_usage` tool or CLI `brain-sync status`
 
 ---
 

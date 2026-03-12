@@ -109,7 +109,7 @@ class TestProcessReady:
             count = asyncio.run(q.process_ready())
 
         assert count == 1
-        mock_regen.assert_called_once_with(brain, "project", owner_id=None)
+        mock_regen.assert_called_once_with(brain, "project", owner_id=None, session_id=None)
 
     def test_process_empty_queue(self, brain):
         q = RegenQueue(root=brain)
