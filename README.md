@@ -60,7 +60,7 @@ To re-authenticate: `brain-sync config google --reauth`
 # Confluence page (with context discovery)
 brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
   --path initiatives/my-project \
-  --include-links --include-children --include-attachments
+  --include-children --include-attachments
 
 # Google Doc
 brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
@@ -68,7 +68,7 @@ brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
 
 `--path` is optional. If omitted, brain-sync will analyse your brain structure and suggest a placement based on existing folders and context.
 
-`--include-links`, `--include-children`, and `--include-attachments` are Confluence-only. Comments are synced for Confluence; Google Docs comments are not yet supported.
+`--include-children` and `--include-attachments` are Confluence-only. Comments are synced for Confluence; Google Docs comments are not yet supported.
 
 > **Tip (Claude Desktop):** You can attach files or paste one or more URLs at once when chatting in Claude Desktop — brain-sync will handle them together, making it easy to add multiple sources in a single step.
 
@@ -217,11 +217,11 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 |---|---|
 | `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
 | `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <source> [--path <path>] [--include-links] [--include-children] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
+| `brain-sync add <source> [--path <path>] [--include-children] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
-| `brain-sync update <canonical-id-or-url> [--include-links\|--no-include-links] [--include-children\|--no-include-children] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
+| `brain-sync update <canonical-id-or-url> [--include-children\|--no-include-children] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
 | `brain-sync reconcile [--root <path>]` | Update DB target paths to match where files actually are on disk |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
 | `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
