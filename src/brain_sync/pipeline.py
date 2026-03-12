@@ -33,7 +33,7 @@ class ChildDiscoveryResult:
 
 
 def _has_context_flags(ss: SourceState) -> bool:
-    return ss.include_attachments
+    return ss.sync_attachments
 
 
 def _resolve_target_dir(root: Path | None, source_state: SourceState) -> Path:
@@ -112,7 +112,7 @@ async def process_source(
             filename = new_filename
 
     # Child discovery (one-shot flag, capability-gated)
-    if source_state.include_children and caps.supports_children and root is not None:
+    if source_state.fetch_children and caps.supports_children and root is not None:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
             from brain_sync.attachments import discover_children
@@ -132,7 +132,7 @@ async def process_source(
 
     # Attachment sync (capability-gated)
     att_title_to_path: dict[str, str] = {}
-    if caps.supports_attachments and source_state.include_attachments and root is not None:
+    if caps.supports_attachments and source_state.sync_attachments and root is not None:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
             from brain_sync.attachments import process_attachments
@@ -143,7 +143,7 @@ async def process_source(
                 auth=auth,  # pyright: ignore[reportArgumentType]
                 client=http_client,
                 root=root,
-                include_attachments=source_state.include_attachments,
+                sync_attachments=source_state.sync_attachments,
             )
         except Exception as e:
             log.warning("Attachment processing failed for %s: %s", source_state.source_url, e)

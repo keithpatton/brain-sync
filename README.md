@@ -4,6 +4,11 @@ A brain engine that syncs external knowledge sources, watches for changes, and m
 
 ## Getting started
 
+### Prerequisites
+
+- **Python 3.11+**
+- **Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+
 ### Install
 
 ```bash
@@ -16,10 +21,6 @@ For Google Docs syncing, include the `google` extra:
 pip install -e ".[google]"
 ```
 
-### Prerequisites
-
-**Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-
 ### Initialise a brain
 
 ```bash
@@ -28,13 +29,15 @@ brain-sync init ~/my-brain
 
 This creates the folder structure, initialises the SQLite state database, and installs the Claude Code skill to `~/.claude/skills/brain-sync/`.
 
-Safe to run on an existing folder — only adds missing structure.
+Recommended: make your brain a private git repository, nobody wants to lose their mind 🤯
 
-### Configure source credentials
+### Configure sources
 
-After initialising, configure credentials for each source type you want to sync from. Supported: Confluence and Google Docs.
+After initialising, configure credentials for each source type you want to sync from.
 
-**Confluence** — create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then:
+#### Confluence
+
+Create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then:
 
 ```bash
 brain-sync config confluence \
@@ -45,7 +48,9 @@ brain-sync config confluence \
 
 This writes credentials to `~/.brain-sync/config.json`. Alternatively, set environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`.
 
-**Google Docs** — requires the `google` extra (`pip install -e ".[google]"`). Then authenticate:
+#### Google Docs
+
+Requires the `google` extra (`pip install -e ".[google]"`). Then authenticate:
 
 ```bash
 brain-sync config google
@@ -53,24 +58,6 @@ brain-sync config google
 
 This opens a browser for consent. The token is cached in `~/.brain-sync/config.json`.
 To re-authenticate: `brain-sync config google --reauth`
-
-### Add a source
-
-```bash
-# Confluence page (with context discovery)
-brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
-  --path initiatives/my-project \
-  --include-children --include-attachments
-
-# Google Doc
-brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
-```
-
-`--path` is optional. If omitted, brain-sync will analyse your brain structure and suggest a placement based on existing folders and context.
-
-`--include-children` and `--include-attachments` are Confluence-only. Comments are synced for Confluence; Google Docs comments are not yet supported.
-
-> **Tip (Claude Desktop):** You can attach files or paste one or more URLs at once when chatting in Claude Desktop — brain-sync will handle them together, making it easy to add multiple sources in a single step.
 
 ### Start the daemon
 
@@ -80,9 +67,66 @@ brain-sync run --root ~/my-brain
 
 The daemon syncs sources, watches `knowledge/` for changes, and enqueues insight regeneration when content changes.
 
+### Add a source
+
+#### CLI
+
+```bash
+# Confluence page (with context discovery)
+brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
+  --path initiatives/my-project \
+  --fetch-children --sync-attachments
+
+# Google Doc
+brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
+```
+
+`--path` is optional. If omitted, brain-sync will analyse your brain structure and suggest a placement based on existing folders and context.
+
+Comments are synced for Confluence; Google Docs comments are not yet supported.
+
+`--fetch-children` and `--sync-attachments` are Confluence-only.
+
+#### Via chat
+
+Just paste one or more links into the conversation and ask to add them to your brain. You can mention options naturally — e.g. "add this page and fetch its children" or "sync attachments too". Claude will call the right MCP tools on your behalf.
+
+In Claude Desktop you can also attach a local document (drag-and-drop or the **+** button) and ask to add it to your brain.
+
 ### Talk to your brain
 
-The skill is auto-installed during `brain-sync init`. In Claude Code, invoke it with `/brain-sync` or mention "brain" in conversation. All brain interaction goes through MCP tools — no filesystem access required.
+#### Claude Code
+
+1. **Register the MCP server** (one-time, across all projects):
+
+   ```bash
+   claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
+   ```
+
+   Alternatively, the project includes `.mcp.json` at the repo root which Claude Code picks up automatically when working in this repo.
+
+2. **Restart Claude Code.** Invoke with `/brain-sync` or mention "brain" in conversation.
+
+#### Claude Desktop
+
+1. **Install the skill:** Customize > Skills > **+** > Upload a skill, then select `src/brain_sync/skills/brain_sync/SKILL.md` from the brain-sync repo.
+
+2. **Register the MCP server:** Settings > Developer > Edit Config, and add:
+
+   ```json
+   {
+     "mcpServers": {
+       "brain-sync": {
+         "command": "python",
+         "args": ["-m", "brain_sync.mcp"]
+       }
+     }
+   }
+   ```
+
+3. **Restart Claude Desktop.** Mention "brain" in conversation or paste URLs to sync.
+
+> **Tip (Claude Desktop):** You can attach files or paste one or more URLs at once — brain-sync will handle them together, making it easy to add multiple sources in a single step.
 
 ## Folder structure
 
@@ -152,30 +196,9 @@ Restrictions:
 
 ## MCP server
 
-brain-sync includes an MCP server that provides complete brain access — querying, searching, reading, source management, and insight regeneration. This lets Claude Code and Claude Desktop interact with the brain without filesystem access.
+brain-sync includes an MCP server that provides complete brain access — querying, searching, reading, source management, and insight regeneration. All brain interaction goes through MCP tools — no filesystem access required.
 
-### Register the server
-
-The project includes `.mcp.json` at the repo root, which Claude Code picks up automatically. To register globally (across all projects):
-
-```bash
-claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
-```
-
-For Claude Desktop, add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "brain-sync": {
-      "command": "python",
-      "args": ["-m", "brain_sync.mcp"]
-    }
-  }
-}
-```
-
-Restart Claude Code/Desktop. The following tools become available:
+Registration is covered in [Talk to your brain](#talk-to-your-brain) above. The following tools are available:
 
 #### Brain query tools
 
@@ -217,13 +240,13 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 |---|---|
 | `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
 | `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <source> [--path <path>] [--include-children] [--child-path <path>] [--include-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
+| `brain-sync add <source> [--path <path>] [--fetch-children] [--child-path <path>] [--sync-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
-| `brain-sync update <canonical-id-or-url> [--include-children\|--no-include-children] [--child-path <path>] [--include-attachments\|--no-include-attachments]` | Update source settings without re-adding |
+| `brain-sync update <canonical-id-or-url> [--fetch-children] [--child-path <path>] [--sync-attachments\|--no-sync-attachments]` | Update source settings without re-adding |
 | `brain-sync reconcile [--root <path>]` | Update DB target paths to match where files actually are on disk |
-| `brain-sync migrate [--root <path>]` | Migrate legacy `_sync-context/` and bare-ID `_attachments/` dirs to the current layout |
+| `brain-sync migrate [--root <path>]` | Manual migration of legacy controlled brain-sync folders to the latest approved layout |
 | `brain-sync status [--root <path>]` | Show daemon and sync status |
 | `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
 | `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
@@ -251,12 +274,12 @@ When content changes, the interval resets to 30 minutes. Confluence sources get 
 
 ### Children and attachments
 
-When a Confluence source has `--include-children` or `--include-attachments` enabled, the daemon discovers related content:
+When a Confluence source has `--fetch-children` or `--sync-attachments` enabled, the daemon discovers related content:
 
 | Flag | Discovers | Behaviour |
 |---|---|---|
-| `--include-children` | Direct child pages in the page tree | One-shot: children are added as independent primary sources on first sync, then the flag is cleared |
-| `--include-attachments` | Attached files (images, PDFs, etc.) | Stored in `_attachments/{source_dir_id}/` (e.g. `c12345`), incrementally maintained |
+| `--fetch-children` | Direct child pages in the page tree | One-shot: children are added as independent primary sources on first sync, then the flag is cleared |
+| `--sync-attachments` | Attached files (images, PDFs, etc.) | Stored in `_attachments/{source_dir_id}/` (e.g. `c12345`), incrementally maintained |
 
 Use `--child-path` to control where discovered children are placed (default: a subfolder named after the parent page). Children become fully independent sources — they can be moved, removed, and have their own attachments.
 

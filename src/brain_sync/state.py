@@ -12,7 +12,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -49,8 +49,8 @@ CREATE TABLE IF NOT EXISTS sources (
     next_check_utc TEXT,
     interval_seconds INTEGER,
     target_path TEXT NOT NULL DEFAULT '',
-    include_children INTEGER NOT NULL DEFAULT 0,
-    include_attachments INTEGER NOT NULL DEFAULT 0,
+    fetch_children INTEGER NOT NULL DEFAULT 0,
+    sync_attachments INTEGER NOT NULL DEFAULT 0,
     child_path TEXT
 );
 """
@@ -187,8 +187,8 @@ class SourceState(_PathNormalized):
     next_check_utc: str | None = None
     interval_seconds: int | None = None
     target_path: str = ""
-    include_children: bool = False
-    include_attachments: bool = False
+    fetch_children: bool = False
+    sync_attachments: bool = False
     child_path: str | None = None
 
 
@@ -621,6 +621,20 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         )
         conn.commit()
         log.info("Migrated DB schema from v%d to v13: removed links, added child_path", from_version)
+        from_version = 13
+
+    if from_version < 14:
+        # v13 → v14: Rename include_children → fetch_children, include_attachments → sync_attachments
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+        if "include_children" in existing_cols:
+            conn.execute("ALTER TABLE sources RENAME COLUMN include_children TO fetch_children")
+        if "include_attachments" in existing_cols:
+            conn.execute("ALTER TABLE sources RENAME COLUMN include_attachments TO sync_attachments")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '14')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema from v%d to v14: renamed children/attachments flags", from_version)
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -676,7 +690,7 @@ def load_state(root: Path) -> SyncState:
             "SELECT canonical_id, source_url, source_type, "
             "last_checked_utc, last_changed_utc, current_interval_secs, "
             "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
-            "target_path, include_children, include_attachments, child_path "
+            "target_path, fetch_children, sync_attachments, child_path "
             "FROM sources"
         ).fetchall()
         for row in rows:
@@ -692,8 +706,8 @@ def load_state(root: Path) -> SyncState:
                 next_check_utc=row[8],
                 interval_seconds=row[9],
                 target_path=row[10] or "",
-                include_children=bool(row[11]),
-                include_attachments=bool(row[12]),
+                fetch_children=bool(row[11]),
+                sync_attachments=bool(row[12]),
                 child_path=row[13],
             )
     except Exception as e:
@@ -709,7 +723,7 @@ def save_state(root: Path, state: SyncState) -> None:
     """Save sync progress for all sources.
 
     Uses UPDATE for existing rows to preserve CLI-managed config fields
-    (target_path, include_children, include_attachments, child_path).
+    (target_path, fetch_children, sync_attachments, child_path).
     Only inserts if the source doesn't exist yet.
     """
     conn = _connect(root)
@@ -741,7 +755,7 @@ def save_state(root: Path, state: SyncState) -> None:
                     "(canonical_id, source_url, source_type, "
                     "last_checked_utc, last_changed_utc, current_interval_secs, "
                     "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
-                    "target_path, include_children, include_attachments, child_path) "
+                    "target_path, fetch_children, sync_attachments, child_path) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
@@ -755,8 +769,8 @@ def save_state(root: Path, state: SyncState) -> None:
                         ss.next_check_utc,
                         ss.interval_seconds,
                         normalize_path(ss.target_path),
-                        int(ss.include_children),
-                        int(ss.include_attachments),
+                        int(ss.fetch_children),
+                        int(ss.sync_attachments),
                         ss.child_path,
                     ),
                 )
@@ -793,8 +807,8 @@ def update_source_flags(
     root: Path,
     canonical_id: str,
     *,
-    include_children: bool | None = None,
-    include_attachments: bool | None = None,
+    fetch_children: bool | None = None,
+    sync_attachments: bool | None = None,
     child_path: str | None = ...,  # type: ignore[assignment]  # sentinel
 ) -> None:
     """Update config flags for a source directly in the DB.
@@ -804,12 +818,12 @@ def update_source_flags(
     """
     sets: list[str] = []
     values: list[int | str | None] = []
-    if include_children is not None:
-        sets.append("include_children = ?")
-        values.append(int(include_children))
-    if include_attachments is not None:
-        sets.append("include_attachments = ?")
-        values.append(int(include_attachments))
+    if fetch_children is not None:
+        sets.append("fetch_children = ?")
+        values.append(int(fetch_children))
+    if sync_attachments is not None:
+        sets.append("sync_attachments = ?")
+        values.append(int(sync_attachments))
     if child_path is not ...:
         sets.append("child_path = ?")
         values.append(child_path)
@@ -830,11 +844,11 @@ def update_source_flags(
 
 
 def clear_children_flag(root: Path, canonical_id: str) -> None:
-    """Clear the one-shot include_children flag and child_path after processing."""
+    """Clear the one-shot fetch_children flag and child_path after processing."""
     conn = _connect(root)
     try:
         conn.execute(
-            "UPDATE sources SET include_children = 0, child_path = NULL WHERE canonical_id = ?",
+            "UPDATE sources SET fetch_children = 0, child_path = NULL WHERE canonical_id = ?",
             (canonical_id,),
         )
         conn.commit()

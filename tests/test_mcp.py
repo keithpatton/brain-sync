@@ -40,16 +40,16 @@ SAMPLE_SOURCE = SourceInfo(
     last_checked_utc="2026-03-08T00:00:00+00:00",
     last_changed_utc="2026-03-07T12:00:00+00:00",
     current_interval_secs=1800,
-    include_children=False,
-    include_attachments=False,
+    fetch_children=False,
+    sync_attachments=False,
 )
 
 SAMPLE_ADD_RESULT = AddResult(
     canonical_id="confluence:12345",
     source_url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
     target_path="initiatives/test",
-    include_children=False,
-    include_attachments=False,
+    fetch_children=False,
+    sync_attachments=False,
 )
 
 SAMPLE_REMOVE_RESULT = RemoveResult(
@@ -341,7 +341,7 @@ class TestBrainSyncAddFile:
             ctx,
             source=str(src_file),
             target_path="test",
-            include_children=True,
+            fetch_children=True,
         )
         assert result["status"] == "error"
         assert result["error"] == "invalid_flags"

@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_add.add_argument("source", help="Source URL or local file path")
     p_add.add_argument("--path", dest="target_path", default=None, help="Target path relative to knowledge/")
-    p_add.add_argument("--include-children", action="store_true", help="Discover and add child pages (one-shot)")
-    p_add.add_argument("--include-attachments", action="store_true", help="Discover and sync attachments")
+    p_add.add_argument("--fetch-children", action="store_true", help="Discover and add child pages (one-shot)")
+    p_add.add_argument("--sync-attachments", action="store_true", help="Discover and sync attachments")
     p_add.add_argument(
         "--child-path", default=None, help="Override target path for children ('.' = same level as parent)"
     )
@@ -96,13 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_update.add_argument("source", help="Canonical ID or URL of the source to update")
     p_update.add_argument(
-        "--include-children",
-        action=BooleanOptionalAction,
+        "--fetch-children",
+        action="store_true",
         default=None,
         help="Discover and add child pages as independent sources (one-shot)",
     )
     p_update.add_argument(
-        "--include-attachments",
+        "--sync-attachments",
         action=BooleanOptionalAction,
         default=None,
         help="Discover and sync attachments",

@@ -52,7 +52,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 13
+        assert state.version == 14
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -537,7 +537,7 @@ class TestSchemaV4Migration:
         # Verify schema version after full migration chain
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "13"
+        assert version == "14"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")

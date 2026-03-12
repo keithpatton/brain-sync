@@ -198,8 +198,8 @@ def handle_add(args) -> None:
 
     # Flag validation
     if source_kind == SourceKind.FILE:
-        if args.include_children or args.include_attachments:
-            log.error("--include-children/attachments can only be used with URLs")
+        if args.fetch_children or args.sync_attachments:
+            log.error("--fetch-children/--sync-attachments can only be used with URLs")
             sys.exit(1)
         file_path = Path(args.source).resolve()
         if not file_path.exists():
@@ -266,8 +266,8 @@ def handle_add(args) -> None:
                 root=root,
                 url=args.source,
                 target_path=target_path,
-                include_children=args.include_children,
-                include_attachments=args.include_attachments,
+                fetch_children=args.fetch_children,
+                sync_attachments=args.sync_attachments,
                 child_path=getattr(args, "child_path", None),
             )
         except UnsupportedSourceError:
@@ -287,8 +287,8 @@ def handle_add(args) -> None:
         log.info("  Path: knowledge/%s", result.target_path)
         log.info(
             "  Children: %s, Attachments: %s",
-            result.include_children,
-            result.include_attachments,
+            result.fetch_children,
+            result.sync_attachments,
         )
         log.info("  Will sync on next `brain-sync run`")
         return
@@ -400,9 +400,9 @@ def handle_list(args) -> None:
             log.info("  Last changed: %s", s.last_changed_utc or "never")
             log.info("  Interval: %ss", s.current_interval_secs)
             flags = []
-            if s.include_children:
+            if s.fetch_children:
                 flags.append("children")
-            if s.include_attachments:
+            if s.sync_attachments:
                 flags.append("attachments")
             if flags:
                 log.info("  Context: %s", ", ".join(flags))
@@ -437,8 +437,8 @@ def handle_update(args) -> None:
         result = update_source(
             root=_get_root(args),
             source=args.source,
-            include_children=args.include_children,
-            include_attachments=args.include_attachments,
+            fetch_children=args.fetch_children,
+            sync_attachments=args.sync_attachments,
             child_path=child_path_val if child_path_val is not None else ...,  # type: ignore[arg-type]
         )
     except SourceNotFoundError as e:
@@ -451,8 +451,8 @@ def handle_update(args) -> None:
     log.info("Updated source: %s", result.canonical_id)
     log.info(
         "  Children: %s, Attachments: %s",
-        result.include_children,
-        result.include_attachments,
+        result.fetch_children,
+        result.sync_attachments,
     )
 
 

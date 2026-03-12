@@ -354,11 +354,11 @@ async def process_attachments(
     auth: ConfluenceAuth,
     client: httpx.AsyncClient,
     root: Path,
-    include_attachments: bool = False,
+    sync_attachments: bool = False,
 ) -> dict[str, str]:
     """Run full discovery → reconciliation → sync cycle for attachment documents.
 
-    Only called for primary sources with include_attachments=True.
+    Only called for primary sources with sync_attachments=True.
     Returns a mapping of original attachment title → local_path for inline image resolution.
     """
     now = datetime.now(UTC).isoformat()
@@ -372,7 +372,7 @@ async def process_attachments(
 
     # Discover
     discovered: list[DiscoveredDoc] = []
-    if include_attachments:
+    if sync_attachments:
         discovered.extend(await discover_attachments(page_id, auth, client))
 
     # Deduplicate by canonical_id

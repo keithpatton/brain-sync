@@ -44,7 +44,7 @@ artifacts do not answer the question. Stop once the question can be answered.
 | `brain_sync_list` | List registered sources (optional `filter_path`). |
 | `brain_sync_suggest_placement` | Suggest placement areas for a new document. **Always present results to the user.** |
 | `brain_sync_add` | Register a URL for syncing or add a local file (`source`, `target_path`, optional flags). |
-| `brain_sync_update` | Update settings for a source — pass only the flags to change (`include_children`, `include_attachments`, `child_path`). |
+| `brain_sync_update` | Update settings for a source — pass only the flags to change (`fetch_children`, `sync_attachments`, `child_path`). |
 | `brain_sync_remove` | Unregister a source (`source` = canonical ID or URL). |
 | `brain_sync_move` | Move a source to a new path (`source`, `to_path`). |
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all). |
@@ -87,7 +87,7 @@ custom path. Never auto-select.
 Call `brain_sync_add` with the user's chosen `target_path`:
 
 - **URLs:** pass `source` (the URL) and `target_path`. Optional flags:
-  `include_children`, `include_attachments`, `child_path`.
+  `fetch_children`, `sync_attachments`, `child_path`.
 - **Files:** save attachments to a temp file, then pass the file path as
   `source` with `target_path` and `copy=true`.
 

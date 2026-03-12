@@ -34,8 +34,8 @@ class AddResult:
     canonical_id: str
     source_url: str
     target_path: str
-    include_children: bool
-    include_attachments: bool
+    fetch_children: bool
+    sync_attachments: bool
     child_path: str | None = None
 
 
@@ -55,8 +55,8 @@ class SourceInfo:
     last_checked_utc: str | None
     last_changed_utc: str | None
     current_interval_secs: int
-    include_children: bool
-    include_attachments: bool
+    fetch_children: bool
+    sync_attachments: bool
 
 
 @dataclass
@@ -71,8 +71,8 @@ class MoveResult:
 class UpdateResult:
     canonical_id: str
     source_url: str
-    include_children: bool
-    include_attachments: bool
+    fetch_children: bool
+    sync_attachments: bool
     child_path: str | None = None
 
 
@@ -124,8 +124,8 @@ def add_source(
     *,
     url: str,
     target_path: str,
-    include_children: bool = False,
-    include_attachments: bool = False,
+    fetch_children: bool = False,
+    sync_attachments: bool = False,
     child_path: str | None = None,
 ) -> AddResult:
     """Register a source URL for syncing.
@@ -149,8 +149,8 @@ def add_source(
         source_url=url,
         source_type=stype.value,
         target_path=target_path,
-        include_children=include_children,
-        include_attachments=include_attachments,
+        fetch_children=fetch_children,
+        sync_attachments=sync_attachments,
         child_path=child_path,
     )
     save_state(root, state)
@@ -162,8 +162,8 @@ def add_source(
         canonical_id=cid,
         source_url=url,
         target_path=target_path,
-        include_children=include_children,
-        include_attachments=include_attachments,
+        fetch_children=fetch_children,
+        sync_attachments=sync_attachments,
         child_path=child_path,
     )
 
@@ -273,8 +273,8 @@ def list_sources(
                 last_checked_utc=ss.last_checked_utc,
                 last_changed_utc=ss.last_changed_utc,
                 current_interval_secs=ss.current_interval_secs,
-                include_children=getattr(ss, "include_children", False),
-                include_attachments=getattr(ss, "include_attachments", False),
+                fetch_children=getattr(ss, "fetch_children", False),
+                sync_attachments=getattr(ss, "sync_attachments", False),
             )
         )
 
@@ -337,8 +337,8 @@ def update_source(
     root: Path | None = None,
     *,
     source: str,
-    include_children: bool | None = None,
-    include_attachments: bool | None = None,
+    fetch_children: bool | None = None,
+    sync_attachments: bool | None = None,
     child_path: str | None = ...,  # type: ignore[assignment]  # sentinel
 ) -> UpdateResult:
     """Update config flags for an existing sync source.
@@ -358,10 +358,10 @@ def update_source(
     ss = state.sources[cid]
 
     # Apply provided flags to in-memory state
-    if include_children is not None:
-        ss.include_children = include_children
-    if include_attachments is not None:
-        ss.include_attachments = include_attachments
+    if fetch_children is not None:
+        ss.fetch_children = fetch_children
+    if sync_attachments is not None:
+        ss.sync_attachments = sync_attachments
     if child_path is not ...:
         ss.child_path = child_path  # type: ignore[assignment]
 
@@ -369,16 +369,16 @@ def update_source(
     update_source_flags(
         root,
         cid,
-        include_children=include_children,
-        include_attachments=include_attachments,
+        fetch_children=fetch_children,
+        sync_attachments=sync_attachments,
         child_path=child_path,
     )
 
     return UpdateResult(
         canonical_id=cid,
         source_url=ss.source_url,
-        include_children=ss.include_children,
-        include_attachments=ss.include_attachments,
+        fetch_children=ss.fetch_children,
+        sync_attachments=ss.sync_attachments,
         child_path=ss.child_path,
     )
 

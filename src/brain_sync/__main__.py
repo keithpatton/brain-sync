@@ -180,7 +180,7 @@ async def run(root: Path) -> None:
                                             root=root,
                                             url=child.url,
                                             target_path=child_target_base,
-                                            include_attachments=ss.include_attachments,
+                                            sync_attachments=ss.sync_attachments,
                                         )
                                         # Update in-memory state and schedule immediate sync
                                         child_ss = load_state(root).sources.get(child_result.canonical_id)
@@ -199,7 +199,7 @@ async def run(root: Path) -> None:
 
                                 # Clear the one-shot flag AFTER all children processed
                                 clear_children_flag(root, key)
-                                ss.include_children = False
+                                ss.fetch_children = False
                                 ss.child_path = None
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)

@@ -157,11 +157,11 @@ class TestAddSource:
             root=brain,
             url=CONFLUENCE_URL,
             target_path="project",
-            include_children=True,
-            include_attachments=True,
+            fetch_children=True,
+            sync_attachments=True,
         )
-        assert result.include_children is True
-        assert result.include_attachments is True
+        assert result.fetch_children is True
+        assert result.sync_attachments is True
 
     def test_root_none_uses_config(self, brain, monkeypatch):
         """add_source with root=None auto-discovers from config."""
@@ -429,19 +429,19 @@ class TestMoveSource:
 
 class TestUpdateSource:
     def test_update_source_flags(self, brain):
-        """Update include_children from False to True, verify DB."""
+        """Update fetch_children from False to True, verify DB."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
 
-        result = update_source(root=brain, source=CONFLUENCE_CID, include_children=True)
+        result = update_source(root=brain, source=CONFLUENCE_CID, fetch_children=True)
 
         assert isinstance(result, UpdateResult)
         assert result.canonical_id == CONFLUENCE_CID
-        assert result.include_children is True
-        assert result.include_attachments is False
+        assert result.fetch_children is True
+        assert result.sync_attachments is False
 
         # Verify persisted in DB by reloading
         sources = list_sources(root=brain)
-        assert sources[0].include_children is True
+        assert sources[0].fetch_children is True
 
     def test_update_source_partial(self, brain):
         """Update only one flag, others unchanged."""
@@ -449,39 +449,39 @@ class TestUpdateSource:
             root=brain,
             url=CONFLUENCE_URL,
             target_path="project",
-            include_children=True,
-            include_attachments=True,
+            fetch_children=True,
+            sync_attachments=True,
         )
 
-        result = update_source(root=brain, source=CONFLUENCE_CID, include_children=False)
+        result = update_source(root=brain, source=CONFLUENCE_CID, fetch_children=False)
 
-        assert result.include_children is False
-        assert result.include_attachments is True
+        assert result.fetch_children is False
+        assert result.sync_attachments is True
 
         # Verify persisted
         sources = list_sources(root=brain)
-        assert sources[0].include_children is False
-        assert sources[0].include_attachments is True
+        assert sources[0].fetch_children is False
+        assert sources[0].sync_attachments is True
 
     def test_update_source_not_found(self, brain):
         """Raises SourceNotFoundError for unknown source."""
         with pytest.raises(SourceNotFoundError):
-            update_source(root=brain, source="nonexistent", include_children=True)
+            update_source(root=brain, source="nonexistent", fetch_children=True)
 
     def test_update_source_by_url(self, brain):
         """Can resolve source by URL."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
 
-        result = update_source(root=brain, source=CONFLUENCE_URL, include_attachments=True)
+        result = update_source(root=brain, source=CONFLUENCE_URL, sync_attachments=True)
         assert result.canonical_id == CONFLUENCE_CID
-        assert result.include_attachments is True
+        assert result.sync_attachments is True
 
     def test_update_source_no_changes(self, brain):
         """Calling with no flags is a no-op but succeeds."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_children=True)
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", fetch_children=True)
 
         result = update_source(root=brain, source=CONFLUENCE_CID)
-        assert result.include_children is True
+        assert result.fetch_children is True
 
 
 class TestReconcileSources:
@@ -632,7 +632,7 @@ class TestReconcileSources:
 
 class TestMigrateSources:
     def test_migrates_legacy_attachments(self, brain):
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_attachments=True)
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
         target_dir = brain / "knowledge" / "project"
 
         # Create legacy _sync-context/attachments/ with a file
@@ -675,7 +675,7 @@ class TestMigrateSources:
 
     def test_remigrates_bare_id_attachments(self, brain):
         """Bare-ID _attachments/12345/ dirs are re-migrated to _attachments/c12345/."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", include_attachments=True)
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
         target_dir = brain / "knowledge" / "project"
 
         # Simulate earlier migration that used bare ID
