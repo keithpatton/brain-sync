@@ -27,10 +27,12 @@ from brain_sync.sources.googledocs.rest import (  # noqa: E402
     FetchError,
     TabData,
     TabsDocument,
+    _flatten_tabs,
     compute_semantic_fingerprint,
     extract_canonical_text,
     extract_title_from_html,
     fetch_all_tabs,
+    generate_tabs_markdown,
 )
 
 pytestmark = pytest.mark.unit
@@ -72,7 +74,7 @@ class TestCheckForUpdate:
     def _make_tabs_doc(self, title: str | None = "My Doc") -> TabsDocument:
         return TabsDocument(
             title=title,
-            tabs=[TabData(tab_id="t1", title="Main", body_content=[])],
+            tabs=[TabData(tab_id="t1", title="Main", number="1", body_content=[])],
         )
 
     async def test_returns_unchanged_when_semantic_hash_matches(self, adapter, source_state):
@@ -92,6 +94,7 @@ class TestCheckForUpdate:
                 TabData(
                     tab_id="t1",
                     title="Main",
+                    number="1",
                     body_content=[{"paragraph": {"elements": [{"textRun": {"content": "old content"}}]}}],
                 )
             ],
@@ -103,6 +106,7 @@ class TestCheckForUpdate:
                 TabData(
                     tab_id="t1",
                     title="Main",
+                    number="1",
                     body_content=[{"paragraph": {"elements": [{"textRun": {"content": "new content"}}]}}],
                 )
             ],
@@ -141,7 +145,7 @@ class TestCheckForUpdate:
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.adapter_state is not None
         assert "semanticFingerprint" in result.adapter_state
-        assert result.adapter_state["semanticFingerprint"].startswith("gdocs:v2:")
+        assert result.adapter_state["semanticFingerprint"].startswith("gdocs:v3:")
 
 
 class TestFetch:
@@ -166,6 +170,7 @@ class TestFetch:
                 TabData(
                     tab_id="t1",
                     title="Main",
+                    number="1",
                     body_content=[
                         {"paragraph": {"elements": [{"textRun": {"content": "Hello"}}]}},
                         {"paragraph": {"elements": [{"textRun": {"content": "World"}}]}},
@@ -191,10 +196,10 @@ class TestFetch:
         tabs_doc = self._make_tabs_doc()
         with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
             result = await adapter.fetch(
-                source_state, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v2:abc123"}
+                source_state, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v3:abc123"}
             )
 
-        assert result.metadata_fingerprint == "gdocs:v2:abc123"
+        assert result.metadata_fingerprint == "gdocs:v3:abc123"
 
     async def test_fetch_uses_title_from_adapter_state(self, adapter, source_state):
         # tabs_doc.title is None — title should come from prior_adapter_state
@@ -204,7 +209,7 @@ class TestFetch:
                 source_state,
                 Mock(),
                 AsyncMock(),
-                prior_adapter_state={"semanticFingerprint": "gdocs:v2:abc123", "title": "Adapter Title"},
+                prior_adapter_state={"semanticFingerprint": "gdocs:v3:abc123", "title": "Adapter Title"},
             )
 
         assert result.title == "Adapter Title"
@@ -239,7 +244,7 @@ class TestFetch:
 
 class TestExtractCanonicalText:
     def _make_tabs_doc(self, content: list[dict]) -> TabsDocument:
-        return TabsDocument(title=None, tabs=[TabData(tab_id="t1", title="Tab 1", body_content=content)])
+        return TabsDocument(title=None, tabs=[TabData(tab_id="t1", title="Tab 1", number="1", body_content=content)])
 
     def _para(self, text: str, style: str | None = None, bullet: bool = False) -> dict:
         para: dict = {
@@ -256,7 +261,7 @@ class TestExtractCanonicalText:
     def test_empty_body(self):
         doc = self._make_tabs_doc([])
         result = extract_canonical_text(doc)
-        assert result == "TAB:Tab 1"
+        assert result == "TAB:1:Tab 1"
 
     def test_plain_paragraph(self):
         doc = self._make_tabs_doc([self._para("Hello world")])
@@ -322,13 +327,13 @@ class TestExtractCanonicalText:
         tabs_doc = TabsDocument(
             title=None,
             tabs=[
-                TabData(tab_id="t1", title="Overview", body_content=[self._para("Intro text")]),
-                TabData(tab_id="t2", title="Details", body_content=[self._para("Detail text")]),
+                TabData(tab_id="t1", title="Overview", number="1", body_content=[self._para("Intro text")]),
+                TabData(tab_id="t2", title="Details", number="2", body_content=[self._para("Detail text")]),
             ],
         )
         result = extract_canonical_text(tabs_doc)
-        assert "TAB:Overview" in result
-        assert "TAB:Details" in result
+        assert "TAB:1:Overview" in result
+        assert "TAB:2:Details" in result
         assert "Intro text" in result
         assert "Detail text" in result
 
@@ -336,7 +341,7 @@ class TestExtractCanonicalText:
 class TestComputeSemanticFingerprint:
     def test_starts_with_version_prefix(self):
         fp = compute_semantic_fingerprint("hello")
-        assert fp.startswith("gdocs:v2:")
+        assert fp.startswith("gdocs:v3:")
 
     def test_same_text_same_fingerprint(self):
         assert compute_semantic_fingerprint("abc") == compute_semantic_fingerprint("abc")
@@ -348,7 +353,7 @@ class TestComputeSemanticFingerprint:
         import hashlib
 
         text = "test content"
-        expected = "gdocs:v2:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        expected = "gdocs:v3:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert compute_semantic_fingerprint(text) == expected
 
 
@@ -558,6 +563,199 @@ class TestExtractTitleFromHtml:
     def test_whitespace_title(self):
         html = "<html><head><title>  </title></head><body></body></html>"
         assert extract_title_from_html(html) is None
+
+
+class TestFlattenTabs:
+    def _doc_tab(self, tab_id: str, title: str, children: list[dict] | None = None) -> dict:
+        tab: dict = {
+            "tabProperties": {"tabId": tab_id, "title": title},
+            "documentTab": {"body": {"content": []}},
+        }
+        if children:
+            tab["childTabs"] = children
+        return tab
+
+    def _non_doc_tab(self, tab_id: str, title: str) -> dict:
+        return {"tabProperties": {"tabId": tab_id, "title": title}}
+
+    def test_flat_tabs(self):
+        tabs = [self._doc_tab("t1", "A"), self._doc_tab("t2", "B")]
+        result = _flatten_tabs(tabs)
+        assert [(num, t["tabProperties"]["tabId"]) for num, t in result] == [("1", "t1"), ("2", "t2")]
+
+    def test_child_tabs(self):
+        tabs = [
+            self._doc_tab(
+                "t1",
+                "Parent",
+                children=[
+                    self._doc_tab("t1a", "Child A"),
+                    self._doc_tab("t1b", "Child B"),
+                ],
+            ),
+        ]
+        result = _flatten_tabs(tabs)
+        nums = [num for num, _ in result]
+        assert nums == ["1", "1.1", "1.2"]
+
+    def test_deeply_nested(self):
+        tabs = [
+            self._doc_tab(
+                "t1",
+                "L1",
+                children=[
+                    self._doc_tab(
+                        "t1a",
+                        "L2",
+                        children=[
+                            self._doc_tab("t1a1", "L3"),
+                        ],
+                    ),
+                ],
+            ),
+        ]
+        result = _flatten_tabs(tabs)
+        nums = [num for num, _ in result]
+        assert nums == ["1", "1.1", "1.1.1"]
+
+    def test_mixed_siblings_and_children(self):
+        tabs = [
+            self._doc_tab("t1", "A"),
+            self._doc_tab(
+                "t2",
+                "B",
+                children=[
+                    self._doc_tab("t2a", "B1"),
+                ],
+            ),
+            self._doc_tab("t3", "C"),
+        ]
+        result = _flatten_tabs(tabs)
+        nums = [num for num, _ in result]
+        assert nums == ["1", "2", "2.1", "3"]
+
+
+class TestFetchAllTabsChildTabs:
+    """Tests for child tab recursion in fetch_all_tabs."""
+
+    async def test_child_tabs_flattened(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {
+            "title": "Doc",
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t1", "title": "Parent"},
+                    "documentTab": {"body": {"content": []}},
+                    "childTabs": [
+                        {
+                            "tabProperties": {"tabId": "t1a", "title": "Child A"},
+                            "documentTab": {"body": {"content": []}},
+                        },
+                        {
+                            "tabProperties": {"tabId": "t1b", "title": "Child B"},
+                            "documentTab": {"body": {"content": []}},
+                        },
+                    ],
+                },
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is not None
+        assert len(result.tabs) == 3
+        assert result.tabs[0].number == "1"
+        assert result.tabs[0].title == "Parent"
+        assert result.tabs[1].number == "1.1"
+        assert result.tabs[1].title == "Child A"
+        assert result.tabs[2].number == "1.2"
+        assert result.tabs[2].title == "Child B"
+
+    async def test_child_tab_non_document_skipped(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        data = {
+            "title": "Doc",
+            "tabs": [
+                {
+                    "tabProperties": {"tabId": "t1", "title": "Parent"},
+                    "documentTab": {"body": {"content": []}},
+                    "childTabs": [
+                        {
+                            "tabProperties": {"tabId": "t1a", "title": "Non-doc child"},
+                            # no documentTab — should be skipped
+                        },
+                    ],
+                },
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = data
+        mock_response.raise_for_status = MagicMock()
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_all_tabs("abc123", auth, client)
+        assert result is not None
+        assert len(result.tabs) == 1
+        assert result.tabs[0].tab_id == "t1"
+
+
+class TestGenerateTabsMarkdown:
+    def _tab(self, tab_id: str, title: str, number: str, content: list[dict] | None = None) -> TabData:
+        return TabData(tab_id=tab_id, title=title, number=number, body_content=content or [])
+
+    def test_single_tab_uses_h2(self):
+        doc = TabsDocument(title="Doc", tabs=[self._tab("t1", "Overview", "1")])
+        md = generate_tabs_markdown(doc)
+        assert md.startswith("## Overview")
+        assert "# Tab" not in md
+
+    def test_multi_tab_uses_h1_with_number(self):
+        doc = TabsDocument(
+            title="Doc",
+            tabs=[
+                self._tab("t1", "Overview", "1"),
+                self._tab("t2", "Details", "2"),
+            ],
+        )
+        md = generate_tabs_markdown(doc)
+        assert "# Tab 1 \u2014 Overview" in md
+        assert "# Tab 2 \u2014 Details" in md
+
+    def test_child_tab_numbering(self):
+        doc = TabsDocument(
+            title="Doc",
+            tabs=[
+                self._tab("t1", "Parent", "1"),
+                self._tab("t1a", "Child", "1.1"),
+            ],
+        )
+        md = generate_tabs_markdown(doc)
+        assert "# Tab 1 \u2014 Parent" in md
+        assert "# Tab 1.1 \u2014 Child" in md
+
+    def test_separator_between_tabs(self):
+        doc = TabsDocument(
+            title="Doc",
+            tabs=[
+                self._tab("t1", "A", "1"),
+                self._tab("t2", "B", "2"),
+            ],
+        )
+        md = generate_tabs_markdown(doc)
+        assert "\n\n---\n\n" in md
+
+    def test_tab_content_rendered(self):
+        content = [{"paragraph": {"elements": [{"textRun": {"content": "Hello world"}}]}}]
+        doc = TabsDocument(title="Doc", tabs=[self._tab("t1", "Main", "1", content)])
+        md = generate_tabs_markdown(doc)
+        assert "Hello world" in md
 
 
 # --- OAuth2 auth tests ---

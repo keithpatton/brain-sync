@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 30.0
 
-SEMANTIC_FINGERPRINT_PREFIX = "gdocs:v2:"
+SEMANTIC_FINGERPRINT_PREFIX = "gdocs:v3:"
 
 
 class FetchError(Exception):
@@ -30,6 +30,7 @@ class TabData:
 
     tab_id: str
     title: str  # resolved: raw title or f"Untitled Tab ({tab_id})"
+    number: str  # dotted position: "1", "2", "3.1", "3.1.1"
     body_content: list[dict]
 
 
@@ -41,9 +42,7 @@ class TabsDocument:
     tabs: list[TabData]  # order preserved as returned by API
 
 
-async def fetch_doc_html(
-    doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient
-) -> str:
+async def fetch_doc_html(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> str:
     """Fetch Google Doc as HTML via export endpoint."""
     token = await auth.get_token()
     url = f"https://docs.google.com/document/d/{doc_id}/export?format=html"
@@ -56,9 +55,7 @@ async def fetch_doc_html(
     return response.text
 
 
-async def fetch_doc_title(
-    doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient
-) -> str | None:
+async def fetch_doc_title(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> str | None:
     """Fetch Google Doc title via Docs API v1 (lightweight metadata only).
 
     Uses the Docs API rather than Drive API because shared docs that haven't
@@ -84,9 +81,24 @@ async def fetch_doc_title(
         return None
 
 
-async def fetch_all_tabs(
-    doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient
-) -> TabsDocument | None:
+def _flatten_tabs(raw_tabs: list[dict], prefix: str = "") -> list[tuple[str, dict]]:
+    """Recursively flatten nested tabs, returning (number, raw_tab) pairs.
+
+    Top-level: "1", "2", "3"
+    Children of tab 3: "3.1", "3.2"
+    Deeply nested: "3.1.1"
+    """
+    result: list[tuple[str, dict]] = []
+    for i, raw_tab in enumerate(raw_tabs, 1):
+        num = f"{prefix}{i}"
+        result.append((num, raw_tab))
+        children = raw_tab.get("childTabs", [])
+        if children:
+            result.extend(_flatten_tabs(children, prefix=f"{num}."))
+    return result
+
+
+async def fetch_all_tabs(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> TabsDocument | None:
     """Fetch all tab content from a Google Doc via the Docs API tabs endpoint.
 
     Returns a TabsDocument containing all document tabs in the order returned
@@ -98,14 +110,7 @@ async def fetch_all_tabs(
     url = f"https://docs.googleapis.com/v1/documents/{doc_id}"
     headers = {"Authorization": f"Bearer {token}"}
     params = {
-        "fields": (
-            "title,"
-            "tabs.tabProperties,"
-            "tabs.documentTab.body.content("
-            "paragraph(elements(textRun(content)),paragraphStyle(namedStyleType),bullet),"
-            "table(tableRows(tableCells(content(paragraph(elements(textRun(content)))))))"
-            ")"
-        ),
+        "fields": "title,tabs",
         "includeTabsContent": "true",
     }
     try:
@@ -128,7 +133,7 @@ async def fetch_all_tabs(
         return None
 
     tabs: list[TabData] = []
-    for raw_tab in raw_tabs:
+    for number, raw_tab in _flatten_tabs(raw_tabs):
         if "documentTab" not in raw_tab:
             # Skip non-document tab types
             continue
@@ -137,7 +142,7 @@ async def fetch_all_tabs(
         raw_title = props.get("title", "").strip()
         title = raw_title or f"Untitled Tab ({tab_id})"
         body_content = raw_tab["documentTab"].get("body", {}).get("content", [])
-        tabs.append(TabData(tab_id=tab_id, title=title, body_content=body_content))
+        tabs.append(TabData(tab_id=tab_id, title=title, number=number, body_content=body_content))
 
     if not tabs:
         log.warning("Docs API returned no document tabs for %s", doc_id)
@@ -156,7 +161,7 @@ def extract_canonical_text(tabs_doc: TabsDocument) -> str:
     """
     parts: list[str] = []
     for tab in tabs_doc.tabs:
-        parts.append(f"TAB:{tab.title}")
+        parts.append(f"TAB:{tab.number}:{tab.title}")
         _walk_body(tab.body_content, parts)
     text = "\n".join(parts)
     text = re.sub(r"\s+", " ", text).strip()
@@ -167,9 +172,7 @@ def _walk_body(content: list[dict], parts: list[str]) -> None:
     for element in content:
         if "paragraph" in element:
             para = element["paragraph"]
-            text = "".join(
-                e.get("textRun", {}).get("content", "") for e in para.get("elements", [])
-            ).strip()
+            text = "".join(e.get("textRun", {}).get("content", "") for e in para.get("elements", [])).strip()
             if not text:
                 continue
             style = para.get("paragraphStyle", {}).get("namedStyleType")
@@ -216,9 +219,7 @@ def _walk_body_markdown(content: list[dict], parts: list[str]) -> None:
     for element in content:
         if "paragraph" in element:
             para = element["paragraph"]
-            text = "".join(
-                e.get("textRun", {}).get("content", "") for e in para.get("elements", [])
-            ).strip()
+            text = "".join(e.get("textRun", {}).get("content", "") for e in para.get("elements", [])).strip()
             if not text:
                 continue
             style = para.get("paragraphStyle", {}).get("namedStyleType", "")
@@ -245,13 +246,18 @@ def _walk_body_markdown(content: list[dict], parts: list[str]) -> None:
 def generate_tabs_markdown(tabs_doc: TabsDocument) -> str:
     """Render all tabs of a Google Doc as markdown.
 
-    Each tab is introduced with a level-2 heading.  Multiple tabs are
-    separated by a horizontal rule.  Uses _walk_body_markdown (not _walk_body)
-    to produce valid markdown rather than fingerprint notation.
+    Multi-tab documents use H1 headings with dotted numbering (``# Tab 1 — Title``).
+    Single-tab documents keep ``## Title`` to avoid noise.
+    Multiple tabs are separated by a horizontal rule.
     """
+    multi = len(tabs_doc.tabs) > 1
     sections: list[str] = []
     for tab in tabs_doc.tabs:
-        parts: list[str] = [f"## {tab.title}", ""]
+        if multi:
+            heading = f"# Tab {tab.number} \u2014 {tab.title}"
+        else:
+            heading = f"## {tab.title}"
+        parts: list[str] = [heading, ""]
         _walk_body_markdown(tab.body_content, parts)
         sections.append("\n".join(parts))
     return "\n\n---\n\n".join(sections)
