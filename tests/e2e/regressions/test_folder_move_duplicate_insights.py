@@ -15,7 +15,7 @@ from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
 from tests.e2e.harness.assertions import assert_no_duplicate_insights, assert_no_orphan_insights
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.regression]
 
 
 class TestFolderMoveNoDuplicateInsights:

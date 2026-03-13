@@ -8,9 +8,14 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.harness.artifacts import pytest_runtest_makereport  # noqa: F401
+from tests.e2e.harness.assertions import assert_brain_consistent
 from tests.e2e.harness.brain import BrainFixture, create_brain
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess
+
+# Thread-local-ish holder: stores the brain root path so the autouse
+# invariant fixture can access it even after the brain fixture is torn down.
+_brain_root_holder: dict[str, Path] = {}
 
 
 @pytest.fixture
@@ -20,7 +25,10 @@ def brain(tmp_path: Path) -> BrainFixture:
     config_dir.mkdir()
     config = {"brain_root": str(tmp_path / "brain")}
     (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
-    return create_brain(tmp_path)
+    bf = create_brain(tmp_path)
+    # Stash root path for the invariant fixture
+    _brain_root_holder[str(tmp_path)] = bf.root
+    return bf
 
 
 @pytest.fixture
@@ -55,3 +63,18 @@ def daemon(brain: BrainFixture, config_dir: Path, capture_dir: Path):
     )
     yield d
     d.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _check_brain_invariants(request: pytest.FixtureRequest, tmp_path: Path):
+    """Post-test invariant: knowledge/, insights/, and DB must be consistent.
+
+    Opt out with ``@pytest.mark.skip_invariants``.
+    """
+    yield
+    if request.node.get_closest_marker("skip_invariants"):
+        return
+    key = str(tmp_path)
+    root = _brain_root_holder.pop(key, None)
+    if root is not None and root.exists():
+        assert_brain_consistent(root)

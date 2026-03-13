@@ -176,6 +176,18 @@ Each test gets its own `tmp_path` containing isolated brain root, config dir, SQ
 5. Regression tests from bug fixes go in `tests/e2e/regressions/` with naming `test_<description>.py`.
 6. E2E assertions must check **eventual state** (via `wait_for_*` helpers), never event sequences or log output.
 
+### Test Failure Classification
+
+When test failures occur, classify into three buckets:
+
+| Bucket | Action | Examples |
+|---|---|---|
+| **Harness issue** | Fix test | Race due to fixed sleep, daemon readiness not detected, incorrect fixture setup |
+| **Timing misunderstanding** | Adjust test logic, not timeouts | Debounce window, eventual consistency delay — fix by waiting on state, not time |
+| **Product behaviour violation** | Do NOT modify test — report bug | UNCHANGED source writes file, duplicate regen sessions, orphan insights, stale DB state |
+
+Never assume regen occurs within N seconds — only that it **eventually** occurs. Use `wait_for_file()` or `wait_for_condition()`, never fixed sleeps.
+
 ---
 
 ## Module Dependency Rule

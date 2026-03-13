@@ -7,6 +7,7 @@ from enum import Enum
 class SourceType(Enum):
     CONFLUENCE = "confluence"
     GOOGLE_DOCS = "googledocs"
+    TEST = "test"
 
 
 class UnsupportedSourceError(Exception):
@@ -17,7 +18,12 @@ class URLParseError(Exception):
     pass
 
 
+_TEST_URL_RE = re.compile(r"^test://doc/([a-zA-Z0-9_-]+)")
+
+
 def detect_source_type(url: str) -> SourceType:
+    if url.startswith("test://"):
+        return SourceType.TEST
     if "atlassian.net/wiki/" in url:
         return SourceType.CONFLUENCE
     if "docs.google.com/document/" in url:
@@ -69,6 +75,13 @@ def slugify(title: str) -> str:
     return s or "untitled"
 
 
+def extract_test_doc_id(url: str) -> str:
+    m = _TEST_URL_RE.search(url)
+    if not m:
+        raise URLParseError(f"Cannot extract test doc ID from: {url}")
+    return m.group(1)
+
+
 def canonical_id(source_type: SourceType, url: str) -> str:
     """Return a stable canonical ID for a source URL."""
     if source_type == SourceType.CONFLUENCE:
@@ -77,6 +90,9 @@ def canonical_id(source_type: SourceType, url: str) -> str:
     if source_type == SourceType.GOOGLE_DOCS:
         doc_id = extract_google_doc_id(url)
         return f"gdoc:{doc_id}"
+    if source_type == SourceType.TEST:
+        doc_id = extract_test_doc_id(url)
+        return f"test:{doc_id}"
     raise UnsupportedSourceError(f"Cannot create canonical ID for: {url}")
 
 
@@ -86,6 +102,8 @@ def extract_id(source_type: SourceType, url: str) -> str:
         return extract_confluence_page_id(url)
     if source_type == SourceType.GOOGLE_DOCS:
         return extract_google_doc_id(url)
+    if source_type == SourceType.TEST:
+        return extract_test_doc_id(url)
     raise UnsupportedSourceError(f"Cannot extract ID for: {source_type}")
 
 
@@ -100,6 +118,8 @@ def canonical_filename(source_type: SourceType, doc_id: str, title: str | None) 
         prefix = f"c{doc_id}"
     elif source_type == SourceType.GOOGLE_DOCS:
         prefix = f"g{doc_id}"
+    elif source_type == SourceType.TEST:
+        prefix = f"t{doc_id}"
     else:
         prefix = doc_id
 

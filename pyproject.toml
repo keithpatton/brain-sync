@@ -58,4 +58,6 @@ markers = [
     "unit: fast isolated unit tests",
     "system: CLI subprocess tests with fake LLM backend",
     "e2e: end-to-end daemon lifecycle and watcher tests",
+    "regression: regression tests from bug fixes",
+    "skip_invariants: opt out of post-test brain consistency check",
 ]

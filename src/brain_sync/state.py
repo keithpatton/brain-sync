@@ -12,7 +12,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -118,6 +118,14 @@ CREATE TABLE IF NOT EXISTS relationships (
     first_seen_utc TEXT,
     last_seen_utc TEXT,
     PRIMARY KEY (parent_canonical_id, canonical_id)
+);
+"""
+
+_DAEMON_STATUS_DDL = """
+CREATE TABLE IF NOT EXISTS daemon_status (
+    pid       INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    status     TEXT NOT NULL
 );
 """
 
@@ -624,7 +632,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 
         # Delete link and child relationships + orphaned documents
         link_child_docs = conn.execute(
-            "SELECT DISTINCT canonical_id FROM relationships " "WHERE relationship_type IN ('link', 'child')"
+            "SELECT DISTINCT canonical_id FROM relationships WHERE relationship_type IN ('link', 'child')"
         ).fetchall()
         conn.execute("DELETE FROM relationships WHERE relationship_type IN ('link', 'child')")
         # Remove documents that are now orphaned (no remaining relationships)
@@ -730,6 +738,15 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         log.info("Migrated DB schema to v19: reset structure_hash for content hash re-backfill")
         from_version = 19
 
+    if from_version < 20:
+        conn.executescript(_DAEMON_STATUS_DDL)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '20')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v20: added daemon_status table")
+        from_version = 20
+
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
 
@@ -757,6 +774,7 @@ def _connect(root: Path) -> sqlite3.Connection:
         conn.executescript(_RELATIONSHIPS_DDL)
         conn.executescript(_INSIGHT_STATE_DDL)
         conn.executescript(_TOKEN_EVENTS_DDL)
+        conn.executescript(_DAEMON_STATUS_DDL)
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -1305,7 +1323,7 @@ def reclaim_stale_running_states(root: Path, stale_threshold_secs: float = 600.0
     conn = _connect(root)
     try:
         rows = conn.execute(
-            "SELECT knowledge_path, regen_started_utc FROM insight_state " "WHERE regen_status = 'running'"
+            "SELECT knowledge_path, regen_started_utc FROM insight_state WHERE regen_status = 'running'"
         ).fetchall()
         stale_paths: list[str] = []
         for kp, started_utc in rows:
@@ -1327,7 +1345,7 @@ def reclaim_stale_running_states(root: Path, stale_threshold_secs: float = 600.0
                 stale_paths.append(kp)
         if stale_paths:
             conn.executemany(
-                "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL " "WHERE knowledge_path = ?",
+                "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL WHERE knowledge_path = ?",
                 [(kp,) for kp in stale_paths],
             )
             conn.commit()
@@ -1368,7 +1386,7 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
     conn = _connect(root)
     try:
         running_rows = conn.execute(
-            "SELECT knowledge_path, regen_started_utc FROM insight_state " "WHERE regen_status = 'running'"
+            "SELECT knowledge_path, regen_started_utc FROM insight_state WHERE regen_status = 'running'"
         ).fetchall()
         stale_running = 0
         for _, started_utc in running_rows:
@@ -1382,7 +1400,7 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
                 stale_running += 1
 
         failed_rows = conn.execute(
-            "SELECT knowledge_path, error_reason, last_regen_utc FROM insight_state " "WHERE regen_status = 'failed'"
+            "SELECT knowledge_path, error_reason, last_regen_utc FROM insight_state WHERE regen_status = 'failed'"
         ).fetchall()
         return {
             "stale_running": stale_running,
@@ -1412,5 +1430,43 @@ def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
             (new_path, old_path),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# --- daemon_status helpers ---
+
+
+def write_daemon_status(root: Path, pid: int, status: str) -> None:
+    """Write the daemon lifecycle status as a single-row table.
+
+    DELETE + INSERT on 'starting' keeps exactly one row.  On crash the
+    row remains as 'ready' or 'starting' — diagnostic evidence preserved.
+    """
+    from datetime import UTC, datetime
+
+    conn = _connect(root)
+    try:
+        if status == "starting":
+            # New lifecycle: clear previous row, insert fresh
+            conn.execute("DELETE FROM daemon_status")
+            conn.execute(
+                "INSERT INTO daemon_status (pid, started_at, status) VALUES (?, ?, ?)",
+                (pid, datetime.now(UTC).isoformat(), status),
+            )
+        else:
+            conn.execute("UPDATE daemon_status SET status = ? WHERE pid = ?", (status, pid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def read_daemon_status(root: Path) -> dict | None:
+    """Read the single daemon_status row.  Returns dict or None."""
+    conn = _connect(root)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT pid, started_at, status FROM daemon_status").fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()

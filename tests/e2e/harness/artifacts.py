@@ -54,7 +54,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):  # type
     if report.when != "call" or not report.failed:
         return
 
-    tmp_path = item.funcargs.get("tmp_path")
+    tmp_path = item.funcargs.get("tmp_path")  # pyright: ignore[reportAttributeAccessIssue]
     if tmp_path is None:
         return
 
@@ -72,6 +72,21 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):  # type
         # SQLite dump
         db_path = brain / ".sync-state.sqlite"
         (artifacts / "db_dump.txt").write_text(_dump_sqlite(db_path), encoding="utf-8")
+
+    # Daemon stdout/stderr (shut down if still running so pipes can be read)
+    daemon_fixture = item.funcargs.get("daemon")  # pyright: ignore[reportAttributeAccessIssue]
+    if daemon_fixture is not None:
+        try:
+            if daemon_fixture.is_running():
+                daemon_fixture.shutdown()
+            stdout = daemon_fixture.stdout_text
+            stderr = daemon_fixture.stderr_text
+            if stdout:
+                (artifacts / "daemon_stdout.txt").write_text(stdout, encoding="utf-8")
+            if stderr:
+                (artifacts / "daemon_stderr.txt").write_text(stderr, encoding="utf-8")
+        except Exception:
+            pass
 
     # Captured prompts
     prompts_dir = Path(tmp_path) / "prompts"

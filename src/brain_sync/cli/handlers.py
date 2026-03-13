@@ -187,7 +187,7 @@ def handle_add(args) -> None:
 
     # URL-only: reject non-URLs with helpful hint
     parsed = urlparse(args.source)
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme not in ("http", "https", "test"):
         log.error("Not a URL. Use `brain-sync add-file <path>` for local files.")
         sys.exit(1)
 

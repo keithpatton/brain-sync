@@ -51,7 +51,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 19
+        assert state.version == 20
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -514,7 +514,7 @@ class TestSchemaV4Migration:
         # Verify schema version after full migration chain
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "19"
+        assert version == "20"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
@@ -861,7 +861,7 @@ class TestSchemaV15V16Migration:
 
         # Check version
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "19"
+        assert version == "20"
 
         # token_events table exists
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -989,7 +989,7 @@ class TestSchemaV17Migration:
 
         # Version updated
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "19"
+        assert version == "20"
 
         # local_path column is gone
         cols = {r[1] for r in conn.execute("PRAGMA table_info(relationships)").fetchall()}
@@ -1000,7 +1000,7 @@ class TestSchemaV17Migration:
 
         # Relationship data preserved (minus local_path)
         row = conn.execute(
-            "SELECT parent_canonical_id, canonical_id, relationship_type, source_type " "FROM relationships"
+            "SELECT parent_canonical_id, canonical_id, relationship_type, source_type FROM relationships"
         ).fetchone()
         assert row is not None
         assert row == ("confluence:100", "confluence-attachment:789", "attachment", "confluence")
@@ -1114,7 +1114,7 @@ class TestV17ToV18Migration:
 
         # Version updated
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "19"
+        assert version == "20"
 
         # structure_hash column exists
         cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
@@ -1247,7 +1247,7 @@ class TestV19Migration:
         conn = _connect(tmp_path)
 
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "19"
+        assert version == "20"
 
         # structure_hash is now NULL, content_hash preserved
         row = conn.execute("SELECT knowledge_path, content_hash, structure_hash FROM insight_state").fetchone()

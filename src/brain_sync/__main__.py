@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from brain_sync.state import (
     load_state,
     save_insight_state,
     save_state,
+    write_daemon_status,
 )
 from brain_sync.watcher import KnowledgeWatcher, mirror_folder_move
 
@@ -68,7 +70,11 @@ async def run(root: Path) -> None:
     # INVARIANT: reconcile must run before _ensure_source_states() because
     # reconcile mutates sources.target_path in the DB and load_state() must
     # read the corrected values.
+    pid = os.getpid()
+
     reconcile_result = reconcile_sources(root)
+    write_daemon_status(root, pid, "starting")
+
     if reconcile_result.updated:
         for entry in reconcile_result.updated:
             log.info(
@@ -110,6 +116,7 @@ async def run(root: Path) -> None:
 
         # Start watcher after reconcile + enqueue to avoid spurious events
         watcher.start()
+        write_daemon_status(root, pid, "ready")
 
         async with httpx.AsyncClient() as http_client:
             try:
@@ -255,6 +262,10 @@ async def run(root: Path) -> None:
 
             finally:
                 watcher.stop()
+                try:
+                    write_daemon_status(root, pid, "stopped")
+                except Exception:
+                    log.warning("Failed to write daemon stopped status", exc_info=True)
                 try:
                     save_state(root, state)
                 except Exception:

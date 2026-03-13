@@ -23,6 +23,10 @@ def _get_adapter_class(source_type: SourceType) -> type:
         from brain_sync.sources.googledocs import GoogleDocsAdapter
 
         return GoogleDocsAdapter
+    if source_type == SourceType.TEST:
+        from brain_sync.sources.test import TestAdapter
+
+        return TestAdapter
     raise ValueError(f"No adapter for {source_type}")
 
 

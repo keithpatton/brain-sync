@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psutil
@@ -28,6 +29,7 @@ class DaemonProcess:
         self.capture_dir = capture_dir
         self.extra_env = extra_env or {}
         self._proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+        self._launch_time: str | None = None
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -41,7 +43,8 @@ class DaemonProcess:
 
     def start(self) -> None:
         """Start the daemon subprocess."""
-        cmd = [sys.executable, "-m", "brain_sync", "run", str(self.brain_root)]
+        self._launch_time = datetime.now(UTC).isoformat()
+        cmd = [sys.executable, "-m", "brain_sync", "run", "--root", str(self.brain_root)]
         # CREATE_NEW_PROCESS_GROUP needed on Windows for CTRL_C_EVENT
         kwargs: dict = {}
         if sys.platform == "win32":
@@ -55,19 +58,26 @@ class DaemonProcess:
         )
 
     def wait_for_ready(self, timeout: float = 15) -> None:
-        """Poll the SQLite database until the daemon is present."""
+        """Poll daemon_status table until status='ready' for this PID and session."""
+        if self._proc is None:
+            raise RuntimeError("Daemon not started")
         db_path = self.brain_root / ".sync-state.sqlite"
+        pid = self._proc.pid
+        launch_time = self._launch_time
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self.is_running():
-                raise RuntimeError("Daemon exited before becoming ready")
+                stderr = self.stderr_text
+                raise RuntimeError(f"Daemon exited before becoming ready. stderr:\n{stderr}")
             if db_path.exists():
                 try:
                     conn = sqlite3.connect(str(db_path), timeout=1)
-                    # If we can connect and the DB has tables, daemon is ready
-                    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                    rows = conn.execute(
+                        "SELECT started_at FROM daemon_status WHERE pid = ? AND status = 'ready' AND started_at >= ?",
+                        (pid, launch_time),
+                    ).fetchall()
                     conn.close()
-                    if tables:
+                    if rows:
                         return
                 except (sqlite3.OperationalError, sqlite3.DatabaseError):
                     pass
