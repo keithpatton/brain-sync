@@ -1251,6 +1251,427 @@ def classify_folder_change(
     return event, new_content_hash, new_structure_hash
 
 
+@dataclass
+class SingleFolderResult:
+    """Result of processing a single folder for regen."""
+
+    action: Literal[
+        "regenerated",  # Claude called, new summary written to disk
+        "skipped_unchanged",  # content hash matched, no work needed
+        "skipped_no_content",  # folder exists but empty (no files, no child dirs)
+        "skipped_rename",  # structure-only change, no Claude call
+        "skipped_similarity",  # similarity guard discarded rewrite
+        "skipped_backfill",  # post-v18 migration backfill (hashes updated, no disk change)
+        "cleaned_up",  # folder missing → stale insights/state actually deleted
+    ]
+    knowledge_path: str
+
+
+# Actions that propagate dirtiness to parent in wave mode
+_PROPAGATES_UP = frozenset(
+    {
+        "regenerated",  # summary changed on disk → parent content hash differs
+        "skipped_no_content",  # empty folder may have had stale insights cleaned → parent re-evaluates
+        "cleaned_up",  # folder gone, artifacts deleted → parent content hash differs
+        "skipped_rename",  # child dir name changed → parent's local child-dir name set changed,
+        #   so parent must re-evaluate its own structure_hash even though
+        #   no Claude call is expected at the child level
+    }
+)
+
+# Actions that do NOT propagate:
+# - skipped_unchanged:  nothing changed, ancestors stable
+# - skipped_similarity: summary unchanged on disk, ancestors stable
+# - skipped_backfill:   only DB metadata updated (structure_hash), no on-disk summary
+#                       change — parent content_hash depends on child summaries on disk,
+#                       not child state metadata, so no propagation needed
+
+
+async def regen_single_folder(
+    root: Path,
+    knowledge_path: str,
+    *,
+    config: RegenConfig | None = None,
+    owner_id: str | None = None,
+    session_id: str | None = None,
+    regen_id: str | None = None,
+) -> SingleFolderResult:
+    """Process a single knowledge folder for regen (no walk-up).
+
+    Returns a ``SingleFolderResult`` describing what happened.
+    Raises ``RegenFailed`` on Claude invocation failure.
+    """
+    if config is None:
+        config = RegenConfig.load()
+    if regen_id is None:
+        regen_id = uuid4().hex[:6]
+
+    similarity_threshold = config.similarity_threshold
+    current_path = knowledge_path
+    knowledge_dir = root / "knowledge" / current_path if current_path else root / "knowledge"
+    insights_dir = root / "insights" / current_path if current_path else root / "insights"
+
+    # Guard: if knowledge dir doesn't exist, clean up stale insights
+    if not knowledge_dir.is_dir():
+        log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
+        if insights_dir.is_dir():
+            shutil.rmtree(insights_dir)
+            log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
+        delete_insight_state(root, current_path)
+        return SingleFolderResult(action="cleaned_up", knowledge_path=current_path)
+
+    # Collect inputs
+    child_dirs = _get_child_dirs(knowledge_dir)
+    has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
+
+    # Cleanup: no readable files and no child dirs
+    if not has_direct_files and not child_dirs:
+        log.debug("[%s] No readable files or child dirs in %s, cleaning up", regen_id, current_path or "(root)")
+        if insights_dir.is_dir():
+            shutil.rmtree(insights_dir)
+            log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
+        delete_insight_state(root, current_path)
+        return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
+
+    # Load current insight state
+    istate = load_insight_state(root, current_path)
+
+    # Collect child summaries and compute split hashes
+    child_summaries = _collect_child_summaries(root, current_path, child_dirs)
+
+    if not child_summaries and not has_direct_files:
+        log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
+        return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
+
+    new_content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
+    new_structure_hash = _compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
+
+    event = classify_change(
+        istate.content_hash if istate else None,
+        new_content_hash,
+        istate.structure_hash if istate else None,
+        new_structure_hash,
+    )
+
+    # Post-v18 migration backfill: preserve old content_hash, set structure_hash only
+    if istate and istate.structure_hash is None and (insights_dir / "summary.md").exists():
+        log.info(
+            "[%s] Backfilling structure_hash for %s (post-v18 migration)",
+            regen_id,
+            current_path or "(root)",
+        )
+        save_insight_state(
+            root,
+            InsightState(
+                knowledge_path=current_path,
+                content_hash=new_content_hash,
+                summary_hash=istate.summary_hash,
+                structure_hash=new_structure_hash,
+                regen_started_utc=istate.regen_started_utc,
+                last_regen_utc=istate.last_regen_utc,
+                regen_status=istate.regen_status,
+                owner_id=istate.owner_id,
+                error_reason=istate.error_reason,
+            ),
+        )
+        return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
+
+    if event.change_type == "none":
+        log.debug(
+            "[%s] Content hash unchanged for %s (hash=%s)",
+            regen_id,
+            current_path or "(root)",
+            new_content_hash[:12],
+        )
+        return SingleFolderResult(action="skipped_unchanged", knowledge_path=current_path)
+
+    if event.structural:
+        # Rename only — persist updated structure_hash
+        log.info(
+            "[%s] Structure-only change for %s (rename), updating structure_hash",
+            regen_id,
+            current_path or "(root)",
+        )
+        save_insight_state(
+            root,
+            InsightState(
+                knowledge_path=current_path,
+                content_hash=istate.content_hash if istate else new_content_hash,
+                summary_hash=istate.summary_hash if istate else None,
+                structure_hash=new_structure_hash,
+                regen_started_utc=istate.regen_started_utc if istate else None,
+                last_regen_utc=istate.last_regen_utc if istate else None,
+                regen_status=istate.regen_status if istate else "idle",
+                owner_id=istate.owner_id if istate else None,
+            ),
+        )
+        return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
+
+    log.debug(
+        "[%s] Content hash changed for %s: %s -> %s",
+        regen_id,
+        current_path or "(root)",
+        (istate.content_hash[:12] if istate and istate.content_hash else "none"),
+        new_content_hash[:12],
+    )
+
+    # Build prompt
+    prompt_result = _build_prompt(
+        current_path,
+        knowledge_dir,
+        child_summaries,
+        insights_dir,
+        root,
+        write_journal=config.write_journal,
+    )
+
+    # Prompt fingerprint for forensic tracing
+    prompt_hash = hashlib.sha1(prompt_result.text.encode("utf-8")).hexdigest()[:8]
+
+    # Read old summary for similarity check
+    summary_path = insights_dir / "summary.md"
+    old_summary = ""
+    if summary_path.exists():
+        old_summary = summary_path.read_text(encoding="utf-8")
+
+    insights_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mark as running — keep old hash so crashes/failures don't block retries
+    started = datetime.now(UTC).isoformat()
+    save_insight_state(
+        root,
+        InsightState(
+            knowledge_path=current_path,
+            content_hash=istate.content_hash if istate else None,
+            summary_hash=istate.summary_hash if istate else None,
+            structure_hash=istate.structure_hash if istate else None,
+            regen_started_utc=started,
+            last_regen_utc=istate.last_regen_utc if istate else None,
+            regen_status="running",
+            owner_id=owner_id,
+        ),
+    )
+
+    # Chunk-and-merge + final invoke — unified exception handler
+    # ensures "failed" state is always saved on any error.
+    try:
+        # Chunk-and-merge for oversized files
+        if prompt_result.oversized_files:
+            chunk_summaries_map: dict[str, list[str]] = {}
+            for filename, content in sorted(prompt_result.oversized_files.items()):
+                chunks = _split_markdown_chunks(content)
+                if len(chunks) > MAX_CHUNKS:
+                    raise RegenFailed(
+                        current_path or "(root)",
+                        f"{filename}: {len(chunks)} chunks exceeds limit of {MAX_CHUNKS}",
+                    )
+                log.info("[%s] Chunking %s: %d chunks", regen_id, filename, len(chunks))
+                file_summaries: list[str] = []
+                for i, chunk in enumerate(chunks, 1):
+                    heading = _first_heading(chunk) or f"part {i}"
+                    chunk_result = await async_retry(
+                        invoke_claude,
+                        _build_chunk_prompt(chunk, i, len(chunks), filename, heading),
+                        cwd=root,
+                        timeout=config.timeout,
+                        model=config.model,
+                        effort=config.effort,
+                        max_turns=1,
+                        system_prompt=MINIMAL_SYSTEM_PROMPT,
+                        tools="",
+                        session_id=session_id,
+                        operation_type=OP_REGEN,
+                        resource_type="knowledge",
+                        resource_id=current_path,
+                        is_chunk=True,
+                        is_success=lambda r: r.success,
+                        breaker=claude_breaker,
+                    )
+                    file_summaries.append(chunk_result.output.strip())
+                    log.debug(
+                        "[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
+                        regen_id,
+                        i,
+                        len(chunks),
+                        filename,
+                        chunk_result.input_tokens,
+                        chunk_result.output_tokens,
+                    )
+                chunk_summaries_map[filename] = file_summaries
+
+            # Collect binary_names from the original _build_prompt pass
+            binary_names = [
+                f.name
+                for f in sorted(knowledge_dir.iterdir())
+                if _is_readable_file(f) and f.suffix.lower() not in TEXT_EXTENSIONS
+            ]
+            # Rebuild prompt with chunk summaries replacing raw content
+            prompt_result = _build_prompt_from_chunks(
+                current_path,
+                chunk_summaries_map,
+                child_summaries,
+                insights_dir,
+                root,
+                binary_names,
+                write_journal=config.write_journal,
+            )
+
+        # Invoke Claude in inference mode (minimal system prompt, no tools)
+        log.info(
+            "[%s] Generating insights: %s (model=%s prompt_hash=%s)",
+            regen_id,
+            current_path or "(root)",
+            config.model,
+            prompt_hash,
+        )
+        result = await async_retry(
+            invoke_claude,
+            prompt_result.text,
+            cwd=root,
+            timeout=config.timeout,
+            model=config.model,
+            effort=config.effort,
+            max_turns=config.max_turns,
+            system_prompt=MINIMAL_SYSTEM_PROMPT,
+            tools="",
+            session_id=session_id,
+            operation_type=OP_REGEN,
+            resource_type="knowledge",
+            resource_id=current_path,
+            is_chunk=False,
+            is_success=lambda r: r.success,
+            breaker=claude_breaker,
+        )
+    except Exception as e:
+        log.error("Regen failed for %s: %s", current_path or "(root)", e, exc_info=True)
+        now = datetime.now(UTC).isoformat()
+        try:
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=istate.content_hash if istate else None,
+                    summary_hash=istate.summary_hash if istate else None,
+                    structure_hash=istate.structure_hash if istate else None,
+                    regen_started_utc=started,
+                    last_regen_utc=now,
+                    regen_status="failed",
+                    owner_id=owner_id,
+                    error_reason=str(e),
+                ),
+            )
+        except Exception as db_err:
+            log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+        raise RegenFailed(current_path or "(root)", str(e)) from e
+    now = datetime.now(UTC).isoformat()
+
+    # Parse structured output (summary + optional journal)
+    new_summary, journal_text = _parse_structured_output(
+        result.output.strip() if result.output else "", config.write_journal
+    )
+    if len(new_summary) < 20:
+        log.warning(
+            "[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
+            regen_id,
+            current_path or "(root)",
+            len(new_summary),
+            result.output[:500],
+        )
+        err_msg = "Claude returned empty or suspiciously small output"
+        try:
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=istate.content_hash if istate else None,
+                    summary_hash=istate.summary_hash if istate else None,
+                    structure_hash=istate.structure_hash if istate else None,
+                    regen_started_utc=started,
+                    last_regen_utc=now,
+                    regen_status="failed",
+                    owner_id=owner_id,
+                    error_reason=err_msg,
+                ),
+            )
+        except Exception as db_err:
+            log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+        raise RegenFailed(current_path or "(root)", err_msg)
+
+    # Similarity guard
+    if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
+        log.info(
+            "[%s] Summary for %s is >%.0f%% similar, discarding rewrite",
+            regen_id,
+            current_path or "(root)",
+            similarity_threshold * 100,
+        )
+        summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
+        save_insight_state(
+            root,
+            InsightState(
+                knowledge_path=current_path,
+                content_hash=new_content_hash,
+                summary_hash=summary_hash,
+                structure_hash=new_structure_hash,
+                regen_started_utc=started,
+                last_regen_utc=now,
+                regen_status="idle",
+                owner_id=None,
+            ),
+        )
+        # Journal is independent of summary similarity — temporal events matter
+        if journal_text:
+            _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
+        return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
+
+    # Summary changed — Python writes the file atomically
+    atomic_write_bytes(summary_path, new_summary.encode("utf-8"))
+    if journal_text:
+        _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
+    summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
+    save_insight_state(
+        root,
+        InsightState(
+            knowledge_path=current_path,
+            content_hash=new_content_hash,
+            summary_hash=summary_hash,
+            structure_hash=new_structure_hash,
+            regen_started_utc=started,
+            last_regen_utc=now,
+            regen_status="idle",
+            owner_id=None,
+        ),
+    )
+    log.info(
+        "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
+        regen_id,
+        current_path or "(root)",
+        config.model,
+        result.input_tokens,
+        result.output_tokens,
+        result.num_turns,
+    )
+    return SingleFolderResult(action="regenerated", knowledge_path=current_path)
+
+
+# Walk-up stop/continue rules for regen_path (preserving original early-exit semantics)
+_WALKUP_CONTINUES = frozenset(
+    {
+        "regenerated",
+        "skipped_no_content",
+        "skipped_rename",
+        "skipped_backfill",
+        "cleaned_up",
+    }
+)
+_WALKUP_STOPS = frozenset(
+    {
+        "skipped_unchanged",
+        "skipped_similarity",
+    }
+)
+
+
 async def regen_path(
     root: Path,
     knowledge_rel_path: str,
@@ -1272,382 +1693,67 @@ async def regen_path(
         config = RegenConfig.load()
 
     regen_id = uuid4().hex[:6]
-    similarity_threshold = config.similarity_threshold
     regen_count = 0
     current_path = knowledge_rel_path
 
     for _ in range(max_depth):
-        knowledge_dir = root / "knowledge" / current_path if current_path else root / "knowledge"
-        insights_dir = root / "insights" / current_path if current_path else root / "insights"
-
-        # Guard: if knowledge dir doesn't exist, clean up stale insights and walk up
-        if not knowledge_dir.is_dir():
-            log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
-            if insights_dir.is_dir():
-                shutil.rmtree(insights_dir)
-                log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
-            delete_insight_state(root, current_path)
-            if not current_path:
-                break
-            parts = current_path.rsplit("/", 1)
-            current_path = parts[0] if len(parts) > 1 else ""
-            continue
-
-        # Collect inputs
-        child_dirs = _get_child_dirs(knowledge_dir)
-        has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
-
-        # Cleanup: no readable files and no child dirs → remove stale insights
-        if not has_direct_files and not child_dirs:
-            log.debug("[%s] No readable files or child dirs in %s, cleaning up", regen_id, current_path or "(root)")
-            if insights_dir.is_dir():
-                shutil.rmtree(insights_dir)
-                log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
-            delete_insight_state(root, current_path)
-            if not current_path:
-                break
-            parts = current_path.rsplit("/", 1)
-            current_path = parts[0] if len(parts) > 1 else ""
-            continue
-
-        # Load current insight state
-        istate = load_insight_state(root, current_path)
-
-        # Collect child summaries and compute split hashes
-        child_summaries = _collect_child_summaries(root, current_path, child_dirs)
-
-        if not child_summaries and not has_direct_files:
-            log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
-            break
-
-        new_content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
-        new_structure_hash = _compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
-
-        event = classify_change(
-            istate.content_hash if istate else None,
-            new_content_hash,
-            istate.structure_hash if istate else None,
-            new_structure_hash,
-        )
-
-        # Post-v18 migration backfill: preserve old content_hash, set structure_hash only
-        if istate and istate.structure_hash is None and (insights_dir / "summary.md").exists():
-            log.info(
-                "[%s] Backfilling structure_hash for %s (post-v18 migration)",
-                regen_id,
-                current_path or "(root)",
-            )
-            save_insight_state(
-                root,
-                InsightState(
-                    knowledge_path=current_path,
-                    content_hash=new_content_hash,
-                    summary_hash=istate.summary_hash,
-                    structure_hash=new_structure_hash,
-                    regen_started_utc=istate.regen_started_utc,
-                    last_regen_utc=istate.last_regen_utc,
-                    regen_status=istate.regen_status,
-                    owner_id=istate.owner_id,
-                    error_reason=istate.error_reason,
-                ),
-            )
-            # Walk up to parent — no Claude call needed
-            if not current_path:
-                break
-            parts = current_path.rsplit("/", 1)
-            current_path = parts[0] if len(parts) > 1 else ""
-            continue
-
-        if event.change_type == "none":
-            log.debug(
-                "[%s] Content hash unchanged for %s, stopping (hash=%s)",
-                regen_id,
-                current_path or "(root)",
-                new_content_hash[:12],
-            )
-            break
-
-        if event.structural:
-            # Rename only — persist updated structure_hash, continue walk to parent
-            log.info(
-                "[%s] Structure-only change for %s (rename), updating structure_hash",
-                regen_id,
-                current_path or "(root)",
-            )
-            save_insight_state(
-                root,
-                InsightState(
-                    knowledge_path=current_path,
-                    content_hash=istate.content_hash if istate else new_content_hash,
-                    summary_hash=istate.summary_hash if istate else None,
-                    structure_hash=new_structure_hash,
-                    regen_started_utc=istate.regen_started_utc if istate else None,
-                    last_regen_utc=istate.last_regen_utc if istate else None,
-                    regen_status=istate.regen_status if istate else "idle",
-                    owner_id=istate.owner_id if istate else None,
-                ),
-            )
-            # Walk up to parent — parent may have content changes
-            if not current_path:
-                break
-            parts = current_path.rsplit("/", 1)
-            current_path = parts[0] if len(parts) > 1 else ""
-            continue
-
-        log.debug(
-            "[%s] Content hash changed for %s: %s -> %s",
-            regen_id,
-            current_path or "(root)",
-            (istate.content_hash[:12] if istate and istate.content_hash else "none"),
-            new_content_hash[:12],
-        )
-
-        # Build prompt
-        prompt_result = _build_prompt(
+        result = await regen_single_folder(
+            root,
             current_path,
-            knowledge_dir,
-            child_summaries,
-            insights_dir,
-            root,
-            write_journal=config.write_journal,
+            config=config,
+            owner_id=owner_id,
+            session_id=session_id,
+            regen_id=regen_id,
         )
 
-        # Prompt fingerprint for forensic tracing
-        prompt_hash = hashlib.sha1(prompt_result.text.encode("utf-8")).hexdigest()[:8]
+        if result.action == "regenerated":
+            regen_count += 1
 
-        # Read old summary for similarity check
-        summary_path = insights_dir / "summary.md"
-        old_summary = ""
-        if summary_path.exists():
-            old_summary = summary_path.read_text(encoding="utf-8")
-
-        insights_dir.mkdir(parents=True, exist_ok=True)
-
-        # Mark as running — keep old hash so crashes/failures don't block retries
-        started = datetime.now(UTC).isoformat()
-        save_insight_state(
-            root,
-            InsightState(
-                knowledge_path=current_path,
-                content_hash=istate.content_hash if istate else None,
-                summary_hash=istate.summary_hash if istate else None,
-                structure_hash=istate.structure_hash if istate else None,
-                regen_started_utc=started,
-                last_regen_utc=istate.last_regen_utc if istate else None,
-                regen_status="running",
-                owner_id=owner_id,
-            ),
-        )
-
-        # Chunk-and-merge + final invoke — unified exception handler
-        # ensures "failed" state is always saved on any error.
-        try:
-            # Chunk-and-merge for oversized files
-            if prompt_result.oversized_files:
-                chunk_summaries_map: dict[str, list[str]] = {}
-                for filename, content in sorted(prompt_result.oversized_files.items()):
-                    chunks = _split_markdown_chunks(content)
-                    if len(chunks) > MAX_CHUNKS:
-                        raise RegenFailed(
-                            current_path or "(root)",
-                            f"{filename}: {len(chunks)} chunks exceeds limit of {MAX_CHUNKS}",
-                        )
-                    log.info("[%s] Chunking %s: %d chunks", regen_id, filename, len(chunks))
-                    file_summaries: list[str] = []
-                    for i, chunk in enumerate(chunks, 1):
-                        heading = _first_heading(chunk) or f"part {i}"
-                        chunk_result = await async_retry(
-                            invoke_claude,
-                            _build_chunk_prompt(chunk, i, len(chunks), filename, heading),
-                            cwd=root,
-                            timeout=config.timeout,
-                            model=config.model,
-                            effort=config.effort,
-                            max_turns=1,
-                            system_prompt=MINIMAL_SYSTEM_PROMPT,
-                            tools="",
-                            session_id=session_id,
-                            operation_type=OP_REGEN,
-                            resource_type="knowledge",
-                            resource_id=current_path,
-                            is_chunk=True,
-                            is_success=lambda r: r.success,
-                            breaker=claude_breaker,
-                        )
-                        file_summaries.append(chunk_result.output.strip())
-                        log.debug(
-                            "[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
-                            regen_id,
-                            i,
-                            len(chunks),
-                            filename,
-                            chunk_result.input_tokens,
-                            chunk_result.output_tokens,
-                        )
-                    chunk_summaries_map[filename] = file_summaries
-
-                # Collect binary_names from the original _build_prompt pass
-                binary_names = [
-                    f.name
-                    for f in sorted(knowledge_dir.iterdir())
-                    if _is_readable_file(f) and f.suffix.lower() not in TEXT_EXTENSIONS
-                ]
-                # Rebuild prompt with chunk summaries replacing raw content
-                prompt_result = _build_prompt_from_chunks(
-                    current_path,
-                    chunk_summaries_map,
-                    child_summaries,
-                    insights_dir,
-                    root,
-                    binary_names,
-                    write_journal=config.write_journal,
-                )
-
-            # Invoke Claude in inference mode (minimal system prompt, no tools)
-            log.info(
-                "[%s] Generating insights: %s (model=%s prompt_hash=%s)",
-                regen_id,
-                current_path or "(root)",
-                config.model,
-                prompt_hash,
-            )
-            result = await async_retry(
-                invoke_claude,
-                prompt_result.text,
-                cwd=root,
-                timeout=config.timeout,
-                model=config.model,
-                effort=config.effort,
-                max_turns=config.max_turns,
-                system_prompt=MINIMAL_SYSTEM_PROMPT,
-                tools="",
-                session_id=session_id,
-                operation_type=OP_REGEN,
-                resource_type="knowledge",
-                resource_id=current_path,
-                is_chunk=False,
-                is_success=lambda r: r.success,
-                breaker=claude_breaker,
-            )
-        except Exception as e:
-            log.error("Regen failed for %s: %s", current_path or "(root)", e, exc_info=True)
-            now = datetime.now(UTC).isoformat()
-            try:
-                save_insight_state(
-                    root,
-                    InsightState(
-                        knowledge_path=current_path,
-                        content_hash=istate.content_hash if istate else None,
-                        summary_hash=istate.summary_hash if istate else None,
-                        structure_hash=istate.structure_hash if istate else None,
-                        regen_started_utc=started,
-                        last_regen_utc=now,
-                        regen_status="failed",
-                        owner_id=owner_id,
-                        error_reason=str(e),
-                    ),
-                )
-            except Exception as db_err:
-                log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
-            raise RegenFailed(current_path or "(root)", str(e)) from e
-        now = datetime.now(UTC).isoformat()
-
-        # Parse structured output (summary + optional journal)
-        new_summary, journal_text = _parse_structured_output(
-            result.output.strip() if result.output else "", config.write_journal
-        )
-        if len(new_summary) < 20:
-            log.warning(
-                "[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
-                regen_id,
-                current_path or "(root)",
-                len(new_summary),
-                result.output[:500],
-            )
-            err_msg = "Claude returned empty or suspiciously small output"
-            try:
-                save_insight_state(
-                    root,
-                    InsightState(
-                        knowledge_path=current_path,
-                        content_hash=istate.content_hash if istate else None,
-                        summary_hash=istate.summary_hash if istate else None,
-                        structure_hash=istate.structure_hash if istate else None,
-                        regen_started_utc=started,
-                        last_regen_utc=now,
-                        regen_status="failed",
-                        owner_id=owner_id,
-                        error_reason=err_msg,
-                    ),
-                )
-            except Exception as db_err:
-                log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
-            raise RegenFailed(current_path or "(root)", err_msg)
-
-        # Similarity guard
-        if old_summary and text_similarity(old_summary, new_summary) > similarity_threshold:
-            log.info(
-                "[%s] Summary for %s is >%.0f%% similar, discarding rewrite",
-                regen_id,
-                current_path or "(root)",
-                similarity_threshold * 100,
-            )
-            summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
-            save_insight_state(
-                root,
-                InsightState(
-                    knowledge_path=current_path,
-                    content_hash=new_content_hash,
-                    summary_hash=summary_hash,
-                    structure_hash=new_structure_hash,
-                    regen_started_utc=started,
-                    last_regen_utc=now,
-                    regen_status="idle",
-                    owner_id=None,
-                ),
-            )
-            # Journal is independent of summary similarity — temporal events matter
-            if journal_text:
-                _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
-            # Summary unchanged → stop walking up
+        if result.action in _WALKUP_STOPS:
             break
 
-        # Summary changed — Python writes the file atomically
-        atomic_write_bytes(summary_path, new_summary.encode("utf-8"))
-        if journal_text:
-            _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
-        summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
-        save_insight_state(
-            root,
-            InsightState(
-                knowledge_path=current_path,
-                content_hash=new_content_hash,
-                summary_hash=summary_hash,
-                structure_hash=new_structure_hash,
-                regen_started_utc=started,
-                last_regen_utc=now,
-                regen_status="idle",
-                owner_id=None,
-            ),
-        )
-        regen_count += 1
-        log.info(
-            "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
-            regen_id,
-            current_path or "(root)",
-            config.model,
-            result.input_tokens,
-            result.output_tokens,
-            result.num_turns,
-        )
+        if result.action in _WALKUP_CONTINUES:
+            # Walk up to parent (or break if at root)
+            if not current_path:
+                break
+            parts = current_path.rsplit("/", 1)
+            current_path = parts[0] if len(parts) > 1 else ""
+            continue
 
-        # Walk up to parent (or break if at root)
-        if not current_path:
-            break
-        parts = current_path.rsplit("/", 1)
-        current_path = parts[0] if len(parts) > 1 else ""
+        # Unknown action — defensive break
+        break
 
     return regen_count
+
+
+def _parent_path(path: str) -> str:
+    """Return the parent of a knowledge path, or "" for root-level paths."""
+    if not path:
+        return ""
+    parts = path.rsplit("/", 1)
+    return parts[0] if len(parts) > 1 else ""
+
+
+def compute_waves(paths: list[str]) -> list[list[str]]:
+    """Compute depth-ordered waves from leaf paths including all ancestors.
+
+    Returns waves deepest-first. Each wave is sorted for determinism.
+    Root ("") is always included if any paths are provided.
+    """
+    if not paths:
+        return []
+
+    by_depth: dict[int, set[str]] = {}
+    for path in paths:
+        p = path
+        while True:
+            depth = 0 if not p else len(p.split("/"))
+            by_depth.setdefault(depth, set()).add(p)
+            if not p:
+                break
+            parts = p.rsplit("/", 1)
+            p = parts[0] if len(parts) > 1 else ""
+    return [sorted(by_depth[d]) for d in sorted(by_depth, reverse=True)]
 
 
 async def regen_all(
@@ -1657,7 +1763,11 @@ async def regen_all(
     owner_id: str | None = None,
     session_id: str | None = None,
 ) -> int:
-    """Regenerate insights for all knowledge paths (bottom-up).
+    """Regenerate insights for all knowledge paths using topological wave processing.
+
+    Organizes paths into depth-ordered waves (deepest first) and processes each
+    wave once. Dirty propagation ensures parents are only processed when at least
+    one child actually changed. Each folder is processed at most once.
 
     Stale-state recovery is the caller's responsibility via ``regen_session``.
     """
@@ -1671,33 +1781,63 @@ async def regen_all(
         log.info("No knowledge paths found")
         return 0
 
-    log.info("Found %d knowledge paths to regenerate", len(content_paths))
+    waves = compute_waves(content_paths)
+    all_paths = {p for wave in waves for p in wave}
+
+    log.info(
+        "Wave regen: %d paths in %d waves (deepest-first)",
+        len(all_paths),
+        len(waves),
+    )
+
+    regen_id = uuid4().hex[:6]
     total = 0
+    dirty: set[str] = set(content_paths)  # all leaves start dirty
     failed_paths: list[tuple[str, str]] = []
-    for path in content_paths:
-        log.info("Assessing insights generation: %s", path)
-        try:
-            count = await regen_path(root, path, config=config, owner_id=owner_id, session_id=session_id)
-            total += count
-        except KeyboardInterrupt:
-            log.info("Interrupted during regen of %s, stopping batch", path)
-            raise
-        except Exception as e:
-            reason = f"{type(e).__name__}: {e}"
-            log.warning("Skipping %s: %s", path, reason, exc_info=True)
-            failed_paths.append((path, reason))
+
+    for wave_idx, wave in enumerate(waves):
+        log.debug("Processing wave %d/%d: %d paths", wave_idx + 1, len(waves), len(wave))
+
+        for path in wave:
+            if path not in dirty:
+                continue
+
+            log.info("Assessing insights generation: %s", path or "(root)")
+            try:
+                result = await regen_single_folder(
+                    root,
+                    path,
+                    config=config,
+                    owner_id=owner_id,
+                    session_id=session_id,
+                    regen_id=regen_id,
+                )
+                if result.action == "regenerated":
+                    total += 1
+                if result.action in _PROPAGATES_UP and path:
+                    dirty.add(_parent_path(path))
+                # else: don't propagate — parent stays clean
+            except KeyboardInterrupt:
+                log.info("Interrupted during regen of %s, stopping batch", path or "(root)")
+                raise
+            except Exception as e:
+                reason = f"{type(e).__name__}: {e}"
+                log.warning("Skipping %s: %s", path or "(root)", reason, exc_info=True)
+                failed_paths.append((path, reason))
+                # Failed paths do NOT propagate dirtiness to parent
 
     if failed_paths:
         # Terse summary only — full stack traces already emitted per-path above
         log.warning(
             "Batch completed with %d/%d failures: %s",
             len(failed_paths),
-            len(content_paths),
-            ", ".join(fp for fp, _ in failed_paths),
+            len(all_paths),
+            ", ".join(fp or "(root)" for fp, _ in failed_paths),
         )
 
     # Clean up orphaned insight states whose knowledge dirs no longer exist
     content_path_set = set(content_paths)
+    content_path_set.add("")  # root is always valid
     all_states = load_all_insight_states(root)
     orphaned = 0
     for istate in all_states:

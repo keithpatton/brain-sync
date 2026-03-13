@@ -189,3 +189,98 @@ class TestNextFireIn:
         remaining = q.next_fire_in()
         assert remaining is not None
         assert 0 < remaining <= 10.0
+
+
+class TestWaveProcessing:
+    """Tests for wave-based multi-path processing in process_ready."""
+
+    def test_process_ready_wave_deduplicates(self, brain):
+        """Multiple siblings processed via waves: parent gets 1 call, not N."""
+        from brain_sync.regen import ClaudeResult
+
+        # Create sibling knowledge dirs
+        for name in ("area/sub1", "area/sub2", "area/sub3"):
+            kdir = brain / "knowledge" / name
+            kdir.mkdir(parents=True, exist_ok=True)
+            (kdir / "doc.md").write_text(f"# {name}", encoding="utf-8")
+        # Parent has its own file
+        (brain / "knowledge" / "area" / "overview.md").write_text("# Area overview", encoding="utf-8")
+
+        call_paths: list[str] = []
+
+        async def track_invoke(prompt: str, cwd, **kwargs):
+            for line in prompt.split("\n"):
+                if "regenerating the insight summary for knowledge area:" in line:
+                    area = line.split(":")[-1].strip()
+                    call_paths.append(area)
+                    break
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        q = RegenQueue(root=brain, debounce_secs=0.0)
+        q.enqueue("area/sub1")
+        q.enqueue("area/sub2")
+        q.enqueue("area/sub3")
+
+        with (
+            patch("brain_sync.regen_queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.invoke_claude", side_effect=track_invoke),
+        ):
+            asyncio.run(q.process_ready())
+
+        # Parent "area" should appear at most once (wave scheduling)
+        assert call_paths.count("area") <= 1
+
+    def test_process_ready_ancestor_ownership_required(self, brain):
+        """If ancestor ownership fails in wave mode, skip it and don't propagate."""
+        from brain_sync.regen import ClaudeResult
+
+        # Need 2+ paths to trigger wave mode (single path uses regen_path fast path)
+        for name in ("area/sub1", "area/sub2"):
+            kdir = brain / "knowledge" / name
+            kdir.mkdir(parents=True, exist_ok=True)
+            (kdir / "doc.md").write_text(f"# {name}", encoding="utf-8")
+
+        call_paths: list[str] = []
+
+        async def track_invoke(prompt: str, cwd, **kwargs):
+            for line in prompt.split("\n"):
+                if "regenerating the insight summary for knowledge area:" in line:
+                    call_paths.append(line.split(":")[-1].strip())
+                    break
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        def ownership_fails_for_area(root, path, owner_id, timeout):
+            # Fail for "area" ancestor, succeed for everything else
+            return path != "area"
+
+        q = RegenQueue(root=brain, debounce_secs=0.0)
+        q.enqueue("area/sub1")
+        q.enqueue("area/sub2")
+
+        with (
+            patch("brain_sync.regen_queue.acquire_regen_ownership", side_effect=ownership_fails_for_area),
+            patch("brain_sync.regen.invoke_claude", side_effect=track_invoke),
+        ):
+            asyncio.run(q.process_ready())
+
+        # Subs should be processed, but area (ownership failed) should not
+        assert "area/sub1" in call_paths
+        assert "area/sub2" in call_paths
+        assert "area" not in call_paths
+
+    def test_process_ready_single_path_uses_regen_path(self, brain):
+        """Single ready path uses regen_path walk-up (fast path)."""
+        q = RegenQueue(root=brain, debounce_secs=0.0)
+        q.enqueue("project")
+
+        with (
+            patch("brain_sync.regen_queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen_queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_rp,
+            patch("brain_sync.regen_queue.regen_single_folder") as mock_rsf,
+        ):
+            total = asyncio.run(q.process_ready())
+
+        # regen_path called (fast path), not regen_single_folder
+        mock_rp.assert_called_once()
+        mock_rsf.assert_not_called()
+        assert total == 1

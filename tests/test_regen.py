@@ -35,9 +35,11 @@ from brain_sync.regen import (
     _write_journal_entry,
     classify_change,
     classify_folder_change,
+    compute_waves,
     invalidate_global_context_cache,
     regen_all,
     regen_path,
+    regen_single_folder,
     text_similarity,
 )
 from brain_sync.retry import claude_breaker
@@ -2251,3 +2253,383 @@ class TestParseStreamJson:
         r = _parse_stream_json(stdout)
         assert r.text == "fallback text"
         assert r.input_tokens == 100
+
+
+class TestComputeWaves:
+    """Tests for compute_waves() — depth-ordered wave computation."""
+
+    def test_basic(self):
+        waves = compute_waves(["a/b/c", "a/b/d", "x/y"])
+        assert len(waves) == 4
+        assert waves[0] == ["a/b/c", "a/b/d"]  # depth 3
+        assert waves[1] == ["a/b", "x/y"]  # depth 2
+        assert waves[2] == ["a", "x"]  # depth 1
+        assert waves[3] == [""]  # depth 0
+
+    def test_empty(self):
+        assert compute_waves([]) == []
+
+    def test_single_leaf(self):
+        waves = compute_waves(["project"])
+        assert waves == [["project"], [""]]
+
+    def test_root_only(self):
+        waves = compute_waves([""])
+        assert waves == [[""]]
+
+    def test_deterministic_sorting(self):
+        """Within each wave, paths are alphabetically sorted."""
+        waves = compute_waves(["z/b", "a/c", "m/d"])
+        # Depth 2 wave should be sorted
+        assert waves[0] == ["a/c", "m/d", "z/b"]
+        # Depth 1 wave
+        assert waves[1] == ["a", "m", "z"]
+        # Root
+        assert waves[2] == [""]
+
+    def test_shared_ancestors_deduped(self):
+        """Shared ancestors appear only once in their wave."""
+        waves = compute_waves(["a/b/c", "a/b/d"])
+        # "a/b" should appear once, not twice
+        depth2 = waves[1]
+        assert depth2.count("a/b") == 1
+
+
+class TestRegenSingleFolder:
+    """Tests for regen_single_folder() — single folder processing."""
+
+    def _mock_claude(self, content: str = "# Summary\n\nGenerated insight summary content."):
+        async def fake_invoke(prompt: str, cwd: Path, **kwargs):
+            return ClaudeResult(success=True, output=content)
+
+        return fake_invoke
+
+    def test_leaf_regen_returns_regenerated(self, brain):
+        """New content triggers Claude and returns 'regenerated'."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+            result = asyncio.run(regen_single_folder(brain, "project"))
+
+        assert result.action == "regenerated"
+        assert result.knowledge_path == "project"
+        assert (brain / "insights" / "project" / "summary.md").exists()
+
+    def test_unchanged_returns_skipped(self, brain):
+        """Matching content hash returns 'skipped_unchanged'."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+
+        # First regen to populate hashes
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+            asyncio.run(regen_single_folder(brain, "project"))
+
+        # Second call — nothing changed
+        with patch("brain_sync.regen.invoke_claude") as mock:
+            result = asyncio.run(regen_single_folder(brain, "project"))
+
+        assert result.action == "skipped_unchanged"
+        mock.assert_not_called()
+
+    def test_rename_returns_skipped_rename(self, brain):
+        """Structure-only change returns 'skipped_rename'."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+        sub = kdir / "sub1"
+        sub.mkdir()
+        (sub / "file.md").write_text("sub content", encoding="utf-8")
+
+        # First regen
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+            asyncio.run(regen_single_folder(brain, "project"))
+
+        # Rename sub dir (content unchanged, structure changed)
+        sub.rename(kdir / "sub2")
+
+        result = asyncio.run(regen_single_folder(brain, "project"))
+        assert result.action == "skipped_rename"
+
+    def test_no_content_returns_skipped_no_content(self, brain):
+        """Empty folder returns 'skipped_no_content'."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        # Folder exists but has no readable files or child dirs
+
+        result = asyncio.run(regen_single_folder(brain, "project"))
+        assert result.action == "skipped_no_content"
+
+    def test_cleaned_up_when_folder_missing(self, brain):
+        """Missing folder with stale insights returns 'cleaned_up'."""
+        # Create insights without knowledge
+        idir = brain / "insights" / "gone"
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("old", encoding="utf-8")
+        save_insight_state(brain, InsightState(knowledge_path="gone", content_hash="abc"))
+
+        result = asyncio.run(regen_single_folder(brain, "gone"))
+        assert result.action == "cleaned_up"
+        assert not idir.exists()
+        assert load_insight_state(brain, "gone") is None
+
+    def test_similarity_returns_skipped_similarity(self, brain):
+        """Similarity guard returns 'skipped_similarity'."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+
+        summary_text = "# Summary\n\nThis is the generated summary."
+
+        # First regen
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude(summary_text)):
+            asyncio.run(regen_single_folder(brain, "project"))
+
+        # Modify content to trigger regen
+        (kdir / "doc.md").write_text("# Updated Content", encoding="utf-8")
+
+        # Return nearly identical summary (>97% similar)
+        similar = "# Summary\n\nThis is the generated summary."
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude(similar)):
+            result = asyncio.run(regen_single_folder(brain, "project"))
+
+        assert result.action == "skipped_similarity"
+
+    def test_backfill_returns_skipped_backfill(self, brain):
+        """Pre-v18 state with existing summary returns 'skipped_backfill'."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+        idir = brain / "insights" / "project"
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("# Old Summary", encoding="utf-8")
+
+        # Pre-v18 state: has content_hash but no structure_hash
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="old_hash",
+                summary_hash="old_summary_hash",
+                structure_hash=None,  # pre-v18
+                regen_status="idle",
+            ),
+        )
+
+        result = asyncio.run(regen_single_folder(brain, "project"))
+        assert result.action == "skipped_backfill"
+
+        # Verify structure_hash was set
+        loaded = load_insight_state(brain, "project")
+        assert loaded is not None
+        assert loaded.structure_hash is not None
+
+    def test_failure_raises_regen_failed(self, brain):
+        """Claude error raises RegenFailed."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+
+        async def fail_invoke(prompt: str, cwd: Path, **kwargs):
+            return ClaudeResult(success=False, output="")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=fail_invoke):
+            with pytest.raises(RegenFailed):
+                asyncio.run(regen_single_folder(brain, "project"))
+
+
+class TestRegenAllWave:
+    """Tests for wave-based regen_all() behavior."""
+
+    def _mock_claude(self, content: str = "# Summary\n\nGenerated insight summary content."):
+        async def fake_invoke(prompt: str, cwd: Path, **kwargs):
+            return ClaudeResult(success=True, output=content)
+
+        return fake_invoke
+
+    def test_no_redundant_calls(self, brain):
+        """3 sibling leaves: each folder gets at most 1 Claude call."""
+        parent = brain / "knowledge" / "area"
+        parent.mkdir(parents=True)
+        (parent / "overview.md").write_text("# Overview", encoding="utf-8")
+        for name in ("sub1", "sub2", "sub3"):
+            d = parent / name
+            d.mkdir()
+            (d / "doc.md").write_text(f"# {name}", encoding="utf-8")
+
+        call_paths: list[str] = []
+
+        async def track_invoke(prompt: str, cwd: Path, **kwargs):
+            for line in prompt.split("\n"):
+                if "regenerating the insight summary for knowledge area:" in line:
+                    area = line.split(":")[-1].strip()
+                    call_paths.append(area)
+                    break
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=track_invoke):
+            total = asyncio.run(regen_all(brain))
+
+        # Each path should appear at most once
+        for p in ("area/sub1", "area/sub2", "area/sub3", "area"):
+            assert call_paths.count(p) <= 1, f"{p} called {call_paths.count(p)} times"
+        assert total >= 4  # sub1, sub2, sub3, area (+ possibly root)
+
+    def test_dirty_propagation_skips_unchanged_parent(self, brain):
+        """If all children are unchanged, parent is not processed."""
+        parent = brain / "knowledge" / "area"
+        parent.mkdir(parents=True)
+        (parent / "overview.md").write_text("# Overview", encoding="utf-8")
+        sub1 = parent / "sub1"
+        sub1.mkdir()
+        (sub1 / "doc.md").write_text("# Sub1", encoding="utf-8")
+        sub2 = parent / "sub2"
+        sub2.mkdir()
+        (sub2 / "doc.md").write_text("# Sub2", encoding="utf-8")
+
+        # First regen — populate all hashes
+        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+            asyncio.run(regen_all(brain))
+
+        # Second regen — nothing changed
+        call_count = 0
+
+        async def count_invoke(prompt: str, cwd: Path, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=count_invoke):
+            total = asyncio.run(regen_all(brain))
+
+        assert total == 0
+        assert call_count == 0
+
+    def test_mixed_dirty_propagation(self, brain):
+        """If one child changed and one didn't, parent is processed once."""
+        parent = brain / "knowledge" / "area"
+        parent.mkdir(parents=True)
+        (parent / "overview.md").write_text("# Overview", encoding="utf-8")
+        sub1 = parent / "sub1"
+        sub1.mkdir()
+        (sub1 / "doc.md").write_text("# Sub1", encoding="utf-8")
+        sub2 = parent / "sub2"
+        sub2.mkdir()
+        (sub2 / "doc.md").write_text("# Sub2", encoding="utf-8")
+
+        # First regen — each path gets a unique summary
+        call_idx = 0
+
+        async def unique_invoke(prompt: str, cwd: Path, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            return ClaudeResult(success=True, output=f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=unique_invoke):
+            asyncio.run(regen_all(brain))
+
+        # Modify only sub1
+        (sub1 / "doc.md").write_text("# Updated Sub1 content", encoding="utf-8")
+
+        call_paths: list[str] = []
+
+        async def track_invoke(prompt: str, cwd: Path, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            for line in prompt.split("\n"):
+                if "regenerating the insight summary for knowledge area:" in line:
+                    area = line.split(":")[-1].strip()
+                    call_paths.append(area)
+                    break
+            return ClaudeResult(success=True, output=f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=track_invoke):
+            total = asyncio.run(regen_all(brain))
+
+        # sub1 changed → parent dirtied → parent processed once
+        assert "area/sub1" in call_paths
+        assert "area/sub2" not in call_paths  # unchanged
+        assert call_paths.count("area") == 1  # parent processed exactly once
+        assert total >= 1
+
+    def test_failure_does_not_propagate(self, brain):
+        """Failed leaf does not dirty its parent (parent has no direct files)."""
+        # Parent has NO direct files — it only gets dirtied via child propagation
+        parent = brain / "knowledge" / "area"
+        parent.mkdir(parents=True)
+        sub1 = parent / "sub1"
+        sub1.mkdir()
+        (sub1 / "doc.md").write_text("# Sub1", encoding="utf-8")
+
+        call_paths: list[str] = []
+
+        async def fail_on_sub1(prompt: str, cwd: Path, **kwargs):
+            for line in prompt.split("\n"):
+                if "regenerating the insight summary for knowledge area:" in line:
+                    area = line.split(":")[-1].strip()
+                    call_paths.append(area)
+                    if area == "area/sub1":
+                        return ClaudeResult(success=False, output="")
+                    break
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=fail_on_sub1):
+            asyncio.run(regen_all(brain))
+
+        # sub1 failed → parent should NOT be processed
+        # (parent is not in content_paths since it has no direct files,
+        # and sub1's failure does not propagate dirtiness)
+        assert "area/sub1" in call_paths
+        assert "area" not in call_paths
+
+    def test_backfill_does_not_propagate(self, brain):
+        """Pre-v18 backfill does not dirty parent."""
+        parent = brain / "knowledge" / "area"
+        parent.mkdir(parents=True)
+        (parent / "overview.md").write_text("# Overview", encoding="utf-8")
+        sub = parent / "sub"
+        sub.mkdir()
+        (sub / "doc.md").write_text("# Sub", encoding="utf-8")
+
+        # Create pre-v18 state for sub (with existing summary)
+        idir = brain / "insights" / "area" / "sub"
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("# Existing Summary", encoding="utf-8")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/sub",
+                content_hash="old_hash",
+                summary_hash="old_summary_hash",
+                structure_hash=None,  # pre-v18
+                regen_status="idle",
+            ),
+        )
+        # Also create pre-v18 state for parent
+        pdir = brain / "insights" / "area"
+        (pdir / "summary.md").write_text("# Parent Summary", encoding="utf-8")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area",
+                content_hash="old_parent_hash",
+                summary_hash="old_parent_summary",
+                structure_hash=None,  # pre-v18
+                regen_status="idle",
+            ),
+        )
+
+        call_count = 0
+
+        async def count_invoke(prompt: str, cwd: Path, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=count_invoke):
+            asyncio.run(regen_all(brain))
+
+        # Backfill should NOT trigger any Claude calls — parent not dirtied
+        assert call_count == 0
