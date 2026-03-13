@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from importlib import resources
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from brain_sync.config import CONFIG_FILE
@@ -45,6 +46,30 @@ from brain_sync.state import (
     save_insight_state,
 )
 from brain_sync.token_tracking import OP_REGEN
+
+
+@dataclass
+class ChangeEvent:
+    """Classification of what changed in a folder between hash computations."""
+
+    change_type: Literal["none", "rename", "content"]
+    structural: bool  # only names/structure changed, not content
+
+
+def classify_change(
+    old_content_hash: str | None,
+    new_content_hash: str,
+    old_structure_hash: str | None,
+    new_structure_hash: str,
+) -> ChangeEvent:
+    """Classify the type of change between old and new hash pairs."""
+    content_changed = old_content_hash != new_content_hash
+    structure_changed = old_structure_hash != new_structure_hash
+    if not content_changed and not structure_changed:
+        return ChangeEvent(change_type="none", structural=False)
+    if not content_changed and structure_changed:
+        return ChangeEvent(change_type="rename", structural=True)
+    return ChangeEvent(change_type="content", structural=False)
 
 
 class RegenFailed(Exception):
@@ -378,17 +403,52 @@ class RegenConfig:
             return cls()
 
 
-def folder_content_hash(folder: Path) -> str:
-    """Compute sha256 of all readable files in a folder.
+def _compute_content_hash(
+    child_summaries: dict[str, str],
+    knowledge_dir: Path,
+    has_direct_files: bool,
+) -> str:
+    """Compute content-only hash for a folder.
 
-    Only files matching READABLE_EXTENSIONS are included.
-    Files are sorted by name for determinism. Returns hex digest.
+    Excludes filenames and dir names so renames don't change the hash.
+    Child summaries are sorted by content (not dir name key).
+    Files are sorted by their content hash (not filename) for determinism
+    across renames.
     """
     h = hashlib.sha256()
-    files = sorted(p for p in folder.iterdir() if _is_readable_file(p))
-    for p in files:
-        h.update(p.name.encode("utf-8"))
-        h.update(p.read_bytes())
+    for content in sorted(child_summaries.values()):
+        h.update(content.encode("utf-8"))
+    if has_direct_files:
+        file_hashes = []
+        for p in knowledge_dir.iterdir():
+            if _is_readable_file(p):
+                raw = p.read_bytes()
+                file_hashes.append((hashlib.sha256(raw).hexdigest(), raw))
+        for _, raw in sorted(file_hashes):
+            h.update(raw)
+    return h.hexdigest()
+
+
+def _compute_structure_hash(
+    child_dirs: list[Path],
+    knowledge_dir: Path,
+    has_direct_files: bool,
+) -> str:
+    """Compute structural hash capturing names only (dir names + filenames).
+
+    Changes here alone (renames) don't trigger regen.
+    """
+    h = hashlib.sha256()
+    for child in sorted(child_dirs, key=lambda d: d.name):
+        h.update(b"dir:")
+        h.update(child.name.encode("utf-8"))
+    if has_direct_files:
+        for p in sorted(
+            (p for p in knowledge_dir.iterdir() if _is_readable_file(p)),
+            key=lambda p: p.name,
+        ):
+            h.update(b"file:")
+            h.update(p.name.encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1134,51 +1194,61 @@ def _collect_child_summaries(
     return child_summaries
 
 
-def _compute_hash(
-    child_dirs: list[Path],
-    child_summaries: dict[str, str],
-    knowledge_dir: Path,
-    has_direct_files: bool,
-) -> str:
-    """Compute unified content hash for a folder.
+def classify_folder_change(
+    root: Path,
+    knowledge_path: str,
+) -> tuple[ChangeEvent, str, str]:
+    """Classify what changed in a knowledge folder vs cached insight state.
 
-    All inputs sorted for deterministic output across runs and platforms.
-    """
-    h = hashlib.sha256()
-    for child in sorted(child_dirs, key=lambda d: d.name):
-        h.update(b"dir:")
-        h.update(child.name.encode("utf-8"))
-    for name, content in sorted(child_summaries.items()):
-        h.update(name.encode("utf-8"))
-        h.update(content.encode("utf-8"))
-    if has_direct_files:
-        h.update(folder_content_hash(knowledge_dir).encode("utf-8"))
-    return h.hexdigest()
-
-
-def content_unchanged(root: Path, knowledge_path: str) -> bool:
-    """Check if folder content hash matches cached insight state.
-
-    Used by the watcher to skip phantom filesystem events (e.g. Windows
-    Search Indexer touching access times without modifying content).
-    Reuses the same ``_compute_hash`` logic as :func:`regen_path`.
+    Returns (event, new_content_hash, new_structure_hash).
+    Used by the watcher and regen_path to decide whether to trigger regen.
     """
     knowledge_dir = root / "knowledge" / knowledge_path if knowledge_path else root / "knowledge"
     if not knowledge_dir.is_dir():
-        return False
+        return ChangeEvent(change_type="content", structural=False), "", ""
 
     istate = load_insight_state(root, knowledge_path)
-    if not istate or not istate.content_hash:
-        return False
 
     child_dirs = _get_child_dirs(knowledge_dir)
     has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
     if not child_dirs and not has_direct_files:
-        return False
+        return ChangeEvent(change_type="content", structural=False), "", ""
 
     child_summaries = _collect_child_summaries(root, knowledge_path, child_dirs)
-    new_hash = _compute_hash(child_dirs, child_summaries, knowledge_dir, has_direct_files)
-    return istate.content_hash == new_hash
+    new_content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
+    new_structure_hash = _compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
+
+    if not istate or not istate.content_hash:
+        return ChangeEvent(change_type="content", structural=False), new_content_hash, new_structure_hash
+
+    # Post-v18 migration backfill: preserve old content_hash, set structure_hash only
+    if istate.structure_hash is None:
+        insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+        if (insights_dir / "summary.md").exists():
+            log.info("Backfilling structure_hash for %s (post-v18 migration)", knowledge_path or "(root)")
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=knowledge_path,
+                    content_hash=new_content_hash,
+                    summary_hash=istate.summary_hash,
+                    structure_hash=new_structure_hash,
+                    regen_started_utc=istate.regen_started_utc,
+                    last_regen_utc=istate.last_regen_utc,
+                    regen_status=istate.regen_status,
+                    owner_id=istate.owner_id,
+                    error_reason=istate.error_reason,
+                ),
+            )
+            return ChangeEvent(change_type="none", structural=False), new_content_hash, new_structure_hash
+
+    event = classify_change(
+        istate.content_hash,
+        new_content_hash,
+        istate.structure_hash,
+        new_structure_hash,
+    )
+    return event, new_content_hash, new_structure_hash
 
 
 async def regen_path(
@@ -1243,30 +1313,93 @@ async def regen_path(
         # Load current insight state
         istate = load_insight_state(root, current_path)
 
-        # Collect child summaries and compute unified hash
+        # Collect child summaries and compute split hashes
         child_summaries = _collect_child_summaries(root, current_path, child_dirs)
 
         if not child_summaries and not has_direct_files:
             log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
             break
 
-        new_hash = _compute_hash(child_dirs, child_summaries, knowledge_dir, has_direct_files)
+        new_content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
+        new_structure_hash = _compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
 
-        if istate and istate.content_hash == new_hash:
+        event = classify_change(
+            istate.content_hash if istate else None,
+            new_content_hash,
+            istate.structure_hash if istate else None,
+            new_structure_hash,
+        )
+
+        # Post-v18 migration backfill: preserve old content_hash, set structure_hash only
+        if istate and istate.structure_hash is None and (insights_dir / "summary.md").exists():
+            log.info(
+                "[%s] Backfilling structure_hash for %s (post-v18 migration)",
+                regen_id,
+                current_path or "(root)",
+            )
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=new_content_hash,
+                    summary_hash=istate.summary_hash,
+                    structure_hash=new_structure_hash,
+                    regen_started_utc=istate.regen_started_utc,
+                    last_regen_utc=istate.last_regen_utc,
+                    regen_status=istate.regen_status,
+                    owner_id=istate.owner_id,
+                    error_reason=istate.error_reason,
+                ),
+            )
+            # Walk up to parent — no Claude call needed
+            if not current_path:
+                break
+            parts = current_path.rsplit("/", 1)
+            current_path = parts[0] if len(parts) > 1 else ""
+            continue
+
+        if event.change_type == "none":
             log.debug(
                 "[%s] Content hash unchanged for %s, stopping (hash=%s)",
                 regen_id,
                 current_path or "(root)",
-                new_hash[:12],
+                new_content_hash[:12],
             )
             break
+
+        if event.structural:
+            # Rename only — persist updated structure_hash, continue walk to parent
+            log.info(
+                "[%s] Structure-only change for %s (rename), updating structure_hash",
+                regen_id,
+                current_path or "(root)",
+            )
+            save_insight_state(
+                root,
+                InsightState(
+                    knowledge_path=current_path,
+                    content_hash=istate.content_hash if istate else new_content_hash,
+                    summary_hash=istate.summary_hash if istate else None,
+                    structure_hash=new_structure_hash,
+                    regen_started_utc=istate.regen_started_utc if istate else None,
+                    last_regen_utc=istate.last_regen_utc if istate else None,
+                    regen_status=istate.regen_status if istate else "idle",
+                    owner_id=istate.owner_id if istate else None,
+                ),
+            )
+            # Walk up to parent — parent may have content changes
+            if not current_path:
+                break
+            parts = current_path.rsplit("/", 1)
+            current_path = parts[0] if len(parts) > 1 else ""
+            continue
 
         log.debug(
             "[%s] Content hash changed for %s: %s -> %s",
             regen_id,
             current_path or "(root)",
             (istate.content_hash[:12] if istate and istate.content_hash else "none"),
-            new_hash[:12],
+            new_content_hash[:12],
         )
 
         # Build prompt
@@ -1298,6 +1431,7 @@ async def regen_path(
                 knowledge_path=current_path,
                 content_hash=istate.content_hash if istate else None,
                 summary_hash=istate.summary_hash if istate else None,
+                structure_hash=istate.structure_hash if istate else None,
                 regen_started_utc=started,
                 last_regen_utc=istate.last_regen_utc if istate else None,
                 regen_status="running",
@@ -1405,6 +1539,7 @@ async def regen_path(
                         knowledge_path=current_path,
                         content_hash=istate.content_hash if istate else None,
                         summary_hash=istate.summary_hash if istate else None,
+                        structure_hash=istate.structure_hash if istate else None,
                         regen_started_utc=started,
                         last_regen_utc=now,
                         regen_status="failed",
@@ -1437,6 +1572,7 @@ async def regen_path(
                         knowledge_path=current_path,
                         content_hash=istate.content_hash if istate else None,
                         summary_hash=istate.summary_hash if istate else None,
+                        structure_hash=istate.structure_hash if istate else None,
                         regen_started_utc=started,
                         last_regen_utc=now,
                         regen_status="failed",
@@ -1461,8 +1597,9 @@ async def regen_path(
                 root,
                 InsightState(
                     knowledge_path=current_path,
-                    content_hash=new_hash,
+                    content_hash=new_content_hash,
                     summary_hash=summary_hash,
+                    structure_hash=new_structure_hash,
                     regen_started_utc=started,
                     last_regen_utc=now,
                     regen_status="idle",
@@ -1484,8 +1621,9 @@ async def regen_path(
             root,
             InsightState(
                 knowledge_path=current_path,
-                content_hash=new_hash,
+                content_hash=new_content_hash,
                 summary_hash=summary_hash,
+                structure_hash=new_structure_hash,
                 regen_started_utc=started,
                 last_regen_utc=now,
                 regen_status="idle",

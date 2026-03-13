@@ -23,7 +23,8 @@ from brain_sync.regen import (
     _build_prompt,
     _collect_child_summaries,
     _collect_global_context,
-    _compute_hash,
+    _compute_content_hash,
+    _compute_structure_hash,
     _first_heading,
     _get_child_dirs,
     _is_content_dir,
@@ -32,8 +33,8 @@ from brain_sync.regen import (
     _preprocess_content,
     _split_markdown_chunks,
     _write_journal_entry,
-    content_unchanged,
-    folder_content_hash,
+    classify_change,
+    classify_folder_change,
     invalidate_global_context_cache,
     regen_all,
     regen_path,
@@ -79,11 +80,13 @@ def brain(tmp_path):
     return root
 
 
-class TestFolderContentHash:
+class TestComputeContentHash:
+    """Tests for _compute_content_hash (rename-insensitive)."""
+
     def test_empty_folder(self, tmp_path):
         folder = tmp_path / "empty"
         folder.mkdir()
-        h = folder_content_hash(folder)
+        h = _compute_content_hash({}, folder, False)
         assert isinstance(h, str)
         assert len(h) == 64  # sha256 hex
 
@@ -92,17 +95,17 @@ class TestFolderContentHash:
         folder.mkdir()
         (folder / "a.md").write_text("hello", encoding="utf-8")
         (folder / "b.md").write_text("world", encoding="utf-8")
-        h1 = folder_content_hash(folder)
-        h2 = folder_content_hash(folder)
+        h1 = _compute_content_hash({}, folder, True)
+        h2 = _compute_content_hash({}, folder, True)
         assert h1 == h2
 
     def test_changes_with_content(self, tmp_path):
         folder = tmp_path / "docs"
         folder.mkdir()
         (folder / "a.md").write_text("v1", encoding="utf-8")
-        h1 = folder_content_hash(folder)
+        h1 = _compute_content_hash({}, folder, True)
         (folder / "a.md").write_text("v2", encoding="utf-8")
-        h2 = folder_content_hash(folder)
+        h2 = _compute_content_hash({}, folder, True)
         assert h1 != h2
 
     def test_ignores_non_readable_extensions(self, tmp_path):
@@ -110,10 +113,10 @@ class TestFolderContentHash:
         folder = tmp_path / "docs"
         folder.mkdir()
         (folder / "a.md").write_text("hello", encoding="utf-8")
-        h1 = folder_content_hash(folder)
+        h1 = _compute_content_hash({}, folder, True)
         (folder / "archive.zip").write_bytes(b"PK\x03\x04")
         (folder / "binary.exe").write_bytes(b"\x00\x01")
-        h2 = folder_content_hash(folder)
+        h2 = _compute_content_hash({}, folder, True)
         assert h1 == h2
 
     def test_includes_readable_non_md_files(self, tmp_path):
@@ -121,9 +124,9 @@ class TestFolderContentHash:
         folder = tmp_path / "docs"
         folder.mkdir()
         (folder / "a.md").write_text("hello", encoding="utf-8")
-        h1 = folder_content_hash(folder)
+        h1 = _compute_content_hash({}, folder, True)
         (folder / "notes.txt").write_text("included now", encoding="utf-8")
-        h2 = folder_content_hash(folder)
+        h2 = _compute_content_hash({}, folder, True)
         assert h1 != h2
 
     def test_ignores_hidden_and_underscore_files(self, tmp_path):
@@ -131,87 +134,233 @@ class TestFolderContentHash:
         folder = tmp_path / "docs"
         folder.mkdir()
         (folder / "a.md").write_text("hello", encoding="utf-8")
-        h1 = folder_content_hash(folder)
+        h1 = _compute_content_hash({}, folder, True)
         (folder / ".hidden.md").write_text("hidden", encoding="utf-8")
         (folder / "_private.md").write_text("private", encoding="utf-8")
-        h2 = folder_content_hash(folder)
+        h2 = _compute_content_hash({}, folder, True)
         assert h1 == h2
 
     def test_new_file_changes_hash(self, tmp_path):
         folder = tmp_path / "docs"
         folder.mkdir()
         (folder / "a.md").write_text("hello", encoding="utf-8")
-        h1 = folder_content_hash(folder)
+        h1 = _compute_content_hash({}, folder, True)
         (folder / "b.md").write_text("new file", encoding="utf-8")
-        h2 = folder_content_hash(folder)
+        h2 = _compute_content_hash({}, folder, True)
+        assert h1 != h2
+
+    def test_rename_does_not_change_content_hash(self, tmp_path):
+        """Renaming a file (same content) should NOT change the content hash."""
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        (folder / "a.md").write_text("hello", encoding="utf-8")
+        h1 = _compute_content_hash({}, folder, True)
+        (folder / "a.md").rename(folder / "b.md")
+        h2 = _compute_content_hash({}, folder, True)
+        assert h1 == h2
+
+    def test_child_summary_sorted_by_content(self, tmp_path):
+        """Child summaries sorted by content, not key — rename doesn't change hash."""
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        sums_a = {"alpha": "summary-x", "beta": "summary-y"}
+        sums_b = {"gamma": "summary-x", "delta": "summary-y"}
+        h1 = _compute_content_hash(sums_a, folder, False)
+        h2 = _compute_content_hash(sums_b, folder, False)
+        assert h1 == h2
+
+
+class TestComputeStructureHash:
+    """Tests for _compute_structure_hash (rename-sensitive)."""
+
+    def test_rename_changes_structure_hash(self, tmp_path):
+        """Renaming a file changes structure hash."""
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        (folder / "a.md").write_text("hello", encoding="utf-8")
+        dir_list: list[Path] = []
+        h1 = _compute_structure_hash(dir_list, folder, True)
+        (folder / "a.md").rename(folder / "b.md")
+        h2 = _compute_structure_hash(dir_list, folder, True)
+        assert h1 != h2
+
+    def test_dir_order_irrelevant(self, tmp_path):
+        """Dir order doesn't affect hash (sorted internally)."""
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        dir_a = tmp_path / "alpha"
+        dir_a.mkdir()
+        dir_b = tmp_path / "beta"
+        dir_b.mkdir()
+        h1 = _compute_structure_hash([dir_a, dir_b], folder, False)
+        h2 = _compute_structure_hash([dir_b, dir_a], folder, False)
+        assert h1 == h2
+
+    def test_new_child_dir_changes_hash(self, tmp_path):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        dir_a = tmp_path / "alpha"
+        dir_a.mkdir()
+        dir_b = tmp_path / "beta"
+        dir_b.mkdir()
+        h1 = _compute_structure_hash([dir_a], folder, False)
+        h2 = _compute_structure_hash([dir_a, dir_b], folder, False)
         assert h1 != h2
 
 
-class TestContentUnchanged:
-    """Tests for the content_unchanged() guard used by the watcher."""
+class TestClassifyFolderChange:
+    """Tests for the classify_folder_change() guard used by the watcher."""
 
-    def test_false_when_no_insight_state(self, brain):
-        """Returns False when no prior insight state exists."""
+    def test_content_when_no_insight_state(self, brain):
+        """Returns 'content' when no prior insight state exists."""
         kdir = brain / "knowledge" / "area"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("hello", encoding="utf-8")
-        assert content_unchanged(brain, "area") is False
+        event, _, _ = classify_folder_change(brain, "area")
+        assert event.change_type == "content"
 
-    def test_false_when_dir_missing(self, brain):
-        """Returns False when knowledge directory doesn't exist."""
-        assert content_unchanged(brain, "nonexistent") is False
+    def test_content_when_dir_missing(self, brain):
+        """Returns 'content' when knowledge directory doesn't exist."""
+        event, _, _ = classify_folder_change(brain, "nonexistent")
+        assert event.change_type == "content"
 
-    def test_true_when_hash_matches(self, brain):
-        """Returns True when content hash matches cached insight state."""
-        kdir = brain / "knowledge" / "area"
-        kdir.mkdir(parents=True)
-        (kdir / "doc.md").write_text("hello", encoding="utf-8")
-
-        # Compute hash the same way regen would
-        child_dirs = _get_child_dirs(kdir)
-        has_direct = True
-        child_summaries = _collect_child_summaries(brain, "area", child_dirs)
-        current_hash = _compute_hash(child_dirs, child_summaries, kdir, has_direct)
-
-        # Save insight state with that hash
-        istate = InsightState(knowledge_path="area", content_hash=current_hash)
-        save_insight_state(brain, istate)
-
-        assert content_unchanged(brain, "area") is True
-
-    def test_false_when_file_added(self, brain):
-        """Returns False when a new file is added after state was saved."""
+    def test_none_when_hash_matches(self, brain):
+        """Returns 'none' when both hashes match cached insight state."""
         kdir = brain / "knowledge" / "area"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("hello", encoding="utf-8")
 
-        # Save state with current hash
+        # Compute hashes the same way regen would
         child_dirs = _get_child_dirs(kdir)
         child_summaries = _collect_child_summaries(brain, "area", child_dirs)
-        current_hash = _compute_hash(child_dirs, child_summaries, kdir, True)
-        istate = InsightState(knowledge_path="area", content_hash=current_hash)
+        content_hash = _compute_content_hash(child_summaries, kdir, True)
+        structure_hash = _compute_structure_hash(child_dirs, kdir, True)
+
+        istate = InsightState(knowledge_path="area", content_hash=content_hash, structure_hash=structure_hash)
         save_insight_state(brain, istate)
 
-        # Add a new file — hash should differ
+        event, _, _ = classify_folder_change(brain, "area")
+        assert event.change_type == "none"
+
+    def test_content_when_file_added(self, brain):
+        """Returns 'content' when a new file is added after state was saved."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("hello", encoding="utf-8")
+
+        child_dirs = _get_child_dirs(kdir)
+        child_summaries = _collect_child_summaries(brain, "area", child_dirs)
+        content_hash = _compute_content_hash(child_summaries, kdir, True)
+        structure_hash = _compute_structure_hash(child_dirs, kdir, True)
+        istate = InsightState(knowledge_path="area", content_hash=content_hash, structure_hash=structure_hash)
+        save_insight_state(brain, istate)
+
         (kdir / "new.md").write_text("new content", encoding="utf-8")
-        assert content_unchanged(brain, "area") is False
+        event, _, _ = classify_folder_change(brain, "area")
+        assert event.change_type == "content"
 
-    def test_false_when_file_modified(self, brain):
-        """Returns False when file content changes after state was saved."""
+    def test_content_when_file_modified(self, brain):
+        """Returns 'content' when file content changes after state was saved."""
         kdir = brain / "knowledge" / "area"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("original", encoding="utf-8")
 
-        # Save state with current hash
         child_dirs = _get_child_dirs(kdir)
         child_summaries = _collect_child_summaries(brain, "area", child_dirs)
-        current_hash = _compute_hash(child_dirs, child_summaries, kdir, True)
-        istate = InsightState(knowledge_path="area", content_hash=current_hash)
+        content_hash = _compute_content_hash(child_summaries, kdir, True)
+        structure_hash = _compute_structure_hash(child_dirs, kdir, True)
+        istate = InsightState(knowledge_path="area", content_hash=content_hash, structure_hash=structure_hash)
         save_insight_state(brain, istate)
 
-        # Modify file content — hash should differ
         (kdir / "doc.md").write_text("modified", encoding="utf-8")
-        assert content_unchanged(brain, "area") is False
+        event, _, _ = classify_folder_change(brain, "area")
+        assert event.change_type == "content"
+
+    def test_rename_when_file_renamed(self, brain):
+        """Returns 'rename' when a file is renamed but content is unchanged."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "old-name.md").write_text("hello", encoding="utf-8")
+
+        child_dirs = _get_child_dirs(kdir)
+        child_summaries = _collect_child_summaries(brain, "area", child_dirs)
+        content_hash = _compute_content_hash(child_summaries, kdir, True)
+        structure_hash = _compute_structure_hash(child_dirs, kdir, True)
+        istate = InsightState(knowledge_path="area", content_hash=content_hash, structure_hash=structure_hash)
+        save_insight_state(brain, istate)
+
+        (kdir / "old-name.md").rename(kdir / "new-name.md")
+        event, _, _ = classify_folder_change(brain, "area")
+        assert event.change_type == "rename"
+        assert event.structural is True
+
+    def test_backfill_returns_none_after_migration(self, brain):
+        """Pre-v18 state (structure_hash=None) with existing summary returns 'none' and backfills."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("hello", encoding="utf-8")
+
+        # Create existing summary on disk
+        idir = brain / "insights" / "area"
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("# Existing Summary", encoding="utf-8")
+
+        # Save pre-v18 state: has content_hash but no structure_hash
+        istate = InsightState(knowledge_path="area", content_hash="old-hash-value", structure_hash=None)
+        save_insight_state(brain, istate)
+
+        event, new_content_hash, new_structure_hash = classify_folder_change(brain, "area")
+        assert event.change_type == "none"
+
+        # Verify state was backfilled: content_hash updated to new algorithm, structure_hash set
+        loaded = load_insight_state(brain, "area")
+        assert loaded is not None
+        assert loaded.content_hash == new_content_hash
+        assert loaded.content_hash != "old-hash-value"
+        assert loaded.structure_hash == new_structure_hash
+        assert loaded.structure_hash is not None
+
+    def test_no_backfill_without_summary(self, brain):
+        """Pre-v18 state without summary.md on disk falls through to normal classify."""
+        kdir = brain / "knowledge" / "area"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("hello", encoding="utf-8")
+
+        # Save pre-v18 state: has content_hash but no structure_hash, NO summary on disk
+        istate = InsightState(knowledge_path="area", content_hash="old-hash-value", structure_hash=None)
+        save_insight_state(brain, istate)
+
+        event, _, _ = classify_folder_change(brain, "area")
+        # Old content_hash won't match new content_hash → "content" change
+        assert event.change_type == "content"
+
+
+class TestClassifyChange:
+    """Unit tests for classify_change() decision function."""
+
+    def test_none_when_both_unchanged(self):
+        event = classify_change("aaa", "aaa", "bbb", "bbb")
+        assert event.change_type == "none"
+        assert event.structural is False
+
+    def test_rename_when_only_structure_changed(self):
+        event = classify_change("aaa", "aaa", "bbb", "ccc")
+        assert event.change_type == "rename"
+        assert event.structural is True
+
+    def test_content_when_content_changed(self):
+        event = classify_change("aaa", "xxx", "bbb", "bbb")
+        assert event.change_type == "content"
+        assert event.structural is False
+
+    def test_content_when_both_changed(self):
+        event = classify_change("aaa", "xxx", "bbb", "yyy")
+        assert event.change_type == "content"
+        assert event.structural is False
+
+    def test_content_when_old_is_none(self):
+        event = classify_change(None, "aaa", None, "bbb")
+        assert event.change_type == "content"
 
 
 class TestTextSimilarity:
@@ -308,17 +457,19 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Stable Doc", encoding="utf-8")
 
-        # Pre-populate insight state with matching hash
-        # For a leaf (no child dirs), the unified hash equals folder_content_hash
+        # Pre-populate insight state with matching hashes
         child_dirs = _get_child_dirs(kdir)
-        unified_hash = _compute_hash(child_dirs, {}, kdir, True)
+        child_summaries = _collect_child_summaries(brain, "project", child_dirs)
+        content_hash = _compute_content_hash(child_summaries, kdir, True)
+        structure_hash = _compute_structure_hash(child_dirs, kdir, True)
 
         save_insight_state(
             brain,
             InsightState(
                 knowledge_path="project",
-                content_hash=unified_hash,
+                content_hash=content_hash,
                 summary_hash="existing",
+                structure_hash=structure_hash,
                 regen_status="idle",
             ),
         )
@@ -679,6 +830,77 @@ class TestRegenPath:
         assert "LEAF" not in prompt
         assert "PARENT" not in prompt
 
+    def test_backfill_skips_regen_after_migration(self, brain):
+        """Pre-v18 state with existing summary → no Claude call, hashes updated, returns 0."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+
+        # Create existing summary
+        idir = brain / "insights" / "project"
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("# Existing Summary", encoding="utf-8")
+
+        # Save pre-v18 state: content_hash set, structure_hash=None
+        istate = InsightState(
+            knowledge_path="project", content_hash="old-hash-value", structure_hash=None, regen_status="idle"
+        )
+        save_insight_state(brain, istate)
+
+        with patch("brain_sync.regen.invoke_claude") as mock_claude:
+            count = asyncio.run(regen_path(brain, "project", max_depth=1))
+
+        assert count == 0
+        mock_claude.assert_not_called()
+
+        # Verify state: content_hash updated to new algorithm, structure_hash set
+        loaded = load_insight_state(brain, "project")
+        assert loaded is not None
+        assert loaded.content_hash != "old-hash-value"
+        assert loaded.content_hash is not None
+        assert loaded.structure_hash is not None
+
+    def test_backfill_ancestor_not_regenerated_on_second_visit(self, brain):
+        """Two leaf paths sharing a pre-v18 ancestor: second visit must not trigger Claude."""
+        # Create two leaf folders under a shared parent
+        for leaf in ("parent/leaf-a", "parent/leaf-b"):
+            kdir = brain / "knowledge" / leaf
+            kdir.mkdir(parents=True)
+            (kdir / "doc.md").write_text(f"content for {leaf}", encoding="utf-8")
+            idir = brain / "insights" / leaf
+            idir.mkdir(parents=True)
+            (idir / "summary.md").write_text(f"# Summary for {leaf}", encoding="utf-8")
+            save_insight_state(
+                brain,
+                InsightState(knowledge_path=leaf, content_hash="old-hash", structure_hash=None, regen_status="idle"),
+            )
+
+        # Parent also has pre-v18 state
+        pdir = brain / "insights" / "parent"
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "summary.md").write_text("# Parent Summary", encoding="utf-8")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="parent", content_hash="old-parent-hash", structure_hash=None, regen_status="idle"
+            ),
+        )
+
+        with patch("brain_sync.regen.invoke_claude") as mock_claude:
+            count_a = asyncio.run(regen_path(brain, "parent/leaf-a", max_depth=2))
+            count_b = asyncio.run(regen_path(brain, "parent/leaf-b", max_depth=2))
+
+        # Neither call should have invoked Claude — all backfilled
+        assert count_a == 0
+        assert count_b == 0
+        mock_claude.assert_not_called()
+
+        # Parent content_hash should be updated to new algorithm (not "old-parent-hash")
+        loaded_parent = load_insight_state(brain, "parent")
+        assert loaded_parent is not None
+        assert loaded_parent.content_hash != "old-parent-hash"
+        assert loaded_parent.structure_hash is not None
+
 
 class TestIsContentDir:
     def test_excludes_sync_context(self, tmp_path):
@@ -790,21 +1012,21 @@ class TestCollectChildSummaries:
         assert result == {"area": "Area summary"}
 
 
-class TestComputeHash:
-    def test_deterministic(self, tmp_path):
-        """Same inputs produce same hash."""
+class TestComputeHashes:
+    """Tests for the split content/structure hash functions together."""
+
+    def test_content_hash_deterministic(self, tmp_path):
+        """Same inputs produce same content hash."""
         folder = tmp_path / "docs"
         folder.mkdir()
         (folder / "a.md").write_text("content", encoding="utf-8")
-        child = tmp_path / "child"
-        child.mkdir()
 
-        h1 = _compute_hash([child], {"child": "summary"}, folder, True)
-        h2 = _compute_hash([child], {"child": "summary"}, folder, True)
+        h1 = _compute_content_hash({"child": "summary"}, folder, True)
+        h2 = _compute_content_hash({"child": "summary"}, folder, True)
         assert h1 == h2
 
-    def test_sorted_dirs(self, tmp_path):
-        """Dir order doesn't affect hash (sorted internally)."""
+    def test_structure_hash_sorted_dirs(self, tmp_path):
+        """Dir order doesn't affect structure hash (sorted internally)."""
         folder = tmp_path / "docs"
         folder.mkdir()
         dir_a = tmp_path / "alpha"
@@ -812,12 +1034,12 @@ class TestComputeHash:
         dir_b = tmp_path / "beta"
         dir_b.mkdir()
 
-        h1 = _compute_hash([dir_a, dir_b], {}, folder, False)
-        h2 = _compute_hash([dir_b, dir_a], {}, folder, False)
+        h1 = _compute_structure_hash([dir_a, dir_b], folder, False)
+        h2 = _compute_structure_hash([dir_b, dir_a], folder, False)
         assert h1 == h2
 
-    def test_new_child_dir_changes_hash(self, tmp_path):
-        """Adding a child dir changes the hash."""
+    def test_new_child_dir_changes_structure_hash(self, tmp_path):
+        """Adding a child dir changes the structure hash."""
         folder = tmp_path / "docs"
         folder.mkdir()
         dir_a = tmp_path / "alpha"
@@ -825,9 +1047,31 @@ class TestComputeHash:
         dir_b = tmp_path / "beta"
         dir_b.mkdir()
 
-        h1 = _compute_hash([dir_a], {}, folder, False)
-        h2 = _compute_hash([dir_a, dir_b], {}, folder, False)
+        h1 = _compute_structure_hash([dir_a], folder, False)
+        h2 = _compute_structure_hash([dir_a, dir_b], folder, False)
         assert h1 != h2
+
+    def test_child_rename_changes_structure_not_content(self, tmp_path):
+        """Renaming a child dir changes structure hash but not content hash."""
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        dir_a = tmp_path / "alpha"
+        dir_a.mkdir()
+
+        # Same summary content, different key names
+        sums_before = {"alpha": "child summary"}
+        sh1 = _compute_structure_hash([dir_a], folder, False)
+        ch1 = _compute_content_hash(sums_before, folder, False)
+
+        dir_a_renamed = tmp_path / "renamed"
+        dir_a.rename(dir_a_renamed)
+
+        sums_after = {"renamed": "child summary"}
+        sh2 = _compute_structure_hash([dir_a_renamed], folder, False)
+        ch2 = _compute_content_hash(sums_after, folder, False)
+
+        assert sh1 != sh2  # structure changed
+        assert ch1 == ch2  # content unchanged
 
 
 class TestStructuralHash:

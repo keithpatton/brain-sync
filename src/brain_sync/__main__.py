@@ -12,12 +12,14 @@ import httpx
 from brain_sync.fs_utils import normalize_path
 from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
-from brain_sync.regen import content_unchanged
+from brain_sync.regen import classify_folder_change
 from brain_sync.regen_queue import RegenQueue
 from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval
 from brain_sync.state import (
     SyncState,
+    load_insight_state,
     load_state,
+    save_insight_state,
     save_state,
 )
 from brain_sync.watcher import KnowledgeWatcher, mirror_folder_move
@@ -121,8 +123,20 @@ async def run(root: Path) -> None:
                     if changed_paths:
                         for folder in changed_paths:
                             rel = _knowledge_rel_path(root, folder)
-                            if content_unchanged(root, rel):
+                            change, _, new_structure_hash = classify_folder_change(root, rel)
+                            if change.change_type == "none":
                                 log.debug("Watcher event for %s ignored (content hash unchanged)", rel or "(root)")
+                                continue
+                            if change.structural:
+                                # Rename only — persist updated structure_hash, no regen
+                                log.info(
+                                    "Watcher event for %s: structure-only change (rename), skipping regen",
+                                    rel or "(root)",
+                                )
+                                istate = load_insight_state(root, rel)
+                                if istate:
+                                    istate.structure_hash = new_structure_hash
+                                    save_insight_state(root, istate)
                                 continue
                             log.info("Knowledge change detected: %s", rel or "(root)")
                             regen_queue.enqueue(rel)

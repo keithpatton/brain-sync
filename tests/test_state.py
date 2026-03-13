@@ -51,7 +51,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 17
+        assert state.version == 19
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -514,7 +514,7 @@ class TestSchemaV4Migration:
         # Verify schema version after full migration chain
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "17"
+        assert version == "19"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
@@ -861,7 +861,7 @@ class TestSchemaV15V16Migration:
 
         # Check version
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "17"
+        assert version == "19"
 
         # token_events table exists
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -989,7 +989,7 @@ class TestSchemaV17Migration:
 
         # Version updated
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "17"
+        assert version == "19"
 
         # local_path column is gone
         cols = {r[1] for r in conn.execute("PRAGMA table_info(relationships)").fetchall()}
@@ -1022,3 +1022,238 @@ class TestSchemaV17Migration:
 
         field_names = {f.name for f in dataclasses.fields(Relationship)}
         assert "local_path" not in field_names
+
+
+class TestV17ToV18Migration:
+    """Tests for adding structure_hash to insight_state (v18)."""
+
+    def test_v17_to_v18_migration(self, tmp_path):
+        """v17 DB migrates to v18: structure_hash column is added to insight_state."""
+        import sqlite3
+
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                canonical_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                next_check_utc TEXT,
+                interval_seconds INTEGER,
+                target_path TEXT NOT NULL DEFAULT '',
+                fetch_children INTEGER NOT NULL DEFAULT 0,
+                sync_attachments INTEGER NOT NULL DEFAULT 0,
+                child_path TEXT
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+            CREATE TABLE insight_state (
+                knowledge_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                summary_hash TEXT,
+                regen_started_utc TEXT,
+                last_regen_utc TEXT,
+                regen_status TEXT NOT NULL DEFAULT 'idle',
+                owner_id TEXT,
+                error_reason TEXT
+            );
+            CREATE TABLE token_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                operation_type TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                is_chunk INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                duration_ms INTEGER,
+                num_turns INTEGER,
+                success INTEGER NOT NULL,
+                created_utc TEXT NOT NULL
+            );
+        """)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '17')")
+        conn.execute(
+            "INSERT INTO insight_state (knowledge_path, content_hash, summary_hash, regen_status) "
+            "VALUES ('test/area', 'hash123', 'sumhash', 'idle')"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+
+        # Version updated
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        assert version == "19"
+
+        # structure_hash column exists
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
+        assert "structure_hash" in cols
+
+        # Existing data preserved, structure_hash is NULL
+        row = conn.execute("SELECT knowledge_path, content_hash, structure_hash FROM insight_state").fetchone()
+        assert row is not None
+        assert row[0] == "test/area"
+        assert row[1] == "hash123"
+        assert row[2] is None  # new column defaults to NULL
+
+        conn.close()
+
+    def test_fresh_db_has_structure_hash(self, tmp_path):
+        """Fresh DB insight_state table has structure_hash column."""
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
+        assert "structure_hash" in cols
+        conn.close()
+
+    def test_save_and_load_structure_hash(self, tmp_path):
+        """structure_hash round-trips through save/load."""
+        from brain_sync.state import _connect
+
+        _connect(tmp_path).close()  # initialize DB
+
+        istate = InsightState(
+            knowledge_path="test",
+            content_hash="chash",
+            structure_hash="shash",
+        )
+        save_insight_state(tmp_path, istate)
+        loaded = load_insight_state(tmp_path, "test")
+        assert loaded is not None
+        assert loaded.structure_hash == "shash"
+        assert loaded.content_hash == "chash"
+
+
+class TestV19Migration:
+    """Tests for v19 migration: reset structure_hash for content hash re-backfill."""
+
+    def test_v18_to_v19_migration_nulls_structure_hash(self, tmp_path):
+        """v18 DB with structure_hash set → v19 migration NULLs it."""
+        import sqlite3
+
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                canonical_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                next_check_utc TEXT,
+                interval_seconds INTEGER,
+                target_path TEXT NOT NULL DEFAULT '',
+                fetch_children INTEGER NOT NULL DEFAULT 0,
+                sync_attachments INTEGER NOT NULL DEFAULT 0,
+                child_path TEXT
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+            CREATE TABLE insight_state (
+                knowledge_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                summary_hash TEXT,
+                structure_hash TEXT,
+                regen_started_utc TEXT,
+                last_regen_utc TEXT,
+                regen_status TEXT NOT NULL DEFAULT 'idle',
+                owner_id TEXT,
+                error_reason TEXT
+            );
+            CREATE TABLE token_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                operation_type TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                is_chunk INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                duration_ms INTEGER,
+                num_turns INTEGER,
+                success INTEGER NOT NULL,
+                created_utc TEXT NOT NULL
+            );
+        """)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '18')")
+        # Insert row WITH structure_hash set (simulates buggy v18 backfill)
+        conn.execute(
+            "INSERT INTO insight_state (knowledge_path, content_hash, structure_hash, regen_status) "
+            "VALUES ('test/area', 'old-algo-hash', 'some-structure-hash', 'idle')"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        assert version == "19"
+
+        # structure_hash is now NULL, content_hash preserved
+        row = conn.execute("SELECT knowledge_path, content_hash, structure_hash FROM insight_state").fetchone()
+        assert row is not None
+        assert row[0] == "test/area"
+        assert row[1] == "old-algo-hash"  # content_hash unchanged by migration
+        assert row[2] is None  # structure_hash reset to NULL
+
+        conn.close()

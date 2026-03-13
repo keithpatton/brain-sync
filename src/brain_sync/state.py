@@ -12,7 +12,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 19
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS insight_state (
     knowledge_path TEXT PRIMARY KEY,
     content_hash TEXT,
     summary_hash TEXT,
+    structure_hash TEXT,
     regen_started_utc TEXT,
     last_regen_utc TEXT,
     regen_status TEXT NOT NULL DEFAULT 'idle',
@@ -238,6 +239,7 @@ class InsightState(_PathNormalized):
     knowledge_path: str
     content_hash: str | None = None
     summary_hash: str | None = None
+    structure_hash: str | None = None
     regen_started_utc: str | None = None
     last_regen_utc: str | None = None
     regen_status: str = "idle"
@@ -670,6 +672,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
                 knowledge_path TEXT PRIMARY KEY,
                 content_hash TEXT,
                 summary_hash TEXT,
+                structure_hash TEXT,
                 regen_started_utc TEXT,
                 last_regen_utc TEXT,
                 regen_status TEXT NOT NULL DEFAULT 'idle',
@@ -701,6 +704,31 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         conn.commit()
         log.info("Migrated DB schema to v17: dropped local_path from relationships")
         from_version = 17
+
+    if from_version < 18:
+        # v17 → v18: Add structure_hash to insight_state for content/structure hash split
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
+        if "structure_hash" not in existing_cols:
+            conn.execute("ALTER TABLE insight_state ADD COLUMN structure_hash TEXT")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '18')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v18: added structure_hash to insight_state")
+        from_version = 18
+
+    if from_version < 19:
+        # v18 → v19: Reset structure_hash to re-trigger content hash backfill.
+        # The v18 backfill had a bug (preserved old-algorithm content_hash).
+        # NULLing structure_hash lets the corrected backfill in regen.py re-run,
+        # setting content_hash to the new algorithm without any Claude calls.
+        conn.execute("UPDATE insight_state SET structure_hash = NULL")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '19')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v19: reset structure_hash for content hash re-backfill")
+        from_version = 19
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -1122,7 +1150,7 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     try:
         row = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
-            "regen_started_utc, last_regen_utc, regen_status, "
+            "structure_hash, regen_started_utc, last_regen_utc, regen_status, "
             "owner_id, error_reason "
             "FROM insight_state WHERE knowledge_path = ?",
             (knowledge_path,),
@@ -1133,11 +1161,12 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
             knowledge_path=row[0],
             content_hash=row[1],
             summary_hash=row[2],
-            regen_started_utc=row[3],
-            last_regen_utc=row[4],
-            regen_status=row[5],
-            owner_id=row[6],
-            error_reason=row[7],
+            structure_hash=row[3],
+            regen_started_utc=row[4],
+            last_regen_utc=row[5],
+            regen_status=row[6],
+            owner_id=row[7],
+            error_reason=row[8],
         )
     finally:
         conn.close()
@@ -1151,13 +1180,14 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
     try:
         conn.execute(
             "INSERT INTO insight_state "
-            "(knowledge_path, content_hash, summary_hash, "
+            "(knowledge_path, content_hash, summary_hash, structure_hash, "
             "regen_started_utc, last_regen_utc, regen_status, "
             "owner_id, error_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(knowledge_path) DO UPDATE SET "
             "content_hash=excluded.content_hash, "
             "summary_hash=excluded.summary_hash, "
+            "structure_hash=excluded.structure_hash, "
             "regen_started_utc=excluded.regen_started_utc, "
             "last_regen_utc=excluded.last_regen_utc, "
             "regen_status=excluded.regen_status, "
@@ -1167,6 +1197,7 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
                 kp,
                 istate.content_hash,
                 istate.summary_hash,
+                istate.structure_hash,
                 istate.regen_started_utc,
                 istate.last_regen_utc,
                 istate.regen_status,
@@ -1185,7 +1216,7 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
     try:
         rows = conn.execute(
             "SELECT knowledge_path, content_hash, summary_hash, "
-            "regen_started_utc, last_regen_utc, regen_status, "
+            "structure_hash, regen_started_utc, last_regen_utc, regen_status, "
             "owner_id, error_reason "
             "FROM insight_state"
         ).fetchall()
@@ -1194,11 +1225,12 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
                 knowledge_path=r[0],
                 content_hash=r[1],
                 summary_hash=r[2],
-                regen_started_utc=r[3],
-                last_regen_utc=r[4],
-                regen_status=r[5],
-                owner_id=r[6],
-                error_reason=r[7],
+                structure_hash=r[3],
+                regen_started_utc=r[4],
+                last_regen_utc=r[5],
+                regen_status=r[6],
+                owner_id=r[7],
+                error_reason=r[8],
             )
             for r in rows
         ]
