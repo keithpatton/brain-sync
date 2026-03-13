@@ -15,7 +15,7 @@ class BrainNotFoundError(Exception):
     """Raised when no brain root can be resolved."""
 
 
-class InvalidBrainRootError(Exception):
+class InvalidBrainRootError(BrainNotFoundError):
     """Raised when the brain root is misconfigured."""
 
 

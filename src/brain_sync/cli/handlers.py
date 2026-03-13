@@ -48,8 +48,8 @@ def handle_run(args) -> None:
             from brain_sync.commands.context import resolve_root
 
             root = resolve_root()
-        except BrainNotFoundError:
-            log.exception("Cannot resolve brain root")
+        except BrainNotFoundError as e:
+            log.error("Cannot resolve brain root: %s", e)
             sys.exit(1)
 
     if not root.is_dir():
@@ -85,8 +85,8 @@ def _resolve_root_or_exit(args) -> Path:
             from brain_sync.commands.context import resolve_root
 
             root = resolve_root()
-        except BrainNotFoundError:
-            log.exception("Cannot resolve brain root")
+        except BrainNotFoundError as e:
+            log.error("Cannot resolve brain root: %s", e)
             sys.exit(1)
     return root
 
@@ -249,8 +249,8 @@ def handle_add(args) -> None:
         log.warning("  URL: %s", e.source_url)
         log.warning("  Path: %s", e.target_path)
         return
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     log.info("Registered source: %s", result.canonical_id)
@@ -372,8 +372,8 @@ def handle_remove(args) -> None:
     except SourceNotFoundError as e:
         log.warning("Source not found: %s", e.source)
         return
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     log.info("Removing source: %s", result.canonical_id)
@@ -392,8 +392,8 @@ def handle_list(args) -> None:
             root=_get_root(args),
             filter_path=args.filter_path,
         )
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     if not sources:
@@ -429,8 +429,8 @@ def handle_move(args) -> None:
     except SourceNotFoundError as e:
         log.warning("Source not found: %s", e.source)
         return
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     if result.files_moved:
@@ -453,8 +453,8 @@ def handle_update(args) -> None:
     except SourceNotFoundError as e:
         log.warning("Source not found: %s", e.source)
         return
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     log.info("Updated source: %s", result.canonical_id)
@@ -470,8 +470,8 @@ def handle_reconcile(args) -> None:
 
     try:
         result = reconcile_sources(root=_get_root(args))
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     if not result.updated and not result.not_found:
@@ -535,8 +535,8 @@ def handle_regen(args) -> None:
             from brain_sync.commands.context import resolve_root
 
             root = resolve_root()
-        except BrainNotFoundError:
-            log.exception("Cannot resolve brain root")
+        except BrainNotFoundError as e:
+            log.error("Cannot resolve brain root: %s", e)
             sys.exit(1)
 
     knowledge_path = args.knowledge_path or ""
@@ -649,8 +649,8 @@ def handle_migrate(args) -> None:
 
     try:
         result = migrate_sources(root=_get_root(args))
-    except BrainNotFoundError:
-        log.exception("Cannot resolve brain root")
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
     if result.sources_migrated == 0 and result.dirs_cleaned == 0:
