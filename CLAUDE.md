@@ -64,7 +64,7 @@ All code must pass before commit:
 ```bash
 ruff check
 pyright
-pytest
+python -m pytest -n auto -m "unit or integration or external or mcp" --timeout=30
 ```
 
 ---
@@ -83,12 +83,98 @@ Each test file must declare a **test tier** immediately after imports:
 pytestmark = pytest.mark.<tier>
 ```
 
-Valid tiers:
+### Test Tiers and Directories
 
-- `unit`
-- `integration`
-- `external`
-- `mcp`
+| Tier | Directory | Process Model | LLM | What it catches |
+|---|---|---|---|---|
+| `unit` | `tests/unit/` | In-process, mocked deps | Patched `invoke_claude` | Pure logic |
+| `integration` | `tests/integration/` | In-process, real FS + SQLite | `FakeBackend` (imported directly) | Pipeline logic, state transitions |
+| `external` | `tests/external/` | In-process | Patched | REST API interaction mocking |
+| `mcp` | `tests/mcp/` | In-process | Patched | MCP tool handler behaviour |
+| `system` | `tests/system/` | Subprocess CLI | `BRAIN_SYNC_LLM_BACKEND=fake` | CLI parsing, exit codes |
+| `e2e` | `tests/e2e/` | Daemon + CLI subprocesses | `BRAIN_SYNC_LLM_BACKEND=fake` | Lifecycle, concurrency, watcher |
+
+### When to Run What
+
+All test selection uses **markers** (not directory paths) for resilience to future moves.
+
+**Before commit** (required, <30s target):
+
+```bash
+ruff check
+pyright
+python -m pytest -n auto -m "unit or integration or external or mcp" --timeout=30
+```
+
+**Before push to main** (<2min target):
+
+```bash
+python -m pytest -n auto --timeout=120
+```
+
+Runs everything including system and e2e.
+
+**CI** (push to main): All tiers, all platforms (Linux/Windows/macOS), parallel execution via `.github/workflows/ci.yml`.
+
+### Developer Shortcut Scripts
+
+```bash
+scripts/test-fast.sh   # Fast tiers only (<30s)
+scripts/test-full.sh   # All tiers (<2min)
+# Windows: scripts/test-fast.cmd, scripts/test-full.cmd
+# Extra args pass through: scripts/test-fast.sh -v -k test_foo
+```
+
+### Running Tests
+
+```bash
+# All unit/integration/external/mcp tests (fast, parallel)
+python -m pytest -n auto -m "unit or integration or external or mcp" --timeout=30
+
+# Integration tests only (FakeBackend, real FS + SQLite)
+python -m pytest tests/integration/ -v --timeout=30
+
+# System tests (CLI subprocess, ~20s)
+python -m pytest tests/system/ -v --timeout=30
+
+# E2E tests (daemon lifecycle, ~60s)
+python -m pytest tests/e2e/ -v --timeout=120
+
+# Parallel execution (safe — each test fully isolated)
+python -m pytest tests/e2e/ -n 4 --timeout=120
+```
+
+### LLM Backend for Tests
+
+- **Unit tests**: patch `brain_sync.regen.invoke_claude` directly (backward-compat shim routes through it).
+- **Integration tests**: pass `FakeBackend` instance via the `backend=` parameter to `regen_single_folder`, `regen_path`, `regen_all`.
+- **System/E2E tests**: set `BRAIN_SYNC_LLM_BACKEND=fake` in subprocess env (handled by `CliRunner` and `DaemonProcess` harness classes).
+
+`FakeBackend` modes: `stable` (deterministic hash-based output), `rewrite`, `fail`, `timeout`, `malformed`, `partial-stream`, `large-output`.
+
+### E2E Harness
+
+Reusable helpers in `tests/e2e/harness/`:
+
+- `brain.py` — `create_brain()`, `seed_knowledge_tree()`, `seed_sources()`
+- `cli.py` — `CliRunner` subprocess runner with isolated env
+- `daemon.py` — `DaemonProcess` lifecycle manager (cross-platform shutdown)
+- `wait.py` — `wait_for_file()`, `wait_for_db()`, `wait_for_condition()` polling helpers
+- `assertions.py` — `assert_summary_exists()`, `assert_no_orphan_insights()`, etc.
+- `artifacts.py` — pytest plugin capturing diagnostics on test failure
+
+### Test Isolation
+
+Each test gets its own `tmp_path` containing isolated brain root, config dir, SQLite DB, and prompt capture dir. No shared state. `BRAIN_SYNC_CONFIG_DIR` env var overrides `~/.brain-sync` for subprocess tests.
+
+### Adding New Tests
+
+1. Choose the appropriate tier based on what you're testing.
+2. Place the test in the correct directory.
+3. Add `pytestmark = pytest.mark.<tier>` after imports.
+4. For regen tests, prefer passing `FakeBackend` directly over patching `invoke_claude`.
+5. Regression tests from bug fixes go in `tests/e2e/regressions/` with naming `test_<description>.py`.
+6. E2E assertions must check **eventual state** (via `wait_for_*` helpers), never event sequences or log output.
 
 ---
 

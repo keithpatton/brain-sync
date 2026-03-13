@@ -27,25 +27,25 @@ class TestPreprocessHtml:
 
     def test_multiple_images(self):
         html = (
-            '<p>Before</p>'
+            "<p>Before</p>"
             '<ac:image><ri:attachment ri:filename="a.png"/></ac:image>'
-            '<p>Middle</p>'
+            "<p>Middle</p>"
             '<ac:image><ri:attachment ri:filename="b.png"/></ac:image>'
-            '<p>After</p>'
+            "<p>After</p>"
         )
         result = _preprocess_html(html)
-        assert 'attachment-ref:a.png' in result
-        assert 'attachment-ref:b.png' in result
-        assert '<p>Before</p>' in result
-        assert '<p>Middle</p>' in result
-        assert '<p>After</p>' in result
+        assert "attachment-ref:a.png" in result
+        assert "attachment-ref:b.png" in result
+        assert "<p>Before</p>" in result
+        assert "<p>Middle</p>" in result
+        assert "<p>After</p>" in result
 
     def test_no_confluence_tags(self):
-        html = '<p>Normal <strong>HTML</strong></p>'
+        html = "<p>Normal <strong>HTML</strong></p>"
         result = _preprocess_html(html)
         assert result == html
 
     def test_filename_with_query_params(self):
         html = '<ac:image><ri:attachment ri:filename="GetClipboardImage.ashx?Id=abc&DC=GAU3"/></ac:image>'
         result = _preprocess_html(html)
-        assert 'attachment-ref:GetClipboardImage.ashx?Id=abc&DC=GAU3' in result
+        assert "attachment-ref:GetClipboardImage.ashx?Id=abc&DC=GAU3" in result
