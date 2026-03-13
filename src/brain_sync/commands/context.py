@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from brain_sync.config import CONFIG_FILE, load_config
+import brain_sync.config as _config
+from brain_sync.config import load_config
 
 # Re-export for backwards compatibility during migration
-__all__ = ["CONFIG_FILE", "BrainNotFoundError", "InvalidBrainRootError", "resolve_root", "validate_brain_root"]
+__all__ = ["BrainNotFoundError", "InvalidBrainRootError", "resolve_root", "validate_brain_root"]
 
 
 class BrainNotFoundError(Exception):
@@ -40,11 +41,11 @@ def resolve_root() -> Path:
     Raises BrainNotFoundError if no brain is configured.
     Raises InvalidBrainRootError if the root lacks expected structure.
     """
-    if not CONFIG_FILE.exists():
+    if not _config.CONFIG_FILE.exists():
         raise BrainNotFoundError("No brain configured. Run: brain-sync init <path>")
     data = load_config()
     if not data:
-        raise BrainNotFoundError(f"Cannot read {CONFIG_FILE}")
+        raise BrainNotFoundError(f"Cannot read {_config.CONFIG_FILE}")
     brains = data.get("brains", [])
     if not brains:
         raise BrainNotFoundError("No brain roots registered in config")
