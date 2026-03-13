@@ -10,9 +10,22 @@ from pathlib import Path
 from brain_sync.commands.context import _require_root
 from brain_sync.fileops import canonical_prefix, rediscover_local_path
 from brain_sync.fs_utils import normalize_path
+from brain_sync.manifest import (
+    MANIFEST_DIR,
+    MANIFEST_VERSION,
+    SourceManifest,
+    SyncHint,
+    delete_source_manifest,
+    ensure_manifest_dir,
+    read_all_source_manifests,
+    read_source_manifest,
+    update_manifest_materialized_path,
+    write_source_manifest,
+)
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import (
     SourceState,
+    SyncState,
     count_relationships_for_doc,
     load_relationships_for_primary,
     load_state,
@@ -144,6 +157,21 @@ def add_source(
     cid = canonical_id(stype, url)
     state = load_state(root)
 
+    # Phase 1: write manifest first (crash recovery favours disk truth)
+    write_source_manifest(
+        root,
+        SourceManifest(
+            manifest_version=MANIFEST_VERSION,
+            canonical_id=cid,
+            source_url=url,
+            source_type=stype.value,
+            materialized_path="",  # unknown until first sync writes the file
+            fetch_children=fetch_children,
+            sync_attachments=sync_attachments,
+            child_path=child_path,
+        ),
+    )
+
     state.sources[cid] = SourceState(
         canonical_id=cid,
         source_url=url,
@@ -235,6 +263,9 @@ def remove_source(
 
     db_delete_source(root, cid)
 
+    # Phase 1: delete manifest (bypasses two-stage — explicit remove is immediate)
+    delete_source_manifest(root, cid)
+
     return RemoveResult(
         canonical_id=cid,
         source_url=source_url,
@@ -317,6 +348,18 @@ def move_source(
             new_att.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(old_att), str(new_att))
 
+    # Phase 1: update manifest materialized_path (after filesystem move so we
+    # can discover the actual file path, not just the directory).
+    knowledge_root = root / "knowledge"
+    found = rediscover_local_path(knowledge_root, cid)
+    if found is not None:
+        materialized = normalize_path(found.relative_to(knowledge_root))
+        update_manifest_materialized_path(root, cid, materialized)
+    else:
+        # No synced file yet — keep materialized_path empty (not a directory).
+        # First successful sync will populate the real file path.
+        update_manifest_materialized_path(root, cid, "")
+
     return MoveResult(
         canonical_id=cid,
         old_path=old_path,
@@ -366,6 +409,17 @@ def update_source(
         child_path=child_path,
     )
 
+    # Phase 1: update manifest flags
+    manifest = read_source_manifest(root, cid)
+    if manifest is not None:
+        if fetch_children is not None:
+            manifest.fetch_children = fetch_children
+        if sync_attachments is not None:
+            manifest.sync_attachments = sync_attachments
+        if child_path is not ...:
+            manifest.child_path = child_path  # type: ignore[assignment]
+        write_source_manifest(root, manifest)
+
     return UpdateResult(
         canonical_id=cid,
         source_url=ss.source_url,
@@ -389,6 +443,64 @@ class ReconcileResult:
     unchanged: int
 
 
+def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
+    """One-time migration: export existing DB sources to manifests.
+
+    Only runs when .brain-sync/sources/ is empty but DB has sources.
+    Returns the number of manifests written.
+    """
+    manifest_dir = root / MANIFEST_DIR
+    if not manifest_dir.is_dir():
+        ensure_manifest_dir(root)
+
+    existing = read_all_source_manifests(root)
+    if existing:
+        return 0  # manifests already exist — not a migration scenario
+
+    if not state.sources:
+        return 0
+
+    count = 0
+    for cid, ss in state.sources.items():
+        # Discover the actual file path for materialized_path
+        knowledge_root = root / "knowledge"
+        materialized = ""
+        if ss.target_path:
+            target_dir = knowledge_root / ss.target_path
+            if target_dir.is_dir():
+                prefix = canonical_prefix(cid)
+                for p in target_dir.iterdir():
+                    if p.is_file() and p.name.startswith(prefix):
+                        materialized = normalize_path(p.relative_to(knowledge_root))
+                        break
+
+        hint = None
+        if ss.content_hash:
+            hint = SyncHint(
+                content_hash=ss.content_hash,
+                last_synced_utc=ss.last_checked_utc,
+            )
+
+        write_source_manifest(
+            root,
+            SourceManifest(
+                manifest_version=MANIFEST_VERSION,
+                canonical_id=cid,
+                source_url=ss.source_url,
+                source_type=ss.source_type,
+                materialized_path=materialized,
+                fetch_children=ss.fetch_children,
+                sync_attachments=ss.sync_attachments,
+                child_path=ss.child_path,
+                sync_hint=hint,
+            ),
+        )
+        count += 1
+
+    log.info("Bootstrap migration: exported %d DB sources to manifests", count)
+    return count
+
+
 def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     """Update target_path for sources whose files have been moved on disk.
 
@@ -398,6 +510,10 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     """
     root = _require_root(root)
     state = load_state(root)
+
+    # Phase 1: bootstrap manifests from DB if none exist yet (one-time migration)
+    _bootstrap_manifests_from_db(root, state)
+
     knowledge_root = root / "knowledge"
 
     updated: list[ReconcileEntry] = []
@@ -441,6 +557,11 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
         if new_target != old_target:
             update_source_target_path(root, cid, new_target)
             ss.target_path = new_target
+
+            # Phase 1: update manifest materialized_path (full file path, not directory)
+            materialized = normalize_path(found.relative_to(knowledge_root))
+            update_manifest_materialized_path(root, cid, materialized)
+
             updated.append(
                 ReconcileEntry(
                     canonical_id=cid,

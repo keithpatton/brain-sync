@@ -10,6 +10,7 @@ import httpx
 
 from brain_sync.converter import format_comments
 from brain_sync.fileops import content_hash, rediscover_local_path, write_if_changed
+from brain_sync.fs_utils import normalize_path
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
@@ -21,6 +22,29 @@ from brain_sync.sources.registry import get_adapter
 from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
+
+# Managed-file identity header lines (embedded in synced markdown files).
+# The source line is the primary identity binding used by reconciliation.
+MANAGED_HEADER_SOURCE = "<!-- brain-sync-source: {} -->"
+MANAGED_HEADER_WARNING = "<!-- brain-sync-managed: local edits may be overwritten -->"
+
+# Regex to detect/strip existing managed headers (for idempotent rewrites).
+_MANAGED_HEADER_RE = re.compile(r"^<!-- brain-sync-(source|managed): .* -->\n", re.MULTILINE)
+
+
+def strip_managed_header(text: str) -> str:
+    """Remove managed-file header lines from markdown text."""
+    return _MANAGED_HEADER_RE.sub("", text).lstrip("\n")
+
+
+def prepend_managed_header(canonical_id_str: str, markdown: str) -> str:
+    """Prepend the managed-file identity header to markdown content.
+
+    Idempotent — strips any existing header before prepending.
+    """
+    body = strip_managed_header(markdown)
+    header = MANAGED_HEADER_SOURCE.format(canonical_id_str) + "\n" + MANAGED_HEADER_WARNING + "\n\n"
+    return header + body
 
 
 @dataclass
@@ -189,11 +213,18 @@ async def process_source(
         comments_md = format_comments(result.comments)
         markdown = markdown.rstrip("\n") + "\n\n---\n\n## Comments\n\n" + comments_md + "\n"
 
+    # Compute content hash from body (excluding managed header) so the hash
+    # stays stable across header updates and matches sync_hint semantics.
+    body_hash = content_hash(markdown.encode("utf-8"))
+
+    # Prepend managed-file identity header
+    markdown = prepend_managed_header(source_state.canonical_id, markdown)
+
     # Write + state update
     changed = write_if_changed(target, markdown)
 
     source_state.last_checked_utc = now
-    source_state.content_hash = content_hash(markdown.encode("utf-8"))
+    source_state.content_hash = body_hash
     source_state.source_type = source_type.value
     if result.metadata_fingerprint:
         source_state.metadata_fingerprint = result.metadata_fingerprint
@@ -203,5 +234,16 @@ async def process_source(
         log.info("Updated %s (content changed)", filename)
     else:
         log.info("Fetched %s (no content change)", filename)
+
+    # Phase 1: update manifest sync_hint and materialized_path after successful sync
+    if root is not None:
+        try:
+            from brain_sync.manifest import update_manifest_materialized_path, update_manifest_sync_hint
+
+            materialized = normalize_path(target.relative_to(root / "knowledge"))
+            update_manifest_materialized_path(root, source_state.canonical_id, materialized)
+            update_manifest_sync_hint(root, source_state.canonical_id, body_hash, now)
+        except Exception:
+            log.debug("Manifest update skipped (manifest may not exist yet)", exc_info=True)
 
     return changed, discovered_children

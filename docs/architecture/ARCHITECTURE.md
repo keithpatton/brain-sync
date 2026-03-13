@@ -23,6 +23,7 @@ All source lives under `src/brain_sync/`.
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, Claude CLI transport, deterministic test fake |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
 | State | `state`, `token_tracking` | SQLite WAL persistence (sources, documents, relationships, insight state, token events) |
+| Manifests | `manifest` | Source manifest read/write (`.brain-sync/sources/*.json`) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
 | Attachments | `attachments`, `area_index` | Attachment sync lifecycle, area indexing |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
@@ -123,6 +124,103 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 **Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Attachment sync is gated by `supports_attachments`; child discovery by `supports_children`.
 
 **Registry:** Lazy instantiation with no startup wiring. Adapters are created on first access and cached. `reset_registry()` available for testing.
+
+---
+
+## 2.5. State Authority Model
+
+### Authority Hierarchy
+
+The system uses a tiered authority model where filesystem artifacts are authoritative for intent and portable state, while SQLite serves as a disposable performance cache.
+
+| State Class | Authoritative Location | Portable | Rebuildable |
+|---|---|---|---|
+| Source registration (intent) | `.brain-sync/sources/*.json` manifests | Yes (git) | From DB (migration only) |
+| Source sync progress | `sync_cache` DB table | No | Loss triggers re-sync |
+| Insight hashes | `insights/**/.regen-meta.json` sidecars (future) | Yes (git) | From DB (migration only) |
+| Regen lifecycle | `regen_locks` DB table (future) | No | Reset to idle on startup |
+| Document metadata | `documents` DB table | No | Re-discovered on sync |
+| Relationships | `relationships` DB table | No | Re-discovered on sync |
+| Token telemetry | `token_events` DB table | No | Historical loss accepted |
+
+### Managed-File Identity
+
+Synced files carry an embedded identity header that binds them to their source registration:
+
+```markdown
+<!-- brain-sync-source: confluence:123456 -->
+<!-- brain-sync-managed: local edits may be overwritten -->
+```
+
+The `brain-sync-source` line is the primary identity binding — reconciliation reads this to map files to manifests without relying on filename conventions. The `brain-sync-managed` line is a human-readable warning.
+
+Identity resolution chain (ordered by priority):
+1. **Manifest `materialized_path`** — direct file path from `.brain-sync/sources/*.json`
+2. **Embedded identity header** — `<!-- brain-sync-source: {canonical_id} -->` scan
+3. **Canonical prefix fallback** — filename prefix match (e.g., `c12345-`) for legacy/migration
+
+### Source Manifests
+
+Each registered source has a JSON manifest at `.brain-sync/sources/{canonical_id_safe}.json`:
+
+```json
+{
+  "manifest_version": 1,
+  "canonical_id": "confluence:123456",
+  "source_url": "https://acme.atlassian.net/wiki/spaces/ENG/pages/123456",
+  "source_type": "confluence",
+  "materialized_path": "engineering/architecture/c123456-some-page.md",
+  "fetch_children": false,
+  "sync_attachments": true,
+  "child_path": null,
+  "status": "active",
+  "sync_hint": {
+    "content_hash": "abc123...",
+    "last_synced_utc": "2026-03-14T10:00:00+00:00"
+  }
+}
+```
+
+### Brain Control Plane Directory
+
+```
+{brain_root}/
+├── .brain-sync/
+│   ├── version.json           # {"manifest_version": 1}
+│   └── sources/               # one manifest per registered source
+│       └── confluence-123456.json
+├── .sync-state.sqlite         # disposable cache (gitignored)
+├── knowledge/
+└── insights/
+```
+
+### Architectural Invariants (Source Authority)
+
+1. **Identity invariant** — A synced source is identified by its canonical ID, not by its filesystem path.
+2. **Move invariant** — Moving a synced file relocates the materialization. No content is re-fetched.
+3. **Delete invariant** — Deleting a synced file triggers two-stage deregistration (future: manifest read path).
+4. **Edit invariant** — Edits to synced files are overwritten by the next upstream sync.
+5. **No auto-registration** — Files with identity headers but no manifest are ignored.
+6. **No DB resurrection** — DB state must never recreate deleted filesystem content. UNCHANGED + missing file → skip.
+7. **Manifest-first writes** — Commands write manifests before DB to ensure crash recovery favours disk truth.
+
+### DB Table Justifications
+
+Every remaining DB table must justify its existence. If deleted, the consequence column describes what happens on next startup.
+
+| Table | Performance/Operational Problem Solved | If Deleted |
+|---|---|---|
+| `sources` | Avoids re-parsing manifests on every scheduler tick; caches sync progress (last_checked, content_hash, intervals) | Rebuilt from `.brain-sync/sources/*.json` manifests; sync_hint seeds timing so matching sources skip re-fetch |
+| `insight_state` | Caches content/summary/structure hashes to avoid recomputing on every regen check; holds regen lifecycle locks | Future: rebuilt from `.regen-meta.json` sidecars; all locks reset to idle; hashes recomputed on first regen |
+| `documents` | Caches discovered page/attachment metadata to avoid redundant API calls during child/attachment discovery | Re-discovered on next sync cycle; no data loss, slight increase in API calls |
+| `relationships` | Caches parent-child links between sources/documents for orphan cleanup and child discovery deduplication | Rebuilt from next fetch results; orphan detection delayed until rebuild completes |
+| `token_events` | Append-only LLM cost telemetry for usage dashboards and budget monitoring | Historical telemetry lost; new events recorded normally; no operational impact |
+| `daemon_status` | Single-row runtime state for `brain-sync status` CLI; detects stale daemon PIDs | Recreated on next daemon start; `status` command shows "unknown" until daemon writes |
+| `meta` | Stores schema version for migration gating | DB recreated from scratch at current schema version; no migration needed |
+
+### Startup Tree Walk
+
+The startup reconciliation walk (reading manifests, scanning knowledge/ for moved files, reading sidecars) is a **correctness operation**, not cache warming. Its purpose is to detect offline filesystem changes (moves, deletes, additions) and bring the DB cache into agreement with disk truth. Skipping or short-circuiting this walk risks the DB containing stale paths, ghost sources, or missing hashes — all of which produce incorrect sync and regen behaviour.
 
 ---
 
