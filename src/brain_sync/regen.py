@@ -585,6 +585,109 @@ def _collect_global_context(root: Path, current_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class StreamParseResult:
+    """Parsed output from Claude CLI ``--output-format stream-json``."""
+
+    text: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    num_turns: int | None = None
+    is_error: bool = False
+    error_subtype: str | None = None
+
+
+def _parse_stream_json(stdout_text: str) -> StreamParseResult:
+    """Parse NDJSON stream from ``claude --output-format stream-json --verbose``.
+
+    The CLI emits high-level events (not raw Anthropic API streaming events):
+
+    - ``{"type":"assistant","message":{"usage":{...},"content":[...]}}``
+      One per turn.  Contains per-turn usage and the assistant's text content.
+    - ``{"type":"result","usage":{...},"num_turns":N,"is_error":false,...}``
+      Final summary with aggregated usage across all turns.
+
+    Token accounting (from the ``result`` event's aggregated usage):
+    - **input_tokens** = input_tokens + cache_creation_input_tokens (billable).
+      cache_read_input_tokens is logged for observability but excluded.
+    - **output_tokens** = output_tokens from the result usage.
+
+    Text is assembled from ``assistant`` events' ``message.content`` blocks,
+    with the ``result.result`` field as a fallback.
+    """
+    text_parts: list[str] = []
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read: int = 0
+    cache_creation: int = 0
+    num_turns: int | None = None
+    is_error = False
+    error_subtype: str | None = None
+
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        event_type = event.get("type")
+
+        if event_type == "assistant":
+            # Extract text from message.content blocks
+            message = event.get("message", {})
+            for block in message.get("content", []):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+
+        elif event_type == "result":
+            num_turns = event.get("num_turns")
+            is_error = bool(event.get("is_error"))
+            subtype = event.get("subtype", "")
+            if is_error or subtype.startswith("error"):
+                is_error = True
+                error_subtype = subtype or None
+
+            # Extract aggregated usage from result event
+            usage = event.get("usage", {})
+            raw_input = usage.get("input_tokens")
+            cc = usage.get("cache_creation_input_tokens") or 0
+            cr = usage.get("cache_read_input_tokens") or 0
+            out = usage.get("output_tokens")
+
+            if raw_input is not None:
+                cache_creation = cc
+                cache_read = cr
+                input_tokens = raw_input + cc
+            output_tokens = out
+
+            # Fallback: use result.result text if no assistant blocks found
+            if not text_parts:
+                result_text = event.get("result")
+                if result_text:
+                    text_parts.append(result_text)
+
+    if input_tokens is not None:
+        log.debug(
+            "Stream-JSON tokens: input=%s cache_creation=%s cache_read=%s output=%s",
+            input_tokens,
+            cache_creation,
+            cache_read,
+            output_tokens,
+        )
+
+    return StreamParseResult(
+        text="".join(text_parts),
+        input_tokens=input_tokens or None,
+        output_tokens=output_tokens,
+        num_turns=num_turns,
+        is_error=is_error,
+        error_subtype=error_subtype,
+    )
+
+
 async def invoke_claude(
     prompt: str,
     cwd: Path,
@@ -613,8 +716,9 @@ async def invoke_claude(
     cmd = [
         "claude",
         "--print",
+        "--verbose",
         "--output-format",
-        "json",
+        "stream-json",
         "--no-session-persistence",
         "--max-turns",
         str(max_turns),
@@ -690,29 +794,27 @@ async def invoke_claude(
             log.warning("Claude CLI failed stdout: %s", stdout_text[:1000])
         return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
 
-    # Parse JSON output for token counts
+    # Parse stream-json NDJSON output for token counts and text
     input_tokens = None
     output_tokens = None
     num_turns = None
     result_text = stdout_text
     try:
-        data = json.loads(stdout_text)
-        result_text = data.get("result", stdout_text)
-        usage = data.get("usage", {})
-        input_tokens = usage.get("input_tokens")
-        output_tokens = usage.get("output_tokens")
-        duration_ms = data.get("duration_ms")
-        num_turns = data.get("num_turns")
+        parsed = _parse_stream_json(stdout_text)
+        result_text = parsed.text or stdout_text
+        input_tokens = parsed.input_tokens
+        output_tokens = parsed.output_tokens
+        num_turns = parsed.num_turns
         log.info(
-            "Claude CLI: model=%s tokens=%s/%s turns=%s duration=%ss",
+            "Claude CLI: model=%s tokens=%s/%s turns=%s wall=%ss",
             model or "default",
             input_tokens,
             output_tokens,
             num_turns,
-            f"{duration_ms / 1000:.1f}" if duration_ms else "?",
+            f"{elapsed_ms / 1000:.1f}",
         )
-        if data.get("is_error") or data.get("subtype", "").startswith("error"):
-            log.warning("Claude CLI error subtype: %s", data.get("subtype"))
+        if parsed.is_error:
+            log.warning("Claude CLI error subtype: %s", parsed.error_subtype)
             return _record(
                 ClaudeResult(
                     success=False,
@@ -723,8 +825,8 @@ async def invoke_claude(
                     duration_ms=elapsed_ms,
                 )
             )
-    except (json.JSONDecodeError, TypeError):
-        log.debug("Claude CLI output was not JSON, falling back to stderr parsing")
+    except Exception:
+        log.debug("Stream-JSON parsing failed, falling back to stderr")
         input_tokens, output_tokens = _parse_token_counts(stderr_text)
 
     return _record(

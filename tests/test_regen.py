@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -26,6 +27,7 @@ from brain_sync.regen import (
     _first_heading,
     _get_child_dirs,
     _is_content_dir,
+    _parse_stream_json,
     _parse_structured_output,
     _preprocess_content,
     _split_markdown_chunks,
@@ -1817,3 +1819,191 @@ class TestJournalWriting:
         # No journal directory created
         journal_dir = brain / "insights" / "project" / "journal"
         assert not journal_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# _parse_stream_json tests
+# ---------------------------------------------------------------------------
+
+
+def _ndjson(*events: dict) -> str:  # type: ignore[type-arg]
+    """Build NDJSON string from event dicts."""
+    return "\n".join(json.dumps(e) for e in events) + "\n"
+
+
+class TestParseStreamJson:
+    """Tests for _parse_stream_json using the actual CLI verbose stream-json format.
+
+    The CLI emits high-level NDJSON events:
+    - {"type":"system","subtype":"init",...}
+    - {"type":"assistant","message":{"usage":{...},"content":[{"type":"text","text":"..."}]}}
+    - {"type":"result","usage":{...},"num_turns":N,"is_error":false,...}
+    """
+
+    def test_single_turn(self):
+        stdout = _ndjson(
+            {"type": "system", "subtype": "init", "model": "claude-sonnet-4-6"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "Hello world"}],
+                    "usage": {
+                        "input_tokens": 50000,
+                        "cache_creation_input_tokens": 5000,
+                        "cache_read_input_tokens": 10000,
+                        "output_tokens": 2000,
+                    },
+                },
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "num_turns": 1,
+                "result": "Hello world",
+                "usage": {
+                    "input_tokens": 50000,
+                    "cache_creation_input_tokens": 5000,
+                    "cache_read_input_tokens": 10000,
+                    "output_tokens": 2000,
+                },
+            },
+        )
+        r = _parse_stream_json(stdout)
+        # cache_read excluded from billable total: 50000 + 5000 = 55000
+        assert r.input_tokens == 55000
+        assert r.output_tokens == 2000
+        assert r.text == "Hello world"
+        assert r.num_turns == 1
+        assert r.is_error is False
+
+    def test_multi_turn_text_concatenated(self):
+        """Multi-turn: text assembled from assistant events, tokens from result."""
+        stdout = _ndjson(
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "Turn 1. "}],
+                    "usage": {"input_tokens": 30000, "output_tokens": 500},
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "Turn 2."}],
+                    "usage": {"input_tokens": 35000, "output_tokens": 800},
+                },
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "num_turns": 2,
+                "usage": {
+                    "input_tokens": 65000,
+                    "cache_creation_input_tokens": 3000,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 1300,
+                },
+            },
+        )
+        r = _parse_stream_json(stdout)
+        assert r.text == "Turn 1. Turn 2."
+        # Tokens from result event: 65000 + 3000 = 68000
+        assert r.input_tokens == 68000
+        assert r.output_tokens == 1300
+        assert r.num_turns == 2
+
+    def test_error_result(self):
+        stdout = _ndjson(
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "partial"}],
+                    "usage": {"input_tokens": 500, "output_tokens": 50},
+                },
+            },
+            {
+                "type": "result",
+                "num_turns": 1,
+                "is_error": True,
+                "subtype": "error_max_turns",
+                "usage": {"input_tokens": 500, "output_tokens": 50},
+            },
+        )
+        r = _parse_stream_json(stdout)
+        assert r.is_error is True
+        assert r.error_subtype == "error_max_turns"
+        assert r.text == "partial"
+
+    def test_empty_input(self):
+        r = _parse_stream_json("")
+        assert r.text == ""
+        assert r.input_tokens is None
+        assert r.output_tokens is None
+        assert r.num_turns is None
+        assert r.is_error is False
+
+    def test_malformed_lines_skipped(self):
+        stdout = "not json at all\n\n{bad json\n" + _ndjson(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {"input_tokens": 42, "output_tokens": 10},
+                },
+            },
+            {
+                "type": "result",
+                "num_turns": 1,
+                "is_error": False,
+                "subtype": "success",
+                "usage": {"input_tokens": 42, "output_tokens": 10},
+            },
+        )
+        r = _parse_stream_json(stdout)
+        assert r.input_tokens == 42
+        assert r.output_tokens == 10
+        assert r.text == "ok"
+
+    def test_tool_use_content_ignored(self):
+        """Non-text content blocks should not contribute to text."""
+        stdout = _ndjson(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "foo", "input": {}},
+                        {"type": "text", "text": "real text"},
+                    ],
+                    "usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            },
+            {
+                "type": "result",
+                "num_turns": 1,
+                "is_error": False,
+                "subtype": "success",
+                "usage": {"input_tokens": 100, "output_tokens": 20},
+            },
+        )
+        r = _parse_stream_json(stdout)
+        assert r.text == "real text"
+
+    def test_result_text_fallback(self):
+        """If no assistant events, fall back to result.result for text."""
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "result": "fallback text",
+                "num_turns": 1,
+                "is_error": False,
+                "subtype": "success",
+                "usage": {"input_tokens": 100, "output_tokens": 20},
+            },
+        )
+        r = _parse_stream_json(stdout)
+        assert r.text == "fallback text"
+        assert r.input_tokens == 100
