@@ -186,6 +186,39 @@ Supported file types for local add: `.md`, `.txt`. Other formats (`.docx`, `.pdf
 
 > "Based on everything in my brain about the platform team, draft a stakeholder update email covering the last two weeks"
 
+## Updating brain-sync
+
+brain-sync is currently installed from source. To update to the latest version:
+
+### 1. Stop brain-sync
+
+### 2. Pull the latest code
+
+### 3. Update the skill
+
+```bash
+brain-sync update-skill
+```
+
+This re-deploys `SKILL.md` to `~/.claude/skills/brain-sync/`. Safe to run every time.
+
+**Claude Desktop:** The skill must also be re-imported manually — Customize > Skills > **+** > Upload a skill, then select `SKILL.md` from `~/.claude/skills/brain-sync/`.
+
+### 4. Restart MCP clients
+
+Each MCP client (Claude Code, Claude Desktop) spawns its own brain-sync MCP server subprocess. After a code update, these processes run stale code until the client restarts them.
+
+- **Claude Code:** Restart the editor, or run `claude mcp restart brain-sync`
+- **Claude Desktop:** Fully quit and relaunch the app (closing the window is not enough — use system tray > Quit, or kill the process). Re-import the skill if it changed in step 3.
+
+### 5. Start brain-sync
+
+```bash
+brain-sync run
+```
+
+The daemon reconciles any offline changes, syncs sources, and runs insight regeneration as needed.
+
 ## Folder structure
 
 ### After `brain-sync init`

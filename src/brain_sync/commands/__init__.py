@@ -5,7 +5,7 @@ Usage:
     sources = list_sources()  # auto-discovers brain root from config
 """
 
-from brain_sync.commands.context import BrainNotFoundError, resolve_root
+from brain_sync.commands.context import BrainNotFoundError, InvalidBrainRootError, resolve_root, validate_brain_root
 from brain_sync.commands.init import InitResult, init_brain, update_skill
 from brain_sync.commands.placement import (
     PlacementCandidate,
@@ -41,6 +41,7 @@ __all__ = [
     "AddResult",
     "BrainNotFoundError",
     "InitResult",
+    "InvalidBrainRootError",
     "MigrateResult",
     "MoveResult",
     "PlacementCandidate",
@@ -68,4 +69,5 @@ __all__ = [
     "suggest_placement",
     "update_skill",
     "update_source",
+    "validate_brain_root",
 ]

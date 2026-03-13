@@ -98,6 +98,13 @@ def init_brain(
 ) -> InitResult:
     """Initialise a brain at the given root directory."""
     root = root.resolve()
+
+    if root.name in ("knowledge", "insights") and (root.parent / ".sync-state.sqlite").exists():
+        raise ValueError(
+            f"Path appears to be the '{root.name}/' folder inside an existing brain at {root.parent}. "
+            f"Use the parent directory instead: brain-sync init {root.parent}"
+        )
+
     was_existing = root.exists()
 
     if not was_existing:

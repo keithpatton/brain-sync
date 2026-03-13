@@ -7,11 +7,30 @@ from pathlib import Path
 from brain_sync.config import CONFIG_FILE, load_config
 
 # Re-export for backwards compatibility during migration
-__all__ = ["CONFIG_FILE", "BrainNotFoundError", "resolve_root"]
+__all__ = ["CONFIG_FILE", "BrainNotFoundError", "InvalidBrainRootError", "resolve_root", "validate_brain_root"]
 
 
 class BrainNotFoundError(Exception):
     """Raised when no brain root can be resolved."""
+
+
+class InvalidBrainRootError(Exception):
+    """Raised when the brain root is misconfigured."""
+
+
+def validate_brain_root(root: Path) -> None:
+    """Validate that root has the expected brain structure.
+
+    Raises InvalidBrainRootError if the structural invariant is violated.
+    """
+    if not (root / "knowledge").is_dir():
+        raise InvalidBrainRootError(
+            f"Brain root '{root}' is invalid.\n"
+            f"Expected structure:\n"
+            f"  {root}/knowledge/\n"
+            f"  {root}/insights/\n"
+            f"The configured root appears to point to the wrong directory."
+        )
 
 
 def resolve_root() -> Path:
@@ -19,6 +38,7 @@ def resolve_root() -> Path:
 
     Returns the first registered brain root.
     Raises BrainNotFoundError if no brain is configured.
+    Raises InvalidBrainRootError if the root lacks expected structure.
     """
     if not CONFIG_FILE.exists():
         raise BrainNotFoundError("No brain configured. Run: brain-sync init <path>")
@@ -28,11 +48,15 @@ def resolve_root() -> Path:
     brains = data.get("brains", [])
     if not brains:
         raise BrainNotFoundError("No brain roots registered in config")
-    return Path(brains[0])
+    root = Path(brains[0]).expanduser()
+    validate_brain_root(root)
+    return root
 
 
 def _require_root(root: Path | None) -> Path:
     """Resolve root: explicit path wins, otherwise auto-discover from config."""
     if root is not None:
-        return root.resolve()
+        resolved = root.resolve()
+        validate_brain_root(resolved)
+        return resolved
     return resolve_root()

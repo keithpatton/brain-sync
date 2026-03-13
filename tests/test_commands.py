@@ -9,6 +9,7 @@ import pytest
 from brain_sync.commands import (
     AddResult,
     BrainNotFoundError,
+    InvalidBrainRootError,
     MigrateResult,
     MoveResult,
     ReconcileResult,
@@ -28,6 +29,7 @@ from brain_sync.commands import (
     resolve_root,
     update_skill,
     update_source,
+    validate_brain_root,
 )
 from brain_sync.commands.context import _require_root
 from brain_sync.state import (
@@ -72,6 +74,7 @@ class TestResolveRoot:
     def test_reads_from_config(self, tmp_path, monkeypatch):
         brain_root = tmp_path / "my-brain"
         brain_root.mkdir()
+        (brain_root / "knowledge").mkdir()
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -104,6 +107,7 @@ class TestResolveRoot:
         """_require_root uses explicit path when provided."""
         explicit = tmp_path / "explicit"
         explicit.mkdir()
+        (explicit / "knowledge").mkdir()
 
         # Config points elsewhere
         config_file = tmp_path / "config.json"
@@ -115,6 +119,125 @@ class TestResolveRoot:
 
         result = _require_root(explicit)
         assert result == explicit.resolve()
+
+
+class TestValidateBrainRoot:
+    def test_valid_root_passes(self, tmp_path):
+        root = tmp_path / "brain"
+        root.mkdir()
+        (root / "knowledge").mkdir()
+        (root / "insights").mkdir()
+        validate_brain_root(root)  # should not raise
+
+    def test_missing_knowledge_raises(self, tmp_path):
+        root = tmp_path / "brain"
+        root.mkdir()
+        with pytest.raises(InvalidBrainRootError):
+            validate_brain_root(root)
+
+    def test_resolve_root_rejects_misconfigured_root(self, tmp_path, monkeypatch):
+        """Regression: root pointing at knowledge/ folder is caught at resolve time."""
+        brain = tmp_path / "brain"
+        brain.mkdir()
+        (brain / "knowledge").mkdir()
+        (brain / "insights").mkdir()
+        (brain / ".sync-state.sqlite").touch()
+
+        # Point config at the knowledge/ subfolder (the bug)
+        wrong_root = brain / "knowledge"
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.json"
+        config_file.write_text(
+            json.dumps({"brains": [str(wrong_root)]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+
+        with pytest.raises(InvalidBrainRootError):
+            resolve_root()
+
+        # Verify no knowledge/insights/ directory was created
+        assert not (wrong_root / "insights").exists()
+
+    def test_resolve_root_expands_tilde(self, tmp_path, monkeypatch):
+        """resolve_root handles ~ in config via expanduser()."""
+        brain_root = tmp_path / "my-brain"
+        brain_root.mkdir()
+        (brain_root / "knowledge").mkdir()
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.json"
+        # Store path with ~ prefix — monkeypatch expanduser to resolve it
+        config_file.write_text(
+            json.dumps({"brains": ["~/my-brain"]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+        monkeypatch.setattr("pathlib.Path.expanduser", lambda self: tmp_path / self.parts[-1])
+
+        result = resolve_root()
+        assert result == brain_root
+
+    def test_init_rejects_knowledge_subfolder(self, tmp_path, monkeypatch):
+        """init_brain rejects path that is knowledge/ inside an existing brain."""
+        brain = tmp_path / "brain"
+        brain.mkdir()
+        (brain / "knowledge").mkdir()
+        (brain / "insights").mkdir()
+        (brain / ".sync-state.sqlite").touch()
+
+        # Isolate config so init doesn't touch real config
+        config_dir = tmp_path / "fake-config"
+        config_dir.mkdir()
+        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_dir / "config.json")
+        monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", tmp_path / "skills")
+
+        with pytest.raises(ValueError, match="existing brain"):
+            init_brain(brain / "knowledge")
+
+        # Verify no knowledge/knowledge/ was created
+        assert not (brain / "knowledge" / "knowledge").exists()
+
+    def test_init_rejects_insights_subfolder(self, tmp_path, monkeypatch):
+        """init_brain rejects path that is insights/ inside an existing brain."""
+        brain = tmp_path / "brain"
+        brain.mkdir()
+        (brain / "knowledge").mkdir()
+        (brain / "insights").mkdir()
+        (brain / ".sync-state.sqlite").touch()
+
+        config_dir = tmp_path / "fake-config"
+        config_dir.mkdir()
+        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_dir / "config.json")
+        monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", tmp_path / "skills")
+
+        with pytest.raises(ValueError, match="existing brain"):
+            init_brain(brain / "insights")
+
+    def test_init_allows_new_brain(self, tmp_path, monkeypatch):
+        """init_brain works fine for a fresh path (no false positive)."""
+        config_dir = tmp_path / "fake-config"
+        config_dir.mkdir()
+        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_dir / "config.json")
+        monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", tmp_path / "skills")
+
+        result = init_brain(tmp_path / "new-brain")
+        assert (tmp_path / "new-brain" / "knowledge").is_dir()
+        assert result.was_existing is False
+
+    def test_knowledge_subfolder_named_insights_is_normal_content(self, brain):
+        """A folder named 'insights' inside knowledge/ is valid content, not excluded."""
+        content_dir = brain / "knowledge" / "insights"
+        content_dir.mkdir()
+        (content_dir / "notes.md").write_text("normal content")
+        assert (content_dir / "notes.md").exists()
+        # validate_brain_root should still pass — the brain itself is valid
+        validate_brain_root(brain)
 
 
 class TestCheckSourceExists:
