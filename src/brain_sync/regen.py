@@ -286,9 +286,8 @@ def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, d
     timestamped = f"## {now.strftime('%H:%M')}\n\n{journal_text}"
 
     if journal_path.exists():
-        existing = journal_path.read_text(encoding="utf-8")
-        combined = existing.rstrip() + "\n\n" + timestamped
-        atomic_write_bytes(journal_path, combined.encode("utf-8"))
+        with open(journal_path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + timestamped)
     else:
         atomic_write_bytes(journal_path, timestamped.encode("utf-8"))
 
@@ -419,13 +418,12 @@ def _compute_content_hash(
     for content in sorted(child_summaries.values()):
         h.update(content.encode("utf-8"))
     if has_direct_files:
-        file_hashes = []
+        file_hashes: list[tuple[str, Path]] = []
         for p in knowledge_dir.iterdir():
             if _is_readable_file(p):
-                raw = p.read_bytes()
-                file_hashes.append((hashlib.sha256(raw).hexdigest(), raw))
-        for _, raw in sorted(file_hashes):
-            h.update(raw)
+                file_hashes.append((hashlib.sha256(p.read_bytes()).hexdigest(), p))
+        for _, p in sorted(file_hashes):
+            h.update(p.read_bytes())
     return h.hexdigest()
 
 
@@ -839,6 +837,11 @@ async def invoke_claude(
         log.warning("Claude CLI timed out after %ds", timeout)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
+    except BaseException:
+        # CancelledError, KeyboardInterrupt — kill subprocess before propagating
+        proc.kill()
+        await proc.communicate()
+        raise
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     stderr_text = stderr.decode("utf-8", errors="replace").strip()
@@ -886,8 +889,28 @@ async def invoke_claude(
                 )
             )
     except Exception:
-        log.debug("Stream-JSON parsing failed, falling back to stderr")
+        log.warning("Stream-JSON parsing failed, attempting text-only extraction")
         input_tokens, output_tokens = _parse_token_counts(stderr_text)
+        # Lightweight fallback: extract assistant text without touching usage fields
+        fallback_parts: list[str] = []
+        for line in stdout_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if event.get("type") == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    if block.get("type") == "text":
+                        fallback_parts.append(block.get("text", ""))
+        if fallback_parts:
+            result_text = "".join(fallback_parts)
+            log.info("Recovered assistant text from NDJSON fallback (%d chars)", len(result_text))
+        else:
+            log.warning("Could not extract assistant text from NDJSON, failing invocation")
+            return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
 
     return _record(
         ClaudeResult(
@@ -1221,7 +1244,7 @@ def classify_folder_change(
     if not istate or not istate.content_hash:
         return ChangeEvent(change_type="content", structural=False), new_content_hash, new_structure_hash
 
-    # Post-v18 migration backfill: preserve old content_hash, set structure_hash only
+    # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
     if istate.structure_hash is None:
         insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
         if (insights_dir / "summary.md").exists():
@@ -1353,7 +1376,7 @@ async def regen_single_folder(
         new_structure_hash,
     )
 
-    # Post-v18 migration backfill: preserve old content_hash, set structure_hash only
+    # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
     if istate and istate.structure_hash is None and (insights_dir / "summary.md").exists():
         log.info(
             "[%s] Backfilling structure_hash for %s (post-v18 migration)",
