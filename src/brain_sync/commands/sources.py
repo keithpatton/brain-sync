@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
@@ -15,8 +16,10 @@ from brain_sync.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
     SyncHint,
+    clear_manifest_missing,
     delete_source_manifest,
     ensure_manifest_dir,
+    mark_manifest_missing,
     read_all_source_manifests,
     read_source_manifest,
     update_manifest_materialized_path,
@@ -168,6 +171,7 @@ def add_source(
             materialized_path="",  # unknown until first sync writes the file
             fetch_children=fetch_children,
             sync_attachments=sync_attachments,
+            target_path=target_path,
             child_path=child_path,
         ),
     )
@@ -196,6 +200,31 @@ def add_source(
     )
 
 
+def _resolve_source_or_manifest(state: SyncState, root: Path, source: str) -> tuple[str, str, str]:
+    """Resolve source by state first, then manifest fallback (for missing-status sources).
+
+    Returns (canonical_id, source_url, target_path).
+    Raises SourceNotFoundError if not found anywhere.
+    """
+    cid = _resolve_source(state, source)
+    if cid is not None:
+        ss = state.sources[cid]
+        return cid, ss.source_url, ss.target_path
+
+    # Fallback: check manifests directly (covers missing-status sources excluded from state)
+    manifest = read_source_manifest(root, source)
+    if manifest is not None:
+        return manifest.canonical_id, manifest.source_url, manifest.target_path
+
+    # Try URL match across all manifests
+    all_manifests = read_all_source_manifests(root)
+    for m in all_manifests.values():
+        if m.source_url == source:
+            return m.canonical_id, m.source_url, m.target_path
+
+    raise SourceNotFoundError(source)
+
+
 def remove_source(
     root: Path | None = None,
     *,
@@ -210,13 +239,7 @@ def remove_source(
     root = _require_root(root)
     state = load_state(root)
 
-    cid = _resolve_source(state, source)
-    if cid is None:
-        raise SourceNotFoundError(source)
-
-    ss = state.sources[cid]
-    target_path = ss.target_path
-    source_url = ss.source_url
+    cid, source_url, target_path = _resolve_source_or_manifest(state, root, source)
 
     # --- Scoped file deletion (only files owned by this source) ---
     files_deleted = False
@@ -258,7 +281,7 @@ def remove_source(
             remove_document_if_orphaned(root, rel.canonical_id)
     remove_document_if_orphaned(root, cid)
 
-    del state.sources[cid]
+    state.sources.pop(cid, None)
     save_state(root, state)
 
     db_delete_source(root, cid)
@@ -348,17 +371,17 @@ def move_source(
             new_att.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(old_att), str(new_att))
 
-    # Phase 1: update manifest materialized_path (after filesystem move so we
-    # can discover the actual file path, not just the directory).
+    # Phase 1: update manifest materialized_path and target_path
     knowledge_root = root / "knowledge"
     found = rediscover_local_path(knowledge_root, cid)
-    if found is not None:
-        materialized = normalize_path(found.relative_to(knowledge_root))
-        update_manifest_materialized_path(root, cid, materialized)
-    else:
-        # No synced file yet — keep materialized_path empty (not a directory).
-        # First successful sync will populate the real file path.
-        update_manifest_materialized_path(root, cid, "")
+    manifest = read_source_manifest(root, cid)
+    if manifest is not None:
+        manifest.target_path = to_path
+        if found is not None:
+            manifest.materialized_path = normalize_path(found.relative_to(knowledge_root))
+        else:
+            manifest.materialized_path = ""
+        write_source_manifest(root, manifest)
 
     return MoveResult(
         canonical_id=cid,
@@ -387,10 +410,26 @@ def update_source(
     state = load_state(root)
 
     cid = _resolve_source(state, source)
-    if cid is None:
-        raise SourceNotFoundError(source)
-
-    ss = state.sources[cid]
+    if cid is not None:
+        ss = state.sources[cid]
+    else:
+        # Fallback: manifest lookup for missing-status sources excluded from state
+        manifest = read_source_manifest(root, source)
+        if manifest is None:
+            all_manifests = read_all_source_manifests(root)
+            manifest = next((m for m in all_manifests.values() if m.source_url == source), None)
+        if manifest is None:
+            raise SourceNotFoundError(source)
+        cid = manifest.canonical_id
+        ss = SourceState(
+            canonical_id=cid,
+            source_url=manifest.source_url,
+            source_type=manifest.source_type,
+            target_path=manifest.target_path,
+            fetch_children=manifest.fetch_children,
+            sync_attachments=manifest.sync_attachments,
+            child_path=manifest.child_path,
+        )
 
     # Apply provided flags to in-memory state
     if fetch_children is not None:
@@ -409,16 +448,16 @@ def update_source(
         child_path=child_path,
     )
 
-    # Phase 1: update manifest flags
-    manifest = read_source_manifest(root, cid)
-    if manifest is not None:
+    # Update manifest flags
+    manifest_obj = read_source_manifest(root, cid)
+    if manifest_obj is not None:
         if fetch_children is not None:
-            manifest.fetch_children = fetch_children
+            manifest_obj.fetch_children = fetch_children
         if sync_attachments is not None:
-            manifest.sync_attachments = sync_attachments
+            manifest_obj.sync_attachments = sync_attachments
         if child_path is not ...:
-            manifest.child_path = child_path  # type: ignore[assignment]
-        write_source_manifest(root, manifest)
+            manifest_obj.child_path = child_path  # type: ignore[assignment]
+        write_source_manifest(root, manifest_obj)
 
     return UpdateResult(
         canonical_id=cid,
@@ -441,12 +480,17 @@ class ReconcileResult:
     updated: list[ReconcileEntry]
     not_found: list[str]
     unchanged: int
+    marked_missing: list[str] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    reappeared: list[str] = field(default_factory=list)
+    orphan_rows_pruned: int = 0
 
 
 def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
     """One-time migration: export existing DB sources to manifests.
 
     Only runs when .brain-sync/sources/ is empty but DB has sources.
+    Reads DB directly (not from state, which may be manifest-filtered).
     Returns the number of manifests written.
     """
     manifest_dir = root / MANIFEST_DIR
@@ -457,11 +501,15 @@ def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
     if existing:
         return 0  # manifests already exist — not a migration scenario
 
-    if not state.sources:
+    # Read DB directly — state may be empty if manifest dir exists but is empty
+    from brain_sync.state import _load_db_sync_progress
+
+    db_sources = _load_db_sync_progress(root)
+    if not db_sources:
         return 0
 
     count = 0
-    for cid, ss in state.sources.items():
+    for cid, ss in db_sources.items():
         # Discover the actual file path for materialized_path
         knowledge_root = root / "knowledge"
         materialized = ""
@@ -491,6 +539,7 @@ def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
                 materialized_path=materialized,
                 fetch_children=ss.fetch_children,
                 sync_attachments=ss.sync_attachments,
+                target_path=ss.target_path,
                 child_path=ss.child_path,
                 sync_hint=hint,
             ),
@@ -501,17 +550,34 @@ def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
     return count
 
 
-def reconcile_sources(root: Path | None = None) -> ReconcileResult:
-    """Update target_path for sources whose files have been moved on disk.
+def _find_file_by_identity_header(knowledge_root: Path, canonical_id_str: str) -> Path | None:
+    """Tier-2: scan .md files across all of knowledge/ for matching identity header."""
+    from brain_sync.pipeline import extract_source_id
 
-    Scans knowledge/ for each source's canonical-prefix file.  If the file
-    is no longer at the expected target_path but is found elsewhere, the DB
-    is updated to match.
+    if not knowledge_root.is_dir():
+        return None
+    for p in knowledge_root.rglob("*.md"):
+        if p.is_file():
+            found_cid = extract_source_id(p)
+            if found_cid == canonical_id_str:
+                return p
+    return None
+
+
+def reconcile_sources(root: Path | None = None) -> ReconcileResult:
+    """Reconcile source registrations against filesystem state.
+
+    Iterates manifests (not DB sources). Uses 3-tier file resolution:
+    1. materialized_path — direct file check
+    2. Identity header scan — extract_source_id() on nearby .md files
+    3. Prefix glob — rediscover_local_path() (existing)
+
+    Implements two-stage missing protocol and orphan DB row pruning.
     """
     root = _require_root(root)
     state = load_state(root)
 
-    # Phase 1: bootstrap manifests from DB if none exist yet (one-time migration)
+    # Bootstrap manifests from DB if none exist yet (one-time migration)
     _bootstrap_manifests_from_db(root, state)
 
     knowledge_root = root / "knowledge"
@@ -519,58 +585,101 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     updated: list[ReconcileEntry] = []
     not_found: list[str] = []
     unchanged_count = 0
+    marked_missing: list[str] = []
+    deleted: list[str] = []
+    reappeared: list[str] = []
 
-    for cid, ss in state.sources.items():
-        prefix = canonical_prefix(cid)
-        expected_dir = knowledge_root / ss.target_path if ss.target_path else knowledge_root
+    # Read ALL manifests (including missing-status) for reconciliation
+    all_manifests = read_all_source_manifests(root)
+    utc_now = datetime.now(UTC).isoformat()
 
-        # Check if a file with this prefix exists at the expected location
-        found_at_expected = False
-        if expected_dir.is_dir():
-            for p in expected_dir.iterdir():
-                if p.is_file() and p.name.startswith(prefix):
-                    found_at_expected = True
-                    break
-            # Also check bare prefix (titleless docs)
-            if not found_at_expected:
-                bare = prefix.rstrip("-")
-                if bare != prefix:
-                    for p in expected_dir.iterdir():
-                        if p.is_file() and p.name.startswith(bare):
-                            found_at_expected = True
-                            break
+    for cid, m in all_manifests.items():
+        # Three-tier file resolution
+        found: Path | None = None
 
-        if found_at_expected:
+        if m.materialized_path:
+            # Tier 1: direct file check at materialized_path
+            direct = knowledge_root / m.materialized_path
+            if direct.is_file():
+                found = direct
+
+            # Tier 2: identity header scan across all of knowledge/
+            if found is None:
+                found = _find_file_by_identity_header(knowledge_root, cid)
+
+        # Tier 3: prefix glob (searches all of knowledge/) — also used for unmaterialized sources
+        if found is None:
+            found = rediscover_local_path(knowledge_root, cid)
+
+        # Unmaterialized active source with no file found → nothing to reconcile
+        if m.status == "active" and not m.materialized_path and found is None:
             unchanged_count += 1
             continue
 
-        # File not at expected location — search all of knowledge/
-        found = rediscover_local_path(knowledge_root, cid)
-        if found is None:
-            not_found.append(cid)
+        if m.status == "missing":
+            if found is not None:
+                # Reappearing: file found again during grace period
+                clear_manifest_missing(root, cid)
+                materialized = normalize_path(found.relative_to(knowledge_root))
+                update_manifest_materialized_path(root, cid, materialized)
+                reappeared.append(cid)
+            else:
+                # Second-stage: still missing → delete manifest + DB row
+                delete_source_manifest(root, cid)
+                db_delete_source(root, cid)
+                deleted.append(cid)
             continue
 
-        # Compute new target_path relative to knowledge/
-        new_target = normalize_path(found.parent.relative_to(knowledge_root))
-        old_target = ss.target_path
-
-        if new_target != old_target:
-            update_source_target_path(root, cid, new_target)
-            ss.target_path = new_target
-
-            # Phase 1: update manifest materialized_path (full file path, not directory)
+        # Active manifest with materialized_path
+        if found is not None:
+            # Update materialized_path if file moved
             materialized = normalize_path(found.relative_to(knowledge_root))
-            update_manifest_materialized_path(root, cid, materialized)
-
-            updated.append(
-                ReconcileEntry(
-                    canonical_id=cid,
-                    old_path=old_target,
-                    new_path=new_target,
-                )
+            new_target = normalize_path(found.parent.relative_to(knowledge_root))
+            old_target = m.target_path or (
+                normalize_path(Path(m.materialized_path).parent) if m.materialized_path else ""
             )
 
-    return ReconcileResult(updated=updated, not_found=not_found, unchanged=unchanged_count)
+            if materialized != m.materialized_path:
+                update_manifest_materialized_path(root, cid, materialized)
+                # Update target_path in manifest
+                manifest_obj = read_source_manifest(root, cid)
+                if manifest_obj is not None:
+                    manifest_obj.target_path = new_target
+                    write_source_manifest(root, manifest_obj)
+
+            if new_target != old_target:
+                update_source_target_path(root, cid, new_target)
+                updated.append(ReconcileEntry(canonical_id=cid, old_path=old_target, new_path=new_target))
+            else:
+                unchanged_count += 1
+        else:
+            # First-stage missing: file not found at any tier
+            mark_manifest_missing(root, cid, utc_now)
+            marked_missing.append(cid)
+            not_found.append(cid)
+
+    # Orphan DB row pruning: delete DB rows with no corresponding manifest
+    manifest_dir = root / ".brain-sync" / "sources"
+    orphan_count = 0
+    if manifest_dir.is_dir():
+        from brain_sync.state import _load_db_sync_progress
+
+        db_sources = _load_db_sync_progress(root)
+        for db_cid in db_sources:
+            if db_cid not in all_manifests:
+                db_delete_source(root, db_cid)
+                orphan_count += 1
+                log.info("Pruned orphan DB row: %s", db_cid)
+
+    return ReconcileResult(
+        updated=updated,
+        not_found=not_found,
+        unchanged=unchanged_count,
+        marked_missing=marked_missing,
+        deleted=deleted,
+        reappeared=reappeared,
+        orphan_rows_pruned=orphan_count,
+    )
 
 
 @dataclass

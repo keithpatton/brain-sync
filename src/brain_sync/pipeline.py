@@ -31,6 +31,20 @@ MANAGED_HEADER_WARNING = "<!-- brain-sync-managed: local edits may be overwritte
 # Regex to detect/strip existing managed headers (for idempotent rewrites).
 _MANAGED_HEADER_RE = re.compile(r"^<!-- brain-sync-(source|managed): .* -->\n", re.MULTILINE)
 
+# Regex to extract canonical_id from the identity header (tier-2 resolution).
+_EXTRACT_SOURCE_RE = re.compile(r"^<!-- brain-sync-source: (.+) -->\r?$", re.MULTILINE)
+
+
+def extract_source_id(path: Path) -> str | None:
+    """Extract canonical_id from a file's embedded identity header (tier-2 resolution)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(512).decode("utf-8", errors="replace")
+        m = _EXTRACT_SOURCE_RE.search(head)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
 
 def strip_managed_header(text: str) -> str:
     """Remove managed-file header lines from markdown text."""

@@ -61,7 +61,7 @@ class TestAdd:
     """brain-sync add via subprocess."""
 
     def test_add_test_source(self, cli: CliRunner, brain_root: Path):
-        """Add a test:// source registers it in the DB."""
+        """Add a test:// source registers it via manifest."""
         cli.run("init", str(brain_root))
         result = cli.run(
             "add",
@@ -73,12 +73,14 @@ class TestAdd:
         )
         assert result.returncode == 0, f"Add failed: {result.stderr}"
 
-        # Verify in DB
-        conn = sqlite3.connect(str(brain_root / ".sync-state.sqlite"))
-        row = conn.execute("SELECT canonical_id, target_path FROM sources WHERE canonical_id = 'test:123'").fetchone()
-        conn.close()
-        assert row is not None, "Source not found in DB"
-        assert row[1] == "area"
+        # Verify manifest exists (Phase 2: manifests are authoritative, not DB)
+        import json
+
+        manifest_path = brain_root / ".brain-sync" / "sources" / "test-123.json"
+        assert manifest_path.exists(), "Manifest not found"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert data["canonical_id"] == "test:123"
+        assert data["target_path"] == "area"
 
     def test_add_duplicate_rejects(self, cli: CliRunner, brain_root: Path):
         """Adding the same source twice does not crash (warns instead)."""
@@ -133,17 +135,19 @@ class TestMove:
     """brain-sync move via subprocess."""
 
     def test_move_source(self, cli: CliRunner, brain_root: Path):
-        """Move changes target_path in the DB."""
+        """Move changes target_path in the manifest."""
         cli.run("init", str(brain_root))
         cli.run("add", "test://doc/mv1", "--path", "old-area", "--root", str(brain_root))
         result = cli.run("move", "test:mv1", "--to", "new-area", "--root", str(brain_root))
         assert result.returncode == 0, f"Move failed: {result.stderr}"
 
-        conn = sqlite3.connect(str(brain_root / ".sync-state.sqlite"))
-        row = conn.execute("SELECT target_path FROM sources WHERE canonical_id = 'test:mv1'").fetchone()
-        conn.close()
-        assert row is not None
-        assert row[0] == "new-area"
+        # Verify manifest has updated target_path (Phase 2: manifests are authoritative)
+        import json
+
+        manifest_path = brain_root / ".brain-sync" / "sources" / "test-mv1.json"
+        assert manifest_path.exists(), "Manifest not found"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert data["target_path"] == "new-area"
 
     def test_move_nonexistent_exits_cleanly(self, cli: CliRunner, brain_root: Path):
         """Moving a nonexistent source exits cleanly."""

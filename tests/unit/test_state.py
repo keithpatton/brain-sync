@@ -59,6 +59,7 @@ class TestStatePersistence:
             canonical_id="confluence:1",
             source_url="u1",
             source_type="confluence",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         save_state(tmp_path, state)
 
@@ -66,6 +67,7 @@ class TestStatePersistence:
             canonical_id="confluence:2",
             source_url="u2",
             source_type="confluence",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         save_state(tmp_path, state)
 
@@ -79,6 +81,7 @@ class TestStatePersistence:
             canonical_id="confluence:1",
             source_url="u",
             source_type="confluence",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         save_state(tmp_path, state)
         assert (tmp_path / ".sync-state.sqlite").exists()
@@ -227,11 +230,13 @@ class TestPruneDb:
             canonical_id="confluence:1",
             source_url="u1",
             source_type="confluence",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         state.sources["confluence:2"] = SourceState(
             canonical_id="confluence:2",
             source_url="u2",
             source_type="confluence",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         save_state(tmp_path, state)
 

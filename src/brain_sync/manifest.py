@@ -39,6 +39,7 @@ class SourceManifest:
     materialized_path: str  # full relative path from knowledge/ to file
     fetch_children: bool
     sync_attachments: bool
+    target_path: str = ""  # placement intent (area within knowledge/)
     child_path: str | None = None
     status: str = "active"  # "active" or "missing"
     missing_since_utc: str | None = None
@@ -65,7 +66,9 @@ def ensure_manifest_dir(root: Path) -> None:
 
 def _serialize_manifest(manifest: SourceManifest) -> bytes:
     d = asdict(manifest)
-    # Omit None-valued optional fields for cleaner JSON
+    # Omit empty/None-valued optional fields for cleaner JSON
+    if not d.get("target_path"):
+        del d["target_path"]
     if d.get("missing_since_utc") is None:
         del d["missing_since_utc"]
     if d.get("child_path") is None:
@@ -106,6 +109,7 @@ def _deserialize_manifest(data: bytes, *, source_path: str = "<unknown>") -> Sou
         materialized_path=d["materialized_path"],
         fetch_children=d["fetch_children"],
         sync_attachments=d["sync_attachments"],
+        target_path=d.get("target_path", ""),
         child_path=d.get("child_path"),
         status=d.get("status", "active"),
         missing_since_utc=d.get("missing_since_utc"),

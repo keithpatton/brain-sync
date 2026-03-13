@@ -5,7 +5,10 @@ import sqlite3
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from brain_sync.manifest import SourceManifest
 
 from brain_sync.fs_utils import normalize_path
 
@@ -790,14 +793,15 @@ def _connect(root: Path) -> sqlite3.Connection:
     return conn
 
 
-def load_state(root: Path) -> SyncState:
+def _load_db_sync_progress(root: Path) -> dict[str, SourceState]:
+    """Read all source rows from the DB. Returns {canonical_id: SourceState}."""
     try:
         conn = _connect(root)
     except Exception as e:
-        log.warning("Cannot open sync state DB, starting fresh: %s", e)
-        return SyncState()
+        log.warning("Cannot open sync state DB: %s", e)
+        return {}
 
-    state = SyncState()
+    result: dict[str, SourceState] = {}
     try:
         rows = conn.execute(
             "SELECT canonical_id, source_url, source_type, "
@@ -807,7 +811,7 @@ def load_state(root: Path) -> SyncState:
             "FROM sources"
         ).fetchall()
         for row in rows:
-            state.sources[row[0]] = SourceState(
+            result[row[0]] = SourceState(
                 canonical_id=row[0],
                 source_url=row[1],
                 source_type=row[2],
@@ -824,12 +828,137 @@ def load_state(root: Path) -> SyncState:
                 child_path=row[13],
             )
     except Exception as e:
-        log.warning("Error reading sync state, starting fresh: %s", e)
-        state = SyncState()
+        log.warning("Error reading sync state: %s", e)
     finally:
         conn.close()
 
-    return state
+    return result
+
+
+def _seed_from_hint(root: Path, m: SourceManifest, target_path: str) -> SourceState:
+    """Create a SourceState from a manifest with no DB row, seeding from sync_hint if possible."""
+    ss = SourceState(
+        canonical_id=m.canonical_id,
+        source_url=m.source_url,
+        source_type=m.source_type,
+        target_path=target_path,
+        fetch_children=m.fetch_children,
+        sync_attachments=m.sync_attachments,
+        child_path=m.child_path,
+    )
+
+    # Try to seed from sync_hint to avoid thundering-herd re-fetch
+    if m.sync_hint and m.sync_hint.content_hash and m.materialized_path:
+        local_file = root / "knowledge" / m.materialized_path
+        if local_file.is_file():
+            # Inline imports to avoid circular deps
+            from brain_sync.fileops import content_hash as compute_hash
+            from brain_sync.pipeline import strip_managed_header
+
+            try:
+                raw = local_file.read_text(encoding="utf-8")
+                body = strip_managed_header(raw)
+                local_hash = compute_hash(body.encode("utf-8"))
+                if local_hash == m.sync_hint.content_hash:
+                    ss.content_hash = m.sync_hint.content_hash
+                    ss.last_checked_utc = m.sync_hint.last_synced_utc
+                    # Seed scheduler fields so schedule_from_persisted() is used
+                    if m.sync_hint.last_synced_utc:
+                        from datetime import datetime, timedelta
+
+                        try:
+                            last = datetime.fromisoformat(m.sync_hint.last_synced_utc)
+                            ss.next_check_utc = (last + timedelta(seconds=1800)).isoformat()
+                            ss.interval_seconds = 1800
+                        except (ValueError, TypeError):
+                            pass
+                    log.info("Seeded %s from sync_hint (hash match)", m.canonical_id)
+            except OSError:
+                pass
+
+    return ss
+
+
+def _has_sync_progress(ss: SourceState) -> bool:
+    """Check if a SourceState has any persistable sync progress."""
+    return (
+        ss.last_checked_utc is not None
+        or ss.content_hash is not None
+        or ss.metadata_fingerprint is not None
+        or ss.next_check_utc is not None
+    )
+
+
+def load_state(root: Path) -> SyncState:
+    db_sources = _load_db_sync_progress(root)
+
+    # Legacy detection: .brain-sync/sources/ absent → pre-Phase-2 brain, DB-only
+    manifest_dir = root / ".brain-sync" / "sources"
+    if not manifest_dir.is_dir():
+        return SyncState(sources=db_sources)
+
+    # Manifests are authoritative. DB-only sources are orphan cache.
+    from brain_sync.manifest import read_all_source_manifests, write_source_manifest
+
+    manifests = read_all_source_manifests(root)
+
+    # Empty-manifest-dir migration: dir exists but no manifests, DB has sources.
+    # Bootstrap before applying manifest-authoritative logic so CLI commands
+    # (list, add duplicate-check) don't observe a false-empty source set.
+    if not manifests and db_sources:
+        from brain_sync.commands.sources import _bootstrap_manifests_from_db
+
+        _bootstrap_manifests_from_db(root, SyncState(sources=db_sources))
+        manifests = read_all_source_manifests(root)
+
+    merged: dict[str, SourceState] = {}
+    for cid, m in manifests.items():
+        # Skip missing-status sources — they are not schedulable
+        if m.status == "missing":
+            continue
+
+        # Derive target_path: explicit field > materialized_path parent > ""
+        target_path = m.target_path
+        if not target_path and m.materialized_path:
+            target_path = normalize_path(Path(m.materialized_path).parent)
+
+        # Phase 1→2 migration backfill: if manifest has no target_path and no
+        # materialized_path (unsynced source), but DB has a non-empty target_path,
+        # use the DB value and write it back to the manifest. One-time self-healing.
+        if not target_path and not m.materialized_path and cid in db_sources:
+            db_tp = db_sources[cid].target_path
+            if db_tp:
+                target_path = db_tp
+                m.target_path = db_tp
+                write_source_manifest(root, m)
+                log.info("Backfilled target_path '%s' into manifest for %s", db_tp, cid)
+
+        if cid in db_sources:
+            # Merge: manifest intent + DB progress
+            db = db_sources[cid]
+            merged[cid] = SourceState(
+                # Intent from manifest
+                canonical_id=cid,
+                source_url=m.source_url,
+                source_type=m.source_type,
+                target_path=target_path,
+                fetch_children=m.fetch_children,
+                sync_attachments=m.sync_attachments,
+                child_path=m.child_path,
+                # Progress from DB
+                last_checked_utc=db.last_checked_utc,
+                last_changed_utc=db.last_changed_utc,
+                current_interval_secs=db.current_interval_secs,
+                content_hash=db.content_hash,
+                metadata_fingerprint=db.metadata_fingerprint,
+                next_check_utc=db.next_check_utc,
+                interval_seconds=db.interval_seconds,
+            )
+        else:
+            # Manifest-only: seed from sync_hint if possible
+            merged[cid] = _seed_from_hint(root, m, target_path)
+
+    return SyncState(sources=merged)
 
 
 def save_state(root: Path, state: SyncState) -> None:
@@ -861,8 +990,9 @@ def save_state(root: Path, state: SyncState) -> None:
                     key,
                 ),
             )
-            if cur.rowcount == 0:
-                # New source — full insert
+            if cur.rowcount == 0 and _has_sync_progress(ss):
+                # New source with real sync progress — full insert.
+                # Manifest-only sources with no progress don't belong in the DB.
                 conn.execute(
                     "INSERT INTO sources "
                     "(canonical_id, source_url, source_type, "

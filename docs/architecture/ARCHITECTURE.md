@@ -50,8 +50,8 @@ Dependency direction rules are defined in `CLAUDE.md`.
 When `brain-sync run` starts, it reconciles offline filesystem changes before entering the sync loop:
 
 ```
-reconcile_sources()  → scan knowledge/ for moved ID-anchored files, update sources.target_path
-load_state()         → read corrected DB state
+reconcile_sources()  → manifest-driven: 3-tier file resolution, two-stage missing, orphan DB pruning
+load_state()         → manifest-authoritative merge (manifests + DB progress cache)
 regen_session()      → acquire regen ownership
 RegenQueue()         → create queue, enqueue reconciled paths
 watcher.start()      → begin filesystem monitoring (after reconcile to avoid spurious events)
@@ -65,7 +65,7 @@ sync loop            → normal operation
 | `knowledge/` + `sources` table | sync / reconcile / watcher | Source-of-truth document locations |
 | `insights/` + `insight_state` table | regen | Derived artifacts from knowledge |
 
-Reconcile is a pure state-repair operation — it only updates `sources.target_path` in the DB. Regen detects path changes on its next run and rebuilds insights at the correct locations, cleaning up orphaned `insight_state` entries.
+Reconcile is a manifest-driven state-repair operation. It iterates all manifests (including missing-status), uses 3-tier file resolution (materialized_path → identity header → prefix glob), implements two-stage missing protocol, and prunes orphan DB rows. `load_state()` merges manifest intent with DB sync progress — manifests are authoritative for registration, the DB is a disposable cache. Missing-status sources are excluded from runtime state (not schedulable). Regen detects path changes on its next run and rebuilds insights at the correct locations.
 
 ### Attachment Storage
 
@@ -170,6 +170,7 @@ Each registered source has a JSON manifest at `.brain-sync/sources/{canonical_id
   "source_url": "https://acme.atlassian.net/wiki/spaces/ENG/pages/123456",
   "source_type": "confluence",
   "materialized_path": "engineering/architecture/c123456-some-page.md",
+  "target_path": "engineering/architecture",
   "fetch_children": false,
   "sync_attachments": true,
   "child_path": null,
@@ -180,6 +181,8 @@ Each registered source has a JSON manifest at `.brain-sync/sources/{canonical_id
   }
 }
 ```
+
+`target_path` preserves placement intent independently of `materialized_path`. When the DB is deleted, `target_path` ensures the first sync writes to the correct area. `materialized_path` is the relative file path within `knowledge/`; `target_path` is the containing directory. `target_path == ""` means knowledge root. `materialized_path == ""` means the source has not yet been synced to a file (unmaterialized).
 
 ### Brain Control Plane Directory
 
@@ -198,7 +201,7 @@ Each registered source has a JSON manifest at `.brain-sync/sources/{canonical_id
 
 1. **Identity invariant** — A synced source is identified by its canonical ID, not by its filesystem path.
 2. **Move invariant** — Moving a synced file relocates the materialization. No content is re-fetched.
-3. **Delete invariant** — Deleting a synced file triggers two-stage deregistration (future: manifest read path).
+3. **Delete invariant** — Deleting a synced file triggers two-stage deregistration via manifests (first reconcile marks missing, second reconcile deletes).
 4. **Edit invariant** — Edits to synced files are overwritten by the next upstream sync.
 5. **No auto-registration** — Files with identity headers but no manifest are ignored.
 6. **No DB resurrection** — DB state must never recreate deleted filesystem content. UNCHANGED + missing file → skip.
@@ -210,7 +213,7 @@ Every remaining DB table must justify its existence. If deleted, the consequence
 
 | Table | Performance/Operational Problem Solved | If Deleted |
 |---|---|---|
-| `sources` | Avoids re-parsing manifests on every scheduler tick; caches sync progress (last_checked, content_hash, intervals) | Rebuilt from `.brain-sync/sources/*.json` manifests; sync_hint seeds timing so matching sources skip re-fetch |
+| `sources` | Caches sync progress (last_checked, content_hash, intervals) to avoid re-fetching; `load_state()` merges manifest intent + DB progress | Rebuilt from `.brain-sync/sources/*.json` manifests; `_seed_from_hint()` seeds timing from `sync_hint` so matching sources skip re-fetch; orphan DB rows (no manifest) are pruned during reconcile |
 | `insight_state` | Caches content/summary/structure hashes to avoid recomputing on every regen check; holds regen lifecycle locks | Future: rebuilt from `.regen-meta.json` sidecars; all locks reset to idle; hashes recomputed on first regen |
 | `documents` | Caches discovered page/attachment metadata to avoid redundant API calls during child/attachment discovery | Re-discovered on next sync cycle; no data loss, slight increase in API calls |
 | `relationships` | Caches parent-child links between sources/documents for orphan cleanup and child discovery deduplication | Rebuilt from next fetch results; orphan detection delayed until rebuild completes |

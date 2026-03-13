@@ -89,12 +89,14 @@ class TestMirrorFolderMove:
             source_url="https://example.com/page",
             source_type="confluence",
             target_path="old-name",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         state.sources["test:456"] = SourceState(
             canonical_id="test:456",
             source_url="https://example.com/page2",
             source_type="confluence",
             target_path="old-name/sub",
+            last_checked_utc="2026-01-01T00:00:00",
         )
         save_state(brain, state)
 

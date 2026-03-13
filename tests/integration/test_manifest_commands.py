@@ -127,12 +127,24 @@ class TestUpdateSourceUpdatesManifest:
 class TestReconcileBootstrapsMigration:
     def test_bootstraps_manifests_from_db(self, brain: Path):
         """When DB has sources but no manifests, reconcile exports them."""
-        # Add source to DB directly (simulate pre-manifest brain)
-        add_source(brain, url=CONFLUENCE_URL, target_path="area")
-        # Delete the manifest that add_source created
-        manifest_path = brain / ".brain-sync" / "sources" / "confluence-12345.json"
-        if manifest_path.exists():
-            manifest_path.unlink()
+        # Simulate a pre-Phase-2 brain: source in DB with progress, no manifests
+        from brain_sync.state import SourceState, SyncState, save_state
+
+        state = SyncState()
+        state.sources[CONFLUENCE_CID] = SourceState(
+            canonical_id=CONFLUENCE_CID,
+            source_url=CONFLUENCE_URL,
+            source_type="confluence",
+            target_path="area",
+            last_checked_utc="2026-01-01T00:00:00",
+        )
+        save_state(brain, state)
+        # Ensure no manifests exist (delete dir if add_source created it)
+        import shutil
+
+        manifest_dir = brain / ".brain-sync" / "sources"
+        if manifest_dir.exists():
+            shutil.rmtree(manifest_dir)
         assert read_all_source_manifests(brain) == {}
 
         reconcile_sources(brain)

@@ -156,6 +156,25 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
     except Exception as e:
         log.warning("Failed to update source target_paths after move: %s", e)
 
+    # Update manifests: materialized_path and target_path
+    try:
+        from brain_sync.manifest import read_all_source_manifests, write_source_manifest
+
+        all_manifests = read_all_source_manifests(root)
+        for m in all_manifests.values():
+            old_mp = m.materialized_path
+            old_tp = m.target_path
+            # Only update materialized_path for materialized sources
+            if old_mp and (old_mp.startswith(src_rel_str + "/") or old_mp == src_rel_str):
+                m.materialized_path = dest_rel_str + old_mp[len(src_rel_str) :]
+            # Always update target_path if it matches
+            if old_tp == src_rel_str or old_tp.startswith(src_rel_str + "/"):
+                m.target_path = dest_rel_str + old_tp[len(src_rel_str) :]
+            if m.materialized_path != old_mp or m.target_path != old_tp:
+                write_source_manifest(root, m)
+    except Exception as e:
+        log.warning("Failed to update manifests after move: %s", e)
+
 
 class KnowledgeWatcher:
     """Watch knowledge/ folder for file changes, with debounce."""

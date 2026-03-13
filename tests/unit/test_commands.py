@@ -643,13 +643,14 @@ class TestReconcileSources:
         assert len(result.updated) == 1
         assert result.updated[0].new_path == "confluence/team"
 
-    def test_not_found_when_file_missing(self, brain):
+    def test_unmaterialized_source_is_unchanged(self, brain):
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
-        # Don't create any file — source has no file on disk
+        # Don't create any file — source hasn't synced yet (unmaterialized)
 
         result = reconcile_sources(root=brain)
         assert result.updated == []
-        assert result.not_found == [CONFLUENCE_CID]
+        assert result.not_found == []
+        assert result.unchanged == 1
 
     def test_multiple_sources_mixed(self, brain):
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-a")
@@ -665,7 +666,8 @@ class TestReconcileSources:
         result = reconcile_sources(root=brain)
         assert len(result.updated) == 1
         assert result.updated[0].canonical_id == CONFLUENCE_CID
-        assert CONFLUENCE_CID_2 in result.not_found
+        # Second source is unmaterialized (never synced), not "not found"
+        assert result.unchanged == 1
 
     def test_noop_when_no_sources(self, brain):
         result = reconcile_sources(root=brain)
@@ -742,10 +744,10 @@ class TestReconcileSources:
         # Third source missing (not_found) — no file created
 
         result = reconcile_sources(root=brain)
-        assert result.unchanged == 1
+        # Third source is unmaterialized (never synced) → unchanged, not not_found
+        assert result.unchanged == 2  # first (at expected path) + third (unmaterialized)
         assert len(result.updated) == 1
         assert result.updated[0].canonical_id == CONFLUENCE_CID_2
-        assert CONFLUENCE_CID_3 in result.not_found
 
 
 class TestMigrateSources:
