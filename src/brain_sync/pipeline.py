@@ -132,7 +132,7 @@ async def process_source(
 
     # Attachment sync (capability-gated)
     att_title_to_path: dict[str, str] = {}
-    if caps.supports_attachments and source_state.sync_attachments and root is not None:
+    if caps.supports_attachments and source_state.sync_attachments and root is not None and not result.inline_images:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
             from brain_sync.attachments import process_attachments
@@ -147,6 +147,23 @@ async def process_source(
             )
         except Exception as e:
             log.warning("Attachment processing failed for %s: %s", source_state.source_url, e)
+
+    # Process inline images from adapter (source-agnostic)
+    if result.inline_images and source_state.sync_attachments and root is not None:
+        try:
+            from brain_sync.attachments import process_inline_images
+
+            inline_paths = await process_inline_images(
+                images=result.inline_images,
+                headers=result.download_headers,
+                client=http_client,
+                target_dir=target_dir,
+                primary_canonical_id=result.attachment_parent_id or canonical_id(source_type, source_state.source_url),
+                root=root,
+            )
+            att_title_to_path.update(inline_paths)
+        except Exception as e:
+            log.warning("Inline image processing failed for %s: %s", source_state.source_url, e)
 
     # Resolve inline attachment image refs (attachment-ref:title → local path)
     markdown = result.body_markdown

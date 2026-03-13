@@ -79,6 +79,8 @@ knowledge/area/
 
 Path computation is centralised in `attachments.attachment_local_path()` — used by sync, remove, move, and inline `attachment-ref:` resolution.
 
+Inline images from Google Docs are discovered via `DiscoveredImage` (in `sources/base.py`) and processed by the source-agnostic `attachments.process_inline_images()`. The adapter populates `SourceFetchResult.inline_images` during fetch; the pipeline gates download behind `sync_attachments=True`. Canonical IDs use the format `gdoc-image:{docId}:{objectId}` to avoid cross-document collision. In markdown, images are referenced as `attachment-ref:{canonicalId}` and resolved by the same regex as Confluence attachment refs.
+
 ### Architectural Principles
 
 **Import purity** — Modules may define behavior at import time, but must not resolve environment-dependent runtime state at import time. Filesystem access, config resolution, and index construction must be deferred to explicit startup/lifespan hooks.
@@ -99,7 +101,7 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 **Key abstractions:**
 - `SourceCapabilities` — declares what a source supports (version check, comments, attachments, children)
 - `UpdateCheckResult` — cheap pre-fetch check; `adapter_state` passes opaque data to `fetch()` to avoid duplicate API calls
-- `SourceFetchResult` — full fetch result with markdown, comments, title, optional source HTML
+- `SourceFetchResult` — full fetch result with markdown, comments, title, optional source HTML, inline images, and download headers
 - `AuthProvider` — per-source auth (Confluence: config/env credentials; Google Docs: native OAuth2 via browser consent)
 
 **Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Attachment sync is gated by `supports_attachments`; child discovery by `supports_children`.

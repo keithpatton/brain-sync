@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import httpx
@@ -25,6 +25,17 @@ class FetchError(Exception):
 
 
 @dataclass(frozen=True)
+class InlineImageInfo:
+    """Metadata for an inline image object within a Google Doc."""
+
+    object_id: str
+    content_uri: str
+    title: str | None = None
+    description: str | None = None
+    mime_type: str | None = None
+
+
+@dataclass(frozen=True)
 class TabData:
     """Content and identity of a single document tab."""
 
@@ -32,6 +43,7 @@ class TabData:
     title: str  # resolved: raw title or f"Untitled Tab ({tab_id})"
     number: str  # dotted position: "1", "2", "3.1", "3.1.1"
     body_content: list[dict]
+    inline_objects: dict[str, InlineImageInfo] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -98,6 +110,26 @@ def _flatten_tabs(raw_tabs: list[dict], prefix: str = "") -> list[tuple[str, dic
     return result
 
 
+def _extract_inline_objects(raw_inline_objects: dict) -> dict[str, InlineImageInfo]:
+    """Extract InlineImageInfo from the Docs API inlineObjects map."""
+    result: dict[str, InlineImageInfo] = {}
+    for obj_id, obj_data in raw_inline_objects.items():
+        props = obj_data.get("inlineObjectProperties", {})
+        embedded = props.get("embeddedObject", {})
+        image_props = embedded.get("imageProperties", {})
+        content_uri = image_props.get("contentUri")
+        if not content_uri:
+            continue
+        result[obj_id] = InlineImageInfo(
+            object_id=obj_id,
+            content_uri=content_uri,
+            title=embedded.get("title") or None,
+            description=embedded.get("description") or None,
+            mime_type=None,  # MIME detected from Content-Type header during download
+        )
+    return result
+
+
 async def fetch_all_tabs(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> TabsDocument | None:
     """Fetch all tab content from a Google Doc via the Docs API tabs endpoint.
 
@@ -141,8 +173,12 @@ async def fetch_all_tabs(doc_id: str, auth: GoogleOAuthCredentials, client: http
         tab_id = props.get("tabId", "unknown")
         raw_title = props.get("title", "").strip()
         title = raw_title or f"Untitled Tab ({tab_id})"
-        body_content = raw_tab["documentTab"].get("body", {}).get("content", [])
-        tabs.append(TabData(tab_id=tab_id, title=title, number=number, body_content=body_content))
+        doc_tab = raw_tab["documentTab"]
+        body_content = doc_tab.get("body", {}).get("content", [])
+        inline_objects = _extract_inline_objects(doc_tab.get("inlineObjects", {}))
+        tabs.append(
+            TabData(tab_id=tab_id, title=title, number=number, body_content=body_content, inline_objects=inline_objects)
+        )
 
     if not tabs:
         log.warning("Docs API returned no document tabs for %s", doc_id)
@@ -172,7 +208,15 @@ def _walk_body(content: list[dict], parts: list[str]) -> None:
     for element in content:
         if "paragraph" in element:
             para = element["paragraph"]
-            text = "".join(e.get("textRun", {}).get("content", "") for e in para.get("elements", [])).strip()
+            text_parts: list[str] = []
+            for e in para.get("elements", []):
+                if "textRun" in e:
+                    text_parts.append(e["textRun"].get("content", ""))
+                elif "inlineObjectElement" in e:
+                    obj_id = e["inlineObjectElement"].get("inlineObjectId", "")
+                    if obj_id:
+                        parts.append(f"IMG:{obj_id}")
+            text = "".join(text_parts).strip()
             if not text:
                 continue
             style = para.get("paragraphStyle", {}).get("namedStyleType")
@@ -211,15 +255,33 @@ _HEADING_LEVELS: dict[str, str] = {
 }
 
 
-def _walk_body_markdown(content: list[dict], parts: list[str]) -> None:
+def _walk_body_markdown(
+    content: list[dict],
+    parts: list[str],
+    inline_objects: dict[str, InlineImageInfo] | None = None,
+    doc_id: str | None = None,
+) -> None:
     """Walk Docs API body content and emit standard markdown strings.
 
     Separate from _walk_body, which emits fingerprint notation (H:, LI:, T:).
+    When inline_objects and doc_id are provided, inlineObjectElement entries
+    are rendered as ``![alt](attachment-ref:gdoc-image:{doc_id}:{objectId})``.
     """
     for element in content:
         if "paragraph" in element:
             para = element["paragraph"]
-            text = "".join(e.get("textRun", {}).get("content", "") for e in para.get("elements", [])).strip()
+            # Build paragraph content handling both text runs and inline images
+            inline_parts: list[str] = []
+            for e in para.get("elements", []):
+                if "textRun" in e:
+                    inline_parts.append(e["textRun"].get("content", ""))
+                elif "inlineObjectElement" in e and inline_objects and doc_id:
+                    obj_id = e["inlineObjectElement"].get("inlineObjectId", "")
+                    img = inline_objects.get(obj_id)
+                    if img:
+                        alt = img.description or img.title or "image"
+                        inline_parts.append(f"![{alt}](attachment-ref:gdoc-image:{doc_id}:{obj_id})")
+            text = "".join(inline_parts).strip()
             if not text:
                 continue
             style = para.get("paragraphStyle", {}).get("namedStyleType", "")
@@ -235,7 +297,7 @@ def _walk_body_markdown(content: list[dict], parts: list[str]) -> None:
                 row_cells: list[str] = []
                 for cell in row.get("tableCells", []):
                     cell_parts: list[str] = []
-                    _walk_body_markdown(cell.get("content", []), cell_parts)
+                    _walk_body_markdown(cell.get("content", []), cell_parts, inline_objects, doc_id)
                     row_cells.append(" ".join(cell_parts).strip())
                 parts.append("| " + " | ".join(row_cells) + " |")
                 if i == 0:
@@ -243,7 +305,7 @@ def _walk_body_markdown(content: list[dict], parts: list[str]) -> None:
                     parts.append("| " + " | ".join("---" for _ in row_cells) + " |")
 
 
-def generate_tabs_markdown(tabs_doc: TabsDocument) -> str:
+def generate_tabs_markdown(tabs_doc: TabsDocument, doc_id: str | None = None) -> str:
     """Render all tabs of a Google Doc as markdown.
 
     Multi-tab documents use H1 headings with dotted numbering (``# Tab 1 — Title``).
@@ -258,9 +320,41 @@ def generate_tabs_markdown(tabs_doc: TabsDocument) -> str:
         else:
             heading = f"## {tab.title}"
         parts: list[str] = [heading, ""]
-        _walk_body_markdown(tab.body_content, parts)
+        _walk_body_markdown(tab.body_content, parts, tab.inline_objects, doc_id)
         sections.append("\n".join(parts))
     return "\n\n---\n\n".join(sections)
+
+
+_MIME_TO_EXT: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+_MAX_SLUG_LEN = 80
+
+
+def image_filename(object_id: str, title: str | None, description: str | None, mime_type: str | None) -> str:
+    """Compute a filename for an inline image: a{objectId}-{slug}.{ext}."""
+    from pathlib import Path
+
+    from brain_sync.sources import slugify
+
+    # Slug priority: title → description → objectId
+    raw = title or description or object_id
+    slug = slugify(raw)[:_MAX_SLUG_LEN]
+
+    # Extension: MIME-derived → title-derived → .bin
+    ext = _MIME_TO_EXT.get(mime_type or "")
+    if not ext and title:
+        title_ext = Path(title).suffix.lower()
+        if title_ext:
+            ext = title_ext
+    if not ext:
+        ext = ".bin"
+
+    return f"a{object_id}-{slug}{ext}"
 
 
 def extract_title_from_html(html: str) -> str | None:

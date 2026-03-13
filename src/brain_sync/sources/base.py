@@ -45,6 +45,16 @@ class Comment:
     replies: list[Comment] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class DiscoveredImage:
+    """An inline image discovered during source fetch (e.g. Google Docs inline objects)."""
+
+    canonical_id: str  # e.g. "gdoc-image:1AbcXyz:kix.abc123" — also used as attachment-ref key
+    download_url: str  # Direct download URL (may be ephemeral)
+    title: str | None  # Filename hint
+    mime_type: str | None  # e.g. "image/png"
+
+
 @dataclass
 class SourceFetchResult:
     body_markdown: str
@@ -52,6 +62,9 @@ class SourceFetchResult:
     metadata_fingerprint: str | None = None
     title: str | None = None
     source_html: str | None = None
+    inline_images: list[DiscoveredImage] = field(default_factory=list)
+    download_headers: dict[str, str] = field(default_factory=dict)
+    attachment_parent_id: str | None = None
 
 
 @runtime_checkable

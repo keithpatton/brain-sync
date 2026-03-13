@@ -92,6 +92,10 @@ def canonical_prefix(canonical_id: str) -> str:
         return f"a{canonical_id.split(':', 1)[1]}-"
     if canonical_id.startswith("confluence:"):
         return f"c{canonical_id.split(':', 1)[1]}-"
+    if canonical_id.startswith("gdoc-image:"):
+        # gdoc-image:{docId}:{objectId} → gi{docId}-{objectId}-
+        parts = canonical_id.split(":", 2)
+        return f"gi{parts[1]}-{parts[2]}-" if len(parts) == 3 else f"gi{parts[1]}-"
     if canonical_id.startswith("gdoc:"):
         return f"g{canonical_id.split(':', 1)[1]}-"
     return canonical_id.split(":", 1)[1] + "-"

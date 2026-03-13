@@ -52,7 +52,7 @@ class TestCapabilities:
         caps = GoogleDocsAdapter().capabilities
         assert caps.supports_version_check is True
         assert caps.supports_children is False
-        assert caps.supports_attachments is False
+        assert caps.supports_attachments is True
         assert caps.supports_comments is False
 
 

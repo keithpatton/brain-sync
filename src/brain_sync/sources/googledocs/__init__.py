@@ -10,6 +10,7 @@ import httpx
 from brain_sync.sources import extract_google_doc_id
 from brain_sync.sources.base import (
     AuthProvider,
+    DiscoveredImage,
     SourceCapabilities,
     SourceFetchResult,
     UpdateCheckResult,
@@ -34,7 +35,7 @@ class GoogleDocsAdapter:
         return SourceCapabilities(
             supports_version_check=True,
             supports_children=False,
-            supports_attachments=False,
+            supports_attachments=True,
             supports_comments=False,
         )
 
@@ -86,11 +87,34 @@ class GoogleDocsAdapter:
         title = (
             tabs_doc.title or (prior_adapter_state or {}).get("title") or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         )
-        body_markdown = generate_tabs_markdown(tabs_doc)
+        body_markdown = generate_tabs_markdown(tabs_doc, doc_id=doc_id)
         fingerprint = (prior_adapter_state or {}).get("semanticFingerprint")
+
+        # Build deduplicated inline image list from all tabs
+        images_by_cid: dict[str, DiscoveredImage] = {}
+        for tab in tabs_doc.tabs:
+            for obj_id, img in tab.inline_objects.items():
+                cid = f"gdoc-image:{doc_id}:{obj_id}"
+                if cid not in images_by_cid:
+                    images_by_cid[cid] = DiscoveredImage(
+                        canonical_id=cid,
+                        download_url=img.content_uri,
+                        title=img.title,
+                        mime_type=img.mime_type,
+                    )
+
+        # Auth headers for image download
+        download_headers: dict[str, str] = {}
+        if images_by_cid:
+            token = await auth.get_token()  # pyright: ignore[reportAttributeAccessIssue]
+            download_headers = {"Authorization": f"Bearer {token}"}
+
         return SourceFetchResult(
             body_markdown=body_markdown,
             comments=[],
             metadata_fingerprint=fingerprint,
             title=title,
+            inline_images=list(images_by_cid.values()),
+            download_headers=download_headers,
+            attachment_parent_id=f"gdoc:{doc_id}",
         )

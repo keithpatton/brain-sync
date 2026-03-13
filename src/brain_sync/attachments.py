@@ -17,6 +17,7 @@ from brain_sync.confluence_rest import (
 )
 from brain_sync.fileops import EXCLUDED_DIRS, atomic_write_bytes, canonical_prefix, content_hash
 from brain_sync.sources import slugify
+from brain_sync.sources.base import DiscoveredImage
 from brain_sync.state import (
     DocumentState,
     Relationship,
@@ -406,3 +407,205 @@ async def process_attachments(
                 log.debug("Kept attachment %s (still referenced by other primaries)", cid)
 
     return att_title_to_path
+
+
+# --- Generic inline image processing (source-agnostic) ---
+
+
+def _inline_image_local_path(
+    source_dir_id: str, canonical_id: str, image: DiscoveredImage, mime_type: str | None = None
+) -> str:
+    """Compute the local path for an inline image.
+
+    Returns ``_attachments/{source_dir_id}/a{objectId}-{slug}.{ext}``.
+    """
+    from brain_sync.sources.googledocs.rest import image_filename
+
+    # Extract objectId from canonical_id (last segment after final colon)
+    parts = canonical_id.rsplit(":", 1)
+    object_id = parts[1] if len(parts) == 2 else canonical_id
+    filename = image_filename(object_id, image.title, None, mime_type or image.mime_type)
+    return f"{ATTACHMENTS_DIR}/{source_dir_id}/{filename}"
+
+
+async def process_inline_images(
+    images: list[DiscoveredImage],
+    headers: dict[str, str],
+    client: httpx.AsyncClient,
+    target_dir: Path,
+    primary_canonical_id: str,
+    root: Path,
+) -> dict[str, str]:
+    """Download and store inline images. Returns canonical_id → local_path mapping.
+
+    Source-agnostic: works with any adapter that populates DiscoveredImage.
+    Re-fetches all discovered images on each sync (URLs may be ephemeral),
+    but only writes to disk when content hash changes.
+    """
+    now = datetime.now(UTC).isoformat()
+    source_dir_id = _source_dir_id(primary_canonical_id)
+    result_map: dict[str, str] = {}
+
+    # Convert DiscoveredImage list to DiscoveredDoc for reconciliation reuse
+    discovered = [
+        DiscoveredDoc(
+            canonical_id=img.canonical_id,
+            url=img.download_url,
+            title=img.title,
+            relationship_type=RelType.ATTACHMENT,
+            media_type=img.mime_type,
+        )
+        for img in images
+    ]
+
+    existing_rels = load_relationships_for_primary(root, primary_canonical_id)
+    # Filter to only inline-image relationships (canonical IDs starting with gdoc-image:)
+    existing_image_rels = [r for r in existing_rels if r.canonical_id.startswith("gdoc-image:")]
+
+    to_add, to_check, to_remove_ids = reconcile(discovered, existing_image_rels)
+
+    ensure_attachment_dir(target_dir, source_dir_id)
+    att_dir = target_dir / ATTACHMENTS_DIR / source_dir_id
+
+    # Build image lookup for description fallback
+    image_by_cid = {img.canonical_id: img for img in images}
+
+    # Process new images
+    for doc in to_add:
+        img = image_by_cid.get(doc.canonical_id)
+        if not img:
+            continue
+        try:
+            dl_result = await _download_image(doc.url, headers, client)
+            if dl_result is None:
+                continue
+            data, content_type = dl_result
+            effective_mime = content_type or img.mime_type
+            local_path = _inline_image_local_path(source_dir_id, doc.canonical_id, img, effective_mime)
+            target = target_dir / local_path
+            atomic_write_bytes(target, data)
+            save_document(
+                root,
+                DocumentState(
+                    canonical_id=doc.canonical_id,
+                    source_type="googledocs",
+                    url=doc.canonical_id,
+                    title=img.title,
+                    last_checked_utc=now,
+                    last_changed_utc=now,
+                    content_hash=content_hash(data),
+                    mime_type=effective_mime,
+                ),
+            )
+            save_relationship(
+                root,
+                Relationship(
+                    parent_canonical_id=primary_canonical_id,
+                    canonical_id=doc.canonical_id,
+                    relationship_type=RelType.ATTACHMENT.value,
+                    source_type="googledocs",
+                    first_seen_utc=now,
+                    last_seen_utc=now,
+                ),
+            )
+            result_map[doc.canonical_id] = local_path
+            log.info("Added inline image: %s → %s", doc.canonical_id, local_path)
+        except Exception:
+            log.exception("Failed to sync inline image %s", doc.canonical_id)
+
+    # Re-check existing images (re-download, content-hash compare)
+    existing_rel_map = {r.canonical_id: r for r in existing_image_rels}
+    for doc in to_check:
+        rel = existing_rel_map[doc.canonical_id]
+        img = image_by_cid.get(doc.canonical_id)
+        if not img:
+            continue
+        try:
+            save_relationship(
+                root,
+                Relationship(
+                    parent_canonical_id=primary_canonical_id,
+                    canonical_id=doc.canonical_id,
+                    relationship_type=rel.relationship_type,
+                    source_type=rel.source_type,
+                    first_seen_utc=rel.first_seen_utc,
+                    last_seen_utc=now,
+                ),
+            )
+
+            # Always re-download (URL may have changed), but only write if content changed
+            dl_result = await _download_image(doc.url, headers, client)
+            if dl_result is None:
+                # Download failed — still return existing path from DB for ref resolution
+                existing_doc = load_document(root, doc.canonical_id)
+                if existing_doc and existing_doc.mime_type:
+                    local_path = _inline_image_local_path(source_dir_id, doc.canonical_id, img, existing_doc.mime_type)
+                    result_map[doc.canonical_id] = local_path
+                continue
+            data, content_type = dl_result
+            effective_mime = content_type or img.mime_type
+            local_path = _inline_image_local_path(source_dir_id, doc.canonical_id, img, effective_mime)
+            result_map[doc.canonical_id] = local_path
+
+            new_hash = content_hash(data)
+            existing_doc = load_document(root, doc.canonical_id)
+            file_exists = (target_dir / local_path).exists()
+            if existing_doc and existing_doc.content_hash == new_hash and file_exists:
+                continue
+
+            target = target_dir / local_path
+            atomic_write_bytes(target, data)
+            save_document(
+                root,
+                DocumentState(
+                    canonical_id=doc.canonical_id,
+                    source_type="googledocs",
+                    url=doc.canonical_id,
+                    title=img.title,
+                    last_checked_utc=now,
+                    last_changed_utc=now,
+                    content_hash=new_hash,
+                    mime_type=effective_mime,
+                ),
+            )
+            log.info("Updated inline image: %s", doc.canonical_id)
+        except Exception:
+            log.exception("Failed to check inline image %s", doc.canonical_id)
+
+    # Remove stale images
+    for cid in to_remove_ids:
+        rel = existing_rel_map.get(cid)
+        if rel:
+            remove_relationship(root, primary_canonical_id, cid)
+            if count_relationships_for_doc(root, cid) == 0:
+                existing_doc = load_document(root, cid)
+                if existing_doc:
+                    img_dummy = DiscoveredImage(
+                        canonical_id=cid, download_url="", title=existing_doc.title, mime_type=existing_doc.mime_type
+                    )
+                    local_path = _inline_image_local_path(source_dir_id, cid, img_dummy)
+                    file_path = target_dir / local_path
+                    try:
+                        remove_synced_file(file_path, att_dir)
+                    except SafetyError as e:
+                        log.warning("%s", e)
+                remove_document_if_orphaned(root, cid)
+                log.info("Removed stale inline image: %s", cid)
+            else:
+                log.debug("Kept inline image %s (still referenced by other primaries)", cid)
+
+    return result_map
+
+
+async def _download_image(
+    url: str, headers: dict[str, str], client: httpx.AsyncClient
+) -> tuple[bytes, str | None] | None:
+    """Download an image, returning (data, content_type) or None on failure."""
+    try:
+        response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").split(";")[0].strip() or None
+        return response.content, content_type
+    except httpx.HTTPError as e:
+        log.warning("Failed to download image %s: %s", url, e)
+        return None
