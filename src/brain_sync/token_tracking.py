@@ -11,6 +11,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from brain_sync.config import load_config
 from brain_sync.state import STATE_FILENAME
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,9 @@ log = logging.getLogger(__name__)
 OP_REGEN = "regen"
 OP_QUERY = "query"
 OP_CLASSIFY = "classify"
+
+# Default retention period for token_events rows
+TOKEN_RETENTION_DAYS = 90
 
 _failure_logged = False
 
@@ -160,3 +164,38 @@ def get_usage_summary(root: Path, days: int = 7) -> dict:
         }
     finally:
         conn.close()
+
+
+def load_retention_days() -> int:
+    """Read token_events retention period from config, defaulting to 90 days."""
+    cfg = load_config()
+    return cfg.get("token_events", {}).get("retention_days", TOKEN_RETENTION_DAYS)
+
+
+def prune_token_events(root: Path, retention_days: int = TOKEN_RETENTION_DAYS) -> int:
+    """Delete token_events rows older than *retention_days*. Never raises.
+
+    Returns the number of rows deleted (0 on failure).
+    """
+    global _failure_logged
+    try:
+        cutoff = f"-{retention_days} days"
+        conn = sqlite3.connect(str(_db_path(root)), timeout=5)
+        try:
+            cursor = conn.execute(
+                "DELETE FROM token_events WHERE created_utc < datetime('now', ?)",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if deleted:
+            log.info("Pruned %d token_events rows older than %d days", deleted, retention_days)
+        _failure_logged = False
+        return deleted
+    except Exception:
+        if not _failure_logged:
+            log.warning("Failed to prune token events", exc_info=True)
+            _failure_logged = True
+        return 0

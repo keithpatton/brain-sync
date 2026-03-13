@@ -147,9 +147,9 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 |---|---|---|---|
 | Content state | `insight_state` | Content hashes, regen status, error tracking | Per-resource, updated each regen |
 | Concurrency lock | `insight_state.owner_id` | Regen ownership for crash recovery | Transient, cleared on completion |
-| Invocation telemetry | `token_events` | Append-only LLM cost accounting | Permanent history |
+| Invocation telemetry | `token_events` | Append-only LLM cost accounting | Retained for configurable period (default 90 days) |
 
-Token usage is recorded exclusively in `token_events`. The `insight_state` table contains only content state and regen coordination fields — token columns were removed in schema v16.
+`token_events` is a cross-cutting telemetry store for all LLM workflows — regen, query, classify, and any future agent operations. Token usage is recorded exclusively here. The `insight_state` table contains only content state and regen coordination fields — token columns were removed in schema v16.
 
 ### Identity Model
 
@@ -168,6 +168,14 @@ Token usage is recorded exclusively in `token_events`. The `insight_state` table
 ### Timing
 
 `duration_ms` measures provider invocation time for a single attempt. Retry backoff delays are excluded — each retry attempt gets its own `token_events` row with its own `duration_ms`.
+
+### Retention
+
+Old `token_events` rows are pruned on daemon startup. Default retention: 90 days. Configurable via `token_events.retention_days` in `~/.brain-sync/config.json`:
+
+```json
+{ "token_events": { "retention_days": 90 } }
+```
 
 ### Extension Model
 

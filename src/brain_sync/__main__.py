@@ -76,6 +76,11 @@ async def run(root: Path) -> None:
                 entry.new_path,
             )
 
+    # Prune old telemetry rows on startup
+    from brain_sync.token_tracking import load_retention_days, prune_token_events
+
+    prune_token_events(root, load_retention_days())
+
     state = load_state(root)
     scheduler = Scheduler()
     watcher = KnowledgeWatcher(root)

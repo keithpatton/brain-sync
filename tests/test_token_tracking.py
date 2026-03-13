@@ -12,6 +12,7 @@ from brain_sync.token_tracking import (
     OP_QUERY,
     OP_REGEN,
     get_usage_summary,
+    prune_token_events,
     record_token_event,
 )
 
@@ -319,3 +320,73 @@ class TestGetUsageSummary:
         conn.close()
         assert knowledge_rows[0] == 1
         assert doc_rows[0] == 1
+
+
+class TestPruneTokenEvents:
+    def test_deletes_old_rows(self, brain):
+        """Rows older than retention period are deleted."""
+        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+        conn.execute(
+            "INSERT INTO token_events "
+            "(session_id, operation_type, is_chunk, success, created_utc) "
+            "VALUES ('old', 'regen', 0, 1, '2025-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        deleted = prune_token_events(brain, retention_days=90)
+
+        assert deleted == 1
+        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+        remaining = conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0]
+        conn.close()
+        assert remaining == 0
+
+    def test_keeps_recent_rows(self, brain):
+        """Recent rows within retention period are preserved."""
+        record_token_event(
+            root=brain,
+            session_id="recent",
+            operation_type=OP_REGEN,
+            resource_type=None,
+            resource_id=None,
+            is_chunk=False,
+            model=None,
+            input_tokens=100,
+            output_tokens=50,
+            duration_ms=1000,
+            num_turns=1,
+            success=True,
+        )
+
+        deleted = prune_token_events(brain, retention_days=90)
+
+        assert deleted == 0
+        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+        remaining = conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0]
+        conn.close()
+        assert remaining == 1
+
+    def test_returns_deleted_count(self, brain):
+        """Return value matches the number of rows deleted."""
+        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO token_events "
+                "(session_id, operation_type, is_chunk, success, created_utc) "
+                f"VALUES ('old-{i}', 'regen', 0, 1, '2025-01-01T00:00:00+00:00')"
+            )
+        conn.commit()
+        conn.close()
+
+        deleted = prune_token_events(brain, retention_days=90)
+        assert deleted == 5
+
+    def test_never_raises_on_bad_path(self, tmp_path):
+        """Bad DB path returns 0 without raising."""
+        import brain_sync.token_tracking as tt
+
+        tt._failure_logged = False
+        bad_root = tmp_path / "nonexistent" / "deep" / "path"
+        deleted = prune_token_events(bad_root, retention_days=90)
+        assert deleted == 0
