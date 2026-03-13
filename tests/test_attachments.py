@@ -12,14 +12,11 @@ from brain_sync.attachments import (
     ensure_attachment_dir,
     migrate_legacy_context,
     reconcile,
-    rediscover_relationship_paths,
     remove_synced_file,
 )
 from brain_sync.state import (
     Relationship,
     SyncState,
-    load_relationships_for_primary,
-    save_relationship,
     save_state,
 )
 
@@ -39,7 +36,7 @@ class TestReconcile:
 
     def test_all_existing(self):
         discovered = [DiscoveredDoc("c:1", "url1", "T1", RelType.ATTACHMENT)]
-        existing = [Relationship("parent", "c:1", "attachment", "path", "confluence")]
+        existing = [Relationship("parent", "c:1", "attachment", "confluence")]
         to_add, to_check, to_remove = reconcile(discovered, existing)
         assert len(to_add) == 0
         assert len(to_check) == 1
@@ -51,8 +48,8 @@ class TestReconcile:
             DiscoveredDoc("c:3", "url3", "T3", RelType.ATTACHMENT),
         ]
         existing = [
-            Relationship("parent", "c:1", "attachment", "p1", "confluence"),
-            Relationship("parent", "c:2", "attachment", "p2", "confluence"),
+            Relationship("parent", "c:1", "attachment", "confluence"),
+            Relationship("parent", "c:2", "attachment", "confluence"),
         ]
         to_add, to_check, to_remove = reconcile(discovered, existing)
         assert len(to_add) == 1
@@ -112,91 +109,6 @@ class TestRemoveSyncedFile:
         assert remove_synced_file(f, att_dir) is False
 
 
-class TestRediscoverRelationshipPaths:
-    def test_updates_moved_file(self, tmp_path):
-        """File moved from _attachments/ to a different folder — rediscovery finds it."""
-        save_state(tmp_path, SyncState())
-        manifest_dir = tmp_path / "project"
-        manifest_dir.mkdir()
-
-        # File was at _attachments/c100/a789-diagram.png but moved
-        new_loc = manifest_dir / "reorganised" / "a789-diagram.png"
-        new_loc.parent.mkdir(parents=True)
-        new_loc.write_bytes(b"png")
-
-        rel = Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence-attachment:789",
-            relationship_type="attachment",
-            local_path="_attachments/c100/a789-diagram.png",
-            source_type="confluence",
-        )
-        save_relationship(tmp_path, rel)
-
-        updated = rediscover_relationship_paths(manifest_dir, tmp_path, [rel])
-        assert len(updated) == 1
-        assert "reorganised/a789-diagram.png" in updated[0].local_path
-        assert updated[0].local_path != rel.local_path
-
-        # DB should also be updated
-        db_rels = load_relationships_for_primary(tmp_path, "confluence:100")
-        assert "reorganised/a789-diagram.png" in db_rels[0].local_path
-
-    def test_no_change_when_file_exists(self, tmp_path):
-        """File still at original location — no change."""
-        manifest_dir = tmp_path / "project"
-        att_dir = manifest_dir / "_attachments" / "c100"
-        att_dir.mkdir(parents=True)
-        (att_dir / "a789-diagram.png").write_bytes(b"png")
-
-        rel = Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence-attachment:789",
-            relationship_type="attachment",
-            local_path="_attachments/c100/a789-diagram.png",
-            source_type="confluence",
-        )
-
-        updated = rediscover_relationship_paths(manifest_dir, tmp_path, [rel])
-        assert updated[0].local_path == rel.local_path
-
-    def test_keeps_record_when_not_found(self, tmp_path):
-        """File gone entirely — keep original record (will be re-synced)."""
-        manifest_dir = tmp_path / "project"
-        manifest_dir.mkdir()
-
-        rel = Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence-attachment:789",
-            relationship_type="attachment",
-            local_path="_attachments/c100/a789-diagram.png",
-            source_type="confluence",
-        )
-
-        updated = rediscover_relationship_paths(manifest_dir, tmp_path, [rel])
-        assert updated[0].local_path == rel.local_path
-
-    def test_finds_attachment(self, tmp_path):
-        """Moved attachment is rediscovered."""
-        manifest_dir = tmp_path / "project"
-        new_loc = manifest_dir / "docs" / "a789-diagram.png"
-        new_loc.parent.mkdir(parents=True)
-        new_loc.write_bytes(b"png")
-
-        save_state(tmp_path, SyncState())
-        rel = Relationship(
-            parent_canonical_id="confluence:100",
-            canonical_id="confluence-attachment:789",
-            relationship_type="attachment",
-            local_path="_attachments/c100/a789-diagram.png",
-            source_type="confluence",
-        )
-        save_relationship(tmp_path, rel)
-
-        updated = rediscover_relationship_paths(manifest_dir, tmp_path, [rel])
-        assert "docs/a789-diagram.png" in updated[0].local_path
-
-
 class TestMigrateLegacyContext:
     def test_migrates_attachments(self, tmp_path):
         """Attachment files are moved from _sync-context/attachments/ to _attachments/{source_dir_id}/."""
@@ -211,28 +123,6 @@ class TestMigrateLegacyContext:
         # Legacy index file
         (target_dir / LEGACY_CONTEXT_DIR / "_index.md").write_text("old index")
 
-        # Create relationship in DB
-        save_relationship(
-            tmp_path,
-            Relationship(
-                parent_canonical_id="confluence:100",
-                canonical_id="confluence-attachment:789",
-                relationship_type="attachment",
-                local_path="_sync-context/attachments/a789-diagram.png",
-                source_type="confluence",
-            ),
-        )
-        save_relationship(
-            tmp_path,
-            Relationship(
-                parent_canonical_id="confluence:100",
-                canonical_id="confluence-attachment:790",
-                relationship_type="attachment",
-                local_path="_sync-context/attachments/a790-photo.jpg",
-                source_type="confluence",
-            ),
-        )
-
         count = migrate_legacy_context(target_dir, "c100", "confluence:100", tmp_path)
 
         assert count == 2
@@ -242,11 +132,6 @@ class TestMigrateLegacyContext:
         assert (new_dir / "a790-photo.jpg").read_bytes() == b"jpg-data"
         # Legacy dir removed
         assert not (target_dir / LEGACY_CONTEXT_DIR).exists()
-        # DB relationships updated
-        rels = load_relationships_for_primary(tmp_path, "confluence:100")
-        paths = {r.local_path for r in rels}
-        assert "_attachments/c100/a789-diagram.png" in paths
-        assert "_attachments/c100/a790-photo.jpg" in paths
 
     def test_cleans_up_empty_legacy_dir(self, tmp_path):
         """Empty _sync-context/ (no attachments) is removed."""
@@ -294,18 +179,6 @@ class TestMigrateLegacyContext:
         bare_dir.mkdir(parents=True)
         (bare_dir / "a789-diagram.png").write_bytes(b"png-data")
 
-        # Relationship in DB with bare-ID path
-        save_relationship(
-            tmp_path,
-            Relationship(
-                parent_canonical_id="confluence:100",
-                canonical_id="confluence-attachment:789",
-                relationship_type="attachment",
-                local_path="_attachments/100/a789-diagram.png",
-                source_type="confluence",
-            ),
-        )
-
         count = migrate_legacy_context(target_dir, "c100", "confluence:100", tmp_path)
 
         assert count == 1
@@ -314,6 +187,3 @@ class TestMigrateLegacyContext:
         assert (new_dir / "a789-diagram.png").read_bytes() == b"png-data"
         # Bare dir removed
         assert not bare_dir.exists()
-        # DB updated
-        rels = load_relationships_for_primary(tmp_path, "confluence:100")
-        assert rels[0].local_path == "_attachments/c100/a789-diagram.png"

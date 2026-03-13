@@ -12,7 +12,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -113,7 +113,6 @@ CREATE TABLE IF NOT EXISTS relationships (
     parent_canonical_id TEXT NOT NULL,
     canonical_id TEXT NOT NULL,
     relationship_type TEXT NOT NULL,
-    local_path TEXT NOT NULL,
     source_type TEXT NOT NULL,
     first_seen_utc TEXT,
     last_seen_utc TEXT,
@@ -142,7 +141,6 @@ CREATE TABLE IF NOT EXISTS relationships (
     parent_canonical_id TEXT NOT NULL,
     canonical_id TEXT NOT NULL,
     relationship_type TEXT NOT NULL,
-    local_path TEXT NOT NULL,
     source_type TEXT NOT NULL,
     first_seen_utc TEXT,
     last_seen_utc TEXT,
@@ -248,13 +246,10 @@ class InsightState(_PathNormalized):
 
 
 @dataclass
-class Relationship(_PathNormalized):
-    _PATH_FIELDS: ClassVar[set[str]] = {"local_path"}
-
+class Relationship:
     parent_canonical_id: str
     canonical_id: str
     relationship_type: str
-    local_path: str
     source_type: str
     first_seen_utc: str | None = None
     last_seen_utc: str | None = None
@@ -549,11 +544,13 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             (bs,),
         )
 
-        # relationships: normalize local_path
-        conn.execute(
-            "UPDATE relationships SET local_path = REPLACE(local_path, ?, '/')",
-            (bs,),
-        )
+        # relationships: normalize local_path (column may not exist on fresh DBs post-v17)
+        rel_cols = {row[1] for row in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+        if "local_path" in rel_cols:
+            conn.execute(
+                "UPDATE relationships SET local_path = REPLACE(local_path, ?, '/')",
+                (bs,),
+            )
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '10')",
         )
@@ -692,6 +689,18 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         conn.commit()
         log.info("Migrated DB schema to v16: removed token columns from insight_state")
         from_version = 16
+
+    if from_version < 17:
+        # v16 → v17: Drop local_path from relationships (now computed deterministically)
+        rel_cols = {row[1] for row in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+        if "local_path" in rel_cols:
+            conn.execute("ALTER TABLE relationships DROP COLUMN local_path")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '17')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v17: dropped local_path from relationships")
+        from_version = 17
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
@@ -999,24 +1008,21 @@ def load_document(root: Path, canonical_id: str) -> DocumentState | None:
 
 def save_relationship(root: Path, rel: Relationship) -> None:
     """UPSERT a relationship record."""
-    local_path = normalize_path(rel.local_path)
     conn = _connect(root)
     try:
         conn.execute(
             "INSERT INTO relationships "
-            "(parent_canonical_id, canonical_id, relationship_type, local_path, "
+            "(parent_canonical_id, canonical_id, relationship_type, "
             "source_type, first_seen_utc, last_seen_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(parent_canonical_id, canonical_id) DO UPDATE SET "
             "relationship_type=excluded.relationship_type, "
-            "local_path=excluded.local_path, "
             "source_type=excluded.source_type, "
             "last_seen_utc=excluded.last_seen_utc",
             (
                 rel.parent_canonical_id,
                 rel.canonical_id,
                 rel.relationship_type,
-                local_path,
                 rel.source_type,
                 rel.first_seen_utc,
                 rel.last_seen_utc,
@@ -1031,7 +1037,7 @@ def load_relationships_for_primary(root: Path, parent_canonical_id: str) -> list
     conn = _connect(root)
     try:
         rows = conn.execute(
-            "SELECT parent_canonical_id, canonical_id, relationship_type, local_path, "
+            "SELECT parent_canonical_id, canonical_id, relationship_type, "
             "source_type, first_seen_utc, last_seen_utc "
             "FROM relationships WHERE parent_canonical_id = ?",
             (parent_canonical_id,),
@@ -1041,32 +1047,12 @@ def load_relationships_for_primary(root: Path, parent_canonical_id: str) -> list
                 parent_canonical_id=r[0],
                 canonical_id=r[1],
                 relationship_type=r[2],
-                local_path=r[3],
-                source_type=r[4],
-                first_seen_utc=r[5],
-                last_seen_utc=r[6],
+                source_type=r[3],
+                first_seen_utc=r[4],
+                last_seen_utc=r[5],
             )
             for r in rows
         ]
-    finally:
-        conn.close()
-
-
-def update_relationship_path(
-    root: Path,
-    parent_canonical_id: str,
-    canonical_id: str,
-    new_local_path: str,
-) -> None:
-    """Update the local_path for a relationship after file rediscovery."""
-    new_local_path = normalize_path(new_local_path)
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "UPDATE relationships SET local_path = ? WHERE parent_canonical_id = ? AND canonical_id = ?",
-            (new_local_path, parent_canonical_id, canonical_id),
-        )
-        conn.commit()
     finally:
         conn.close()
 

@@ -223,7 +223,6 @@ class TestRemoveSource:
                 parent_canonical_id=CONFLUENCE_CID,
                 canonical_id="confluence:99999",
                 relationship_type="child",
-                local_path="_sync-context/children/c99999-child-page.md",
                 source_type="confluence",
             ),
         )
@@ -271,7 +270,6 @@ class TestRemoveSource:
                 parent_canonical_id=CONFLUENCE_CID,
                 canonical_id="confluence:99999",
                 relationship_type="child",
-                local_path="_sync-context/children/c99999-child.md",
                 source_type="confluence",
             ),
         )
@@ -296,7 +294,6 @@ class TestRemoveSource:
                 parent_canonical_id=CONFLUENCE_CID,
                 canonical_id="confluence:99999",
                 relationship_type="child",
-                local_path="_sync-context/children/c99999-child.md",
                 source_type="confluence",
             ),
         )
@@ -325,7 +322,6 @@ class TestRemoveSource:
                 parent_canonical_id=CONFLUENCE_CID,
                 canonical_id=shared_child_cid,
                 relationship_type="child",
-                local_path="_sync-context/children/c99999-shared.md",
                 source_type="confluence",
             ),
         )
@@ -335,7 +331,6 @@ class TestRemoveSource:
                 parent_canonical_id=CONFLUENCE_CID_2,
                 canonical_id=shared_child_cid,
                 relationship_type="child",
-                local_path="_sync-context/children/c99999-shared.md",
                 source_type="confluence",
             ),
         )
@@ -647,7 +642,6 @@ class TestMigrateSources:
                 parent_canonical_id=CONFLUENCE_CID,
                 canonical_id="confluence-attachment:789",
                 relationship_type="attachment",
-                local_path="_sync-context/attachments/a789-diagram.png",
                 source_type="confluence",
             ),
         )
@@ -661,9 +655,6 @@ class TestMigrateSources:
         assert (target_dir / "_attachments" / "c12345" / "a789-diagram.png").read_bytes() == b"png-data"
         # Legacy dir gone
         assert not (target_dir / "_sync-context").exists()
-        # DB updated
-        rels = load_relationships_for_primary(brain, CONFLUENCE_CID)
-        assert rels[0].local_path == "_attachments/c12345/a789-diagram.png"
 
     def test_noop_when_nothing_to_migrate(self, brain):
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
@@ -689,7 +680,6 @@ class TestMigrateSources:
                 parent_canonical_id=CONFLUENCE_CID,
                 canonical_id="confluence-attachment:789",
                 relationship_type="attachment",
-                local_path="_attachments/12345/a789-diagram.png",
                 source_type="confluence",
             ),
         )
@@ -702,9 +692,6 @@ class TestMigrateSources:
         assert (target_dir / "_attachments" / "c12345" / "a789-diagram.png").read_bytes() == b"png-data"
         # Bare dir gone
         assert not bare_dir.exists()
-        # DB updated
-        rels = load_relationships_for_primary(brain, CONFLUENCE_CID)
-        assert rels[0].local_path == "_attachments/c12345/a789-diagram.png"
 
     def test_cleans_stale_insights_sync_context(self, brain):
         """Stale _sync-context/ in insights/ (from old regen) is cleaned up."""

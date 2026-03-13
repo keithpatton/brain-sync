@@ -202,15 +202,7 @@ def remove_source(
                     f.unlink()
                     files_deleted = True
 
-            # Delete relationship files (_sync-context or _attachments)
-            rels = load_relationships_for_primary(root, cid)
-            for rel in rels:
-                rel_file = target_dir / rel.local_path
-                if rel_file.is_file():
-                    rel_file.unlink(missing_ok=True)
-                    files_deleted = True
-
-            # Also clean up _attachments/{source_dir_id}/ for this source
+            # Clean up _attachments/{source_dir_id}/ for this source
             source_dir_id = canonical_prefix(cid).rstrip("-")
             att_dir = target_dir / "_attachments" / source_dir_id
             if att_dir.is_dir():

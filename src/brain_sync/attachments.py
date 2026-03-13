@@ -15,8 +15,7 @@ from brain_sync.confluence_rest import (
     fetch_attachments,
     fetch_child_pages,
 )
-from brain_sync.fileops import EXCLUDED_DIRS, atomic_write_bytes, canonical_prefix, content_hash, rediscover_local_path
-from brain_sync.fs_utils import normalize_path
+from brain_sync.fileops import EXCLUDED_DIRS, atomic_write_bytes, canonical_prefix, content_hash
 from brain_sync.sources import slugify
 from brain_sync.state import (
     DocumentState,
@@ -28,7 +27,6 @@ from brain_sync.state import (
     remove_relationship,
     save_document,
     save_relationship,
-    update_relationship_path,
 )
 
 log = logging.getLogger(__name__)
@@ -149,65 +147,6 @@ async def discover_attachments(
     ]
 
 
-# --- Path Rediscovery ---
-
-
-def rediscover_relationship_paths(
-    manifest_dir: Path,
-    root: Path,
-    relationships: list[Relationship],
-) -> list[Relationship]:
-    """Check stored local_paths and attempt rediscovery for any missing files.
-
-    Returns the (potentially updated) list of relationships.
-    """
-    updated: list[Relationship] = []
-    for rel in relationships:
-        file_path = manifest_dir / rel.local_path
-        if file_path.exists():
-            updated.append(rel)
-            continue
-
-        # File missing — attempt rediscovery
-        found = rediscover_local_path(manifest_dir, rel.canonical_id)
-        if found is not None:
-            try:
-                new_local = normalize_path(found.relative_to(manifest_dir.resolve()))
-            except ValueError:
-                # Found file is outside manifest_dir — skip
-                updated.append(rel)
-                continue
-
-            log.info(
-                "Rediscovered %s: %s → %s",
-                rel.canonical_id,
-                rel.local_path,
-                new_local,
-            )
-            update_relationship_path(
-                root,
-                rel.parent_canonical_id,
-                rel.canonical_id,
-                new_local,
-            )
-            updated.append(
-                Relationship(
-                    parent_canonical_id=rel.parent_canonical_id,
-                    canonical_id=rel.canonical_id,
-                    relationship_type=rel.relationship_type,
-                    local_path=new_local,
-                    source_type=rel.source_type,
-                    first_seen_utc=rel.first_seen_utc,
-                    last_seen_utc=rel.last_seen_utc,
-                )
-            )
-        else:
-            # Not found — keep original record (will be re-synced)
-            updated.append(rel)
-
-    return updated
-
-
 # --- Reconciliation ---
 
 
@@ -280,30 +219,12 @@ def migrate_legacy_context(
         if legacy_att_dir.is_dir():
             new_dir = ensure_attachment_dir(target_dir, source_dir_id)
 
-            # Load existing relationships to update local_path
-            rels = load_relationships_for_primary(root, primary_canonical_id)
-            rel_by_old_path = {r.local_path: r for r in rels}
-
             for f in list(legacy_att_dir.iterdir()):
                 if not f.is_file():
                     continue
                 dest = new_dir / f.name
-                old_local = f"{LEGACY_CONTEXT_DIR}/attachments/{f.name}"
-                new_local = f"{ATTACHMENTS_DIR}/{source_dir_id}/{f.name}"
-
                 shutil.move(str(f), str(dest))
                 migrated += 1
-
-                # Update relationship local_path in DB
-                rel = rel_by_old_path.get(old_local)
-                if rel:
-                    update_relationship_path(
-                        root,
-                        rel.parent_canonical_id,
-                        rel.canonical_id,
-                        new_local,
-                    )
-                    log.debug("Migrated relationship path: %s → %s", old_local, new_local)
 
         # Remove the entire legacy _sync-context/ tree
         shutil.rmtree(legacy_root)
@@ -330,15 +251,6 @@ def migrate_legacy_context(
             shutil.move(str(f), str(dest))
             remigrated += 1
         bare_dir.rmdir()
-
-        # Update DB relationship paths: _attachments/{bare_id}/ → _attachments/{source_dir_id}/
-        rels = load_relationships_for_primary(root, primary_canonical_id)
-        old_prefix = f"{ATTACHMENTS_DIR}/{bare_id}/"
-        new_prefix = f"{ATTACHMENTS_DIR}/{source_dir_id}/"
-        for rel in rels:
-            if rel.local_path.startswith(old_prefix):
-                new_local = new_prefix + rel.local_path[len(old_prefix) :]
-                update_relationship_path(root, rel.parent_canonical_id, rel.canonical_id, new_local)
         log.info("Re-migrated _attachments/%s/ → _attachments/%s/", bare_id, source_dir_id)
         migrated += remigrated
 
@@ -384,9 +296,7 @@ async def process_attachments(
             unique.append(d)
     discovered = unique
 
-    # Rediscover any moved files before reconciliation
     existing_rels = load_relationships_for_primary(root, primary_canonical_id)
-    existing_rels = rediscover_relationship_paths(target_dir, root, existing_rels)
 
     # Reconcile
     to_add, to_check, to_remove_ids = reconcile(discovered, existing_rels)
@@ -414,7 +324,6 @@ async def process_attachments(
                     parent_canonical_id=primary_canonical_id,
                     canonical_id=doc.canonical_id,
                     relationship_type=doc.relationship_type.value,
-                    local_path=local_path,
                     source_type="confluence",
                     first_seen_utc=now,
                     last_seen_utc=now,
@@ -430,6 +339,8 @@ async def process_attachments(
     existing_rel_map = {r.canonical_id: r for r in existing_rels}
     for doc in to_check:
         rel = existing_rel_map[doc.canonical_id]
+        att_id = doc.canonical_id.split(":", 1)[1]
+        local_path = attachment_local_path(source_dir_id, att_id, doc.title)
         try:
             # Update last_seen_utc
             save_relationship(
@@ -438,7 +349,6 @@ async def process_attachments(
                     parent_canonical_id=primary_canonical_id,
                     canonical_id=doc.canonical_id,
                     relationship_type=rel.relationship_type,
-                    local_path=rel.local_path,
                     source_type=rel.source_type,
                     first_seen_utc=rel.first_seen_utc,
                     last_seen_utc=now,
@@ -446,20 +356,21 @@ async def process_attachments(
             )
 
             if doc.title:
-                att_title_to_path[doc.title] = rel.local_path
+                att_title_to_path[doc.title] = local_path
 
-            # Version check
+            # Version check — also re-download if file is missing on disk
             existing_doc = load_document(root, doc.canonical_id)
             if (
                 existing_doc
                 and existing_doc.metadata_fingerprint
                 and doc.version
                 and str(doc.version) == existing_doc.metadata_fingerprint
+                and (target_dir / local_path).exists()
             ):
                 continue
             doc_state = await _sync_attachment_doc(
                 doc,
-                rel.local_path,
+                local_path,
                 target_dir,
                 auth,
                 client,
@@ -480,7 +391,11 @@ async def process_attachments(
 
             # Only delete file + document if no other primary references it
             if count_relationships_for_doc(root, cid) == 0:
-                file_path = target_dir / rel.local_path
+                existing_doc = load_document(root, cid)
+                doc_title = existing_doc.title if existing_doc else None
+                att_id = cid.split(":", 1)[1]
+                local_path = attachment_local_path(source_dir_id, att_id, doc_title)
+                file_path = target_dir / local_path
                 try:
                     remove_synced_file(file_path, att_dir)
                 except SafetyError as e:

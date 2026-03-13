@@ -21,7 +21,6 @@ from brain_sync.state import (
     save_relationship,
     save_state,
     update_insight_path,
-    update_relationship_path,
 )
 
 pytestmark = pytest.mark.unit
@@ -52,7 +51,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 16
+        assert state.version == 17
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -154,7 +153,6 @@ class TestRelationshipCrud:
             parent_canonical_id="confluence:100",
             canonical_id="confluence:200",
             relationship_type="link",
-            local_path="_sync-context/linked/c200-page.md",
             source_type="confluence",
             first_seen_utc="2026-03-07T00:00:00+00:00",
             last_seen_utc="2026-03-07T00:00:00+00:00",
@@ -170,7 +168,6 @@ class TestRelationshipCrud:
             parent_canonical_id="confluence:100",
             canonical_id="confluence:200",
             relationship_type="link",
-            local_path="path",
             source_type="confluence",
         )
         save_relationship(tmp_path, rel)
@@ -187,7 +184,6 @@ class TestRelationshipCrud:
                     parent_canonical_id=parent_id,
                     canonical_id="confluence:200",
                     relationship_type="link",
-                    local_path="path",
                     source_type="confluence",
                 ),
             )
@@ -217,30 +213,11 @@ class TestRelationshipCrud:
                 parent_canonical_id="confluence:100",
                 canonical_id="confluence:200",
                 relationship_type="link",
-                local_path="path",
                 source_type="confluence",
             ),
         )
         assert remove_document_if_orphaned(tmp_path, "confluence:200") is False
         assert load_document(tmp_path, "confluence:200") is not None
-
-
-class TestUpdateRelationshipPath:
-    def test_updates_path(self, tmp_path):
-        save_state(tmp_path, SyncState())
-        save_relationship(
-            tmp_path,
-            Relationship(
-                parent_canonical_id="confluence:100",
-                canonical_id="confluence:200",
-                relationship_type="link",
-                local_path="old/path.md",
-                source_type="confluence",
-            ),
-        )
-        update_relationship_path(tmp_path, "confluence:100", "confluence:200", "new/path.md")
-        rels = load_relationships_for_primary(tmp_path, "confluence:100")
-        assert rels[0].local_path == "new/path.md"
 
 
 class TestPruneDb:
@@ -537,7 +514,7 @@ class TestSchemaV4Migration:
         # Verify schema version after full migration chain
         conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "16"
+        assert version == "17"
 
         # Data preserved
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
@@ -650,16 +627,6 @@ class TestDataclassPathNormalization:
         s = SourceState(canonical_id="x", source_url="u", source_type="t", target_path="a/b")
         s.target_path = "c\\d"
         assert s.target_path == "c/d"
-
-    def test_relationship_normalizes_local_path(self):
-        r = Relationship(
-            parent_canonical_id="p",
-            canonical_id="c",
-            relationship_type="link",
-            local_path="a\\b\\c.md",
-            source_type="confluence",
-        )
-        assert r.local_path == "a/b/c.md"
 
     def test_mixed_separators(self):
         s = InsightState(knowledge_path="a\\b/c\\d")
@@ -894,7 +861,7 @@ class TestSchemaV15V16Migration:
 
         # Check version
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "16"
+        assert version == "17"
 
         # token_events table exists
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -927,3 +894,131 @@ class TestSchemaV15V16Migration:
         assert "output_tokens" not in field_names
         assert "num_turns" not in field_names
         assert "model" not in field_names
+
+
+class TestSchemaV17Migration:
+    """Tests for dropping local_path from relationships (v17)."""
+
+    def test_v16_to_v17_migration(self, tmp_path):
+        """v16 DB migrates to v17: local_path column is dropped from relationships."""
+        import sqlite3
+
+        db_path = tmp_path / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                canonical_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                next_check_utc TEXT,
+                interval_seconds INTEGER,
+                target_path TEXT NOT NULL DEFAULT '',
+                fetch_children INTEGER NOT NULL DEFAULT 0,
+                sync_attachments INTEGER NOT NULL DEFAULT 0,
+                child_path TEXT
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+            CREATE TABLE insight_state (
+                knowledge_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                summary_hash TEXT,
+                regen_started_utc TEXT,
+                last_regen_utc TEXT,
+                regen_status TEXT NOT NULL DEFAULT 'idle',
+                owner_id TEXT,
+                error_reason TEXT
+            );
+            CREATE TABLE token_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                operation_type TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                is_chunk INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                duration_ms INTEGER,
+                num_turns INTEGER,
+                success INTEGER NOT NULL,
+                created_utc TEXT NOT NULL
+            );
+        """)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '16')")
+        conn.execute(
+            "INSERT INTO relationships "
+            "(parent_canonical_id, canonical_id, relationship_type, local_path, source_type) "
+            "VALUES ('confluence:100', 'confluence-attachment:789', 'attachment', "
+            "'_attachments/c100/a789-diagram.png', 'confluence')"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+
+        # Version updated
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        assert version == "17"
+
+        # local_path column is gone
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+        assert "local_path" not in cols
+        assert "parent_canonical_id" in cols
+        assert "canonical_id" in cols
+        assert "source_type" in cols
+
+        # Relationship data preserved (minus local_path)
+        row = conn.execute(
+            "SELECT parent_canonical_id, canonical_id, relationship_type, source_type " "FROM relationships"
+        ).fetchone()
+        assert row is not None
+        assert row == ("confluence:100", "confluence-attachment:789", "attachment", "confluence")
+
+        conn.close()
+
+    def test_fresh_db_has_no_local_path(self, tmp_path):
+        """Fresh DB relationships table has no local_path column."""
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+        assert "local_path" not in cols
+        conn.close()
+
+    def test_relationship_dataclass_no_local_path(self):
+        """Relationship dataclass has no local_path field."""
+        import dataclasses
+
+        field_names = {f.name for f in dataclasses.fields(Relationship)}
+        assert "local_path" not in field_names
