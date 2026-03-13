@@ -9,21 +9,21 @@ import pytest
 
 pytest.importorskip("google.auth", reason="google-auth not installed (install brain-sync[google])")
 
-from brain_sync.sources.base import (  # noqa: E402
+from brain_sync.sources.base import (
     AuthProvider,
     SourceAdapter,
     SourceFetchResult,
     UpdateStatus,
 )
-from brain_sync.sources.googledocs import GoogleDocsAdapter  # noqa: E402
-from brain_sync.sources.googledocs.auth import (  # noqa: E402
+from brain_sync.sources.googledocs import GoogleDocsAdapter
+from brain_sync.sources.googledocs.auth import (
     GoogleDocsAuthProvider,
     GoogleOAuthCredentials,
     _load_cached_token,
     _save_token,
     run_oauth_flow,
 )
-from brain_sync.sources.googledocs.rest import (  # noqa: E402
+from brain_sync.sources.googledocs.rest import (
     FetchError,
     TabData,
     TabsDocument,

@@ -9,10 +9,10 @@ import pytest
 
 pytest.importorskip("google.auth", reason="google-auth not installed (install brain-sync[google])")
 
-from brain_sync.attachments import ATTACHMENTS_DIR, process_inline_images  # noqa: E402
-from brain_sync.fileops import canonical_prefix  # noqa: E402
-from brain_sync.sources.base import DiscoveredImage  # noqa: E402
-from brain_sync.sources.googledocs.rest import (  # noqa: E402
+from brain_sync.attachments import ATTACHMENTS_DIR, process_inline_images
+from brain_sync.fileops import canonical_prefix
+from brain_sync.sources.base import DiscoveredImage
+from brain_sync.sources.googledocs.rest import (
     InlineImageInfo,
     TabData,
     TabsDocument,
@@ -23,7 +23,7 @@ from brain_sync.sources.googledocs.rest import (  # noqa: E402
     generate_tabs_markdown,
     image_filename,
 )
-from brain_sync.state import SyncState, save_state  # noqa: E402
+from brain_sync.state import SyncState, save_state
 
 pytestmark = pytest.mark.unit
 
