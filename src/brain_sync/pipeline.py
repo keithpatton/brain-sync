@@ -99,6 +99,14 @@ async def process_source(
         source_state.last_checked_utc = now
         return False, []
 
+    # Defensive guard: if adapter reports UNCHANGED but the local file
+    # does not exist (e.g. test adapter or corrupted state), skip fetch.
+    # Real adapters return CHANGED on first sync (metadata_fingerprint starts None).
+    if check and check.status == UpdateStatus.UNCHANGED and existing_file is None:
+        log.debug("Source %s unchanged and no local file, skipping", doc_id)
+        source_state.last_checked_utc = now
+        return False, []
+
     # Full fetch
     prior_adapter_state = check.adapter_state if check else None
     result = await adapter.fetch(source_state, auth, http_client, root, prior_adapter_state)

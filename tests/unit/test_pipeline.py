@@ -81,23 +81,25 @@ class TestSkipGuardWithRoot:
         assert children == []
         adapter.fetch.assert_not_called()
 
-    async def test_fetch_when_file_not_found_via_rediscover(
+    async def test_skip_when_file_not_found_via_rediscover(
         self,
         source_state: SourceState,
         unchanged_check: UpdateCheckResult,
         fetch_result: SourceFetchResult,
         tmp_path: Path,
     ) -> None:
-        """When rediscover_local_path returns None, skip guard is bypassed and fetch is called."""
+        """When rediscover_local_path returns None and status is UNCHANGED, skip fetch."""
         adapter = _make_adapter(unchanged_check, fetch_result)
 
         with (
             patch("brain_sync.pipeline.get_adapter", return_value=adapter),
             patch("brain_sync.pipeline.rediscover_local_path", return_value=None),
         ):
-            await process_source(source_state, AsyncMock(), root=tmp_path)
+            changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
-        adapter.fetch.assert_called_once()
+        assert changed is False
+        assert children == []
+        adapter.fetch.assert_not_called()
 
     async def test_skip_guard_does_not_fire_when_status_changed(
         self,
@@ -151,7 +153,7 @@ class TestSkipGuardWithoutRoot:
         assert children == []
         adapter.fetch.assert_not_called()
 
-    async def test_fetch_when_root_none_and_file_absent(
+    async def test_skip_when_root_none_and_file_absent(
         self,
         source_state: SourceState,
         unchanged_check: UpdateCheckResult,
@@ -159,11 +161,13 @@ class TestSkipGuardWithoutRoot:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """With root=None and no file on disk, skip guard is bypassed and fetch is called."""
+        """With root=None and no file on disk and status UNCHANGED, skip fetch."""
         monkeypatch.chdir(tmp_path)
         adapter = _make_adapter(unchanged_check, fetch_result)
 
         with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
-            await process_source(source_state, AsyncMock(), root=None)
+            changed, children = await process_source(source_state, AsyncMock(), root=None)
 
-        adapter.fetch.assert_called_once()
+        assert changed is False
+        assert children == []
+        adapter.fetch.assert_not_called()
