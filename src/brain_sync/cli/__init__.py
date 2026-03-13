@@ -34,24 +34,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
 
-    # --- add ---
-    p_add = sub.add_parser("add", help="Add a URL or local file to the brain")
+    # --- add (sync sources only) ---
+    p_add = sub.add_parser("add", help="Register a URL for ongoing sync")
     p_add.add_argument(
         "--root",
         type=Path,
         default=None,
         help="Brain root directory (auto-detected from config if omitted)",
     )
-    p_add.add_argument("source", help="Source URL or local file path")
+    p_add.add_argument("source", help="Source URL (Confluence page or Google Doc)")
     p_add.add_argument("--path", dest="target_path", default=None, help="Target path relative to knowledge/")
     p_add.add_argument("--fetch-children", action="store_true", help="Discover and add child pages (one-shot)")
     p_add.add_argument("--sync-attachments", action="store_true", help="Discover and sync attachments")
     p_add.add_argument(
         "--child-path", default=None, help="Override target path for children ('.' = same level as parent)"
     )
-    p_add.add_argument("--copy", action="store_true", help="Copy instead of move (local files only)")
     p_add.add_argument("--dry-run", action="store_true", help="Show suggestions without making changes")
     p_add.add_argument("--subtree", default=None, help="Restrict placement suggestions to this subtree")
+
+    # --- add-file (local files only) ---
+    p_add_file = sub.add_parser("add-file", help="Import a local .md or .txt file into knowledge/")
+    p_add_file.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_add_file.add_argument("file", type=Path, help="Local file path (.md or .txt)")
+    p_add_file.add_argument("--path", dest="target_path", default=None, help="Target path relative to knowledge/")
+    p_add_file.add_argument("--move", action="store_true", help="Move instead of copy (default: copy)")
+    p_add_file.add_argument("--dry-run", action="store_true", help="Show placement suggestion only")
+    p_add_file.add_argument("--subtree", default=None, help="Restrict placement suggestions to this subtree")
 
     # --- remove ---
     p_remove = sub.add_parser("remove", help="Unregister a sync source")
@@ -63,6 +76,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_remove.add_argument("source", help="Canonical ID or URL of the source to remove")
     p_remove.add_argument("--delete-files", action="store_true", help="Also delete synced files from disk")
+
+    # --- remove-file ---
+    p_remove_file = sub.add_parser("remove-file", help="Remove a file from knowledge/")
+    p_remove_file.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_remove_file.add_argument("file", help="Path relative to knowledge/")
 
     # --- list ---
     p_list = sub.add_parser("list", help="List registered sync sources")

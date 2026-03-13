@@ -13,6 +13,9 @@ TEXT_EXTENSIONS = {".md", ".txt", ".csv", ".json"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 KNOWLEDGE_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
 
+# Extensions accepted by add-file / brain_sync_add_file for local file import.
+ADDFILE_EXTENSIONS = {".md", ".txt"}
+
 # Directories excluded from content discovery, regen, and watching.
 # _attachments/ contains binary attachments managed by the sync engine.
 # _sync-context/ is the legacy location (kept during transition period).

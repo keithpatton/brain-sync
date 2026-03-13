@@ -239,7 +239,7 @@ acme-brain/
       summary.md                        ← deployed by init
 ```
 
-**`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually via `brain-sync add <file>`.
+**`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually via `brain-sync add-file <file>`.
 
 Restrictions:
 - `_core/` is reserved for always-loaded global context (top-level only)
@@ -272,10 +272,12 @@ Registration is covered in [Talk to your brain](#talk-to-your-brain) above. The 
 | Tool | Description |
 |------|-------------|
 | `brain_sync_list` | List registered sources (optional `filter_path`) |
-| `brain_sync_add` | Register a URL for syncing or add a local file |
+| `brain_sync_add` | Register a URL for syncing |
+| `brain_sync_add_file` | Add a local `.md` or `.txt` file to knowledge/ |
 | `brain_sync_suggest_placement` | Suggest brain areas for placing a new document |
 | `brain_sync_update` | Update settings for a source (pass only the flags to change) |
-| `brain_sync_remove` | Unregister a source |
+| `brain_sync_remove` | Unregister a sync source |
+| `brain_sync_remove_file` | Remove a local file from knowledge/ |
 | `brain_sync_move` | Move a source to a new path |
 | `brain_sync_reconcile` | Reconcile DB target paths with filesystem after offline moves |
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
@@ -298,8 +300,10 @@ The server communicates over stdio using the MCP JSON-RPC protocol.
 |---|---|
 | `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
 | `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <source> [--path <path>] [--fetch-children] [--child-path <path>] [--sync-attachments] [--copy] [--dry-run] [--subtree <path>]` | Add a file or register a sync source to your brain (suggests placement when `--path` omitted) |
-| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a source |
+| `brain-sync add <url> [--path <path>] [--fetch-children] [--child-path <path>] [--sync-attachments] [--dry-run] [--subtree <path>]` | Register a URL for ongoing sync (suggests placement when `--path` omitted) |
+| `brain-sync add-file <file> [--path <path>] [--move] [--dry-run] [--subtree <path>]` | Import a local `.md` or `.txt` file into knowledge/ (copies by default) |
+| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a sync source |
+| `brain-sync remove-file <path>` | Remove a file from knowledge/ (path relative to knowledge/) |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
 | `brain-sync update <canonical-id-or-url> [--fetch-children] [--child-path <path>] [--sync-attachments\|--no-sync-attachments]` | Update source settings without re-adding |

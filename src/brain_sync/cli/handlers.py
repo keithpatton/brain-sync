@@ -179,128 +179,114 @@ def _resolve_collision(dest: Path, max_suffix: int = 10) -> Path | None:
 
 
 def handle_add(args) -> None:
-    import shutil
+    from urllib.parse import urlparse
 
-    from brain_sync.commands.placement import (
-        SourceKind,
-        classify_source,
-        extract_file_excerpt,
-        extract_title_from_url,
-    )
+    from brain_sync.commands.placement import extract_title_from_url
     from brain_sync.commands.sources import SourceAlreadyExistsError, add_source
     from brain_sync.sources import UnsupportedSourceError
 
-    try:
-        source_kind = classify_source(args.source)
-    except UnsupportedSourceError:
-        log.error("Not a URL or existing file: %s", args.source)
-        sys.exit(1)
-
-    # Flag validation
-    if source_kind == SourceKind.FILE:
-        if args.fetch_children or args.sync_attachments:
-            log.error("--fetch-children/--sync-attachments can only be used with URLs")
-            sys.exit(1)
-        file_path = Path(args.source).resolve()
-        if not file_path.exists():
-            log.error("File not found: %s", file_path)
-            sys.exit(1)
-        supported = {".md", ".txt"}
-        if file_path.suffix.lower() in {".pdf", ".docx"}:
-            log.error("Unsupported: %s — use brain-sync convert to produce markdown first", file_path.suffix)
-            sys.exit(1)
-        if file_path.suffix.lower() not in supported:
-            log.error("Unsupported file type: %s (supported: %s)", file_path.suffix, ", ".join(sorted(supported)))
-            sys.exit(1)
-
-    if source_kind == SourceKind.URL and getattr(args, "copy", False):
-        log.error("--copy can only be used with local files")
+    # URL-only: reject non-URLs with helpful hint
+    parsed = urlparse(args.source)
+    if parsed.scheme not in ("http", "https"):
+        log.error("Not a URL. Use `brain-sync add-file <path>` for local files.")
         sys.exit(1)
 
     root = _resolve_root_or_exit(args)
 
     # Early duplicate check — before interactive placement to avoid wasted effort
-    if source_kind == SourceKind.URL:
-        from brain_sync.commands.sources import check_source_exists
+    from brain_sync.commands.sources import check_source_exists
 
-        existing = check_source_exists(root, args.source)
-        if existing is not None:
-            log.warning("Source already registered: %s", existing.canonical_id)
-            log.warning("  URL: %s", existing.source_url)
-            log.warning("  Path: %s", existing.target_path)
-            return
-
-    # --- URL branch ---
-    if source_kind == SourceKind.URL:
-        if args.target_path is None:
-            # Interactive placement for URLs — resolve real title for Google Docs
-            from brain_sync.sources import canonical_filename, detect_source_type, extract_id
-            from brain_sync.sources.title_resolution import resolve_source_title_sync
-
-            title = resolve_source_title_sync(args.source) or extract_title_from_url(args.source) or "Untitled"
-            source_type = detect_source_type(args.source)
-            doc_id = extract_id(source_type, args.source)
-            filename = canonical_filename(source_type, doc_id, title)
-            subtree = args.subtree
-            if subtree is None:
-                subtree = _detect_subtree(root)
-
-            selection = _interactive_placement(
-                root,
-                title,
-                "",
-                filename,
-                args.source,
-                subtree,
-                getattr(args, "dry_run", False),
-            )
-            if selection.cancelled:
-                return
-            # Extract directory portion from selection path
-            target_path = str(Path(selection.path).parent)
-        else:
-            target_path = args.target_path
-
-        try:
-            result = add_source(
-                root=root,
-                url=args.source,
-                target_path=target_path,
-                fetch_children=args.fetch_children,
-                sync_attachments=args.sync_attachments,
-                child_path=getattr(args, "child_path", None),
-            )
-        except UnsupportedSourceError:
-            log.exception("Unsupported source")
-            return
-        except SourceAlreadyExistsError as e:
-            log.warning("Source already registered: %s", e.canonical_id)
-            log.warning("  URL: %s", e.source_url)
-            log.warning("  Path: %s", e.target_path)
-            return
-        except BrainNotFoundError:
-            log.exception("Cannot resolve brain root")
-            sys.exit(1)
-
-        log.info("Registered source: %s", result.canonical_id)
-        log.info("  URL: %s", result.source_url)
-        log.info("  Path: knowledge/%s", result.target_path)
-        log.info(
-            "  Children: %s, Attachments: %s",
-            result.fetch_children,
-            result.sync_attachments,
-        )
-        log.info("  Will sync on next `brain-sync run`")
+    existing = check_source_exists(root, args.source)
+    if existing is not None:
+        log.warning("Source already registered: %s", existing.canonical_id)
+        log.warning("  URL: %s", existing.source_url)
+        log.warning("  Path: %s", existing.target_path)
         return
 
-    # --- File branch ---
-    file_path = Path(args.source).resolve()
-    title = file_path.stem
-    excerpt = extract_file_excerpt(file_path)
+    if args.target_path is None:
+        # Interactive placement — resolve real title for Google Docs
+        from brain_sync.sources import canonical_filename, detect_source_type, extract_id
+        from brain_sync.sources.title_resolution import resolve_source_title_sync
+
+        title = resolve_source_title_sync(args.source) or extract_title_from_url(args.source) or "Untitled"
+        source_type = detect_source_type(args.source)
+        doc_id = extract_id(source_type, args.source)
+        filename = canonical_filename(source_type, doc_id, title)
+        subtree = args.subtree
+        if subtree is None:
+            subtree = _detect_subtree(root)
+
+        selection = _interactive_placement(
+            root,
+            title,
+            "",
+            filename,
+            args.source,
+            subtree,
+            getattr(args, "dry_run", False),
+        )
+        if selection.cancelled:
+            return
+        # Extract directory portion from selection path
+        target_path = str(Path(selection.path).parent)
+    else:
+        target_path = args.target_path
+
+    try:
+        result = add_source(
+            root=root,
+            url=args.source,
+            target_path=target_path,
+            fetch_children=args.fetch_children,
+            sync_attachments=args.sync_attachments,
+            child_path=getattr(args, "child_path", None),
+        )
+    except UnsupportedSourceError:
+        log.exception("Unsupported source")
+        return
+    except SourceAlreadyExistsError as e:
+        log.warning("Source already registered: %s", e.canonical_id)
+        log.warning("  URL: %s", e.source_url)
+        log.warning("  Path: %s", e.target_path)
+        return
+    except BrainNotFoundError:
+        log.exception("Cannot resolve brain root")
+        sys.exit(1)
+
+    log.info("Registered source: %s", result.canonical_id)
+    log.info("  URL: %s", result.source_url)
+    log.info("  Path: knowledge/%s", result.target_path)
+    log.info(
+        "  Children: %s, Attachments: %s",
+        result.fetch_children,
+        result.sync_attachments,
+    )
+    log.info("  Will sync on next `brain-sync run`")
+
+
+def handle_add_file(args) -> None:
+    import shutil
+
+    from brain_sync.commands.placement import extract_file_excerpt
+    from brain_sync.fileops import ADDFILE_EXTENSIONS
+
+    file_path = Path(args.file).resolve()
+    if not file_path.exists():
+        log.error("File not found: %s", file_path)
+        sys.exit(1)
+
+    ext = file_path.suffix.lower()
+    if ext not in ADDFILE_EXTENSIONS:
+        log.error("Unsupported file type: %s. add-file supports: %s", ext, ", ".join(sorted(ADDFILE_EXTENSIONS)))
+        sys.exit(1)
+
+    root = _resolve_root_or_exit(args)
 
     if args.target_path is not None:
         target_dir = root / "knowledge" / args.target_path
     else:
+        title = file_path.stem
+        excerpt = extract_file_excerpt(file_path)
         filename = file_path.name
         subtree = args.subtree
         if subtree is None:
@@ -311,13 +297,12 @@ def handle_add(args) -> None:
             title,
             excerpt,
             filename,
-            args.source,
+            str(file_path),
             subtree,
             getattr(args, "dry_run", False),
         )
         if selection.cancelled:
             return
-        # selection.path is "area/subarea/filename.ext"
         target_dir = root / "knowledge" / str(Path(selection.path).parent)
 
     dest = _resolve_collision(target_dir / file_path.name)
@@ -326,12 +311,36 @@ def handle_add(args) -> None:
         return
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    if getattr(args, "copy", False):
-        shutil.copy2(str(file_path), str(dest))
-        log.info("Copied to %s", dest.relative_to(root))
-    else:
+    if getattr(args, "move", False):
         shutil.move(str(file_path), str(dest))
         log.info("Moved to %s", dest.relative_to(root))
+    else:
+        shutil.copy2(str(file_path), str(dest))
+        log.info("Copied to %s", dest.relative_to(root))
+
+
+def handle_remove_file(args) -> None:
+    root = _resolve_root_or_exit(args)
+    knowledge_root = root / "knowledge"
+    target = knowledge_root / args.file
+
+    # Safety: ensure target is within knowledge/
+    try:
+        target.resolve().relative_to(knowledge_root.resolve())
+    except ValueError:
+        log.error("Path must be within knowledge/: %s", args.file)
+        sys.exit(1)
+
+    if not target.exists():
+        log.error("File not found: knowledge/%s", args.file)
+        sys.exit(1)
+
+    if not target.is_file():
+        log.error("Not a file: knowledge/%s", args.file)
+        sys.exit(1)
+
+    target.unlink()
+    log.info("Removed knowledge/%s. Insights will update on next regen.", args.file)
 
 
 def _detect_subtree(root: Path) -> str | None:

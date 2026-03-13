@@ -43,9 +43,11 @@ artifacts do not answer the question. Stop once the question can be answered.
 |------|---------|
 | `brain_sync_list` | List registered sources (optional `filter_path`). |
 | `brain_sync_suggest_placement` | Suggest placement areas for a new document. **Always present results to the user.** |
-| `brain_sync_add` | Register a URL for syncing or add a local file (`source`, `target_path`, optional flags). |
+| `brain_sync_add` | Register a URL for syncing (`source`, `target_path`, optional flags). |
+| `brain_sync_add_file` | Add a local `.md` or `.txt` file to knowledge/ (`source`, `target_path`, `copy`). |
 | `brain_sync_update` | Update settings for a source — pass only the flags to change (`fetch_children`, `sync_attachments`, `child_path`). |
-| `brain_sync_remove` | Unregister a source (`source` = canonical ID or URL). |
+| `brain_sync_remove` | Unregister a sync source (`source` = canonical ID or URL). |
+| `brain_sync_remove_file` | Remove a local file from knowledge/ (`path` relative to knowledge/). |
 | `brain_sync_move` | Move a source to a new path (`source`, `to_path`). |
 | `brain_sync_regen` | Regenerate insights (optional `path`, omit for all). |
 
@@ -84,12 +86,12 @@ custom path. Never auto-select.
 
 ### Step 2 — Add the source
 
-Call `brain_sync_add` with the user's chosen `target_path`:
+Call the appropriate tool with the user's chosen `target_path`:
 
-- **URLs:** pass `source` (the URL) and `target_path`. Optional flags:
-  `fetch_children`, `sync_attachments`, `child_path`.
-- **Files:** save attachments to a temp file, then pass the file path as
-  `source` with `target_path` and `copy=true`.
+- **URLs:** call `brain_sync_add` with `source` (the URL) and `target_path`.
+  Optional flags: `fetch_children`, `sync_attachments`, `child_path`.
+- **Files:** save to a temp file, then call `brain_sync_add_file` with the
+  file path as `source`, `target_path`, and `copy=true`.
 
 Use $ARGUMENTS as a hint for which area to query (e.g. invoked with "AAA",
 search for the matching initiative). Otherwise infer from conversation context.

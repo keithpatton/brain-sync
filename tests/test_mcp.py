@@ -296,17 +296,30 @@ class TestBrainSyncAdd:
         assert result["status"] == "error"
         assert result["error"] == "unsupported_url"
 
+    def test_add_rejects_file_path(self, _dummy_root, tmp_path):
+        """add rejects non-URL input with helpful hint."""
+        from brain_sync.mcp import brain_sync_add
+
+        src_file = tmp_path / "notes.md"
+        src_file.write_text("content", encoding="utf-8")
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_add(ctx, source=str(src_file), target_path="test")
+        assert result["status"] == "error"
+        assert result["error"] == "not_a_url"
+        assert "brain_sync_add_file" in result["message"]
+
 
 class TestBrainSyncAddFile:
     def test_add_file_copied(self, brain_root, tmp_path):
         """File is copied to knowledge/ by default (MCP copy=True)."""
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.mcp import brain_sync_add_file
 
         src_file = tmp_path / "notes.md"
         src_file.write_text("My notes content.", encoding="utf-8")
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA")
+        result = brain_sync_add_file(ctx, source=str(src_file), target_path="initiatives/AAA")
         assert result["status"] == "ok"
         assert result["action"] == "copied"
         assert "knowledge/initiatives/AAA/notes.md" in result["path"]
@@ -317,51 +330,48 @@ class TestBrainSyncAddFile:
 
     def test_add_file_moved(self, brain_root, tmp_path):
         """File is moved when copy=False."""
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.mcp import brain_sync_add_file
 
         src_file = tmp_path / "notes.md"
         src_file.write_text("My notes content.", encoding="utf-8")
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA", copy=False)
+        result = brain_sync_add_file(ctx, source=str(src_file), target_path="initiatives/AAA", copy=False)
         assert result["status"] == "ok"
         assert result["action"] == "moved"
         # Original file gone
         assert not src_file.exists()
 
-    def test_add_file_url_flags_rejected(self, brain_root, tmp_path):
-        """URL-only flags error when used with file source."""
-        from brain_sync.mcp import brain_sync_add
-
-        src_file = tmp_path / "notes.md"
-        src_file.write_text("content", encoding="utf-8")
+    def test_add_file_rejects_url(self, brain_root):
+        """add-file rejects URL input."""
+        from brain_sync.mcp import brain_sync_add_file
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_add(
+        result = brain_sync_add_file(
             ctx,
-            source=str(src_file),
+            source="https://example.com/page",
             target_path="test",
-            fetch_children=True,
         )
         assert result["status"] == "error"
-        assert result["error"] == "invalid_flags"
+        assert result["error"] == "file_not_found"
 
-    def test_add_file_pdf_rejected(self, brain_root, tmp_path):
-        """PDF files are explicitly rejected."""
-        from brain_sync.mcp import brain_sync_add
+    def test_add_file_unsupported_extension(self, brain_root, tmp_path):
+        """Unsupported file types are rejected with helpful message."""
+        from brain_sync.mcp import brain_sync_add_file
 
-        src_file = tmp_path / "doc.pdf"
-        src_file.write_bytes(b"fake pdf")
+        for ext in [".pdf", ".docx", ".png", ".jpg"]:
+            src_file = tmp_path / f"doc{ext}"
+            src_file.write_bytes(b"fake content")
 
-        ctx = _make_ctx(brain_root)
-        result = brain_sync_add(ctx, source=str(src_file), target_path="test")
-        assert result["status"] == "error"
-        assert result["error"] == "unsupported_file_type"
-        assert ".pdf" in result["message"]
+            ctx = _make_ctx(brain_root)
+            result = brain_sync_add_file(ctx, source=str(src_file), target_path="test")
+            assert result["status"] == "error", f"Expected error for {ext}"
+            assert result["error"] == "unsupported_file_type", f"Wrong error for {ext}"
+            assert ".md" in result["message"]
 
     def test_add_file_collision_suffix(self, brain_root, tmp_path):
         """Numeric suffix applied when destination exists."""
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.mcp import brain_sync_add_file
 
         # Create existing file at destination
         dest_dir = brain_root / "knowledge" / "initiatives" / "AAA"
@@ -372,30 +382,81 @@ class TestBrainSyncAddFile:
         src_file.write_text("new content", encoding="utf-8")
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA")
+        result = brain_sync_add_file(ctx, source=str(src_file), target_path="initiatives/AAA")
         assert result["status"] == "ok"
         assert "notes-2.md" in result["path"]
         assert (dest_dir / "notes-2.md").exists()
 
     def test_add_file_not_found(self, brain_root):
         """Non-existent file source returns error."""
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.mcp import brain_sync_add_file
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_add(ctx, source="/nonexistent/path/doc.md", target_path="test")
+        result = brain_sync_add_file(ctx, source="/nonexistent/path/doc.md", target_path="test")
         assert result["status"] == "error"
+        assert result["error"] == "file_not_found"
 
     def test_add_file_txt_supported(self, brain_root, tmp_path):
         """Plain text files are supported."""
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.mcp import brain_sync_add_file
 
         src_file = tmp_path / "readme.txt"
         src_file.write_text("plain text", encoding="utf-8")
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_add(ctx, source=str(src_file), target_path="initiatives/AAA")
+        result = brain_sync_add_file(ctx, source=str(src_file), target_path="initiatives/AAA")
         assert result["status"] == "ok"
         assert (brain_root / "knowledge" / "initiatives" / "AAA" / "readme.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Remove File
+# ---------------------------------------------------------------------------
+
+
+class TestBrainSyncRemoveFile:
+    def test_remove_file_success(self, brain_root):
+        """File is removed from knowledge/."""
+        from brain_sync.mcp import brain_sync_remove_file
+
+        target = brain_root / "knowledge" / "initiatives" / "AAA" / "notes.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("content", encoding="utf-8")
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_remove_file(ctx, path="initiatives/AAA/notes.md")
+        assert result["status"] == "ok"
+        assert not target.exists()
+
+    def test_remove_file_not_found(self, brain_root):
+        """Non-existent file returns error."""
+        from brain_sync.mcp import brain_sync_remove_file
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_remove_file(ctx, path="initiatives/AAA/nonexistent.md")
+        assert result["status"] == "error"
+        assert result["error"] == "file_not_found"
+
+    def test_remove_file_path_traversal(self, brain_root, tmp_path):
+        """Path traversal outside knowledge/ is blocked."""
+        from brain_sync.mcp import brain_sync_remove_file
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_remove_file(ctx, path="../../etc/passwd")
+        assert result["status"] == "error"
+        assert result["error"] in ("invalid_path", "file_not_found")
+
+    def test_remove_file_is_directory(self, brain_root):
+        """Directories are rejected."""
+        from brain_sync.mcp import brain_sync_remove_file
+
+        target_dir = brain_root / "knowledge" / "initiatives" / "AAA"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        ctx = _make_ctx(brain_root)
+        result = brain_sync_remove_file(ctx, path="initiatives/AAA")
+        assert result["status"] == "error"
+        assert result["error"] == "not_a_file"
 
 
 # ---------------------------------------------------------------------------

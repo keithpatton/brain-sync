@@ -252,6 +252,7 @@ def main() -> None:
     from brain_sync.cli import build_parser
     from brain_sync.cli.handlers import (
         handle_add,
+        handle_add_file,
         handle_config,
         handle_convert,
         handle_init,
@@ -261,6 +262,7 @@ def main() -> None:
         handle_reconcile,
         handle_regen,
         handle_remove,
+        handle_remove_file,
         handle_run,
         handle_status,
         handle_update,
@@ -286,7 +288,9 @@ def main() -> None:
         "init": handle_init,
         "run": handle_run,
         "add": handle_add,
+        "add-file": handle_add_file,
         "remove": handle_remove,
+        "remove-file": handle_remove_file,
         "list": handle_list,
         "move": handle_move,
         "update": handle_update,

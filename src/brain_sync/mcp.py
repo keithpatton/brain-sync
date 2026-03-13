@@ -232,12 +232,9 @@ def brain_sync_list(ctx: Context, filter_path: str | None = None) -> dict:
 @server.tool(
     name="brain_sync_add",
     description=(
-        "Register a URL for syncing or add a local file to the brain. "
-        "For URLs: supports Confluence pages and Google Docs — registers for ongoing sync. "
-        "For files: one-time placement into knowledge/. Save attachments to a temp file first. "
+        "Register a URL for syncing. Supports Confluence pages and Google Docs. "
         "target_path is required — call suggest_placement first to determine it, "
-        "present the candidates to the user, and use their chosen path. "
-        "copy defaults to true for files (safe for temp files)."
+        "present the candidates to the user, and use their chosen path."
     ),
 )
 def brain_sync_add(
@@ -247,71 +244,75 @@ def brain_sync_add(
     fetch_children: bool = False,
     sync_attachments: bool = False,
     child_path: str | None = None,
-    copy: bool = True,
 ) -> dict:
-    """Register a source URL for syncing or add a local file."""
-    import shutil
-
-    from brain_sync.commands.placement import SourceKind, classify_source
+    """Register a source URL for syncing."""
+    from urllib.parse import urlparse
 
     rt = _runtime(ctx)
 
-    try:
-        source_kind = classify_source(source)
-    except UnsupportedSourceError:
-        return {"status": "error", "error": "unsupported_source", "source": source}
-
-    # --- URL branch ---
-    if source_kind == SourceKind.URL:
-        if copy is not True:
-            # copy param is file-only but we silently ignore it for URLs
-            pass
-        try:
-            result = add_source(
-                root=rt.root,
-                url=source,
-                target_path=target_path,
-                fetch_children=fetch_children,
-                sync_attachments=sync_attachments,
-                child_path=child_path,
-            )
-            return {"status": "ok", **asdict(result)}
-        except SourceAlreadyExistsError as e:
-            return {
-                "status": "error",
-                "error": "source_already_exists",
-                "canonical_id": e.canonical_id,
-                "source_url": e.source_url,
-                "target_path": e.target_path,
-            }
-        except UnsupportedSourceError:
-            return {"status": "error", "error": "unsupported_url", "source": source}
-
-    # --- File branch ---
-    if fetch_children or sync_attachments:
+    # URL-only: reject non-URLs with helpful hint
+    parsed = urlparse(source)
+    if parsed.scheme not in ("http", "https"):
         return {
             "status": "error",
-            "error": "invalid_flags",
-            "message": "--fetch-children/--sync-attachments can only be used with URLs",
+            "error": "not_a_url",
+            "message": "Use brain_sync_add_file for local files (.md or .txt)",
         }
+
+    try:
+        result = add_source(
+            root=rt.root,
+            url=source,
+            target_path=target_path,
+            fetch_children=fetch_children,
+            sync_attachments=sync_attachments,
+            child_path=child_path,
+        )
+        return {"status": "ok", **asdict(result)}
+    except SourceAlreadyExistsError as e:
+        return {
+            "status": "error",
+            "error": "source_already_exists",
+            "canonical_id": e.canonical_id,
+            "source_url": e.source_url,
+            "target_path": e.target_path,
+        }
+    except UnsupportedSourceError:
+        return {"status": "error", "error": "unsupported_url", "source": source}
+
+
+@server.tool(
+    name="brain_sync_add_file",
+    description=(
+        "Add a local file to the brain. Supports .md and .txt files. "
+        "Save attachments to a temp file first, then call this tool. "
+        "target_path is required — call suggest_placement first to determine it. "
+        "copy defaults to true (safe for temp files). If false, the source file is moved instead of copied."
+    ),
+)
+def brain_sync_add_file(
+    ctx: Context,
+    source: str,
+    target_path: str,
+    copy: bool = True,
+) -> dict:
+    """Add a local file to the brain."""
+    import shutil
+
+    from brain_sync.fileops import ADDFILE_EXTENSIONS
+
+    rt = _runtime(ctx)
 
     file_path = Path(source).resolve()
     if not file_path.exists():
         return {"status": "error", "error": "file_not_found", "source": source}
 
-    if file_path.suffix.lower() in {".pdf", ".docx"}:
+    ext = file_path.suffix.lower()
+    if ext not in ADDFILE_EXTENSIONS:
         return {
             "status": "error",
             "error": "unsupported_file_type",
-            "message": f"Unsupported: {file_path.suffix} — use brain-sync convert to produce markdown first",
-        }
-
-    supported = {".md", ".txt"}
-    if file_path.suffix.lower() not in supported:
-        return {
-            "status": "error",
-            "error": "unsupported_file_type",
-            "message": f"Unsupported: {file_path.suffix} (supported: {', '.join(sorted(supported))})",
+            "message": f"Unsupported file type: {ext}. add-file supports: {', '.join(sorted(ADDFILE_EXTENSIONS))}",
         }
 
     # Resolve destination with collision handling
@@ -344,6 +345,37 @@ def brain_sync_add(
 
     rel = normalize_path(dest.relative_to(rt.root))
     return {"status": "ok", "action": action, "path": rel}
+
+
+@server.tool(
+    name="brain_sync_remove_file",
+    description=(
+        "Remove a local (non-synced) file from knowledge/. "
+        "path is relative to knowledge/ (e.g. 'area/notes.md'). "
+        "Does not affect synced sources — use brain_sync_remove for those. "
+        "Insights will be updated on next regen cycle."
+    ),
+)
+def brain_sync_remove_file(ctx: Context, path: str) -> dict:
+    """Remove a file from knowledge/."""
+    rt = _runtime(ctx)
+    knowledge_root = rt.root / "knowledge"
+    target = knowledge_root / path
+
+    # Safety: ensure target is within knowledge/
+    try:
+        target.resolve().relative_to(knowledge_root.resolve())
+    except ValueError:
+        return {"status": "error", "error": "invalid_path", "message": "Path must be within knowledge/"}
+
+    if not target.exists():
+        return {"status": "error", "error": "file_not_found", "path": path}
+
+    if not target.is_file():
+        return {"status": "error", "error": "not_a_file", "path": path}
+
+    target.unlink()
+    return {"status": "ok", "path": path, "hint": "Insights will update on next regen."}
 
 
 @server.tool(
