@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -15,8 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-      - run: pip install -e ".[dev,google]"
+      - run: pip install uv
+      - run: uv pip install --system -e ".[dev,google]"
       - run: ruff check
       - run: pyright
 
@@ -32,8 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-      - run: pip install -e ".[dev]"
+      - run: pip install uv
+      - run: uv pip install --system -e ".[dev]"
       - name: Fast tests (unit/integration/external/mcp)
         run: python -m pytest -n auto -m "unit or integration or external or mcp" --timeout=30 -v
       - name: Slow tests (system/e2e)
