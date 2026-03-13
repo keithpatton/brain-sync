@@ -12,15 +12,12 @@ assembled context in → summary.md out.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import threading
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -37,6 +34,7 @@ from brain_sync.fs_utils import (
     is_content_dir,
     is_readable_file,
 )
+from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
 from brain_sync.state import (
     InsightState,
@@ -459,16 +457,44 @@ def text_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, normalise(a), normalise(b)).ratio()
 
 
-@dataclass
-class ClaudeResult:
-    """Result from a Claude CLI invocation."""
+# Backward-compat alias — existing tests import ``ClaudeResult`` from here.
+ClaudeResult = LlmResult
 
-    success: bool
-    output: str
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    num_turns: int | None = None
-    duration_ms: int | None = None
+
+class _InvokeClaudeShim:
+    """Adapter that routes ``backend.invoke()`` through :func:`invoke_claude`.
+
+    When no explicit backend is passed to regen functions, this shim is used
+    so that existing tests that ``patch("brain_sync.regen.invoke_claude")``
+    continue to intercept LLM calls.
+
+    Once all tests migrate to passing ``FakeBackend`` directly, this shim
+    can be removed.
+    """
+
+    async def invoke(
+        self,
+        prompt: str,
+        cwd: Path,
+        timeout: int = 300,
+        model: str = "",
+        effort: str = "",
+        max_turns: int = 6,
+        system_prompt: str | None = None,
+        tools: str | None = None,
+        is_chunk: bool = False,
+    ) -> LlmResult:
+        return await invoke_claude(
+            prompt,
+            cwd,
+            timeout=timeout,
+            model=model,
+            effort=effort,
+            max_turns=max_turns,
+            system_prompt=system_prompt,
+            tools=tools,
+            is_chunk=is_chunk,
+        )
 
 
 @dataclass
@@ -761,166 +787,69 @@ async def invoke_claude(
     resource_id: str | None = None,
     is_chunk: bool = False,
 ) -> ClaudeResult:
-    """Invoke Claude CLI in non-interactive mode.
+    """Backward-compat shim — delegates to the LLM backend.
 
-    Prompt is delivered via stdin. When *system_prompt* and *tools* are set,
-    the CLI's heavy agent system prompt (~130K tokens) is replaced with a
-    minimal directive, turning it into a thin inference wrapper.
+    Existing tests that ``patch("brain_sync.regen.invoke_claude")`` continue
+    to work.  New code should call ``backend.invoke()`` directly.
 
-    When *session_id* is provided, records a token_events row for telemetry.
+    Telemetry recording wraps the result when *session_id* is provided.
     """
-    t0 = time.monotonic()
-
-    cmd = [
-        "claude",
-        "--print",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        "--no-session-persistence",
-        "--max-turns",
-        str(max_turns),
-    ]
-    if system_prompt is not None:
-        cmd.extend(["--system-prompt", system_prompt])
-    if tools is not None:
-        cmd.extend(["--tools", tools])
-    else:
-        # Legacy path: full agent mode with tool permissions
-        cmd.extend(["--dangerously-skip-permissions", "--disable-slash-commands"])
-    if model:
-        cmd.extend(["--model", model])
-    if effort:
-        cmd.extend(["--effort", effort])
-
-    log.debug("Claude CLI cmd: %s", " ".join(c for c in cmd))
-
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
-    def _record(result: ClaudeResult) -> ClaudeResult:
-        """Record telemetry if session_id is set. Returns result unchanged."""
-        if session_id and operation_type:
-            from brain_sync.token_tracking import record_token_event
-
-            record_token_event(
-                root=cwd,
-                session_id=session_id,
-                operation_type=operation_type,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                is_chunk=is_chunk,
-                model=model or None,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                duration_ms=result.duration_ms,
-                num_turns=result.num_turns,
-                success=result.success,
-            )
-        return result
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
+    backend = get_backend()
+    result = await backend.invoke(
+        prompt,
+        cwd,
+        timeout=timeout,
+        model=model,
+        effort=effort,
+        max_turns=max_turns,
+        system_prompt=system_prompt,
+        tools=tools,
+        is_chunk=is_chunk,
     )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=prompt.encode("utf-8")),
-            timeout=timeout,
+
+    # Record telemetry
+    if session_id and operation_type:
+        _record_telemetry(
+            result,
+            cwd=cwd,
+            session_id=session_id,
+            operation_type=operation_type,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            is_chunk=is_chunk,
+            model=model,
         )
-    except TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        log.warning("Claude CLI timed out after %ds", timeout)
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
-    except BaseException:
-        # CancelledError, KeyboardInterrupt — kill subprocess before propagating
-        proc.kill()
-        await proc.communicate()
-        raise
 
-    elapsed_ms = int((time.monotonic() - t0) * 1000)
-    stderr_text = stderr.decode("utf-8", errors="replace").strip()
-    stdout_text = stdout.decode("utf-8", errors="replace")
+    return result
 
-    if stderr_text:
-        for line in stderr_text.splitlines():
-            log.info("Claude CLI: %s", line)
 
-    if proc.returncode != 0:
-        log.warning("Claude CLI failed (rc=%d) stderr: %s", proc.returncode, stderr_text[:500])
-        if stdout_text.strip():
-            log.warning("Claude CLI failed stdout: %s", stdout_text[:1000])
-        return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
+def _record_telemetry(
+    result: LlmResult,
+    *,
+    cwd: Path,
+    session_id: str,
+    operation_type: str,
+    resource_type: str | None,
+    resource_id: str | None,
+    is_chunk: bool,
+    model: str,
+) -> None:
+    """Record a token_events row for telemetry."""
+    from brain_sync.token_tracking import record_token_event
 
-    # Parse stream-json NDJSON output for token counts and text
-    input_tokens = None
-    output_tokens = None
-    num_turns = None
-    result_text = stdout_text
-    try:
-        parsed = _parse_stream_json(stdout_text)
-        result_text = parsed.text or stdout_text
-        input_tokens = parsed.input_tokens
-        output_tokens = parsed.output_tokens
-        num_turns = parsed.num_turns
-        log.info(
-            "Claude CLI: model=%s tokens=%s/%s turns=%s wall=%ss",
-            model or "default",
-            input_tokens,
-            output_tokens,
-            num_turns,
-            f"{elapsed_ms / 1000:.1f}",
-        )
-        if parsed.is_error:
-            log.warning("Claude CLI error subtype: %s", parsed.error_subtype)
-            return _record(
-                ClaudeResult(
-                    success=False,
-                    output=result_text,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    num_turns=num_turns,
-                    duration_ms=elapsed_ms,
-                )
-            )
-    except Exception:
-        log.warning("Stream-JSON parsing failed, attempting text-only extraction")
-        input_tokens, output_tokens = _parse_token_counts(stderr_text)
-        # Lightweight fallback: extract assistant text without touching usage fields
-        fallback_parts: list[str] = []
-        for line in stdout_text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if event.get("type") == "assistant":
-                for block in event.get("message", {}).get("content", []):
-                    if block.get("type") == "text":
-                        fallback_parts.append(block.get("text", ""))
-        if fallback_parts:
-            result_text = "".join(fallback_parts)
-            log.info("Recovered assistant text from NDJSON fallback (%d chars)", len(result_text))
-        else:
-            log.warning("Could not extract assistant text from NDJSON, failing invocation")
-            return _record(ClaudeResult(success=False, output="", duration_ms=elapsed_ms))
-
-    return _record(
-        ClaudeResult(
-            success=True,
-            output=result_text,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            num_turns=num_turns,
-            duration_ms=elapsed_ms,
-        )
+    record_token_event(
+        root=cwd,
+        session_id=session_id,
+        operation_type=operation_type,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        is_chunk=is_chunk,
+        model=model or None,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        duration_ms=result.duration_ms,
+        num_turns=result.num_turns,
+        success=result.success,
     )
 
 
@@ -1318,6 +1247,7 @@ async def regen_single_folder(
     owner_id: str | None = None,
     session_id: str | None = None,
     regen_id: str | None = None,
+    backend: LlmBackend | None = None,
 ) -> SingleFolderResult:
     """Process a single knowledge folder for regen (no walk-up).
 
@@ -1328,6 +1258,8 @@ async def regen_single_folder(
         config = RegenConfig.load()
     if regen_id is None:
         regen_id = uuid4().hex[:6]
+    if backend is None:
+        backend = _InvokeClaudeShim()
 
     similarity_threshold = config.similarity_threshold
     current_path = knowledge_path
@@ -1493,7 +1425,7 @@ async def regen_single_folder(
                 for i, chunk in enumerate(chunks, 1):
                     heading = _first_heading(chunk) or f"part {i}"
                     chunk_result = await async_retry(
-                        invoke_claude,
+                        backend.invoke,
                         _build_chunk_prompt(chunk, i, len(chunks), filename, heading),
                         cwd=root,
                         timeout=config.timeout,
@@ -1502,14 +1434,21 @@ async def regen_single_folder(
                         max_turns=1,
                         system_prompt=MINIMAL_SYSTEM_PROMPT,
                         tools="",
-                        session_id=session_id,
-                        operation_type=OP_REGEN,
-                        resource_type="knowledge",
-                        resource_id=current_path,
                         is_chunk=True,
                         is_success=lambda r: r.success,
                         breaker=claude_breaker,
                     )
+                    if session_id:
+                        _record_telemetry(
+                            chunk_result,
+                            cwd=root,
+                            session_id=session_id,
+                            operation_type=OP_REGEN,
+                            resource_type="knowledge",
+                            resource_id=current_path,
+                            is_chunk=True,
+                            model=config.model,
+                        )
                     file_summaries.append(chunk_result.output.strip())
                     log.debug(
                         "[%s] Chunk %d/%d for %s: in=%s out=%s tokens",
@@ -1548,7 +1487,7 @@ async def regen_single_folder(
             prompt_hash,
         )
         result = await async_retry(
-            invoke_claude,
+            backend.invoke,
             prompt_result.text,
             cwd=root,
             timeout=config.timeout,
@@ -1557,14 +1496,21 @@ async def regen_single_folder(
             max_turns=config.max_turns,
             system_prompt=MINIMAL_SYSTEM_PROMPT,
             tools="",
-            session_id=session_id,
-            operation_type=OP_REGEN,
-            resource_type="knowledge",
-            resource_id=current_path,
             is_chunk=False,
             is_success=lambda r: r.success,
             breaker=claude_breaker,
         )
+        if session_id:
+            _record_telemetry(
+                result,
+                cwd=root,
+                session_id=session_id,
+                operation_type=OP_REGEN,
+                resource_type="knowledge",
+                resource_id=current_path,
+                is_chunk=False,
+                model=config.model,
+            )
     except Exception as e:
         log.error("Regen failed for %s: %s", current_path or "(root)", e, exc_info=True)
         now = datetime.now(UTC).isoformat()
@@ -1703,6 +1649,7 @@ async def regen_path(
     config: RegenConfig | None = None,
     owner_id: str | None = None,
     session_id: str | None = None,
+    backend: LlmBackend | None = None,
 ) -> int:
     """Run the deterministic incremental regen loop for a knowledge path.
 
@@ -1714,6 +1661,8 @@ async def regen_path(
     """
     if config is None:
         config = RegenConfig.load()
+    if backend is None:
+        backend = _InvokeClaudeShim()
 
     regen_id = uuid4().hex[:6]
     regen_count = 0
@@ -1727,6 +1676,7 @@ async def regen_path(
             owner_id=owner_id,
             session_id=session_id,
             regen_id=regen_id,
+            backend=backend,
         )
 
         if result.action == "regenerated":
@@ -1785,6 +1735,7 @@ async def regen_all(
     config: RegenConfig | None = None,
     owner_id: str | None = None,
     session_id: str | None = None,
+    backend: LlmBackend | None = None,
 ) -> int:
     """Regenerate insights for all knowledge paths using topological wave processing.
 
@@ -1796,6 +1747,8 @@ async def regen_all(
     """
     if config is None:
         config = RegenConfig.load()
+    if backend is None:
+        backend = _InvokeClaudeShim()
 
     knowledge_root = root / "knowledge"
     content_paths = find_all_content_paths(knowledge_root)
@@ -1834,6 +1787,7 @@ async def regen_all(
                     owner_id=owner_id,
                     session_id=session_id,
                     regen_id=regen_id,
+                    backend=backend,
                 )
                 if result.action == "regenerated":
                     total += 1

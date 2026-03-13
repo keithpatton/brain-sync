@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-from pathlib import Path
 from uuid import uuid4
 
-LOG_DIR = Path.home() / ".brain-sync" / "logs"
+from brain_sync.config import CONFIG_DIR
+
+LOG_DIR = CONFIG_DIR / "logs"
 LOG_FILE = LOG_DIR / "brain-sync.log"
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 BACKUP_COUNT = 5

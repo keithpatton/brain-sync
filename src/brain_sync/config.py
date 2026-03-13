@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-CONFIG_DIR: Path = Path.home() / ".brain-sync"
+CONFIG_DIR: Path = (
+    Path(os.environ["BRAIN_SYNC_CONFIG_DIR"]) if "BRAIN_SYNC_CONFIG_DIR" in os.environ else Path.home() / ".brain-sync"
+)
 CONFIG_FILE: Path = CONFIG_DIR / "config.json"
 
 _lock = threading.Lock()

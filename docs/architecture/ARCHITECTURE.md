@@ -20,6 +20,7 @@ All source lives under `src/brain_sync/`.
 | Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, and write knowledge files |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind `SourceAdapter` protocol |
 | REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + attachments) |
+| LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, Claude CLI transport, deterministic test fake |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
 | State | `state`, `token_tracking` | SQLite WAL persistence (sources, documents, relationships, insight state, token events) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
@@ -87,6 +88,21 @@ Inline images from Google Docs are discovered via `DiscoveredImage` (in `sources
 
 **MCP runtime ownership** — `BrainRuntime` is the single owner of MCP process state (root path, area index, concurrency locks). Module-level variables in `mcp.py` must remain pure definitions (constants, helper functions, tool registrations). Any variable whose value depends on filesystem state, configuration, or runtime execution must live in `BrainRuntime`. Future contributors adding new runtime state (connections, caches, locks) must add it to `BrainRuntime`, not as a new module global.
 
+### LLM Backend Abstraction
+
+All LLM invocations go through `LlmBackend.invoke()` (protocol in `llm/base.py`). Two implementations:
+
+- **`ClaudeCliBackend`** (`llm/claude_cli.py`) — Production backend. Spawns `claude --print` subprocess, parses NDJSON stream output, handles timeouts.
+- **`FakeBackend`** (`llm/fake.py`) — Test backend. Deterministic output from prompt hash. Modes: `stable`, `rewrite`, `fail`, `timeout`, `malformed`, `partial-stream`, `large-output`.
+
+Backend resolution: `get_backend()` checks `BRAIN_SYNC_LLM_BACKEND` env var (`fake` → `FakeBackend`, default → `ClaudeCliBackend`). Backend is resolved once at regen entry points (`regen_path`, `regen_all`) and threaded through the call chain as a `backend` parameter. No function below the entry point calls `get_backend()`.
+
+For backward compatibility, `regen_single_folder` defaults to `_InvokeClaudeShim` when no backend is passed, routing through `invoke_claude()` so existing test patches continue to work. New tests should pass `FakeBackend` directly.
+
+Telemetry recording (`_record_telemetry`) wraps `backend.invoke()` results — it is not part of the backend protocol.
+
+Prompt capture: when `BRAIN_SYNC_CAPTURE_PROMPTS` env var is set to a directory path, both backends write each prompt to `{dir}/{timestamp}_{hash}.prompt.txt`.
+
 ### Source Adapter Pattern
 
 The sync pipeline uses a `SourceAdapter` protocol (`sources/base.py`) to abstract per-source fetch logic. Each source type (Confluence, Google Docs) implements the protocol as a package under `sources/`.
@@ -138,6 +154,7 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 - **State persistence coupling** — `state._connect` no longer imported by command modules; replaced with public API (`delete_source`, `update_source_flags`, `ensure_db`, `update_source_target_path`)
 - **Cache invalidation race** — `process_source()` in daemon loop now invalidates global context cache when `_core/` sources change, closing the race between sync writes and regen reads
 - **Dead alias** — `_find_all_content_paths` alias removed from `regen.py`; callers use `find_all_content_paths` from `fs_utils` directly
+- **LLM coupling** — `invoke_claude()` subprocess logic extracted to `llm/claude_cli.py` behind `LlmBackend` protocol; deterministic `FakeBackend` enables integration tests without subprocess overhead
 
 ---
 
@@ -183,7 +200,7 @@ Old `token_events` rows are pruned on daemon startup. Default retention: 90 days
 
 New LLM workflows should:
 1. Use operation type constants from `token_tracking.py` (`OP_REGEN`, `OP_QUERY`, `OP_CLASSIFY`)
-2. Pass `session_id`, `operation_type`, `resource_type`, `resource_id` to `invoke_claude()`
+2. Resolve a backend via `get_backend()` and call `backend.invoke()`, then record telemetry via `_record_telemetry()`
 3. Query via MCP `brain_sync_usage` tool or CLI `brain-sync status`
 
 ---
