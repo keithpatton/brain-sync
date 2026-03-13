@@ -116,6 +116,7 @@ async def async_retry(
     Returns the result on success.  Raises ``CircuitOpenError`` if the
     breaker is open, or ``RuntimeError`` if all retries are exhausted.
     """
+    last_error = ""
     for attempt in range(max_retries + 1):
         if breaker and breaker.is_open():
             raise CircuitOpenError("Circuit breaker open")
@@ -129,10 +130,14 @@ async def async_retry(
                     breaker.record_success()
                 return result
 
+            last_error = "is_success check failed"
+            log.warning("Attempt %d/%d: call returned but is_success check failed", attempt + 1, max_retries + 1)
+
         except CircuitOpenError:
             raise
         except Exception as exc:
-            log.debug("Attempt %d/%d failed: %s", attempt + 1, max_retries + 1, exc)
+            last_error = str(exc)
+            log.warning("Attempt %d/%d failed: %s", attempt + 1, max_retries + 1, exc)
 
         # Record failure
         if breaker:
@@ -143,11 +148,11 @@ async def async_retry(
 
         # Jittered backoff: ~1s, ~2s, ~4s
         delay = (backoff_base ** (attempt + 1)) / 2 + random.uniform(0, 0.5)
-        log.info("Call failed (attempt %d/%d), retrying in %.1fs", attempt + 1, max_retries + 1, delay)
+        log.info("Retrying in %.1fs (attempt %d/%d)", delay, attempt + 1, max_retries + 1)
         await asyncio.sleep(delay)
 
     raise RuntimeError(
-        f"Retry attempts exhausted ({max_retries + 1} attempts)",
+        f"Retry attempts exhausted ({max_retries + 1} attempts): {last_error}",
     )
 
 
