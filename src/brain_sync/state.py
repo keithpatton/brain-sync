@@ -773,8 +773,8 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         #
         # Step 1: Export insight_state hashes to sidecars.
         # IMPORTANT: Read directly from `conn` (the open migration connection).
-        # Do NOT call synchronize_sidecars_from_db() — it calls _connect()
-        # which would recurse back into _migrate().
+        # Do NOT call sidecar helpers that use _connect() — it would recurse
+        # back into _migrate().
         if root is not None:
             from brain_sync.sidecar import RegenMeta, read_regen_meta, write_regen_meta
 

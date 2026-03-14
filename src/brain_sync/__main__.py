@@ -66,12 +66,6 @@ async def run(root: Path) -> None:
     from brain_sync.reconcile import reconcile_knowledge_tree
     from brain_sync.regen_lifecycle import regen_session
 
-    # Synchronize sidecars from DB authority before any code reads them.
-    # Transitional: removed in Phase 6 after v21 drops insight_state.
-    from brain_sync.sidecar import synchronize_sidecars_from_db
-
-    synchronize_sidecars_from_db(root)
-
     # Reconcile target_paths with filesystem before loading state for sync.
     # This handles files moved while the daemon was not running.
     # INVARIANT: reconcile must run before _ensure_source_states() because

@@ -3,8 +3,7 @@
 In v21, sidecars are the sole authority for regen hashes.
 - save_insight_state() writes hashes to sidecars directly
 - delete_insight_state() removes both sidecar and regen_locks row
-- synchronize_sidecars_from_db() is a no-op (reads from sidecars, compares to sidecars)
-- load_regen_hashes() reads sidecar-first (DB fallback is circular in v21)
+- load_regen_hashes() reads from sidecar only
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from brain_sync.regen import RegenConfig, classify_folder_change, regen_single_f
 from brain_sync.sidecar import (
     RegenMeta,
     read_regen_meta,
-    synchronize_sidecars_from_db,
     write_regen_meta,
 )
 from brain_sync.state import InsightState, save_insight_state
@@ -30,8 +28,8 @@ def _config() -> RegenConfig:
     return RegenConfig(model="fake-model", effort="low", timeout=30)
 
 
-class TestSynchronizeSidecarsV21:
-    """In v21, synchronize_sidecars_from_db is a no-op — save_insight_state writes sidecars directly."""
+class TestSaveWritesSidecar:
+    """save_insight_state() writes sidecar directly in v21+."""
 
     def test_save_writes_sidecar_directly(self, brain: Path) -> None:
         """save_insight_state() writes sidecar — no sync needed."""
@@ -53,64 +51,6 @@ class TestSynchronizeSidecarsV21:
         assert meta.content_hash == "ch1"
         assert meta.summary_hash == "sh1"
         assert meta.structure_hash == "st1"
-
-    def test_sync_is_noop_in_v21(self, brain: Path) -> None:
-        """synchronize_sidecars_from_db returns 0 in v21 (sidecar already written by save)."""
-        insights_dir = brain / "insights" / "project"
-        insights_dir.mkdir(parents=True)
-        save_insight_state(
-            brain,
-            InsightState(
-                knowledge_path="project",
-                content_hash="ch1",
-                summary_hash="sh1",
-                structure_hash="st1",
-            ),
-        )
-
-        count = synchronize_sidecars_from_db(brain)
-        assert count == 0
-
-    def test_sync_noop_when_matching(self, brain: Path) -> None:
-        """Sidecar and regen state agree -> sync is no-op."""
-        insights_dir = brain / "insights" / "project"
-        insights_dir.mkdir(parents=True)
-
-        save_insight_state(
-            brain,
-            InsightState(
-                knowledge_path="project",
-                content_hash="ch1",
-                summary_hash="sh1",
-                structure_hash="st1",
-            ),
-        )
-
-        import time
-
-        time.sleep(0.05)
-        mtime_before = (insights_dir / ".regen-meta.json").stat().st_mtime
-
-        count = synchronize_sidecars_from_db(brain)
-        assert count == 0
-        assert (insights_dir / ".regen-meta.json").stat().st_mtime == mtime_before
-
-    def test_skips_no_insights_dir(self, brain: Path) -> None:
-        """Regen state exists but no insights dir -> sync skips."""
-        save_insight_state(
-            brain,
-            InsightState(knowledge_path="missing", content_hash="ch1", summary_hash="sh1"),
-        )
-        count = synchronize_sidecars_from_db(brain)
-        assert count == 0
-
-    def test_skips_no_content_hash(self, brain: Path) -> None:
-        """Regen state with null content_hash -> skipped."""
-        insights_dir = brain / "insights" / "empty"
-        insights_dir.mkdir(parents=True)
-        save_insight_state(brain, InsightState(knowledge_path="empty"))
-        count = synchronize_sidecars_from_db(brain)
-        assert count == 0
 
 
 class TestClassifyReadsFromSidecar:

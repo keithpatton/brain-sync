@@ -339,7 +339,6 @@ class TestSchemaV3Migration:
         conn.close()
 
         # Now _connect triggers migration all the way to v21.
-        # Patch synchronize_sidecars_from_db to avoid recursion.
         from brain_sync.state import _connect
 
         conn = _connect(tmp_path)
