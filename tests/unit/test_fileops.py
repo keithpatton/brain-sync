@@ -5,6 +5,7 @@ import pytest
 
 from brain_sync.fileops import (
     atomic_write_bytes,
+    clean_insights_tree,
     content_hash,
     rediscover_local_path,
     win_long_path,
@@ -118,6 +119,59 @@ class TestWinLongPath:
     def test_noop_on_non_windows(self, tmp_path):
         p = tmp_path / "file.txt"
         assert win_long_path(p) == p
+
+
+class TestCleanInsightsTree:
+    def test_removes_summary_and_sidecar(self, tmp_path):
+        """Flat dir with only regenerable files → fully removed."""
+        d = tmp_path / "area"
+        d.mkdir()
+        (d / "summary.md").write_text("summary")
+        (d / ".regen-meta.json").write_text("{}")
+        assert clean_insights_tree(d) is True
+        assert not d.exists()
+
+    def test_preserves_journal(self, tmp_path):
+        """Dir with summary + journal/ → summary removed, journal preserved."""
+        d = tmp_path / "area"
+        d.mkdir()
+        (d / "summary.md").write_text("summary")
+        (d / ".regen-meta.json").write_text("{}")
+        journal = d / "journal" / "2026-03"
+        journal.mkdir(parents=True)
+        (journal / "2026-03-11.md").write_text("entry")
+
+        assert clean_insights_tree(d) is False
+        assert not (d / "summary.md").exists()
+        assert not (d / ".regen-meta.json").exists()
+        assert (journal / "2026-03-11.md").read_text() == "entry"
+
+    def test_recursive_subtree(self, tmp_path):
+        """Nested subtree: regenerable files removed, journals preserved, empty dirs pruned."""
+        root = tmp_path / "project"
+        sub = root / "subarea"
+        sub.mkdir(parents=True)
+        (sub / "summary.md").write_text("sub summary")
+        (sub / ".regen-meta.json").write_text("{}")
+        journal = sub / "journal" / "2026-03"
+        journal.mkdir(parents=True)
+        (journal / "2026-03-11.md").write_text("entry")
+
+        (root / "summary.md").write_text("root summary")
+        (root / ".regen-meta.json").write_text("{}")
+
+        assert clean_insights_tree(root) is False
+        # Regenerable files removed at both levels
+        assert not (root / "summary.md").exists()
+        assert not (sub / "summary.md").exists()
+        # Journal preserved
+        assert (journal / "2026-03-11.md").read_text() == "entry"
+        # Root still exists because journal subtree remains
+        assert root.is_dir()
+
+    def test_nonexistent_dir(self, tmp_path):
+        """Non-existent dir → returns False, no error."""
+        assert clean_insights_tree(tmp_path / "nope") is False
 
 
 class TestAtomicWriteBytesLongPath:

@@ -8,6 +8,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from brain_sync.fileops import INSIGHT_ARTIFACT_DIRS
+
 
 def assert_summary_exists(root: Path, knowledge_path: str) -> str:
     """Assert that insights/{path}/summary.md exists and return its content."""
@@ -55,8 +57,8 @@ def assert_no_orphan_insights(root: Path) -> None:
         if not d.is_dir():
             continue
         rel = d.relative_to(insights_root)
-        if rel.name.startswith("_"):
-            continue  # _core, _sync-context etc.
+        if rel.name.startswith("_") or rel.name in INSIGHT_ARTIFACT_DIRS:
+            continue  # _core, _sync-context, journal etc.
         matching = knowledge_root / rel
         assert matching.is_dir(), f"Orphan insight dir: insights/{rel} (no knowledge/{rel})"
 

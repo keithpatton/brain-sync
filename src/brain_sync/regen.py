@@ -16,7 +16,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,7 +26,7 @@ from typing import Literal
 from uuid import uuid4
 
 from brain_sync.config import CONFIG_FILE
-from brain_sync.fileops import TEXT_EXTENSIONS, atomic_write_bytes
+from brain_sync.fileops import TEXT_EXTENSIONS, atomic_write_bytes, clean_insights_tree
 from brain_sync.fs_utils import (
     find_all_content_paths,
     get_child_dirs,
@@ -1285,7 +1284,7 @@ async def regen_single_folder(
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if insights_dir.is_dir():
-            shutil.rmtree(insights_dir)
+            clean_insights_tree(insights_dir)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
         delete_insight_state(root, current_path)
         return SingleFolderResult(action="cleaned_up", knowledge_path=current_path)
@@ -1302,7 +1301,7 @@ async def regen_single_folder(
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if insights_dir.is_dir():
-            shutil.rmtree(insights_dir)
+            clean_insights_tree(insights_dir)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
         delete_insight_state(root, current_path)
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)

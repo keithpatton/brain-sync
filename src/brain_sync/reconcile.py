@@ -9,10 +9,10 @@ and identifies paths needing regen.
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from brain_sync.fileops import clean_insights_tree
 from brain_sync.fs_utils import find_all_content_paths
 from brain_sync.regen import classify_folder_change
 from brain_sync.state import (
@@ -55,8 +55,11 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
         delete_insight_state(root, orphan)
         orphan_insights = insights_root / orphan
         if orphan_insights.is_dir():
-            shutil.rmtree(str(orphan_insights))
-            log.info("Cleaned orphan insights dir: insights/%s", orphan)
+            fully_removed = clean_insights_tree(orphan_insights)
+            if not fully_removed:
+                log.info("Preserved non-regenerable artifacts in insights/%s", orphan)
+            else:
+                log.info("Cleaned orphan insights dir: insights/%s", orphan)
         log.info("Cleaned orphan regen state: %s", orphan)
         result.orphans_cleaned.append(orphan)
 

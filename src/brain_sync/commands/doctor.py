@@ -15,7 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
-from brain_sync.fileops import atomic_write_bytes, canonical_prefix, rediscover_local_path
+from brain_sync.fileops import (
+    INSIGHT_ARTIFACT_DIRS,
+    atomic_write_bytes,
+    canonical_prefix,
+    clean_insights_tree,
+    rediscover_local_path,
+)
 from brain_sync.fs_utils import normalize_path
 from brain_sync.manifest import (
     MANIFEST_VERSION_FILE,
@@ -379,7 +385,12 @@ def check_orphan_insights(root: Path) -> list[Finding]:
 
     def _walk(directory: Path, prefix: str) -> None:
         for child in sorted(directory.iterdir()):
-            if not child.is_dir() or child.name.startswith("_") or child.name.startswith("."):
+            if (
+                not child.is_dir()
+                or child.name.startswith("_")
+                or child.name.startswith(".")
+                or child.name in INSIGHT_ARTIFACT_DIRS
+            ):
                 continue
             rel = f"{prefix}/{child.name}" if prefix else child.name
 
@@ -714,7 +725,7 @@ def _apply_fixes(
             elif f.check == "orphan_insights" and f.knowledge_path:
                 orphan_dir = root / "insights" / f.knowledge_path
                 if orphan_dir.is_dir():
-                    shutil.rmtree(orphan_dir)
+                    clean_insights_tree(orphan_dir)
                 delete_insight_state(root, f.knowledge_path)
                 f.fix_applied = True
                 log.info("Removed orphan insights dir: insights/%s/", f.knowledge_path)
@@ -727,7 +738,7 @@ def _apply_fixes(
             elif f.check == "stale_summaries" and f.knowledge_path:
                 stale_dir = root / "insights" / f.knowledge_path
                 if stale_dir.is_dir():
-                    shutil.rmtree(stale_dir)
+                    clean_insights_tree(stale_dir)
                 f.fix_applied = True
                 log.info("Removed stale insights dir: insights/%s/", f.knowledge_path)
 

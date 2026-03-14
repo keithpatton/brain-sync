@@ -86,6 +86,48 @@ def write_if_changed(target: Path, markdown: str) -> bool:
     return True
 
 
+# Only these files are regenerable and safe to delete during cleanup.
+# Everything else (journal entries, future artifact types) is preserved automatically.
+REGENERABLE_FILES = frozenset({"summary.md", ".regen-meta.json"})
+
+# Subdirectories within insights/ that contain non-regenerable artifacts.
+# These are NOT mirrors of knowledge/ folders and must be excluded from
+# orphan detection. Currently only journal/; future types added here.
+INSIGHT_ARTIFACT_DIRS = frozenset({"journal"})
+
+
+def clean_insights_tree(insights_dir: Path) -> bool:
+    """Recursively remove regenerable artifacts from an insights subtree.
+
+    Walks bottom-up through the entire subtree. At each level, removes only
+    files listed in REGENERABLE_FILES. Prunes directories that become empty.
+    Any file NOT in REGENERABLE_FILES is automatically preserved — this means
+    journal entries and any future non-regenerable artifact types are safe
+    without needing to be explicitly listed.
+
+    Returns True if the root directory was fully removed.
+    """
+    if not insights_dir.is_dir():
+        return False
+
+    # Bottom-up walk: recurse into ALL child directories
+    for child in sorted(insights_dir.iterdir()):
+        if child.is_dir():
+            clean_insights_tree(child)
+
+    # Remove only regenerable files at this level
+    for name in REGENERABLE_FILES:
+        target = insights_dir / name
+        if target.is_file():
+            target.unlink()
+
+    # Remove this directory only if completely empty
+    if not any(insights_dir.iterdir()):
+        insights_dir.rmdir()
+        return True
+    return False
+
+
 def canonical_prefix(canonical_id: str) -> str:
     """Convert a canonical_id to the filename prefix used for rediscovery."""
     if canonical_id.startswith("confluence-attachment:"):

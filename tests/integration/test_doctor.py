@@ -272,6 +272,21 @@ class TestDoctorOrphanInsights:
         assert not (brain / "insights" / "orphan").exists()
 
 
+class TestDoctorJournalNotOrphan:
+    def test_journal_subdir_not_flagged_as_orphan(self, brain: Path) -> None:
+        """insights/area/journal/ is an artifact dir, not a knowledge mirror — no orphan finding."""
+        (brain / "knowledge" / "area").mkdir(parents=True)
+        journal = brain / "insights" / "area" / "journal" / "2026-03" / "2026-03-15.md"
+        journal.parent.mkdir(parents=True)
+        journal.write_text("# Journal Entry\nToday's notes.", encoding="utf-8")
+
+        result = doctor(brain)
+        orphan_findings = [
+            f for f in result.findings if f.check == "orphan_insights" and "journal" in (f.knowledge_path or "")
+        ]
+        assert len(orphan_findings) == 0
+
+
 class TestDoctorNestedOrphanInsights:
     def test_fix_nested_orphan(self, brain: Path) -> None:
         """insights/project/orphan-sub/ with knowledge/project/ but no knowledge/project/orphan-sub/."""
