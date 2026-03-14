@@ -26,6 +26,12 @@ from brain_sync.manifest import (
     write_source_manifest,
 )
 from brain_sync.pipeline import extract_source_id, prepend_managed_header
+from brain_sync.sidecar import (
+    RegenMeta,
+    read_all_regen_meta,
+    read_regen_meta,
+    write_regen_meta,
+)
 from brain_sync.state import (
     InsightState,
     _connect,
@@ -546,7 +552,89 @@ def check_db_path_normalization(root: Path) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Main functions
+# Step 3: Sidecar checks
+# ---------------------------------------------------------------------------
+
+
+def check_missing_sidecars(root: Path) -> list[Finding]:
+    """For every insights/**/summary.md, verify a sibling .regen-meta.json exists and is valid."""
+    findings: list[Finding] = []
+    insights_root = root / "insights"
+    if not insights_root.is_dir():
+        return findings
+
+    for summary_path in insights_root.rglob("summary.md"):
+        rel = summary_path.parent.relative_to(insights_root)
+        kp = normalize_path(rel)
+        if kp.startswith("_"):
+            continue
+
+        meta = read_regen_meta(summary_path.parent)
+        if meta is None:
+            # Distinguish between missing and malformed
+            sidecar_path = summary_path.parent / ".regen-meta.json"
+            if sidecar_path.exists():
+                findings.append(
+                    Finding(
+                        check="missing_sidecars",
+                        severity=Severity.CORRUPTION,
+                        message=f"Malformed sidecar for '{kp}'",
+                        knowledge_path=kp,
+                    )
+                )
+            else:
+                findings.append(
+                    Finding(
+                        check="missing_sidecars",
+                        severity=Severity.DRIFT,
+                        message=f"Missing sidecar for '{kp}'",
+                        knowledge_path=kp,
+                    )
+                )
+    return findings
+
+
+def check_sidecar_db_consistency(root: Path) -> list[Finding]:
+    """For every sidecar, compare hashes against insight_state DB row."""
+    findings: list[Finding] = []
+    insights_root = root / "insights"
+    sidecars = read_all_regen_meta(insights_root)
+    states = load_all_insight_states(root)
+    state_by_path = {s.knowledge_path: s for s in states}
+
+    for kp, meta in sidecars.items():
+        istate = state_by_path.get(kp)
+        if istate is None:
+            findings.append(
+                Finding(
+                    check="sidecar_db_consistency",
+                    severity=Severity.DRIFT,
+                    message=f"Sidecar exists but no DB row for '{kp}'",
+                    knowledge_path=kp,
+                )
+            )
+            continue
+        mismatches = []
+        if meta.content_hash != istate.content_hash:
+            mismatches.append("content_hash")
+        if meta.summary_hash != istate.summary_hash:
+            mismatches.append("summary_hash")
+        if meta.structure_hash != istate.structure_hash:
+            mismatches.append("structure_hash")
+        if mismatches:
+            findings.append(
+                Finding(
+                    check="sidecar_db_consistency",
+                    severity=Severity.DRIFT,
+                    message=f"Sidecar/DB mismatch for '{kp}': {', '.join(mismatches)}",
+                    knowledge_path=kp,
+                )
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Main functions
 # ---------------------------------------------------------------------------
 
 
@@ -577,6 +665,10 @@ def doctor(root: Path | None = None, *, fix: bool = False) -> DoctorResult:
     all_findings.extend(check_regen_change_detection(root))
     all_findings.extend(check_db_path_normalization(root))
 
+    # Sidecar checks
+    all_findings.extend(check_missing_sidecars(root))
+    all_findings.extend(check_sidecar_db_consistency(root))
+
     if fix:
         _apply_fixes(root, all_findings, manifests, knowledge_root, identity_index)
 
@@ -590,9 +682,12 @@ def _apply_fixes(
     knowledge_root: Path,
     identity_index: dict[str, Path],
 ) -> None:
-    """Apply repairs for DRIFT findings."""
+    """Apply repairs for DRIFT findings (and CORRUPTION for sidecars)."""
     for f in findings:
-        if f.severity != Severity.DRIFT:
+        # Sidecar corruption is also fixable (overwrite from DB)
+        if f.severity == Severity.DRIFT or (f.severity == Severity.CORRUPTION and f.check == "missing_sidecars"):
+            pass  # proceed to fix
+        else:
             continue
 
         try:
@@ -688,6 +783,25 @@ def _apply_fixes(
                         update_source_target_path(root, f.canonical_id, normalize_path(ss.target_path))
                         f.fix_applied = True
                         log.info("Normalized source target_path: %s", f.canonical_id)
+
+            elif f.check in ("missing_sidecars", "sidecar_db_consistency") and f.knowledge_path is not None:
+                # Both missing/malformed sidecars and DB mismatches: overwrite from DB
+                from brain_sync.state import load_insight_state
+
+                istate = load_insight_state(root, f.knowledge_path)
+                if istate:
+                    insights_dir = root / "insights" / f.knowledge_path if f.knowledge_path else root / "insights"
+                    write_regen_meta(
+                        insights_dir,
+                        RegenMeta(
+                            content_hash=istate.content_hash,
+                            summary_hash=istate.summary_hash,
+                            structure_hash=istate.structure_hash,
+                            last_regen_utc=istate.last_regen_utc,
+                        ),
+                    )
+                    f.fix_applied = True
+                    log.info("Wrote sidecar from DB for %s", f.knowledge_path)
 
         except Exception:
             log.exception("Failed to fix %s finding for %s", f.check, f.canonical_id or f.knowledge_path)

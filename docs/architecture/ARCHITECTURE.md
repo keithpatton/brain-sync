@@ -24,6 +24,7 @@ All source lives under `src/brain_sync/`.
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
 | State | `state`, `token_tracking` | SQLite WAL persistence (sources, documents, relationships, insight state, token events) |
 | Manifests | `manifest` | Source manifest read/write (`.brain-sync/sources/*.json`) |
+| Sidecars | `sidecar` | Insight regen hash read/write (`insights/**/.regen-meta.json`) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
 | Attachments | `attachments`, `area_index` | Attachment sync lifecycle, area indexing |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
@@ -137,7 +138,7 @@ The system uses a tiered authority model where filesystem artifacts are authorit
 |---|---|---|---|
 | Source registration (intent) | `.brain-sync/sources/*.json` manifests | Yes (git) | From DB (migration only) |
 | Source sync progress | `sync_cache` DB table | No | Loss triggers re-sync |
-| Insight hashes | `insights/**/.regen-meta.json` sidecars (future) | Yes (git) | From DB (migration only) |
+| Insight hashes | `insight_state` DB table + `insights/**/.regen-meta.json` sidecars (Phase 4: write-only export; DB authoritative for reads) | Yes (git, via sidecars) | Sidecars written on every regen; DB rebuilt from sidecars in Phase 5 |
 | Regen lifecycle | `regen_locks` DB table (future) | No | Reset to idle on startup |
 | Document metadata | `documents` DB table | No | Re-discovered on sync |
 | Relationships | `relationships` DB table | No | Re-discovered on sync |
@@ -214,7 +215,7 @@ Every remaining DB table must justify its existence. If deleted, the consequence
 | Table | Performance/Operational Problem Solved | If Deleted |
 |---|---|---|
 | `sources` | Caches sync progress (last_checked, content_hash, intervals) to avoid re-fetching; `load_state()` merges manifest intent + DB progress | Rebuilt from `.brain-sync/sources/*.json` manifests; `_seed_from_hint()` seeds timing from `sync_hint` so matching sources skip re-fetch; orphan DB rows (no manifest) are pruned during reconcile |
-| `insight_state` | Caches content/summary/structure hashes to avoid recomputing on every regen check; holds regen lifecycle locks | Future: rebuilt from `.regen-meta.json` sidecars; all locks reset to idle; hashes recomputed on first regen |
+| `insight_state` | Caches content/summary/structure hashes to avoid recomputing on every regen check; holds regen lifecycle locks | Phase 5: rebuilt from `.regen-meta.json` sidecars; all locks reset to idle. Phase 4: sidecars are write-only exports, DB is authoritative read path |
 | `documents` | Caches discovered page/attachment metadata to avoid redundant API calls during child/attachment discovery | Re-discovered on next sync cycle; no data loss, slight increase in API calls |
 | `relationships` | Caches parent-child links between sources/documents for orphan cleanup and child discovery deduplication | Rebuilt from next fetch results; orphan detection delayed until rebuild completes |
 | `token_events` | Append-only LLM cost telemetry for usage dashboards and budget monitoring | Historical telemetry lost; new events recorded normally; no operational impact |

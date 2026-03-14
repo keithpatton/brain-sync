@@ -19,6 +19,7 @@ from brain_sync.manifest import (
     write_source_manifest,
 )
 from brain_sync.pipeline import prepend_managed_header
+from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
 from brain_sync.state import (
     InsightState,
     _connect,
@@ -318,3 +319,117 @@ class TestDoctorWouldTriggerRegen:
         result = doctor(brain)
         regen = [f for f in result.findings if f.severity == Severity.WOULD_TRIGGER_REGEN]
         assert len(regen) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Sidecar checks
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorSidecarChecks:
+    def test_missing_sidecar_detected(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
+
+        result = doctor(brain)
+        sidecar_findings = [f for f in result.findings if f.check == "missing_sidecars"]
+        assert len(sidecar_findings) == 1
+        assert sidecar_findings[0].severity == Severity.DRIFT
+
+    def test_fix_writes_sidecar_from_db(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="abc",
+                summary_hash="def",
+                structure_hash="ghi",
+                last_regen_utc="2026-03-14T10:00:00+00:00",
+            ),
+        )
+
+        result = doctor(brain, fix=True)
+        sidecar_findings = [f for f in result.findings if f.check == "missing_sidecars"]
+        assert len(sidecar_findings) == 1
+        assert sidecar_findings[0].fix_applied
+
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash == "abc"
+        assert meta.summary_hash == "def"
+        assert meta.structure_hash == "ghi"
+
+
+class TestDoctorSidecarDbMismatch:
+    def test_mismatch_detected(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
+        write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="WRONG"))
+
+        result = doctor(brain)
+        mismatch = [f for f in result.findings if f.check == "sidecar_db_consistency"]
+        assert len(mismatch) == 1
+        assert mismatch[0].severity == Severity.DRIFT
+
+    def test_fix_overwrites_sidecar(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc", summary_hash="def"))
+        write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="WRONG", summary_hash="WRONG"))
+
+        result = doctor(brain, fix=True)
+        mismatch = [f for f in result.findings if f.check == "sidecar_db_consistency"]
+        assert len(mismatch) == 1
+        assert mismatch[0].fix_applied
+
+        # After fix, sidecar should match current DB state
+        from brain_sync.state import load_insight_state
+
+        istate = load_insight_state(brain, "project")
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert istate is not None
+        assert meta.content_hash == istate.content_hash
+        assert meta.summary_hash == istate.summary_hash
+
+
+class TestDoctorSidecarCorruption:
+    def test_malformed_json_corruption(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
+        (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
+
+        result = doctor(brain)
+        corrupt = [f for f in result.findings if f.check == "missing_sidecars" and f.severity == Severity.CORRUPTION]
+        assert len(corrupt) == 1
+
+    def test_fix_overwrites_malformed(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
+        (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
+
+        result = doctor(brain, fix=True)
+        corrupt = [f for f in result.findings if f.check == "missing_sidecars"]
+        assert len(corrupt) == 1
+        assert corrupt[0].fix_applied
+
+        # After fix, sidecar should match current DB state
+        from brain_sync.state import load_insight_state
+
+        istate = load_insight_state(brain, "project")
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert istate is not None
+        assert meta.content_hash == istate.content_hash

@@ -36,6 +36,7 @@ from brain_sync.fs_utils import (
 )
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
+from brain_sync.sidecar import RegenMeta, delete_regen_meta, write_regen_meta
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
@@ -1078,7 +1079,7 @@ def _build_prompt(
             else:
                 entry.inline = False
                 log.info(
-                    "Deferred %s (%d chars) to chunking for %s " "(remaining=%d budget=%d)",
+                    "Deferred %s (%d chars) to chunking for %s (remaining=%d budget=%d)",
                     entry.name,
                     entry.size,
                     display_path,
@@ -1269,6 +1270,10 @@ async def regen_single_folder(
     # Guard: if knowledge dir doesn't exist, clean up stale insights
     if not knowledge_dir.is_dir():
         log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
+        try:
+            delete_regen_meta(insights_dir)
+        except Exception:
+            log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if insights_dir.is_dir():
             shutil.rmtree(insights_dir)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
@@ -1282,6 +1287,10 @@ async def regen_single_folder(
     # Cleanup: no readable files and no child dirs
     if not has_direct_files and not child_dirs:
         log.debug("[%s] No readable files or child dirs in %s, cleaning up", regen_id, current_path or "(root)")
+        try:
+            delete_regen_meta(insights_dir)
+        except Exception:
+            log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if insights_dir.is_dir():
             shutil.rmtree(insights_dir)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
@@ -1329,6 +1338,18 @@ async def regen_single_folder(
                 error_reason=istate.error_reason,
             ),
         )
+        try:
+            write_regen_meta(
+                insights_dir,
+                RegenMeta(
+                    content_hash=new_content_hash,
+                    summary_hash=istate.summary_hash,
+                    structure_hash=new_structure_hash,
+                    last_regen_utc=istate.last_regen_utc,
+                ),
+            )
+        except Exception:
+            log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
         return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
 
     if event.change_type == "none":
@@ -1360,6 +1381,18 @@ async def regen_single_folder(
                 owner_id=istate.owner_id if istate else None,
             ),
         )
+        try:
+            write_regen_meta(
+                insights_dir,
+                RegenMeta(
+                    content_hash=istate.content_hash if istate else new_content_hash,
+                    summary_hash=istate.summary_hash if istate else None,
+                    structure_hash=new_structure_hash,
+                    last_regen_utc=istate.last_regen_utc if istate else None,
+                ),
+            )
+        except Exception:
+            log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
         return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
 
     log.debug(
@@ -1588,6 +1621,18 @@ async def regen_single_folder(
                 owner_id=None,
             ),
         )
+        try:
+            write_regen_meta(
+                insights_dir,
+                RegenMeta(
+                    content_hash=new_content_hash,
+                    summary_hash=summary_hash,
+                    structure_hash=new_structure_hash,
+                    last_regen_utc=now,
+                ),
+            )
+        except Exception:
+            log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
         # Journal is independent of summary similarity — temporal events matter
         if journal_text:
             _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
@@ -1611,6 +1656,18 @@ async def regen_single_folder(
             owner_id=None,
         ),
     )
+    try:
+        write_regen_meta(
+            insights_dir,
+            RegenMeta(
+                content_hash=new_content_hash,
+                summary_hash=summary_hash,
+                structure_hash=new_structure_hash,
+                last_regen_utc=now,
+            ),
+        )
+    except Exception:
+        log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
     log.info(
         "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
         regen_id,

@@ -15,11 +15,13 @@ from brain_sync.commands.doctor import (
     check_db_source_consistency,
     check_identity_headers,
     check_manifest_file_match,
+    check_missing_sidecars,
     check_orphan_attachments,
     check_orphan_insight_state_rows,
     check_orphan_insights,
     check_path_normalization,
     check_regen_change_detection,
+    check_sidecar_db_consistency,
     check_stale_summaries,
     check_summaries_without_db_rows,
     check_unregistered_synced_files,
@@ -27,6 +29,7 @@ from brain_sync.commands.doctor import (
 )
 from brain_sync.manifest import MANIFEST_VERSION, SourceManifest
 from brain_sync.pipeline import MANAGED_HEADER_SOURCE
+from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, write_regen_meta
 from brain_sync.state import InsightState, _connect, save_insight_state
 
 pytestmark = pytest.mark.unit
@@ -452,3 +455,82 @@ class TestBuildIdentityIndex:
         index = _build_identity_index(brain / "knowledge")
         assert "confluence:123" in index
         assert len(index) == 1
+
+
+# ---------------------------------------------------------------------------
+# TestCheckMissingSidecars
+# ---------------------------------------------------------------------------
+
+
+class TestCheckMissingSidecars:
+    def test_summary_with_sidecar_ok(self, brain: Path) -> None:
+        _write_insight_summary(brain, "project")
+        write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="abc"))
+        findings = check_missing_sidecars(brain)
+        assert len(findings) == 0
+
+    def test_summary_without_sidecar_drift(self, brain: Path) -> None:
+        _write_insight_summary(brain, "project")
+        findings = check_missing_sidecars(brain)
+        assert len(findings) == 1
+        assert findings[0].severity == Severity.DRIFT
+        assert findings[0].check == "missing_sidecars"
+
+    def test_malformed_sidecar_corruption(self, brain: Path) -> None:
+        _write_insight_summary(brain, "project")
+        (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
+        findings = check_missing_sidecars(brain)
+        assert len(findings) == 1
+        assert findings[0].severity == Severity.CORRUPTION
+        assert findings[0].check == "missing_sidecars"
+
+    def test_skips_underscore_dirs(self, brain: Path) -> None:
+        _write_insight_summary(brain, "_core")
+        findings = check_missing_sidecars(brain)
+        assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestCheckSidecarDbConsistency
+# ---------------------------------------------------------------------------
+
+
+class TestCheckSidecarDbConsistency:
+    def test_matching_hashes_ok(self, brain: Path) -> None:
+        kp = "project"
+        save_insight_state(
+            brain,
+            InsightState(knowledge_path=kp, content_hash="abc", summary_hash="def", structure_hash="ghi"),
+        )
+        write_regen_meta(
+            brain / "insights" / kp,
+            RegenMeta(content_hash="abc", summary_hash="def", structure_hash="ghi"),
+        )
+        findings = check_sidecar_db_consistency(brain)
+        assert len(findings) == 0
+
+    def test_mismatched_hashes_drift(self, brain: Path) -> None:
+        kp = "project"
+        save_insight_state(
+            brain,
+            InsightState(knowledge_path=kp, content_hash="abc", summary_hash="def", structure_hash="ghi"),
+        )
+        write_regen_meta(
+            brain / "insights" / kp,
+            RegenMeta(content_hash="WRONG", summary_hash="def", structure_hash="ghi"),
+        )
+        findings = check_sidecar_db_consistency(brain)
+        assert len(findings) == 1
+        assert findings[0].severity == Severity.DRIFT
+        assert "content_hash" in findings[0].message
+
+    def test_sidecar_no_db_row_drift(self, brain: Path) -> None:
+        kp = "project"
+        write_regen_meta(
+            brain / "insights" / kp,
+            RegenMeta(content_hash="abc"),
+        )
+        findings = check_sidecar_db_consistency(brain)
+        assert len(findings) == 1
+        assert findings[0].severity == Severity.DRIFT
+        assert "no DB row" in findings[0].message
