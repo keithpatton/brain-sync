@@ -1,4 +1,4 @@
-"""Integration tests for legacy (pre-Phase-2) fallback and v21 manifest-authoritative behavior."""
+"""Integration tests for manifest-authoritative load_state() behavior (v21+)."""
 
 from __future__ import annotations
 
@@ -49,13 +49,9 @@ def _make_manifest(cid: str, url: str, tp: str = "") -> SourceManifest:
     )
 
 
-class TestLegacyFallback:
-    def test_no_manifest_dir_returns_db_only(self, brain: Path):
-        """No .brain-sync/sources/ → load_state returns sync_cache progress-only state.
-
-        In v21, sync_cache has no intent fields, so returned SourceStates have
-        empty source_url/source_type. target_path is manifest-only.
-        """
+class TestManifestAuthority:
+    def test_no_manifest_dir_returns_empty(self, brain: Path):
+        """No .brain-sync/sources/ → load_state returns empty (manifests are required)."""
         manifest_dir = brain / ".brain-sync" / "sources"
         if manifest_dir.is_dir():
             shutil.rmtree(manifest_dir)
@@ -71,10 +67,8 @@ class TestLegacyFallback:
         save_state(brain, state)
 
         loaded = load_state(brain)
-        assert CONFLUENCE_CID in loaded.sources
-        # v21: sync_cache has no intent fields, so they're empty in DB-only mode
-        assert loaded.sources[CONFLUENCE_CID].source_url == ""
-        assert loaded.sources[CONFLUENCE_CID].last_checked_utc == "2026-03-14T10:00:00"
+        # No manifests → no sources, regardless of DB cache
+        assert len(loaded.sources) == 0
 
     def test_manifest_authority_with_db_progress(self, brain: Path):
         """Manifests provide intent, DB provides progress — merged correctly."""

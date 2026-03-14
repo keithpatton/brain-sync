@@ -489,6 +489,8 @@ class ReconcileResult:
 def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
     """One-time migration: export existing DB sources to manifests.
 
+    Used only by v20→v21 migration in _migrate(). Do not add new callers.
+
     Only runs when .brain-sync/sources/ is empty but DB has sources.
     Uses the provided ``state`` directly — callers (including ``_migrate()``)
     must pre-populate it from whatever connection they already hold.
@@ -575,10 +577,6 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     Implements two-stage missing protocol and orphan DB row pruning.
     """
     root = _require_root(root)
-    state = load_state(root)
-
-    # Bootstrap manifests from DB if none exist yet (one-time migration)
-    _bootstrap_manifests_from_db(root, state)
 
     knowledge_root = root / "knowledge"
 

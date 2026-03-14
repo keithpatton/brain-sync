@@ -164,41 +164,11 @@ class TestLoadRegenHashes:
         assert meta.content_hash == "sidecar_hash"
         assert meta.summary_hash == "s_sum"
 
-    def test_db_fallback(self, tmp_path: Path) -> None:
-        """When no sidecar exists, falls back to DB."""
-        from unittest.mock import patch
-
-        root = tmp_path / "brain"
-        root.mkdir()
-        (root / "insights" / "project").mkdir(parents=True)
-        # No sidecar written
-
-        from brain_sync.state import InsightState
-
-        db_state = InsightState(
-            knowledge_path="project",
-            content_hash="db_hash",
-            summary_hash="db_sum",
-            structure_hash="db_struct",
-            last_regen_utc="2026-01-01T00:00:00",
-        )
-        with patch("brain_sync.state.load_insight_state", return_value=db_state):
-            meta = load_regen_hashes(root, "project")
-
-        assert meta is not None
-        assert meta.content_hash == "db_hash"
-        assert meta.summary_hash == "db_sum"
-        assert meta.structure_hash == "db_struct"
-
-    def test_neither_returns_none(self, tmp_path: Path) -> None:
-        """When neither sidecar nor DB have data, returns None."""
-        from unittest.mock import patch
-
+    def test_no_sidecar_returns_none(self, tmp_path: Path) -> None:
+        """When no sidecar exists, returns None (no DB fallback in v21+)."""
         root = tmp_path / "brain"
         root.mkdir()
         (root / "insights" / "project").mkdir(parents=True)
 
-        with patch("brain_sync.state.load_insight_state", return_value=None):
-            meta = load_regen_hashes(root, "project")
-
+        meta = load_regen_hashes(root, "project")
         assert meta is None

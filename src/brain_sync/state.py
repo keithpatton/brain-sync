@@ -1024,24 +1024,10 @@ def _has_sync_progress(ss: SourceState) -> bool:
 def load_state(root: Path) -> SyncState:
     db_sources = _load_db_sync_progress(root)
 
-    # Legacy detection: .brain-sync/sources/ absent → pre-Phase-2 brain, DB-only
-    manifest_dir = root / ".brain-sync" / "sources"
-    if not manifest_dir.is_dir():
-        return SyncState(sources=db_sources)
-
-    # Manifests are authoritative. DB-only sources are orphan cache.
-    from brain_sync.manifest import read_all_source_manifests, write_source_manifest
+    # Manifests are authoritative for source intent. DB is progress-only cache.
+    from brain_sync.manifest import read_all_source_manifests
 
     manifests = read_all_source_manifests(root)
-
-    # Empty-manifest-dir migration: dir exists but no manifests, DB has sources.
-    # Bootstrap before applying manifest-authoritative logic so CLI commands
-    # (list, add duplicate-check) don't observe a false-empty source set.
-    if not manifests and db_sources:
-        from brain_sync.commands.sources import _bootstrap_manifests_from_db
-
-        _bootstrap_manifests_from_db(root, SyncState(sources=db_sources))
-        manifests = read_all_source_manifests(root)
 
     merged: dict[str, SourceState] = {}
     for cid, m in manifests.items():
@@ -1053,17 +1039,6 @@ def load_state(root: Path) -> SyncState:
         target_path = m.target_path
         if not target_path and m.materialized_path:
             target_path = normalize_path(Path(m.materialized_path).parent)
-
-        # Phase 1→2 migration backfill: if manifest has no target_path and no
-        # materialized_path (unsynced source), but DB has a non-empty target_path,
-        # use the DB value and write it back to the manifest. One-time self-healing.
-        if not target_path and not m.materialized_path and cid in db_sources:
-            db_tp = db_sources[cid].target_path
-            if db_tp:
-                target_path = db_tp
-                m.target_path = db_tp
-                write_source_manifest(root, m)
-                log.info("Backfilled target_path '%s' into manifest for %s", db_tp, cid)
 
         if cid in db_sources:
             # Merge: manifest intent + DB progress

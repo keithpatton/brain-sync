@@ -26,6 +26,25 @@ from brain_sync.state import (
 pytestmark = pytest.mark.unit
 
 
+def _write_manifest(root, cid: str, url: str = "https://example.com", tp: str = "") -> None:
+    """Helper: write a minimal manifest so load_state() can discover the source."""
+    from brain_sync.manifest import SourceManifest, write_source_manifest
+
+    write_source_manifest(
+        root,
+        SourceManifest(
+            manifest_version=1,
+            canonical_id=cid,
+            source_url=url,
+            source_type="confluence",
+            materialized_path="",
+            fetch_children=False,
+            sync_attachments=False,
+            target_path=tp,
+        ),
+    )
+
+
 class TestStatePersistence:
     def test_save_and_load_round_trip(self, tmp_path):
         from brain_sync.manifest import SourceManifest, write_source_manifest
@@ -71,6 +90,9 @@ class TestStatePersistence:
         assert state.version == 21
 
     def test_multiple_save_load_cycles(self, tmp_path):
+        _write_manifest(tmp_path, "confluence:1", "u1")
+        _write_manifest(tmp_path, "confluence:2", "u2")
+
         state = SyncState()
         state.sources["confluence:1"] = SourceState(
             canonical_id="confluence:1",
@@ -118,6 +140,8 @@ class TestSchemaV2Migration:
         assert loaded.url == doc.url
 
     def test_next_check_utc_persisted(self, tmp_path):
+        _write_manifest(tmp_path, "confluence:1", "u")
+
         state = SyncState()
         state.sources["confluence:1"] = SourceState(
             canonical_id="confluence:1",
@@ -242,6 +266,9 @@ class TestRelationshipCrud:
 
 class TestPruneDb:
     def test_removes_stale_rows(self, tmp_path):
+        _write_manifest(tmp_path, "confluence:1", "u1")
+        _write_manifest(tmp_path, "confluence:2", "u2")
+
         state = SyncState()
         state.sources["confluence:1"] = SourceState(
             canonical_id="confluence:1",
@@ -259,9 +286,14 @@ class TestPruneDb:
 
         prune_db(tmp_path, active_keys={"confluence:1"})
 
-        loaded = load_state(tmp_path)
-        assert "confluence:1" in loaded.sources
-        assert "confluence:2" not in loaded.sources
+        # prune_db removes sync_cache rows, but load_state is manifest-authoritative.
+        # Both manifests still exist, so both sources appear. Verify DB row was pruned.
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        rows = conn.execute("SELECT canonical_id FROM sync_cache").fetchall()
+        conn.close()
+        assert {r[0] for r in rows} == {"confluence:1"}
 
 
 class TestSchemaV3Migration:
