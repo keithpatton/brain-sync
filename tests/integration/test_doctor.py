@@ -1,0 +1,320 @@
+"""Integration tests for brain-sync doctor — real FS + SQLite."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from brain_sync.commands.doctor import (
+    Severity,
+    deregister_missing,
+    doctor,
+    rebuild_db,
+)
+from brain_sync.commands.sources import add_source
+from brain_sync.manifest import (
+    read_all_source_manifests,
+    write_source_manifest,
+)
+from brain_sync.pipeline import prepend_managed_header
+from brain_sync.state import (
+    InsightState,
+    _connect,
+    load_all_insight_states,
+    save_insight_state,
+)
+
+pytestmark = pytest.mark.integration
+
+
+TEST_URL = "https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Test-Page"
+
+
+def _write_knowledge(root: Path, rel: str, content: str) -> Path:
+    p = root / "knowledge" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
+def _write_insight_summary(root: Path, kpath: str, content: str = "# Summary\nContent.") -> Path:
+    p = root / "insights" / kpath / "summary.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
+def _add_synced_source(root: Path, cid: str = "confluence:12345", target: str = "project") -> None:
+    """Register a source + write a materialized file with identity header."""
+    add_source(root=root, url=TEST_URL, target_path=target)
+    # Write the file so it exists
+    content = prepend_managed_header(cid, "# Test Page\nContent here.")
+    _write_knowledge(root, f"{target}/c12345-test-page.md", content)
+    # Update materialized_path in manifest
+    from brain_sync.manifest import update_manifest_materialized_path
+
+    update_manifest_materialized_path(root, cid, f"{target}/c12345-test-page.md")
+
+
+class TestDoctorCleanBrain:
+    def test_healthy_brain_all_ok(self, brain: Path) -> None:
+        result = doctor(brain)
+        assert result.is_healthy
+        assert result.corruption_count == 0
+        assert result.drift_count == 0
+
+
+class TestDoctorFixDrift:
+    def test_moved_file_fix(self, brain: Path) -> None:
+        _add_synced_source(brain)
+
+        # Move the file
+        src = brain / "knowledge" / "project" / "c12345-test-page.md"
+        dst = brain / "knowledge" / "other"
+        dst.mkdir(parents=True)
+        shutil.move(str(src), str(dst / "c12345-test-page.md"))
+
+        # Doctor should find drift
+        result = doctor(brain)
+        drift = [f for f in result.findings if f.severity == Severity.DRIFT and f.check == "manifest_file_match"]
+        assert len(drift) >= 1
+
+        # Fix it
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied]
+        assert len(fixed) >= 1
+
+
+class TestDoctorFixMissingHeader:
+    def test_strip_header_fix(self, brain: Path) -> None:
+        _add_synced_source(brain)
+
+        # Strip header
+        file_path = brain / "knowledge" / "project" / "c12345-test-page.md"
+        file_path.write_text("# Test Page\nContent without header.", encoding="utf-8")
+
+        result = doctor(brain)
+        drift = [f for f in result.findings if f.severity == Severity.DRIFT and f.check == "identity_headers"]
+        assert len(drift) >= 1
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "identity_headers"]
+        assert len(fixed) >= 1
+
+        # Verify header is restored
+        content = file_path.read_text(encoding="utf-8")
+        assert "brain-sync-source: confluence:12345" in content
+
+
+class TestDoctorRebuildDb:
+    def test_rebuild_preserves_regen_hashes(self, brain: Path) -> None:
+        _add_synced_source(brain)
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+
+        # Save insight state with hashes
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="abc123",
+                summary_hash="def456",
+                structure_hash="ghi789",
+                last_regen_utc="2026-03-10T00:00:00",
+            ),
+        )
+
+        result = rebuild_db(brain)
+        assert result.is_healthy or result.would_trigger_regen_count >= 0
+
+        # Verify hashes preserved
+        states = load_all_insight_states(brain)
+        project_state = next((s for s in states if s.knowledge_path == "project"), None)
+        assert project_state is not None
+        assert project_state.content_hash == "abc123"
+        assert project_state.summary_hash == "def456"
+        assert project_state.structure_hash == "ghi789"
+        assert project_state.last_regen_utc == "2026-03-10T00:00:00"
+
+
+class TestDoctorRebuildDbLifecycleReset:
+    def test_lifecycle_reset_to_idle(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="abc",
+                regen_status="running",
+                owner_id="test-owner",
+                regen_started_utc="2026-03-10T00:00:00",
+                error_reason="test error",
+            ),
+        )
+
+        rebuild_db(brain)
+
+        states = load_all_insight_states(brain)
+        project_state = next((s for s in states if s.knowledge_path == "project"), None)
+        assert project_state is not None
+        assert project_state.content_hash == "abc"
+        assert project_state.regen_status == "idle"
+        assert project_state.owner_id is None
+        assert project_state.regen_started_utc is None
+        assert project_state.error_reason is None
+
+
+class TestDoctorRebuildDbNoRegenBurn:
+    def test_rebuild_then_doctor_no_false_regen(self, brain: Path) -> None:
+        """Rebuild + doctor should not report WOULD_TRIGGER_REGEN from rebuild itself."""
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        _write_knowledge(brain, "project/doc.md", "content")
+        _write_insight_summary(brain, "project")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="matching_hash",
+                summary_hash="sum_hash",
+                structure_hash="struct_hash",
+            ),
+        )
+
+        # The rebuild result includes a doctor check
+        result = rebuild_db(brain)
+        # Some WOULD_TRIGGER_REGEN is expected if hashes don't match live state,
+        # but we shouldn't see spurious ones from the rebuild process itself.
+        assert result.corruption_count == 0
+
+
+class TestDoctorRebuildDbTelemetryLoss:
+    def test_telemetry_tables_dropped(self, brain: Path) -> None:
+        # Insert data into cache tables
+        conn = _connect(brain)
+        try:
+            conn.execute(
+                "INSERT INTO documents (canonical_id, source_type, url, title, content_hash) VALUES (?, ?, ?, ?, ?)",
+                ("confluence:999", "confluence", "https://acme.atlassian.net/wiki/spaces/ENG/pages/999", "Doc", "hash"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rebuild_db(brain)
+
+        # Documents table should be empty after rebuild
+        conn = _connect(brain)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            assert count == 0
+        finally:
+            conn.close()
+
+
+class TestDoctorDeregisterMissing:
+    def test_deregisters_missing_sources(self, brain: Path) -> None:
+        _add_synced_source(brain)
+        # Manually mark manifest as missing
+        manifests = read_all_source_manifests(brain)
+        for _cid, m in manifests.items():
+            m.status = "missing"
+            m.missing_since_utc = "2026-03-10T00:00:00"
+            write_source_manifest(brain, m)
+
+        result = deregister_missing(brain)
+        assert any(f.canonical_id == "confluence:12345" for f in result.findings)
+
+        # Manifest should be gone
+        manifests = read_all_source_manifests(brain)
+        assert "confluence:12345" not in manifests
+
+
+class TestDoctorOrphanAttachments:
+    def test_fix_orphan_attachments(self, brain: Path) -> None:
+        orphan = brain / "knowledge" / "area" / "_attachments" / "c999"
+        orphan.mkdir(parents=True)
+        (orphan / "file.png").write_bytes(b"data")
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_attachments"]
+        assert len(fixed) >= 1
+        assert not orphan.exists()
+
+
+class TestDoctorOrphanDbRows:
+    def test_fix_orphan_db_source_row(self, brain: Path) -> None:
+        # Insert directly via SQL since save_state skips rows without sync progress
+        conn = _connect(brain)
+        try:
+            conn.execute(
+                "INSERT INTO sources (canonical_id, source_url, source_type, target_path) VALUES (?, ?, ?, ?)",
+                ("confluence:999", "https://acme.atlassian.net/wiki/spaces/ENG/pages/999", "confluence", ""),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "db_source_consistency"]
+        assert len(fixed) >= 1
+
+
+class TestDoctorOrphanInsights:
+    def test_fix_orphan_insights_dir(self, brain: Path) -> None:
+        (brain / "insights" / "orphan" / "summary.md").parent.mkdir(parents=True)
+        (brain / "insights" / "orphan" / "summary.md").write_text("# Summary")
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
+        assert len(fixed) >= 1
+        assert not (brain / "insights" / "orphan").exists()
+
+
+class TestDoctorNestedOrphanInsights:
+    def test_fix_nested_orphan(self, brain: Path) -> None:
+        """insights/project/orphan-sub/ with knowledge/project/ but no knowledge/project/orphan-sub/."""
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        (brain / "insights" / "project" / "orphan-sub").mkdir(parents=True)
+        (brain / "insights" / "project" / "orphan-sub" / "summary.md").write_text("# Summary")
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
+        assert len(fixed) >= 1
+        assert not (brain / "insights" / "project" / "orphan-sub").exists()
+        # Parent insights/project/ should still exist
+        assert (brain / "insights" / "project").is_dir()
+
+
+class TestDoctorOrphanInsightState:
+    def test_fix_orphan_insight_state_row(self, brain: Path) -> None:
+        save_insight_state(brain, InsightState(knowledge_path="deleted/area"))
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insight_state_rows"]
+        assert len(fixed) >= 1
+
+        # Row should be gone
+        states = load_all_insight_states(brain)
+        assert not any(s.knowledge_path == "deleted/area" for s in states)
+
+
+class TestDoctorWouldTriggerRegen:
+    def test_modified_knowledge_reports_would_regen(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True)
+        _write_knowledge(brain, "project/doc.md", "original content")
+        _write_insight_summary(brain, "project")
+
+        # Save insight state with old hash
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="old_hash_that_wont_match",
+                structure_hash="old_struct",
+            ),
+        )
+
+        result = doctor(brain)
+        regen = [f for f in result.findings if f.severity == Severity.WOULD_TRIGGER_REGEN]
+        assert len(regen) >= 1

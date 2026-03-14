@@ -280,6 +280,7 @@ def main() -> None:
         handle_add_file,
         handle_config,
         handle_convert,
+        handle_doctor,
         handle_init,
         handle_list,
         handle_migrate,
@@ -326,6 +327,7 @@ def main() -> None:
         "config": handle_config,
         "convert": handle_convert,
         "update-skill": handle_update_skill,
+        "doctor": handle_doctor,
     }
 
     handler = handlers.get(args.command)

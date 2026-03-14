@@ -16,7 +16,7 @@ All source lives under `src/brain_sync/`.
 | Group | Modules | Purpose |
 |---|---|---|
 | Entry points | `__main__`, `mcp` | Daemon loop, MCP stdio server |
-| Commands / CLI | `commands/`, `cli/` | User-facing operations (add, add-file, remove, remove-file, list, move, init) |
+| Commands / CLI | `commands/`, `cli/` | User-facing operations (add, add-file, remove, remove-file, list, move, init, doctor) |
 | Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, and write knowledge files |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind `SourceAdapter` protocol |
 | REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + attachments) |
@@ -41,7 +41,7 @@ Dependency direction rules are defined in `CLAUDE.md`.
 
 **Interfaces** — MCP server exposes brain operations as tools over stdio; watcher monitors the filesystem and queues regen work.
 
-**Commands / CLI** — orchestrate core modules into user-facing operations. Commands are the public API consumed by both CLI handlers and MCP tools. Two command families: **sync source management** (`add`/`remove`/`list`/`update`/`move`) for URL-based sources tracked in the database, and **file management** (`add-file`/`remove-file`) for local `.md`/`.txt` files placed directly in knowledge/ with no DB tracking. Includes `commands/placement.py` for document placement suggestions and filename helpers (used by both MCP tools and CLI commands).
+**Commands / CLI** — orchestrate core modules into user-facing operations. Commands are the public API consumed by both CLI handlers and MCP tools. Two command families: **sync source management** (`add`/`remove`/`list`/`update`/`move`) for URL-based sources tracked in the database, and **file management** (`add-file`/`remove-file`) for local `.md`/`.txt` files placed directly in knowledge/ with no DB tracking. Includes `commands/placement.py` for document placement suggestions and filename helpers (used by both MCP tools and CLI commands). The `doctor` command is a consistency checker and recovery lever covering both source manifests and regen state — it can detect drift, report what work the daemon would do on next run, and optionally repair fixable issues or rebuild the DB from manifests.
 
 **Entry points** — `__main__` runs the daemon loop; `mcp` runs the FastMCP stdio server. Both wire together commands, scheduling, and interfaces.
 

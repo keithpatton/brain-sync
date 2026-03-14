@@ -872,6 +872,58 @@ def brain_sync_open_file(
 
 
 @server.tool(
+    name="brain_sync_doctor",
+    description=(
+        "Check brain consistency and optionally repair. "
+        "mode: 'check' (default), 'fix' (auto-repair drift), "
+        "'rebuild_db' (rebuild source sync progress from manifests, preserves regen state), "
+        "'deregister_missing' (finalize all missing sources)."
+    ),
+)
+def brain_sync_doctor(ctx: Context, mode: str = "check") -> dict:
+    """Diagnose brain health and optionally repair."""
+    from brain_sync.commands.doctor import Severity, deregister_missing, doctor, rebuild_db
+
+    rt = _runtime(ctx)
+    try:
+        if mode == "rebuild_db":
+            result = rebuild_db(rt.root)
+        elif mode == "deregister_missing":
+            result = deregister_missing(rt.root)
+        elif mode == "fix":
+            result = doctor(rt.root, fix=True)
+        else:
+            result = doctor(rt.root, fix=False)
+
+        non_ok = [
+            {
+                "check": f.check,
+                "severity": f.severity.value,
+                "message": f.message,
+                "canonical_id": f.canonical_id,
+                "knowledge_path": f.knowledge_path,
+                "fix_applied": f.fix_applied,
+            }
+            for f in result.findings
+            if f.severity != Severity.OK
+        ]
+        return {
+            "status": "ok",
+            "healthy": result.is_healthy,
+            "summary": {
+                "ok": result.ok_count,
+                "drift": result.drift_count,
+                "would_trigger_regen": result.would_trigger_regen_count,
+                "would_trigger_fetch": result.would_trigger_fetch_count,
+                "corruption": result.corruption_count,
+            },
+            "findings": non_ok,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@server.tool(
     name="brain_sync_usage",
     description=(
         "Show token usage summary for LLM invocations. "

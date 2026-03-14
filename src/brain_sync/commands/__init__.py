@@ -6,6 +6,7 @@ Usage:
 """
 
 from brain_sync.commands.context import BrainNotFoundError, InvalidBrainRootError, resolve_root, validate_brain_root
+from brain_sync.commands.doctor import DoctorResult, Finding, Severity, deregister_missing, doctor, rebuild_db
 from brain_sync.commands.init import InitResult, init_brain, update_skill
 from brain_sync.commands.placement import (
     PlacementCandidate,
@@ -40,6 +41,8 @@ from brain_sync.commands.sources import (
 __all__ = [
     "AddResult",
     "BrainNotFoundError",
+    "DoctorResult",
+    "Finding",
     "InitResult",
     "InvalidBrainRootError",
     "MigrateResult",
@@ -48,6 +51,7 @@ __all__ = [
     "PlacementSelection",
     "ReconcileResult",
     "RemoveResult",
+    "Severity",
     "SourceAlreadyExistsError",
     "SourceInfo",
     "SourceKind",
@@ -57,12 +61,15 @@ __all__ = [
     "add_source",
     "check_source_exists",
     "classify_source",
+    "deregister_missing",
+    "doctor",
     "extract_file_excerpt",
     "extract_title_from_url",
     "init_brain",
     "list_sources",
     "migrate_sources",
     "move_source",
+    "rebuild_db",
     "reconcile_sources",
     "remove_source",
     "resolve_root",

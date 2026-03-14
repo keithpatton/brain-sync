@@ -673,3 +673,45 @@ def handle_update_skill(args) -> None:
 
     updated = update_skill()
     log.info("Skill updated (%s)", ", ".join(p.name for p in updated))
+
+
+def handle_doctor(args) -> None:
+    from brain_sync.commands.doctor import Severity, deregister_missing, doctor, rebuild_db
+
+    # Mutual exclusivity check
+    flags = [args.fix, args.rebuild_db, args.deregister_missing]
+    if sum(bool(f) for f in flags) > 1:
+        log.error("--fix, --rebuild-db, and --deregister-missing are mutually exclusive")
+        sys.exit(1)
+
+    root = _resolve_root_or_exit(args)
+
+    if args.rebuild_db:
+        result = rebuild_db(root)
+    elif args.deregister_missing:
+        result = deregister_missing(root)
+    else:
+        result = doctor(root, fix=args.fix)
+
+    # Log findings grouped by severity
+    by_severity: dict[Severity, list] = {}
+    for f in result.findings:
+        by_severity.setdefault(f.severity, []).append(f)
+
+    for severity in Severity:
+        items = by_severity.get(severity, [])
+        if not items:
+            continue
+        if severity == Severity.OK:
+            log.info("%d check(s) OK", len(items))
+        else:
+            for item in items:
+                level = logging.WARNING if severity in (Severity.DRIFT, Severity.CORRUPTION) else logging.INFO
+                suffix = " [FIXED]" if item.fix_applied else ""
+                log.log(level, "[%s] %s%s", severity.value, item.message, suffix)
+
+    if result.is_healthy:
+        log.info("Brain is healthy.")
+    else:
+        log.warning("Brain has issues. Run with --fix to repair drift.")
+        sys.exit(1)

@@ -213,4 +213,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
 
+    # --- doctor ---
+    p_doctor = sub.add_parser("doctor", help="Check brain consistency and optionally repair")
+    p_doctor.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_doctor.add_argument("--fix", action="store_true", help="Auto-repair fixable issues")
+    p_doctor.add_argument(
+        "--rebuild-db",
+        action="store_true",
+        help="Rebuild source sync progress from manifests (preserves regen state)",
+    )
+    p_doctor.add_argument(
+        "--deregister-missing",
+        action="store_true",
+        help="Finalize all missing sources immediately",
+    )
+
     return parser
