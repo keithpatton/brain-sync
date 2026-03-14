@@ -13,6 +13,7 @@ from brain_sync.sidecar import (
     RegenMeta,
     UnsupportedSidecarVersion,
     delete_regen_meta,
+    load_regen_hashes,
     read_all_regen_meta,
     read_regen_meta,
     write_regen_meta,
@@ -135,3 +136,69 @@ class TestOmitsNoneFields:
         assert "summary_hash" not in raw
         assert "structure_hash" not in raw
         assert "last_regen_utc" not in raw
+
+
+class TestLoadRegenHashes:
+    """Unit tests for load_regen_hashes — sidecar-first, DB fallback."""
+
+    def test_sidecar_first(self, tmp_path: Path) -> None:
+        """When both sidecar and DB have values, sidecar wins."""
+        from unittest.mock import patch
+
+        root = tmp_path / "brain"
+        root.mkdir()
+        insights_dir = root / "insights" / "project"
+        insights_dir.mkdir(parents=True)
+
+        # Write sidecar with one set of values
+        write_regen_meta(insights_dir, RegenMeta(content_hash="sidecar_hash", summary_hash="s_sum"))
+
+        # Mock DB to return different values
+        from brain_sync.state import InsightState
+
+        db_state = InsightState(knowledge_path="project", content_hash="db_hash", summary_hash="d_sum")
+        with patch("brain_sync.state.load_insight_state", return_value=db_state):
+            meta = load_regen_hashes(root, "project")
+
+        assert meta is not None
+        assert meta.content_hash == "sidecar_hash"
+        assert meta.summary_hash == "s_sum"
+
+    def test_db_fallback(self, tmp_path: Path) -> None:
+        """When no sidecar exists, falls back to DB."""
+        from unittest.mock import patch
+
+        root = tmp_path / "brain"
+        root.mkdir()
+        (root / "insights" / "project").mkdir(parents=True)
+        # No sidecar written
+
+        from brain_sync.state import InsightState
+
+        db_state = InsightState(
+            knowledge_path="project",
+            content_hash="db_hash",
+            summary_hash="db_sum",
+            structure_hash="db_struct",
+            last_regen_utc="2026-01-01T00:00:00",
+        )
+        with patch("brain_sync.state.load_insight_state", return_value=db_state):
+            meta = load_regen_hashes(root, "project")
+
+        assert meta is not None
+        assert meta.content_hash == "db_hash"
+        assert meta.summary_hash == "db_sum"
+        assert meta.structure_hash == "db_struct"
+
+    def test_neither_returns_none(self, tmp_path: Path) -> None:
+        """When neither sidecar nor DB have data, returns None."""
+        from unittest.mock import patch
+
+        root = tmp_path / "brain"
+        root.mkdir()
+        (root / "insights" / "project").mkdir(parents=True)
+
+        with patch("brain_sync.state.load_insight_state", return_value=None):
+            meta = load_regen_hashes(root, "project")
+
+        assert meta is None

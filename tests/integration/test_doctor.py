@@ -327,18 +327,24 @@ class TestDoctorWouldTriggerRegen:
 
 
 class TestDoctorSidecarChecks:
-    def test_missing_sidecar_detected(self, brain: Path) -> None:
+    def test_missing_sidecar_repaired_by_sync(self, brain: Path) -> None:
+        """Missing sidecar is auto-repaired by synchronize_sidecars_from_db at doctor startup."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
         save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
 
         result = doctor(brain)
+        # Synchronization repairs the sidecar before check_missing_sidecars runs
         sidecar_findings = [f for f in result.findings if f.check == "missing_sidecars"]
-        assert len(sidecar_findings) == 1
-        assert sidecar_findings[0].severity == Severity.DRIFT
+        assert len(sidecar_findings) == 0
+        # Verify sidecar was written by sync
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash == "abc"
 
-    def test_fix_writes_sidecar_from_db(self, brain: Path) -> None:
+    def test_sync_writes_sidecar_with_all_fields(self, brain: Path) -> None:
+        """Synchronization at doctor startup writes all hash fields from DB."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
@@ -353,10 +359,7 @@ class TestDoctorSidecarChecks:
             ),
         )
 
-        result = doctor(brain, fix=True)
-        sidecar_findings = [f for f in result.findings if f.check == "missing_sidecars"]
-        assert len(sidecar_findings) == 1
-        assert sidecar_findings[0].fix_applied
+        doctor(brain)
 
         meta = read_regen_meta(brain / "insights" / "project")
         assert meta is not None
@@ -366,43 +369,47 @@ class TestDoctorSidecarChecks:
 
 
 class TestDoctorSidecarDbMismatch:
-    def test_mismatch_detected(self, brain: Path) -> None:
+    def test_mismatch_repaired_by_sync(self, brain: Path) -> None:
+        """Sidecar/DB mismatch is auto-repaired by synchronize_sidecars_from_db at doctor startup."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
-        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
+        # Must set structure_hash to avoid triggering post-v18 backfill in classify_folder_change
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc", structure_hash="st1"))
         write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="WRONG"))
 
         result = doctor(brain)
+        # Synchronization repairs sidecar before sidecar_db_consistency check
         mismatch = [f for f in result.findings if f.check == "sidecar_db_consistency"]
-        assert len(mismatch) == 1
-        assert mismatch[0].severity == Severity.DRIFT
+        assert len(mismatch) == 0
+        # Verify sidecar was corrected
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash == "abc"
 
-    def test_fix_overwrites_sidecar(self, brain: Path) -> None:
+    def test_sync_overwrites_mismatched_sidecar(self, brain: Path) -> None:
+        """Synchronization overwrites mismatched sidecar with correct DB values."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
-        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc", summary_hash="def"))
+        save_insight_state(
+            brain,
+            InsightState(knowledge_path="project", content_hash="abc", summary_hash="def", structure_hash="ghi"),
+        )
         write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="WRONG", summary_hash="WRONG"))
 
-        result = doctor(brain, fix=True)
-        mismatch = [f for f in result.findings if f.check == "sidecar_db_consistency"]
-        assert len(mismatch) == 1
-        assert mismatch[0].fix_applied
+        doctor(brain)
 
-        # After fix, sidecar should match current DB state
-        from brain_sync.state import load_insight_state
-
-        istate = load_insight_state(brain, "project")
+        # After sync, sidecar should have the values that were in DB at sync time
         meta = read_regen_meta(brain / "insights" / "project")
         assert meta is not None
-        assert istate is not None
-        assert meta.content_hash == istate.content_hash
-        assert meta.summary_hash == istate.summary_hash
+        assert meta.content_hash == "abc"
+        assert meta.summary_hash == "def"
 
 
 class TestDoctorSidecarCorruption:
-    def test_malformed_json_corruption(self, brain: Path) -> None:
+    def test_malformed_json_repaired_by_sync(self, brain: Path) -> None:
+        """Malformed sidecar is auto-repaired by synchronize_sidecars_from_db at doctor startup."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
@@ -410,26 +417,25 @@ class TestDoctorSidecarCorruption:
         (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
 
         result = doctor(brain)
+        # Synchronization repairs the malformed sidecar before checks run
         corrupt = [f for f in result.findings if f.check == "missing_sidecars" and f.severity == Severity.CORRUPTION]
-        assert len(corrupt) == 1
+        assert len(corrupt) == 0
+        # Verify sidecar was repaired
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash == "abc"
 
-    def test_fix_overwrites_malformed(self, brain: Path) -> None:
+    def test_sync_overwrites_malformed(self, brain: Path) -> None:
+        """Malformed sidecar is overwritten with correct DB values by synchronization."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
-        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
+        save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc", structure_hash="st1"))
         (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
 
-        result = doctor(brain, fix=True)
-        corrupt = [f for f in result.findings if f.check == "missing_sidecars"]
-        assert len(corrupt) == 1
-        assert corrupt[0].fix_applied
+        doctor(brain)
 
-        # After fix, sidecar should match current DB state
-        from brain_sync.state import load_insight_state
-
-        istate = load_insight_state(brain, "project")
+        # After sync, sidecar should have the DB values
         meta = read_regen_meta(brain / "insights" / "project")
         assert meta is not None
-        assert istate is not None
-        assert meta.content_hash == istate.content_hash
+        assert meta.content_hash == "abc"

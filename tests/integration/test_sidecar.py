@@ -143,7 +143,8 @@ class TestSidecarAfterRegen:
         # First regen to create summary
         await regen_single_folder(brain, "project", config=config, backend=backend)
 
-        # Simulate pre-v18 state: set structure_hash to None in DB
+        # Simulate pre-v18 state: set structure_hash to None in DB and remove sidecar
+        # (pre-Phase-4 data has no sidecar, so load_regen_hashes falls back to DB)
         istate = load_insight_state(brain, "project")
         assert istate is not None
         save_insight_state(
@@ -156,6 +157,9 @@ class TestSidecarAfterRegen:
                 last_regen_utc=istate.last_regen_utc,
             ),
         )
+        sidecar_path = brain / "insights" / "project" / SIDECAR_FILENAME
+        if sidecar_path.exists():
+            sidecar_path.unlink()
 
         result = await regen_single_folder(brain, "project", config=config, backend=backend)
         assert result.action == "skipped_backfill"

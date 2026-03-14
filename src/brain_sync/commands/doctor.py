@@ -643,6 +643,12 @@ def doctor(root: Path | None = None, *, fix: bool = False) -> DoctorResult:
     root = _require_root(root)
     knowledge_root = root / "knowledge"
 
+    # Synchronize sidecars from DB before checks that read via load_regen_hashes().
+    # Transitional: removed in Phase 6 after v21 drops insight_state.
+    from brain_sync.sidecar import synchronize_sidecars_from_db
+
+    synchronize_sidecars_from_db(root)
+
     manifests = read_all_source_manifests(root)
     identity_index = _build_identity_index(knowledge_root)
 

@@ -36,7 +36,7 @@ from brain_sync.fs_utils import (
 )
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
-from brain_sync.sidecar import RegenMeta, delete_regen_meta, write_regen_meta
+from brain_sync.sidecar import RegenMeta, delete_regen_meta, load_regen_hashes, write_regen_meta
 from brain_sync.state import (
     InsightState,
     delete_insight_state,
@@ -1160,7 +1160,7 @@ def classify_folder_change(
     if not knowledge_dir.is_dir():
         return ChangeEvent(change_type="content", structural=False), "", ""
 
-    istate = load_insight_state(root, knowledge_path)
+    meta = load_regen_hashes(root, knowledge_path)
 
     child_dirs = _get_child_dirs(knowledge_dir)
     has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
@@ -1171,34 +1171,36 @@ def classify_folder_change(
     new_content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
     new_structure_hash = _compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
 
-    if not istate or not istate.content_hash:
+    if not meta or not meta.content_hash:
         return ChangeEvent(change_type="content", structural=False), new_content_hash, new_structure_hash
 
     # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
-    if istate.structure_hash is None:
+    if meta.structure_hash is None:
         insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
         if (insights_dir / "summary.md").exists():
             log.info("Backfilling structure_hash for %s (post-v18 migration)", knowledge_path or "(root)")
+            # Load full DB state for lifecycle fields, update hashes
+            istate = load_insight_state(root, knowledge_path)
             save_insight_state(
                 root,
                 InsightState(
                     knowledge_path=knowledge_path,
                     content_hash=new_content_hash,
-                    summary_hash=istate.summary_hash,
+                    summary_hash=meta.summary_hash,
                     structure_hash=new_structure_hash,
-                    regen_started_utc=istate.regen_started_utc,
-                    last_regen_utc=istate.last_regen_utc,
-                    regen_status=istate.regen_status,
-                    owner_id=istate.owner_id,
-                    error_reason=istate.error_reason,
+                    regen_started_utc=istate.regen_started_utc if istate else None,
+                    last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
+                    regen_status=istate.regen_status if istate else "idle",
+                    owner_id=istate.owner_id if istate else None,
+                    error_reason=istate.error_reason if istate else None,
                 ),
             )
             return ChangeEvent(change_type="none", structural=False), new_content_hash, new_structure_hash
 
     event = classify_change(
-        istate.content_hash,
+        meta.content_hash,
         new_content_hash,
-        istate.structure_hash,
+        meta.structure_hash,
         new_structure_hash,
     )
     return event, new_content_hash, new_structure_hash
@@ -1297,7 +1299,9 @@ async def regen_single_folder(
         delete_insight_state(root, current_path)
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
 
-    # Load current insight state
+    # Load regen hashes from sidecar (authoritative), DB fallback
+    meta = load_regen_hashes(root, current_path)
+    # Load DB state for lifecycle fields (regen_status, owner_id, etc.)
     istate = load_insight_state(root, current_path)
 
     # Collect child summaries and compute split hashes
@@ -1311,14 +1315,14 @@ async def regen_single_folder(
     new_structure_hash = _compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
 
     event = classify_change(
-        istate.content_hash if istate else None,
+        meta.content_hash if meta else None,
         new_content_hash,
-        istate.structure_hash if istate else None,
+        meta.structure_hash if meta else None,
         new_structure_hash,
     )
 
     # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
-    if istate and istate.structure_hash is None and (insights_dir / "summary.md").exists():
+    if meta and meta.structure_hash is None and (insights_dir / "summary.md").exists():
         log.info(
             "[%s] Backfilling structure_hash for %s (post-v18 migration)",
             regen_id,
@@ -1329,13 +1333,13 @@ async def regen_single_folder(
             InsightState(
                 knowledge_path=current_path,
                 content_hash=new_content_hash,
-                summary_hash=istate.summary_hash,
+                summary_hash=meta.summary_hash,
                 structure_hash=new_structure_hash,
-                regen_started_utc=istate.regen_started_utc,
-                last_regen_utc=istate.last_regen_utc,
-                regen_status=istate.regen_status,
-                owner_id=istate.owner_id,
-                error_reason=istate.error_reason,
+                regen_started_utc=istate.regen_started_utc if istate else None,
+                last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
+                regen_status=istate.regen_status if istate else "idle",
+                owner_id=istate.owner_id if istate else None,
+                error_reason=istate.error_reason if istate else None,
             ),
         )
         try:
@@ -1343,9 +1347,9 @@ async def regen_single_folder(
                 insights_dir,
                 RegenMeta(
                     content_hash=new_content_hash,
-                    summary_hash=istate.summary_hash,
+                    summary_hash=meta.summary_hash,
                     structure_hash=new_structure_hash,
-                    last_regen_utc=istate.last_regen_utc,
+                    last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
                 ),
             )
         except Exception:
@@ -1372,11 +1376,11 @@ async def regen_single_folder(
             root,
             InsightState(
                 knowledge_path=current_path,
-                content_hash=istate.content_hash if istate else new_content_hash,
-                summary_hash=istate.summary_hash if istate else None,
+                content_hash=meta.content_hash if meta else new_content_hash,
+                summary_hash=meta.summary_hash if meta else None,
                 structure_hash=new_structure_hash,
                 regen_started_utc=istate.regen_started_utc if istate else None,
-                last_regen_utc=istate.last_regen_utc if istate else None,
+                last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
                 regen_status=istate.regen_status if istate else "idle",
                 owner_id=istate.owner_id if istate else None,
             ),
@@ -1385,10 +1389,10 @@ async def regen_single_folder(
             write_regen_meta(
                 insights_dir,
                 RegenMeta(
-                    content_hash=istate.content_hash if istate else new_content_hash,
-                    summary_hash=istate.summary_hash if istate else None,
+                    content_hash=meta.content_hash if meta else new_content_hash,
+                    summary_hash=meta.summary_hash if meta else None,
                     structure_hash=new_structure_hash,
-                    last_regen_utc=istate.last_regen_utc if istate else None,
+                    last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
                 ),
             )
         except Exception:
@@ -1399,7 +1403,7 @@ async def regen_single_folder(
         "[%s] Content hash changed for %s: %s -> %s",
         regen_id,
         current_path or "(root)",
-        (istate.content_hash[:12] if istate and istate.content_hash else "none"),
+        (meta.content_hash[:12] if meta and meta.content_hash else "none"),
         new_content_hash[:12],
     )
 
@@ -1430,11 +1434,11 @@ async def regen_single_folder(
         root,
         InsightState(
             knowledge_path=current_path,
-            content_hash=istate.content_hash if istate else None,
-            summary_hash=istate.summary_hash if istate else None,
-            structure_hash=istate.structure_hash if istate else None,
+            content_hash=meta.content_hash if meta else None,
+            summary_hash=meta.summary_hash if meta else None,
+            structure_hash=meta.structure_hash if meta else None,
             regen_started_utc=started,
-            last_regen_utc=istate.last_regen_utc if istate else None,
+            last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
             regen_status="running",
             owner_id=owner_id,
         ),
@@ -1552,9 +1556,9 @@ async def regen_single_folder(
                 root,
                 InsightState(
                     knowledge_path=current_path,
-                    content_hash=istate.content_hash if istate else None,
-                    summary_hash=istate.summary_hash if istate else None,
-                    structure_hash=istate.structure_hash if istate else None,
+                    content_hash=meta.content_hash if meta else None,
+                    summary_hash=meta.summary_hash if meta else None,
+                    structure_hash=meta.structure_hash if meta else None,
                     regen_started_utc=started,
                     last_regen_utc=now,
                     regen_status="failed",
@@ -1585,9 +1589,9 @@ async def regen_single_folder(
                 root,
                 InsightState(
                     knowledge_path=current_path,
-                    content_hash=istate.content_hash if istate else None,
-                    summary_hash=istate.summary_hash if istate else None,
-                    structure_hash=istate.structure_hash if istate else None,
+                    content_hash=meta.content_hash if meta else None,
+                    summary_hash=meta.summary_hash if meta else None,
+                    structure_hash=meta.structure_hash if meta else None,
                     regen_started_utc=started,
                     last_regen_utc=now,
                     regen_status="failed",

@@ -1,9 +1,9 @@
 """Insight sidecar read/write utilities.
 
-Each insights folder can have a `.regen-meta.json` sidecar that persists
-the three regen hashes (content_hash, summary_hash, structure_hash) to
-the filesystem.  In Phase 4 these are write-only exports of DB state —
-the DB remains the authoritative read path.
+Each insights folder has a `.regen-meta.json` sidecar that persists the
+three regen hashes (content_hash, summary_hash, structure_hash) to the
+filesystem.  Sidecars are the authoritative source for regen hashes,
+with DB fallback for pre-Phase-5 data that lacks sidecars.
 """
 
 from __future__ import annotations
@@ -107,3 +107,71 @@ def delete_regen_meta(insights_dir: Path) -> None:
     if target.exists():
         target.unlink()
         log.debug("Deleted sidecar %s", target)
+
+
+def load_regen_hashes(root: Path, knowledge_path: str) -> RegenMeta | None:
+    """Read regen hashes from sidecar first, fall back to DB insight_state.
+
+    This is the authoritative read path for regen hash comparison.
+    Sidecars are the primary source; DB is a fallback for pre-Phase-5
+    data that was never exported to sidecars.
+    """
+    insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+    meta = read_regen_meta(insights_dir)
+    if meta is not None:
+        return meta
+    # Fallback: read from DB (pre-Phase-4 data without sidecars)
+    from brain_sync.state import load_insight_state
+
+    istate = load_insight_state(root, knowledge_path)
+    if istate is None or not istate.content_hash:
+        return None
+    return RegenMeta(
+        content_hash=istate.content_hash,
+        summary_hash=istate.summary_hash,
+        structure_hash=istate.structure_hash,
+        last_regen_utc=istate.last_regen_utc,
+    )
+
+
+def synchronize_sidecars_from_db(root: Path) -> int:
+    """Ensure all sidecars are synchronized from DB authority.
+
+    For each insight_state row with non-null hashes:
+    - If sidecar missing: write from DB values
+    - If sidecar exists but hashes disagree with DB: overwrite from DB values
+    - If sidecar matches DB: no-op
+
+    This is a transitional function used during the Phase 5a authority
+    transfer.  After Phase 5b (v21 migration drops insight_state), this
+    becomes a no-op and is removed in Phase 6.
+
+    Returns count of sidecars written/repaired.
+    """
+    from brain_sync.state import load_all_insight_states
+
+    all_states = load_all_insight_states(root)
+    repaired = 0
+    for istate in all_states:
+        if not istate.content_hash:
+            continue
+        kp = istate.knowledge_path
+        insights_dir = root / "insights" / kp if kp else root / "insights"
+        if not insights_dir.is_dir():
+            continue
+        existing = read_regen_meta(insights_dir)
+        db_meta = RegenMeta(
+            content_hash=istate.content_hash,
+            summary_hash=istate.summary_hash,
+            structure_hash=istate.structure_hash,
+            last_regen_utc=istate.last_regen_utc,
+        )
+        if existing is None or (
+            existing.content_hash != db_meta.content_hash
+            or existing.summary_hash != db_meta.summary_hash
+            or existing.structure_hash != db_meta.structure_hash
+        ):
+            write_regen_meta(insights_dir, db_meta)
+            repaired += 1
+    log.info("Sidecar synchronization: %d repaired/written", repaired)
+    return repaired
