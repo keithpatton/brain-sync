@@ -852,16 +852,7 @@ class TestMigrateSources:
 
 
 class TestInitBrain:
-    @pytest.fixture(autouse=True)
-    def isolate_config(self, tmp_path, monkeypatch):
-        """Prevent init_brain from touching the real ~/.brain-sync/config.json."""
-        config_dir = tmp_path / "fake-config"
-        config_dir.mkdir()
-        config_file = config_dir / "config.json"
-        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", config_dir)
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
-        skill_dir = tmp_path / "fake-skills" / "brain-sync"
-        monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", skill_dir)
+    # Config isolation handled by top-level tests/conftest.py::_isolate_config
 
     def test_creates_structure(self, tmp_path):
         root = tmp_path / "new-brain"
