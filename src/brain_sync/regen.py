@@ -449,6 +449,11 @@ def _compute_structure_hash(
     return h.hexdigest()
 
 
+# Public API for hash computation (used by doctor --adopt-baseline)
+compute_content_hash = _compute_content_hash
+compute_structure_hash = _compute_structure_hash
+
+
 def text_similarity(a: str, b: str) -> float:
     """Compute text similarity between two strings after normalising whitespace."""
 
@@ -1145,6 +1150,9 @@ def _collect_child_summaries(
         if child_summary_path.exists():
             child_summaries[child.name] = child_summary_path.read_text(encoding="utf-8")
     return child_summaries
+
+
+collect_child_summaries = _collect_child_summaries
 
 
 def classify_folder_change(

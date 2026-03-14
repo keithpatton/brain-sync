@@ -433,3 +433,71 @@ class TestDoctorSidecarCorruption:
         # not have hashes to restore. Check that the corruption was at least detected.
         corrupt = [f for f in result.findings if f.check == "missing_sidecars"]
         assert len(corrupt) >= 1
+
+
+# ---------------------------------------------------------------------------
+# TestAdoptBaseline (integration)
+# ---------------------------------------------------------------------------
+
+
+class TestAdoptBaseline:
+    """Integration tests for brain-sync doctor --adopt-baseline."""
+
+    def test_tree_with_children(self, brain: Path) -> None:
+        """Multi-level tree: parent content_hash incorporates child summaries."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        # Create a tree: project/sub-a, project/sub-b
+        for sub in ("sub-a", "sub-b"):
+            (brain / "knowledge" / "project" / sub).mkdir(parents=True, exist_ok=True)
+            _write_knowledge(brain, f"project/{sub}/doc.md", f"# {sub} doc\nContent for {sub}.")
+            _write_insight_summary(brain, f"project/{sub}", f"# {sub} Summary\n{sub} overview.")
+
+        # Parent has no direct files, just children
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        _write_insight_summary(brain, "project", "# Project Summary\nCombined overview.")
+
+        result = adopt_baseline(brain)
+
+        # All three should be adopted
+        adopted = [f for f in result.findings if f.fix_applied]
+        adopted_paths = {f.knowledge_path for f in adopted}
+        assert "project/sub-a" in adopted_paths
+        assert "project/sub-b" in adopted_paths
+        assert "project" in adopted_paths
+
+        # Parent content_hash should be non-empty (computed from child summaries)
+        parent_meta = read_regen_meta(brain / "insights" / "project")
+        assert parent_meta is not None
+        assert parent_meta.content_hash is not None
+        assert len(parent_meta.content_hash) == 64  # SHA-256 hex
+
+    def test_then_doctor_healthy(self, brain: Path) -> None:
+        """After adopt-baseline, doctor() reports no WOULD_TRIGGER_REGEN for adopted paths."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        _write_knowledge(brain, "project/doc.md", "# Doc\nContent.")
+        _write_insight_summary(brain, "project", "# Summary\nOverview.")
+
+        adopt_baseline(brain)
+        result = doctor(brain)
+
+        regen_findings = [
+            f for f in result.findings if f.severity == Severity.WOULD_TRIGGER_REGEN and f.knowledge_path == "project"
+        ]
+        assert len(regen_findings) == 0
+
+    def test_then_classify_no_change(self, brain: Path) -> None:
+        """Critical correctness proof: after adopt-baseline, classify_folder_change returns 'none'."""
+        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.regen import classify_folder_change
+
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        _write_knowledge(brain, "project/doc.md", "# Doc\nContent.")
+        _write_insight_summary(brain, "project", "# Summary\nOverview.")
+
+        adopt_baseline(brain)
+
+        change, _, _ = classify_folder_change(brain, "project")
+        assert change.change_type == "none"

@@ -469,11 +469,11 @@ class TestCheckMissingSidecars:
         findings = check_missing_sidecars(brain)
         assert len(findings) == 0
 
-    def test_summary_without_sidecar_drift(self, brain: Path) -> None:
+    def test_summary_without_sidecar_would_trigger_regen(self, brain: Path) -> None:
         _write_insight_summary(brain, "project")
         findings = check_missing_sidecars(brain)
         assert len(findings) == 1
-        assert findings[0].severity == Severity.DRIFT
+        assert findings[0].severity == Severity.WOULD_TRIGGER_REGEN
         assert findings[0].check == "missing_sidecars"
 
     def test_malformed_sidecar_corruption(self, brain: Path) -> None:
@@ -517,3 +517,211 @@ class TestCheckSidecarIntegrity:
         assert len(findings) == 1
         assert findings[0].severity == Severity.DRIFT
         assert "no regen state" in findings[0].message
+
+
+# ---------------------------------------------------------------------------
+# TestApplyFixes
+# ---------------------------------------------------------------------------
+
+
+class TestApplyFixes:
+    def test_fix_restores_missing_version_json(self, brain: Path) -> None:
+        """doctor --fix should restore a missing version.json."""
+        from brain_sync.commands.doctor import doctor
+
+        (brain / ".brain-sync" / "version.json").unlink()
+        result = doctor(brain, fix=True)
+        vj_findings = [f for f in result.findings if f.check == "version_json"]
+        assert len(vj_findings) == 1
+        assert vj_findings[0].severity == Severity.CORRUPTION
+        assert vj_findings[0].fix_applied is True
+        # File restored on disk
+        restored = json.loads((brain / ".brain-sync" / "version.json").read_text())
+        assert restored == {"manifest_version": 1}
+
+    def test_fix_does_not_fix_missing_sidecars(self, brain: Path) -> None:
+        """Missing sidecars are WOULD_TRIGGER_REGEN — not fixable by doctor --fix."""
+        from brain_sync.commands.doctor import doctor
+
+        _write_insight_summary(brain, "project")
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        save_insight_state(brain, InsightState(knowledge_path="project"))
+        result = doctor(brain, fix=True)
+        sidecar_findings = [f for f in result.findings if f.check == "missing_sidecars"]
+        assert len(sidecar_findings) == 1
+        assert sidecar_findings[0].severity == Severity.WOULD_TRIGGER_REGEN
+        assert sidecar_findings[0].fix_applied is False
+
+
+# ---------------------------------------------------------------------------
+# TestAdoptBaseline
+# ---------------------------------------------------------------------------
+
+
+class TestAdoptBaseline:
+    """Tests for brain-sync doctor --adopt-baseline."""
+
+    def test_writes_sidecar_and_db_row(self, brain: Path) -> None:
+        """Single leaf folder: adopt writes sidecar + regen_locks row."""
+        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.sidecar import read_regen_meta
+
+        # Create knowledge dir with a file, and a matching summary
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        (brain / "knowledge" / "project" / "notes.md").write_text("# Notes\nSome content.", encoding="utf-8")
+        _write_insight_summary(brain, "project", "# Project Summary\nOverview.")
+
+        result = adopt_baseline(brain)
+
+        # Should have findings for "project" (adopted) and possibly root (skipped — no summary)
+        adopted = [f for f in result.findings if f.fix_applied and f.knowledge_path == "project"]
+        assert len(adopted) == 1
+        assert adopted[0].severity == Severity.OK
+        assert "Adopted baseline" in adopted[0].message
+
+        # Verify sidecar was written
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash is not None
+        assert meta.structure_hash is not None
+
+        # Verify DB row exists
+        conn = _connect(brain)
+        try:
+            row = conn.execute("SELECT regen_status FROM regen_locks WHERE knowledge_path = ?", ("project",)).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] == "idle"
+
+    def test_skips_existing_valid_sidecar_with_db_row(self, brain: Path) -> None:
+        """Folder with valid sidecar + regen_locks row is skipped."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        (brain / "knowledge" / "project" / "notes.md").write_text("# Notes", encoding="utf-8")
+        _write_insight_summary(brain, "project", "# Summary")
+
+        # Pre-write sidecar and DB row
+        write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="abc", structure_hash="def"))
+        save_insight_state(
+            brain,
+            InsightState(knowledge_path="project", content_hash="abc", structure_hash="def", regen_status="idle"),
+        )
+
+        result = adopt_baseline(brain)
+        project_findings = [f for f in result.findings if f.knowledge_path == "project"]
+        assert len(project_findings) == 1
+        assert project_findings[0].fix_applied is False
+        assert "Already baselined" in project_findings[0].message
+
+    def test_ensures_lifecycle_row_for_existing_sidecar(self, brain: Path) -> None:
+        """Valid sidecar but no regen_locks row → creates idle lifecycle row."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        (brain / "knowledge" / "project" / "notes.md").write_text("# Notes", encoding="utf-8")
+        _write_insight_summary(brain, "project", "# Summary")
+
+        # Write sidecar only (no DB row)
+        write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="abc", structure_hash="def"))
+
+        result = adopt_baseline(brain)
+        project_findings = [f for f in result.findings if f.knowledge_path == "project"]
+        assert len(project_findings) == 1
+        assert project_findings[0].fix_applied is True
+        assert "Ensured lifecycle row" in project_findings[0].message
+
+        # Verify DB row now exists
+        conn = _connect(brain)
+        try:
+            row = conn.execute("SELECT regen_status FROM regen_locks WHERE knowledge_path = ?", ("project",)).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] == "idle"
+
+    def test_overwrites_malformed_sidecar(self, brain: Path) -> None:
+        """Malformed sidecar JSON is overwritten with correct hashes."""
+        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.sidecar import SIDECAR_FILENAME, read_regen_meta
+
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        (brain / "knowledge" / "project" / "notes.md").write_text("# Notes", encoding="utf-8")
+        _write_insight_summary(brain, "project", "# Summary")
+
+        # Write malformed sidecar
+        sidecar_path = brain / "insights" / "project" / SIDECAR_FILENAME
+        sidecar_path.write_text("{invalid json", encoding="utf-8")
+
+        result = adopt_baseline(brain)
+        project_findings = [f for f in result.findings if f.knowledge_path == "project"]
+        assert len(project_findings) == 1
+        assert project_findings[0].fix_applied is True
+        assert "Adopted baseline" in project_findings[0].message
+
+        # Verify sidecar is now valid
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash is not None
+
+    def test_skips_orphan_insight(self, brain: Path) -> None:
+        """Summary exists but knowledge dir missing → warning finding."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        # Only create insight, no knowledge dir
+        _write_insight_summary(brain, "orphan", "# Orphan Summary")
+
+        result = adopt_baseline(brain)
+        orphan_findings = [f for f in result.findings if f.knowledge_path == "orphan"]
+        assert len(orphan_findings) == 1
+        assert orphan_findings[0].severity == Severity.DRIFT
+        assert "Orphan" in orphan_findings[0].message
+
+    def test_skips_no_summary(self, brain: Path) -> None:
+        """Knowledge dir exists but no summary.md → not in findings."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        (brain / "knowledge" / "empty").mkdir(parents=True, exist_ok=True)
+        (brain / "knowledge" / "empty" / "notes.md").write_text("# Notes", encoding="utf-8")
+
+        result = adopt_baseline(brain)
+        empty_findings = [f for f in result.findings if f.knowledge_path == "empty"]
+        assert len(empty_findings) == 0
+
+    def test_idempotent(self, brain: Path) -> None:
+        """Running adopt_baseline twice: second run skips all with OK findings."""
+        from brain_sync.commands.doctor import adopt_baseline
+
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        (brain / "knowledge" / "project" / "notes.md").write_text("# Notes", encoding="utf-8")
+        _write_insight_summary(brain, "project", "# Summary")
+
+        result1 = adopt_baseline(brain)
+        adopted1 = [f for f in result1.findings if f.knowledge_path == "project"]
+        assert adopted1[0].fix_applied is True
+
+        result2 = adopt_baseline(brain)
+        adopted2 = [f for f in result2.findings if f.knowledge_path == "project"]
+        assert adopted2[0].fix_applied is False
+        assert "Already baselined" in adopted2[0].message
+
+    def test_handles_root_path(self, brain: Path) -> None:
+        """insights/summary.md at root level is adopted."""
+        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.sidecar import read_regen_meta
+
+        # Create a file at knowledge root level
+        (brain / "knowledge" / "readme.md").write_text("# Root readme", encoding="utf-8")
+        # Create root-level summary
+        (brain / "insights" / "summary.md").write_text("# Root Summary", encoding="utf-8")
+
+        result = adopt_baseline(brain)
+        root_findings = [f for f in result.findings if f.knowledge_path == ""]
+        assert len(root_findings) == 1
+        assert root_findings[0].fix_applied is True
+
+        # Verify sidecar at root insights/
+        meta = read_regen_meta(brain / "insights")
+        assert meta is not None
+        assert meta.content_hash is not None

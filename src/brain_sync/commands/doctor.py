@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
-from brain_sync.fileops import canonical_prefix, rediscover_local_path
+from brain_sync.fileops import atomic_write_bytes, canonical_prefix, rediscover_local_path
 from brain_sync.fs_utils import normalize_path
 from brain_sync.manifest import (
     MANIFEST_VERSION_FILE,
@@ -27,10 +27,8 @@ from brain_sync.manifest import (
 )
 from brain_sync.pipeline import extract_source_id, prepend_managed_header
 from brain_sync.sidecar import (
-    RegenMeta,
     read_all_regen_meta,
     read_regen_meta,
-    write_regen_meta,
 )
 from brain_sync.state import (
     InsightState,
@@ -571,8 +569,8 @@ def check_missing_sidecars(root: Path) -> list[Finding]:
                 findings.append(
                     Finding(
                         check="missing_sidecars",
-                        severity=Severity.DRIFT,
-                        message=f"Missing sidecar for '{kp}'",
+                        severity=Severity.WOULD_TRIGGER_REGEN,
+                        message=f"Missing sidecar for '{kp}' (needs regen)",
                         knowledge_path=kp,
                     )
                 )
@@ -656,12 +654,9 @@ def _apply_fixes(
     knowledge_root: Path,
     identity_index: dict[str, Path],
 ) -> None:
-    """Apply repairs for DRIFT findings (and CORRUPTION for sidecars)."""
+    """Apply repairs for DRIFT and fixable CORRUPTION findings."""
     for f in findings:
-        # Sidecar corruption is also fixable (overwrite from DB)
-        if f.severity == Severity.DRIFT or (f.severity == Severity.CORRUPTION and f.check == "missing_sidecars"):
-            pass  # proceed to fix
-        else:
+        if f.severity not in (Severity.DRIFT, Severity.CORRUPTION):
             continue
 
         try:
@@ -747,24 +742,12 @@ def _apply_fixes(
                     f.fix_applied = True
                     log.info("Normalized regen_locks path: %s", f.knowledge_path)
 
-            elif f.check == "missing_sidecars" and f.knowledge_path is not None:
-                # Missing/malformed sidecar: overwrite from current regen state
-                from brain_sync.state import load_insight_state
-
-                istate = load_insight_state(root, f.knowledge_path)
-                if istate and istate.content_hash:
-                    insights_dir = root / "insights" / f.knowledge_path if f.knowledge_path else root / "insights"
-                    write_regen_meta(
-                        insights_dir,
-                        RegenMeta(
-                            content_hash=istate.content_hash,
-                            summary_hash=istate.summary_hash,
-                            structure_hash=istate.structure_hash,
-                            last_regen_utc=istate.last_regen_utc,
-                        ),
-                    )
-                    f.fix_applied = True
-                    log.info("Wrote sidecar for %s", f.knowledge_path)
+            elif f.check == "version_json":
+                version_path = root / MANIFEST_VERSION_FILE
+                version_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(version_path, json.dumps({"manifest_version": 1}).encode("utf-8"))
+                f.fix_applied = True
+                log.info("Restored %s", MANIFEST_VERSION_FILE)
 
         except Exception:
             log.exception("Failed to fix %s finding for %s", f.check, f.canonical_id or f.knowledge_path)
@@ -860,6 +843,154 @@ def deregister_missing(root: Path | None = None) -> DoctorResult:
                 check="deregister_missing",
                 severity=Severity.OK,
                 message="No missing sources to deregister",
+            )
+        )
+
+    return DoctorResult(findings=findings, fix_mode=True)
+
+
+def adopt_baseline(root: Path | None = None) -> DoctorResult:
+    """Record current summaries as regen baseline (migration from pre-sidecar versions).
+
+    Walks knowledge/ bottom-up (leaves first) so parent content hashes incorporate
+    child summary text correctly. For each folder with an existing summary.md,
+    computes hashes using the same functions as classify_folder_change() and writes
+    a sidecar + DB row.
+    """
+    import hashlib
+
+    from brain_sync.fs_utils import find_all_content_paths, get_child_dirs, is_readable_file
+    from brain_sync.regen import collect_child_summaries, compute_content_hash, compute_structure_hash
+
+    root = _require_root(root)
+    knowledge_root = root / "knowledge"
+    insights_root = root / "insights"
+    findings: list[Finding] = []
+
+    # Discover eligible paths bottom-up (leaves first), then root ""
+    content_paths = find_all_content_paths(knowledge_root)
+    content_paths.append("")
+
+    # Also discover insight paths with summaries that aren't in content_paths
+    # (handles orphan detection for summaries with no matching knowledge dir)
+    content_path_set = set(content_paths)
+    if insights_root.is_dir():
+        for summary in insights_root.rglob("summary.md"):
+            rel = summary.parent.relative_to(insights_root)
+            kp = normalize_path(rel)
+            if kp.startswith("_"):
+                continue
+            if kp not in content_path_set:
+                content_paths.append(kp)
+                content_path_set.add(kp)
+
+    # Load existing regen_locks paths for skip detection
+    conn = _connect(root)
+    try:
+        lock_paths = {r[0] for r in conn.execute("SELECT knowledge_path FROM regen_locks").fetchall()}
+    finally:
+        conn.close()
+
+    for kp in content_paths:
+        knowledge_dir = knowledge_root / kp if kp else knowledge_root
+        insights_dir = insights_root / kp if kp else insights_root
+        summary_path = insights_dir / "summary.md"
+
+        # Skip if no summary exists
+        if not summary_path.exists():
+            continue
+
+        # Warn on orphan insight (summary exists but knowledge dir missing)
+        if not knowledge_dir.is_dir():
+            findings.append(
+                Finding(
+                    check="adopt_baseline",
+                    severity=Severity.DRIFT,
+                    message=f"Orphan insight (no knowledge dir): '{kp}'",
+                    knowledge_path=kp,
+                )
+            )
+            continue
+
+        # Check existing sidecar state
+        existing_meta = read_regen_meta(insights_dir)
+        if existing_meta is not None and existing_meta.content_hash is not None:
+            # Valid sidecar exists
+            if kp in lock_paths:
+                # Fully baselined — skip
+                findings.append(
+                    Finding(
+                        check="adopt_baseline",
+                        severity=Severity.OK,
+                        message=f"Already baselined: '{kp}'",
+                        knowledge_path=kp,
+                    )
+                )
+                continue
+            else:
+                # Sidecar exists but no DB row — ensure lifecycle row
+                summary_text = summary_path.read_text(encoding="utf-8")
+                summary_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
+                save_insight_state(
+                    root,
+                    InsightState(
+                        knowledge_path=kp,
+                        content_hash=existing_meta.content_hash,
+                        summary_hash=summary_hash,
+                        structure_hash=existing_meta.structure_hash,
+                        last_regen_utc=None,
+                        regen_status="idle",
+                    ),
+                )
+                findings.append(
+                    Finding(
+                        check="adopt_baseline",
+                        severity=Severity.OK,
+                        message=f"Ensured lifecycle row for existing sidecar: '{kp}'",
+                        knowledge_path=kp,
+                        fix_applied=True,
+                    )
+                )
+                continue
+
+        # Compute hashes using the same functions as regen
+        child_dirs = get_child_dirs(knowledge_dir)
+        has_direct_files = any(is_readable_file(p) for p in knowledge_dir.iterdir())
+        child_summaries = collect_child_summaries(root, kp, child_dirs)
+        content_hash = compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
+        structure_hash = compute_structure_hash(child_dirs, knowledge_dir, has_direct_files)
+        summary_text = summary_path.read_text(encoding="utf-8")
+        summary_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
+
+        # Write via save_insight_state (writes sidecar + DB row)
+        save_insight_state(
+            root,
+            InsightState(
+                knowledge_path=kp,
+                content_hash=content_hash,
+                summary_hash=summary_hash,
+                structure_hash=structure_hash,
+                last_regen_utc=None,
+                regen_status="idle",
+            ),
+        )
+        findings.append(
+            Finding(
+                check="adopt_baseline",
+                severity=Severity.OK,
+                message=f"Adopted baseline for '{kp}'",
+                knowledge_path=kp,
+                fix_applied=True,
+            )
+        )
+        log.info("Adopted baseline for '%s'", kp or "(root)")
+
+    if not findings:
+        findings.append(
+            Finding(
+                check="adopt_baseline",
+                severity=Severity.OK,
+                message="No summaries found to adopt",
             )
         )
 

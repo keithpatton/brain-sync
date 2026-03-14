@@ -232,5 +232,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Finalize all missing sources immediately",
     )
+    p_doctor.add_argument(
+        "--adopt-baseline",
+        action="store_true",
+        help="Record current summaries as regen baseline (migration from pre-sidecar versions)",
+    )
 
     return parser

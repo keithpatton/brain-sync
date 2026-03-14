@@ -686,12 +686,12 @@ def handle_update_skill(args) -> None:
 
 
 def handle_doctor(args) -> None:
-    from brain_sync.commands.doctor import Severity, deregister_missing, doctor, rebuild_db
+    from brain_sync.commands.doctor import Severity, adopt_baseline, deregister_missing, doctor, rebuild_db
 
     # Mutual exclusivity check
-    flags = [args.fix, args.rebuild_db, args.deregister_missing]
+    flags = [args.fix, args.rebuild_db, args.deregister_missing, args.adopt_baseline]
     if sum(bool(f) for f in flags) > 1:
-        log.error("--fix, --rebuild-db, and --deregister-missing are mutually exclusive")
+        log.error("--fix, --rebuild-db, --deregister-missing, and --adopt-baseline are mutually exclusive")
         sys.exit(1)
 
     root = _resolve_root_or_exit(args)
@@ -700,6 +700,8 @@ def handle_doctor(args) -> None:
         result = rebuild_db(root)
     elif args.deregister_missing:
         result = deregister_missing(root)
+    elif args.adopt_baseline:
+        result = adopt_baseline(root)
     else:
         result = doctor(root, fix=args.fix)
 
@@ -715,13 +717,35 @@ def handle_doctor(args) -> None:
         if severity == Severity.OK:
             log.info("%d check(s) OK", len(items))
         else:
+            # Human-readable severity labels
+            labels = {
+                Severity.DRIFT: "DRIFT",
+                Severity.CORRUPTION: "CORRUPTION",
+                Severity.WOULD_TRIGGER_REGEN: "NEEDS REGEN",
+                Severity.WOULD_TRIGGER_FETCH: "NEEDS FETCH",
+            }
+            label = labels.get(severity, severity.value)
             for item in items:
                 level = logging.WARNING if severity in (Severity.DRIFT, Severity.CORRUPTION) else logging.INFO
                 suffix = " [FIXED]" if item.fix_applied else ""
-                log.log(level, "[%s] %s%s", severity.value, item.message, suffix)
+                log.log(level, "[%s] %s%s", label, item.message, suffix)
 
     if result.is_healthy:
         log.info("Brain is healthy.")
     else:
-        log.warning("Brain has issues. Run with --fix to repair drift.")
+        # Build a context-aware exit message
+        unfixed = [f for f in result.findings if f.severity != Severity.OK and not f.fix_applied]
+        has_fixable = any(f.severity in (Severity.DRIFT, Severity.CORRUPTION) for f in unfixed)
+        has_run = any(f.severity in (Severity.WOULD_TRIGGER_REGEN, Severity.WOULD_TRIGGER_FETCH) for f in unfixed)
+
+        hints: list[str] = []
+        if has_fixable:
+            hints.append("run 'brain-sync doctor --fix' to repair")
+        if has_run:
+            hints.append("run 'brain-sync run' to sync and regenerate")
+
+        if hints:
+            log.warning("Brain has issues: %s.", "; ".join(hints))
+        else:
+            log.warning("Brain has issues.")
         sys.exit(1)
