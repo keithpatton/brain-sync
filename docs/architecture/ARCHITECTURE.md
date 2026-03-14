@@ -22,7 +22,7 @@ All source lives under `src/brain_sync/`.
 | REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + attachments) |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, Claude CLI transport, deterministic test fake |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
-| State | `state`, `token_tracking` | SQLite WAL persistence (sources, documents, relationships, insight state, token events) |
+| State | `state`, `token_tracking` | SQLite WAL persistence (sync_cache, documents, relationships, regen_locks, token events) |
 | Manifests | `manifest` | Source manifest read/write (`.brain-sync/sources/*.json`) |
 | Sidecars | `sidecar` | Insight regen hash read/write (`insights/**/.regen-meta.json`) |
 | MCP | `mcp` | FastMCP tool interface over stdio |
@@ -61,7 +61,7 @@ watcher.start()              → begin filesystem monitoring (after reconcile to
 sync loop                    → normal operation
 ```
 
-**`reconcile_knowledge_tree()`** compares the `knowledge/` folder tree against the `insight_state` DB table:
+**`reconcile_knowledge_tree()`** compares the `knowledge/` folder tree against the `regen_locks` DB table and sidecars:
 1. **Orphan cleanup** — DB rows pointing to non-existent knowledge dirs are deleted, along with their orphan insight directories
 2. **Hash-check tracked folders** — for folders in both DB and FS, recomputes content hash to detect offline file additions/deletions
 3. **Scoped enqueue** — untracked folders are enqueued if they have existing insight directories (Rule 1: moved folder) or if orphans were cleaned (Rule 2: brain state disrupted by offline mutations)
@@ -70,8 +70,8 @@ sync loop                    → normal operation
 
 | Layer | Owner | Responsibility |
 |---|---|---|
-| `knowledge/` + `sources` table | sync / reconcile / watcher | Source-of-truth document locations |
-| `insights/` + `insight_state` table | regen | Derived artifacts from knowledge |
+| `knowledge/` + manifests + `sync_cache` | sync / reconcile / watcher | Source-of-truth document locations |
+| `insights/` + sidecars + `regen_locks` | regen | Derived artifacts from knowledge |
 
 Reconcile is a manifest-driven state-repair operation. It iterates all manifests (including missing-status), uses 3-tier file resolution (materialized_path → identity header → prefix glob), implements two-stage missing protocol, and prunes orphan DB rows. `load_state()` merges manifest intent with DB sync progress — manifests are authoritative for registration, the DB is a disposable cache. Missing-status sources are excluded from runtime state (not schedulable). Regen detects path changes on its next run and rebuilds insights at the correct locations.
 
@@ -144,9 +144,9 @@ The system uses a tiered authority model where filesystem artifacts are authorit
 | State Class | Authoritative Location | Portable | Rebuildable |
 |---|---|---|---|
 | Source registration (intent) | `.brain-sync/sources/*.json` manifests | Yes (git) | From DB (migration only) |
-| Source sync progress | `sync_cache` DB table | No | Loss triggers re-sync |
-| Insight hashes | `insight_state` DB table + `insights/**/.regen-meta.json` sidecars (Phase 4: write-only export; DB authoritative for reads) | Yes (git, via sidecars) | Sidecars written on every regen; DB rebuilt from sidecars in Phase 5 |
-| Regen lifecycle | `regen_locks` DB table (future) | No | Reset to idle on startup |
+| Source sync progress | `sync_cache` DB table | No | Loss triggers re-sync; `sync_hint` in manifests seeds timing |
+| Insight hashes | `insights/**/.regen-meta.json` sidecars | Yes (git) | Written on every regen |
+| Regen lifecycle | `regen_locks` DB table | No | Reset to idle on startup |
 | Document metadata | `documents` DB table | No | Re-discovered on sync |
 | Relationships | `relationships` DB table | No | Re-discovered on sync |
 | Token telemetry | `token_events` DB table | No | Historical loss accepted |
@@ -221,8 +221,8 @@ Every remaining DB table must justify its existence. If deleted, the consequence
 
 | Table | Performance/Operational Problem Solved | If Deleted |
 |---|---|---|
-| `sources` | Caches sync progress (last_checked, content_hash, intervals) to avoid re-fetching; `load_state()` merges manifest intent + DB progress | Rebuilt from `.brain-sync/sources/*.json` manifests; `_seed_from_hint()` seeds timing from `sync_hint` so matching sources skip re-fetch; orphan DB rows (no manifest) are pruned during reconcile |
-| `insight_state` | Caches content/summary/structure hashes to avoid recomputing on every regen check; holds regen lifecycle locks | Phase 5: rebuilt from `.regen-meta.json` sidecars; all locks reset to idle. Phase 4: sidecars are write-only exports, DB is authoritative read path |
+| `sync_cache` | Caches sync progress (last_checked, content_hash, intervals) to avoid re-fetching; `load_state()` merges manifest intent + DB progress | Rebuilt from `.brain-sync/sources/*.json` manifests; `_seed_from_hint()` seeds timing from `sync_hint` so matching sources skip re-fetch; orphan DB rows (no manifest) are pruned during reconcile |
+| `regen_locks` | Regen lifecycle ownership (session ID, status) for crash recovery and concurrent access | Reset to idle on startup; no data loss |
 | `documents` | Caches discovered page/attachment metadata to avoid redundant API calls during child/attachment discovery | Re-discovered on next sync cycle; no data loss, slight increase in API calls |
 | `relationships` | Caches parent-child links between sources/documents for orphan cleanup and child discovery deduplication | Rebuilt from next fetch results; orphan detection delayed until rebuild completes |
 | `token_events` | Append-only LLM cost telemetry for usage dashboards and budget monitoring | Historical telemetry lost; new events recorded normally; no operational impact |
@@ -271,13 +271,13 @@ The startup reconciliation walk (reading manifests, scanning knowledge/ for move
 
 ### Three Independent State Systems
 
-| System | Table/Column | Purpose | Lifetime |
+| System | Location | Purpose | Lifetime |
 |---|---|---|---|
-| Content state | `insight_state` | Content hashes, regen status, error tracking | Per-resource, updated each regen |
-| Concurrency lock | `insight_state.owner_id` | Regen ownership for crash recovery | Transient, cleared on completion |
-| Invocation telemetry | `token_events` | Append-only LLM cost accounting | Retained for configurable period (default 90 days) |
+| Content state | `insights/**/.regen-meta.json` sidecars | Content/summary/structure hashes | Per-resource, updated each regen |
+| Concurrency lock | `regen_locks` DB table | Regen ownership for crash recovery | Transient, cleared on completion |
+| Invocation telemetry | `token_events` DB table | Append-only LLM cost accounting | Retained for configurable period (default 90 days) |
 
-`token_events` is a cross-cutting telemetry store for all LLM workflows — regen, query, classify, and any future agent operations. Token usage is recorded exclusively here. The `insight_state` table contains only content state and regen coordination fields — token columns were removed in schema v16.
+`token_events` is a cross-cutting telemetry store for all LLM workflows — regen, query, classify, and any future agent operations. Token usage is recorded exclusively here. Content hashes live in sidecars (filesystem-authoritative); `regen_locks` holds only lifecycle coordination fields.
 
 ### Identity Model
 

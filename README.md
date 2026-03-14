@@ -405,7 +405,7 @@ Regeneration works like a build system (Make/Bazel), not an AI reasoning chain. 
 
 The insights agent also writes **journal entries** at `insights/<path>/journal/YYYY-MM/YYYY-MM-DD.md` when knowledge changes are significant, capturing what changed and why it matters.
 
-**Timing and tokens** are tracked in the database (`insight_state` table) for observability.
+**Timing and tokens** are tracked in the database (`token_events` table) for observability.
 
 ### Insight regeneration vs agent skill
 
@@ -513,14 +513,28 @@ You own `knowledge/` — you can restructure it while the daemon is stopped and 
 
 ## State
 
-Sync state is persisted to `.sync-state.sqlite` (SQLite with WAL mode) in the brain root:
+brain-sync uses a three-tier state model:
 
-- **sources** — per-source scheduling, content hash, target path, context flags
+1. **Manifests** (`.brain-sync/sources/*.json`) — authoritative for source registration intent. Track in git.
+2. **Sidecars** (`insights/**/.regen-meta.json`) — authoritative for insight regen hashes. Track in git.
+3. **DB** (`.sync-state.sqlite`) — disposable performance cache. Add to `.gitignore`.
+
+The SQLite database (WAL mode) contains:
+
+- **sync_cache** — per-source scheduling, content hash, intervals
+- **regen_locks** — regen lifecycle ownership
 - **documents** — canonical ID, URL, title, content hash for all synced documents
 - **relationships** — parent-child links between primary sources and context documents
-- **insight_state** — per-folder content hash, regen timing, token counts, status
+- **token_events** — LLM invocation telemetry
 
-If the state file is lost, the daemon starts fresh (one redundant fetch cycle, insights regenerated on next change).
+The DB is rebuilt automatically from manifests and sidecars on first run. If lost, the daemon starts fresh — `sync_hint` in manifests seeds timing so matching sources skip re-fetch, and sidecars preserve regen hashes so unchanged folders skip regen.
+
+### Upgrade and recovery
+
+- `.sync-state.sqlite` is local and rebuildable — safe to `.gitignore`
+- `.brain-sync/` should be tracked in version control (contains manifests + version metadata)
+- Fresh clone: DB is rebuilt from manifests + sidecars on first `brain-sync run`
+- Run `brain-sync doctor` after upgrading from older versions to validate consistency
 
 ## Development
 
@@ -529,7 +543,7 @@ pip install -e ".[dev,google]"
 python -m pytest
 ```
 
-593 tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, source adapters, and integration tests.
+1100+ tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, source adapters, and integration tests.
 
 ## Supported sources
 

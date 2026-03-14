@@ -196,6 +196,16 @@ Never assume regen occurs within N seconds — only that it **eventually** occur
 
 ---
 
+## State Authority
+
+- `.brain-sync/sources/*.json` manifests are authoritative for source registration intent
+- `insights/**/.regen-meta.json` sidecars are authoritative for regen hashes
+- `sync_cache` and `regen_locks` are non-authoritative DB cache, rebuildable from disk
+- Write disk (manifest/sidecar) before DB on all state mutations
+- `manifest.py` and `sidecar.py` are the canonical modules for reading/writing disk authority
+
+---
+
 ## Module Dependency Rule
 
 Library modules must not import from CLI or entrypoint modules.
