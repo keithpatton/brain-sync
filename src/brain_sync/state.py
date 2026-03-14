@@ -37,26 +37,7 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 """
 
-# --- DDL used for fresh DB creation (current schema) ---
-
-_SOURCES_DDL = """
-CREATE TABLE IF NOT EXISTS sources (
-    canonical_id TEXT PRIMARY KEY,
-    source_url TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    last_checked_utc TEXT,
-    last_changed_utc TEXT,
-    current_interval_secs INTEGER NOT NULL DEFAULT 1800,
-    content_hash TEXT,
-    metadata_fingerprint TEXT,
-    next_check_utc TEXT,
-    interval_seconds INTEGER,
-    target_path TEXT NOT NULL DEFAULT '',
-    fetch_children INTEGER NOT NULL DEFAULT 0,
-    sync_attachments INTEGER NOT NULL DEFAULT 0,
-    child_path TEXT
-);
-"""
+# --- DDL used by v4->v5 migration only ---
 
 _INSIGHT_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS insight_state (
