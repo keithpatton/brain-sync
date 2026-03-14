@@ -29,6 +29,7 @@ All source lives under `src/brain_sync/`.
 | Attachments | `attachments`, `area_index` | Attachment sync lifecycle, area indexing |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
 | Watcher | `watcher` | Filesystem event monitoring, insight folder mirroring |
+| Reconcile | `reconcile` | Startup knowledge-tree reconciliation (orphan cleanup, hash-check, enqueue) |
 
 Dependency direction rules are defined in `CLAUDE.md`.
 
@@ -51,13 +52,19 @@ Dependency direction rules are defined in `CLAUDE.md`.
 When `brain-sync run` starts, it reconciles offline filesystem changes before entering the sync loop:
 
 ```
-reconcile_sources()  → manifest-driven: 3-tier file resolution, two-stage missing, orphan DB pruning
-load_state()         → manifest-authoritative merge (manifests + DB progress cache)
-regen_session()      → acquire regen ownership
-RegenQueue()         → create queue, enqueue reconciled paths
-watcher.start()      → begin filesystem monitoring (after reconcile to avoid spurious events)
-sync loop            → normal operation
+reconcile_sources()          → manifest-driven: 3-tier file resolution, two-stage missing, orphan DB pruning
+reconcile_knowledge_tree()   → tree reconcile: orphan cleanup, hash-check tracked folders, scoped enqueue
+load_state()                 → manifest-authoritative merge (manifests + DB progress cache)
+regen_session()              → acquire regen ownership
+RegenQueue()                 → create queue, enqueue reconciled + tree-reconciled paths
+watcher.start()              → begin filesystem monitoring (after reconcile to avoid spurious events)
+sync loop                    → normal operation
 ```
+
+**`reconcile_knowledge_tree()`** compares the `knowledge/` folder tree against the `insight_state` DB table:
+1. **Orphan cleanup** — DB rows pointing to non-existent knowledge dirs are deleted, along with their orphan insight directories
+2. **Hash-check tracked folders** — for folders in both DB and FS, recomputes content hash to detect offline file additions/deletions
+3. **Scoped enqueue** — untracked folders are enqueued if they have existing insight directories (Rule 1: moved folder) or if orphans were cleaned (Rule 2: brain state disrupted by offline mutations)
 
 **Ownership model:**
 

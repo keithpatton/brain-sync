@@ -63,6 +63,7 @@ async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
     from brain_sync.commands.sources import reconcile_sources
+    from brain_sync.reconcile import reconcile_knowledge_tree
     from brain_sync.regen_lifecycle import regen_session
 
     # Reconcile target_paths with filesystem before loading state for sync.
@@ -73,6 +74,7 @@ async def run(root: Path) -> None:
     pid = os.getpid()
 
     reconcile_result = reconcile_sources(root)
+    tree_result = reconcile_knowledge_tree(root)
     write_daemon_status(root, pid, "starting")
 
     if reconcile_result.updated:
@@ -113,6 +115,12 @@ async def run(root: Path) -> None:
 
                         invalidate_global_context_cache()
                         break
+
+        # Enqueue tree reconcile paths for regen (offline structural changes)
+        for path in tree_result.content_changed:
+            regen_queue.enqueue(path)
+        for path in tree_result.enqueued_paths:
+            regen_queue.enqueue(path)
 
         # Start watcher after reconcile + enqueue to avoid spurious events
         watcher.start()

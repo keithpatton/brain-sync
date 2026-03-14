@@ -94,8 +94,10 @@ class KnowledgeEventHandler(FileSystemEventHandler):
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if isinstance(event, DirMovedEvent):
-            src = Path(str(event.src_path)).resolve()
-            dest = Path(str(event.dest_path)).resolve()
+            # Do NOT resolve() — on case-insensitive filesystems, resolve()
+            # canonicalises casing, which erases case-only renames.
+            src = Path(str(event.src_path))
+            dest = Path(str(event.dest_path))
             if not _should_ignore(src, self._knowledge_root) and not _should_ignore(dest, self._knowledge_root):
                 self._move_queue.put(FolderMove(src=src, dest=dest))
         elif isinstance(event, FileMovedEvent):

@@ -144,6 +144,12 @@ python -m pytest tests/e2e/ -v --timeout=120
 python -m pytest tests/e2e/ -n 4 --timeout=120
 ```
 
+### Parallel Execution (xdist)
+
+All tests are xdist-safe. Every test uses `tmp_path` for full isolation (own brain root, config dir, SQLite DB, prompt capture dir). Current evidence supports `pytest -n auto` as the default command for all tiers. No `xdist_group` markers are currently needed.
+
+If a future test requires serial execution, mark it with `@pytest.mark.xdist_group("serial")` and document the reason.
+
 ### LLM Backend for Tests
 
 - **Unit tests**: patch `brain_sync.regen.invoke_claude` directly (backward-compat shim routes through it).

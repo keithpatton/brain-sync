@@ -467,14 +467,21 @@ def handle_update(args) -> None:
 
 def handle_reconcile(args) -> None:
     from brain_sync.commands.sources import reconcile_sources
+    from brain_sync.reconcile import reconcile_knowledge_tree
+
+    root = _resolve_root_or_exit(args)
 
     try:
-        result = reconcile_sources(root=_get_root(args))
+        result = reconcile_sources(root=root)
+        tree_result = reconcile_knowledge_tree(root)
     except BrainNotFoundError as e:
         log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
-    if not result.updated and not result.not_found:
+    has_source_changes = result.updated or result.not_found
+    has_tree_changes = tree_result.orphans_cleaned or tree_result.content_changed or tree_result.enqueued_paths
+
+    if not has_source_changes and not has_tree_changes:
         log.info("All sources are at their expected paths. Nothing to reconcile.")
         return
 
@@ -485,6 +492,9 @@ def handle_reconcile(args) -> None:
         log.warning("%d source(s) could not be found on disk:", len(result.not_found))
         for cid in result.not_found:
             log.warning("  %s", cid)
+
+    if tree_result.orphans_cleaned:
+        log.info("Cleaned %d orphan insight state(s).", len(tree_result.orphans_cleaned))
 
     log.info("Reconciled %d source(s). %d unchanged.", len(result.updated), result.unchanged)
 

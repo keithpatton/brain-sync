@@ -192,13 +192,10 @@ def _assert_knowledge_path_casing(conn: sqlite3.Connection, knowledge: Path) -> 
         # Resolve actual casing on case-insensitive filesystems
         try:
             resolved = actual.resolve()
-            expected_suffix = str(actual.resolve()).replace("\\", "/")
-            actual_suffix = str(resolved).replace("\\", "/")
-            assert expected_suffix == actual_suffix, (
-                f"Case mismatch for insight_state.knowledge_path '{kp}': "
-                f"DB says '{kp}', filesystem resolves to '{resolved}'"
-            )
-        except OSError:
+            resolved_rel = resolved.relative_to(knowledge.resolve())
+            resolved_rel_str = str(resolved_rel).replace("\\", "/")
+            assert kp == resolved_rel_str, f"Case mismatch: DB has '{kp}', filesystem has '{resolved_rel_str}'"
+        except (OSError, ValueError):
             pass
 
 

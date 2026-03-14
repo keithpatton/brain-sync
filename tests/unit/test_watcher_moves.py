@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import queue
+
 import pytest
+from watchdog.events import DirMovedEvent
 
 from brain_sync.state import (
     InsightState,
@@ -14,7 +17,7 @@ from brain_sync.state import (
     save_insight_state,
     save_state,
 )
-from brain_sync.watcher import FolderMove, mirror_folder_move
+from brain_sync.watcher import FolderMove, KnowledgeEventHandler, mirror_folder_move
 
 pytestmark = pytest.mark.unit
 
@@ -145,3 +148,27 @@ class TestMirrorFolderMove:
         assert (brain / "insights" / "parent" / "new-child" / "summary.md").exists()
         assert load_insight_state(brain, "parent/new-child") is not None
         assert load_insight_state(brain, "parent/old-child") is None
+
+
+class TestOnMovedPreservesRawPaths:
+    """on_moved() must not resolve() DirMovedEvent paths (case-only rename fix)."""
+
+    def test_on_moved_preserves_raw_paths(self, brain):
+        event_q: queue.Queue = queue.Queue()
+        move_q: queue.Queue = queue.Queue()
+        knowledge_root = brain / "knowledge"
+
+        handler = KnowledgeEventHandler(event_q, move_q, knowledge_root)
+
+        # Simulate a case-only rename event with different casing
+        src = str(knowledge_root / "MyArea")
+        dest = str(knowledge_root / "myarea")
+        event = DirMovedEvent(src, dest)
+
+        handler.on_moved(event)
+
+        assert not move_q.empty()
+        move = move_q.get_nowait()
+        # Paths should preserve original casing, not be resolve()-d
+        assert move.src.name == "MyArea"
+        assert move.dest.name == "myarea"
