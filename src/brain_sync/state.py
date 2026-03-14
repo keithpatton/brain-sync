@@ -1068,7 +1068,7 @@ def load_state(root: Path) -> SyncState:
     return SyncState(sources=merged)
 
 
-def save_state(root: Path, state: SyncState) -> None:
+def save_sync_progress(root: Path, state: SyncState) -> None:
     """Save sync progress for all sources to sync_cache.
 
     sync_cache stores only progress fields (no intent — that's in manifests).
@@ -1107,6 +1107,9 @@ def save_state(root: Path, state: SyncState) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+save_state = save_sync_progress  # deprecated alias
 
 
 def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:

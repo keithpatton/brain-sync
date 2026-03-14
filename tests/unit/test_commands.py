@@ -544,6 +544,28 @@ class TestMoveSource:
         sources = list_sources(root=brain)
         assert sources[0].target_path == "new-path"
 
+    def test_move_missing_status_source(self, brain):
+        """move_source resolves missing-status sources via manifest fallback."""
+        from brain_sync.manifest import read_source_manifest, write_source_manifest
+
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old-path")
+
+        # Mark as missing to exclude from load_state()
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.status = "missing"
+        write_source_manifest(brain, manifest)
+
+        result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-path")
+        assert result.canonical_id == CONFLUENCE_CID
+        assert result.old_path == "old-path"
+        assert result.new_path == "new-path"
+
+        # Manifest should be updated
+        updated = read_source_manifest(brain, CONFLUENCE_CID)
+        assert updated is not None
+        assert updated.target_path == "new-path"
+
 
 class TestUpdateSource:
     def test_update_source_flags(self, brain):

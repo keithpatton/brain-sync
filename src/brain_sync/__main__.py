@@ -21,7 +21,7 @@ from brain_sync.state import (
     load_insight_state,
     load_state,
     save_insight_state,
-    save_state,
+    save_sync_progress,
     write_daemon_status,
 )
 from brain_sync.watcher import KnowledgeWatcher, mirror_folder_move
@@ -96,7 +96,7 @@ async def run(root: Path) -> None:
     watcher = KnowledgeWatcher(root)
 
     _ensure_source_states(state, scheduler)
-    save_state(root, state)
+    save_sync_progress(root, state)
 
     last_rescan = time.monotonic()
 
@@ -161,7 +161,7 @@ async def run(root: Path) -> None:
                     if now - last_rescan >= RESCAN_INTERVAL:
                         state = load_state(root)
                         _ensure_source_states(state, scheduler)
-                        save_state(root, state)
+                        save_sync_progress(root, state)
                         last_rescan = now
 
                     # 3. Process due sources
@@ -247,7 +247,7 @@ async def run(root: Path) -> None:
                         ss.interval_seconds = interval
                         ss.next_check_utc = datetime.now(UTC).isoformat()
                         try:
-                            save_state(root, state)
+                            save_sync_progress(root, state)
                         except Exception:
                             log.warning("Failed to save state (will retry next tick)", exc_info=True)
 
@@ -275,7 +275,7 @@ async def run(root: Path) -> None:
                 except Exception:
                     log.warning("Failed to write daemon stopped status", exc_info=True)
                 try:
-                    save_state(root, state)
+                    save_sync_progress(root, state)
                 except Exception:
                     log.error("Failed to save state on shutdown", exc_info=True)
                 log.info("brain-sync stopped")

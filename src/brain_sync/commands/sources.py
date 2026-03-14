@@ -34,7 +34,7 @@ from brain_sync.state import (
     load_state,
     remove_document_if_orphaned,
     remove_relationship,
-    save_state,
+    save_sync_progress,
     update_source_flags,
     update_source_target_path,
 )
@@ -185,7 +185,7 @@ def add_source(
         sync_attachments=sync_attachments,
         child_path=child_path,
     )
-    save_state(root, state)
+    save_sync_progress(root, state)
 
     knowledge_dir = root / "knowledge" / target_path
     knowledge_dir.mkdir(parents=True, exist_ok=True)
@@ -282,7 +282,7 @@ def remove_source(
     remove_document_if_orphaned(root, cid)
 
     state.sources.pop(cid, None)
-    save_state(root, state)
+    save_sync_progress(root, state)
 
     db_delete_source(root, cid)
 
@@ -341,16 +341,13 @@ def move_source(
     root = _require_root(root)
     state = load_state(root)
 
-    cid = _resolve_source(state, source)
-    if cid is None:
-        raise SourceNotFoundError(source)
+    cid, _url, old_path = _resolve_source_or_manifest(state, root, source)
 
-    ss = state.sources[cid]
-    old_path = getattr(ss, "target_path", "")
-    ss.target_path = to_path
-    save_state(root, state)
+    if cid in state.sources:
+        state.sources[cid].target_path = to_path
+        save_sync_progress(root, state)
 
-    # save_state UPDATE doesn't touch target_path (by design), so update directly
+    # save_sync_progress UPDATE doesn't touch target_path (by design), so update directly
     update_source_target_path(root, cid, to_path)
 
     files_moved = False
@@ -439,7 +436,7 @@ def update_source(
     if child_path is not ...:
         ss.child_path = child_path  # type: ignore[assignment]
 
-    # Write directly to DB — save_state skips config fields on UPDATE
+    # Write directly to DB — save_sync_progress skips config fields on UPDATE
     update_source_flags(
         root,
         cid,
