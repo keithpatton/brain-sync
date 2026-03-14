@@ -56,7 +56,7 @@ class TestSaveWritesSidecar:
 class TestClassifyReadsFromSidecar:
     """Classify reads hashes from sidecars (the sole authority in v21)."""
 
-    def test_classify_reads_from_sidecar(self, brain: Path) -> None:
+    async def test_classify_reads_from_sidecar(self, brain: Path) -> None:
         """After regen, sidecar provides hashes. Content unchanged -> 'none'."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
@@ -65,11 +65,7 @@ class TestClassifyReadsFromSidecar:
         backend = FakeBackend(mode="stable")
         config = _config()
 
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(
-            regen_single_folder(brain, "project", config=config, backend=backend)
-        )
+        await regen_single_folder(brain, "project", config=config, backend=backend)
 
         # Sidecar exists and has hashes — content unchanged
         event, _, _ = classify_folder_change(brain, "project")
