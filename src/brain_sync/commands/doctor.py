@@ -19,7 +19,6 @@ from brain_sync.fileops import (
     INSIGHT_ARTIFACT_DIRS,
     atomic_write_bytes,
     canonical_prefix,
-    clean_insights_tree,
     rediscover_local_path,
 )
 from brain_sync.fs_utils import normalize_path
@@ -725,7 +724,10 @@ def _apply_fixes(
             elif f.check == "orphan_insights" and f.knowledge_path:
                 orphan_dir = root / "insights" / f.knowledge_path
                 if orphan_dir.is_dir():
-                    clean_insights_tree(orphan_dir)
+                    # Orphan = no matching knowledge/ dir, so entire tree is stale.
+                    # Use shutil.rmtree (not clean_insights_tree) since there's
+                    # nothing to preserve journals for.
+                    shutil.rmtree(orphan_dir)
                 delete_insight_state(root, f.knowledge_path)
                 f.fix_applied = True
                 log.info("Removed orphan insights dir: insights/%s/", f.knowledge_path)
@@ -738,7 +740,8 @@ def _apply_fixes(
             elif f.check == "stale_summaries" and f.knowledge_path:
                 stale_dir = root / "insights" / f.knowledge_path
                 if stale_dir.is_dir():
-                    clean_insights_tree(stale_dir)
+                    # Stale = knowledge dir deleted, so entire tree is stale.
+                    shutil.rmtree(stale_dir)
                 f.fix_applied = True
                 log.info("Removed stale insights dir: insights/%s/", f.knowledge_path)
 

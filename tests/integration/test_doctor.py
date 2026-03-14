@@ -287,6 +287,40 @@ class TestDoctorJournalNotOrphan:
         assert len(orphan_findings) == 0
 
 
+class TestDoctorOrphanInsightsWithNonRegenerableFiles:
+    def test_fix_removes_orphan_with_extra_files(self, brain: Path) -> None:
+        """Orphan insights dir with non-regenerable files must be fully deleted."""
+        orphan = brain / "insights" / "orphan"
+        orphan.mkdir(parents=True)
+        (orphan / "summary.md").write_text("# Summary")
+        (orphan / ".regen-meta.json").write_text("{}")
+        # Non-regenerable file that clean_insights_tree would preserve
+        journal = orphan / "journal" / "2026-03"
+        journal.mkdir(parents=True)
+        (journal / "2026-03-15.md").write_text("# Entry")
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
+        assert len(fixed) >= 1
+        assert not orphan.exists(), "Orphan dir with non-regenerable files was not fully removed"
+
+    def test_fix_actually_removes_not_just_reports(self, brain: Path) -> None:
+        """Regression: fix must actually delete the dir, not just set fix_applied=True."""
+        orphan = brain / "insights" / "ghost"
+        orphan.mkdir(parents=True)
+        (orphan / "random-file.txt").write_text("leftover")
+
+        result = doctor(brain, fix=True)
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
+        assert len(fixed) >= 1
+        assert not orphan.exists(), "Orphan dir still exists after fix"
+
+        # Second run should be clean
+        result2 = doctor(brain)
+        orphan_findings = [f for f in result2.findings if f.check == "orphan_insights"]
+        assert len(orphan_findings) == 0
+
+
 class TestDoctorNestedOrphanInsights:
     def test_fix_nested_orphan(self, brain: Path) -> None:
         """insights/project/orphan-sub/ with knowledge/project/ but no knowledge/project/orphan-sub/."""
