@@ -60,19 +60,26 @@ class TestDoctorWouldTriggerRegenExitsOne:
         (brain_root / "insights" / "project").mkdir(parents=True)
         (brain_root / "insights" / "project" / "summary.md").write_text("# Summary")
 
-        # Insert insight_state with stale content hash + non-null structure_hash
+        # Insert regen_locks row + write stale sidecar with non-matching hashes
         # (non-null structure_hash prevents backfill from overwriting content_hash)
         import sqlite3
+
+        from brain_sync.sidecar import RegenMeta, write_regen_meta
 
         db = brain_root / ".sync-state.sqlite"
         conn = sqlite3.connect(str(db))
         conn.execute(
-            "INSERT OR REPLACE INTO insight_state "
-            "(knowledge_path, content_hash, structure_hash, regen_status) VALUES (?, ?, ?, ?)",
-            ("project", "stale_hash_that_wont_match", "stale_struct_hash", "idle"),
+            "INSERT OR REPLACE INTO regen_locks (knowledge_path, regen_status) VALUES (?, ?)",
+            ("project", "idle"),
         )
         conn.commit()
         conn.close()
+
+        # Write stale sidecar (the authority for hashes in v21)
+        write_regen_meta(
+            brain_root / "insights" / "project",
+            RegenMeta(content_hash="stale_hash_that_wont_match", structure_hash="stale_struct_hash"),
+        )
 
         result = cli.run("doctor", "--root", str(brain_root))
         assert result.returncode == 1

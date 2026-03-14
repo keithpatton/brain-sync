@@ -409,7 +409,7 @@ def check_orphan_insights(root: Path) -> list[Finding]:
 
 
 def check_orphan_insight_state_rows(root: Path) -> list[Finding]:
-    """insight_state rows where the knowledge dir doesn't exist."""
+    """Regen state (regen_locks/sidecars) where the knowledge dir doesn't exist."""
     findings: list[Finding] = []
     states = load_all_insight_states(root)
     knowledge_root = root / "knowledge"
@@ -421,7 +421,7 @@ def check_orphan_insight_state_rows(root: Path) -> list[Finding]:
                 Finding(
                     check="orphan_insight_state_rows",
                     severity=Severity.DRIFT,
-                    message=f"insight_state row for non-existent dir: '{kp}'",
+                    message=f"Regen state for non-existent dir: '{kp}'",
                     knowledge_path=kp,
                 )
             )
@@ -429,13 +429,13 @@ def check_orphan_insight_state_rows(root: Path) -> list[Finding]:
 
 
 def check_summaries_without_db_rows(root: Path) -> list[Finding]:
-    """summary.md files with no matching insight_state row."""
+    """summary.md files with no matching regen state (regen_locks/sidecars)."""
     findings: list[Finding] = []
     insights_root = root / "insights"
     if not insights_root.is_dir():
         return findings
 
-    # Collect all insight_state paths
+    # Collect all regen state paths
     states = load_all_insight_states(root)
     state_paths = {s.knowledge_path for s in states}
 
@@ -449,7 +449,7 @@ def check_summaries_without_db_rows(root: Path) -> list[Finding]:
                 Finding(
                     check="summaries_without_db_rows",
                     severity=Severity.WOULD_TRIGGER_REGEN,
-                    message=f"Summary exists but no insight_state row: '{kp}'",
+                    message=f"Summary exists but no regen state: '{kp}'",
                     knowledge_path=kp,
                 )
             )
@@ -518,10 +518,9 @@ def check_regen_change_detection(root: Path) -> list[Finding]:
 
 
 def check_db_path_normalization(root: Path) -> list[Finding]:
-    """Check insight_state and source rows for bad paths."""
+    """Check regen_locks paths for bad values."""
     findings: list[Finding] = []
 
-    # insight_state paths
     states = load_all_insight_states(root)
     for istate in states:
         kp = istate.knowledge_path
@@ -530,22 +529,8 @@ def check_db_path_normalization(root: Path) -> list[Finding]:
                 Finding(
                     check="db_path_normalization",
                     severity=Severity.DRIFT,
-                    message=f"Bad insight_state path: '{kp}'",
+                    message=f"Bad regen_locks path: '{kp}'",
                     knowledge_path=kp,
-                )
-            )
-
-    # source target_path
-    db_sources = _load_db_sync_progress(root)
-    for cid, ss in db_sources.items():
-        tp = ss.target_path
-        if tp and ("\\" in tp or tp.startswith("/") or ".." in tp.split("/")):
-            findings.append(
-                Finding(
-                    check="db_path_normalization",
-                    severity=Severity.DRIFT,
-                    message=f"Bad source target_path: '{ss.target_path}'",
-                    canonical_id=cid,
                 )
             )
     return findings
@@ -594,39 +579,28 @@ def check_missing_sidecars(root: Path) -> list[Finding]:
     return findings
 
 
-def check_sidecar_db_consistency(root: Path) -> list[Finding]:
-    """For every sidecar, compare hashes against insight_state DB row."""
+def check_sidecar_integrity(root: Path) -> list[Finding]:
+    """Verify all sidecars have a corresponding regen_locks row."""
+    from brain_sync.state import _connect
+
     findings: list[Finding] = []
     insights_root = root / "insights"
     sidecars = read_all_regen_meta(insights_root)
-    states = load_all_insight_states(root)
-    state_by_path = {s.knowledge_path: s for s in states}
 
-    for kp, meta in sidecars.items():
-        istate = state_by_path.get(kp)
-        if istate is None:
+    # Read regen_locks paths directly (not via load_all_insight_states which merges sidecars)
+    conn = _connect(root)
+    try:
+        lock_paths = {r[0] for r in conn.execute("SELECT knowledge_path FROM regen_locks").fetchall()}
+    finally:
+        conn.close()
+
+    for kp in sidecars:
+        if kp not in lock_paths:
             findings.append(
                 Finding(
-                    check="sidecar_db_consistency",
+                    check="sidecar_integrity",
                     severity=Severity.DRIFT,
-                    message=f"Sidecar exists but no DB row for '{kp}'",
-                    knowledge_path=kp,
-                )
-            )
-            continue
-        mismatches = []
-        if meta.content_hash != istate.content_hash:
-            mismatches.append("content_hash")
-        if meta.summary_hash != istate.summary_hash:
-            mismatches.append("summary_hash")
-        if meta.structure_hash != istate.structure_hash:
-            mismatches.append("structure_hash")
-        if mismatches:
-            findings.append(
-                Finding(
-                    check="sidecar_db_consistency",
-                    severity=Severity.DRIFT,
-                    message=f"Sidecar/DB mismatch for '{kp}': {', '.join(mismatches)}",
+                    message=f"Sidecar exists but no regen state for '{kp}'",
                     knowledge_path=kp,
                 )
             )
@@ -673,7 +647,7 @@ def doctor(root: Path | None = None, *, fix: bool = False) -> DoctorResult:
 
     # Sidecar checks
     all_findings.extend(check_missing_sidecars(root))
-    all_findings.extend(check_sidecar_db_consistency(root))
+    all_findings.extend(check_sidecar_integrity(root))
 
     if fix:
         _apply_fixes(root, all_findings, manifests, knowledge_root, identity_index)
@@ -759,7 +733,7 @@ def _apply_fixes(
             elif f.check == "orphan_insight_state_rows" and f.knowledge_path is not None:
                 delete_insight_state(root, f.knowledge_path)
                 f.fix_applied = True
-                log.info("Pruned orphan insight_state row: %s", f.knowledge_path)
+                log.info("Pruned orphan regen state: %s", f.knowledge_path)
 
             elif f.check == "stale_summaries" and f.knowledge_path:
                 stale_dir = root / "insights" / f.knowledge_path
@@ -768,34 +742,23 @@ def _apply_fixes(
                 f.fix_applied = True
                 log.info("Removed stale insights dir: insights/%s/", f.knowledge_path)
 
-            elif f.check == "db_path_normalization":
-                if f.knowledge_path:
-                    # Fix insight_state path
-                    from brain_sync.state import load_insight_state
-
-                    istate = load_insight_state(root, f.knowledge_path)
-                    if istate:
-                        istate.knowledge_path = normalize_path(istate.knowledge_path)
-                        save_insight_state(root, istate)
-                        f.fix_applied = True
-                        log.info("Normalized insight_state path: %s", f.knowledge_path)
-                elif f.canonical_id:
-                    # Source target_path — update via DB
-                    from brain_sync.state import update_source_target_path
-
-                    db_sources = _load_db_sync_progress(root)
-                    ss = db_sources.get(f.canonical_id)
-                    if ss:
-                        update_source_target_path(root, f.canonical_id, normalize_path(ss.target_path))
-                        f.fix_applied = True
-                        log.info("Normalized source target_path: %s", f.canonical_id)
-
-            elif f.check in ("missing_sidecars", "sidecar_db_consistency") and f.knowledge_path is not None:
-                # Both missing/malformed sidecars and DB mismatches: overwrite from DB
+            elif f.check == "db_path_normalization" and f.knowledge_path:
+                # Fix regen_locks path
                 from brain_sync.state import load_insight_state
 
                 istate = load_insight_state(root, f.knowledge_path)
                 if istate:
+                    istate.knowledge_path = normalize_path(istate.knowledge_path)
+                    save_insight_state(root, istate)
+                    f.fix_applied = True
+                    log.info("Normalized regen_locks path: %s", f.knowledge_path)
+
+            elif f.check == "missing_sidecars" and f.knowledge_path is not None:
+                # Missing/malformed sidecar: overwrite from current regen state
+                from brain_sync.state import load_insight_state
+
+                istate = load_insight_state(root, f.knowledge_path)
+                if istate and istate.content_hash:
                     insights_dir = root / "insights" / f.knowledge_path if f.knowledge_path else root / "insights"
                     write_regen_meta(
                         insights_dir,
@@ -807,7 +770,7 @@ def _apply_fixes(
                         ),
                     )
                     f.fix_applied = True
-                    log.info("Wrote sidecar from DB for %s", f.knowledge_path)
+                    log.info("Wrote sidecar for %s", f.knowledge_path)
 
         except Exception:
             log.exception("Failed to fix %s finding for %s", f.check, f.canonical_id or f.knowledge_path)
@@ -819,9 +782,9 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
 
     root = _require_root(root)
 
-    # 1. Export insight_state rows
+    # 1. Export regen state (hashes from sidecars, lifecycle from regen_locks)
     exported_states = load_all_insight_states(root)
-    log.info("Exported %d insight_state rows for preservation", len(exported_states))
+    log.info("Exported %d regen states for preservation", len(exported_states))
 
     # 2. Delete DB files
     db = _db_path(root)
@@ -836,7 +799,7 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
     conn.close()
     log.info("Created fresh DB with current schema")
 
-    # 4. Restore insight_state with lifecycle reset
+    # 4. Restore regen state with lifecycle reset
     for istate in exported_states:
         restored = InsightState(
             knowledge_path=istate.knowledge_path,
@@ -850,7 +813,7 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
             error_reason=None,
         )
         save_insight_state(root, restored)
-    log.info("Restored %d insight_state rows (lifecycle reset to idle)", len(exported_states))
+    log.info("Restored %d regen states (lifecycle reset to idle)", len(exported_states))
 
     # 5. Seed source sync progress from manifests
     manifests = read_all_source_manifests(root)

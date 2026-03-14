@@ -8,8 +8,8 @@ import pytest
 
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
-from brain_sync.sidecar import SIDECAR_FILENAME, read_regen_meta
-from brain_sync.state import InsightState, load_insight_state, save_insight_state
+from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
+from brain_sync.state import load_insight_state
 
 pytestmark = pytest.mark.integration
 
@@ -119,17 +119,27 @@ class TestSidecarAfterRegen:
         backend = FakeBackend(mode="stable")
         config = _config()
 
-        # Patch write_regen_meta to always raise
-        with patch("brain_sync.regen.write_regen_meta", side_effect=OSError("disk full")):
+        # Patch write_regen_meta everywhere — both regen.py and state.py call it
+        with (
+            patch("brain_sync.regen.write_regen_meta", side_effect=OSError("disk full")),
+            patch("brain_sync.sidecar.atomic_write_bytes", side_effect=OSError("disk full")),
+        ):
             result = await regen_single_folder(brain, "project", config=config, backend=backend)
 
         assert result.action == "regenerated"
         # Summary should still exist despite sidecar failure
         assert (brain / "insights" / "project" / "summary.md").exists()
-        # DB should still be updated
-        istate = load_insight_state(brain, "project")
-        assert istate is not None
-        assert istate.content_hash is not None
+        # regen_locks should still be updated (lifecycle persists even when sidecar fails)
+        from brain_sync.state import _connect
+
+        conn = _connect(brain)
+        try:
+            row = conn.execute(
+                "SELECT knowledge_path FROM regen_locks WHERE knowledge_path = ?", ("project",)
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
         # Sidecar should NOT exist (write was blocked)
         assert not (brain / "insights" / "project" / SIDECAR_FILENAME).exists()
 
@@ -143,23 +153,19 @@ class TestSidecarAfterRegen:
         # First regen to create summary
         await regen_single_folder(brain, "project", config=config, backend=backend)
 
-        # Simulate pre-v18 state: set structure_hash to None in DB and remove sidecar
-        # (pre-Phase-4 data has no sidecar, so load_regen_hashes falls back to DB)
+        # Simulate pre-v18 state: write sidecar with structure_hash=None
+        # (In v21, sidecars are authoritative — no need to touch DB)
         istate = load_insight_state(brain, "project")
         assert istate is not None
-        save_insight_state(
-            brain,
-            InsightState(
-                knowledge_path="project",
+        write_regen_meta(
+            brain / "insights" / "project",
+            RegenMeta(
                 content_hash=istate.content_hash,
                 summary_hash=istate.summary_hash,
                 structure_hash=None,
                 last_regen_utc=istate.last_regen_utc,
             ),
         )
-        sidecar_path = brain / "insights" / "project" / SIDECAR_FILENAME
-        if sidecar_path.exists():
-            sidecar_path.unlink()
 
         result = await regen_single_folder(brain, "project", config=config, backend=backend)
         assert result.action == "skipped_backfill"

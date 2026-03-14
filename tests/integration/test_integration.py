@@ -206,11 +206,30 @@ class TestStatePersistenceRoundTrip:
     """Test that state survives save/load cycle after a full pipeline run."""
 
     def test_state_survives_restart(self, tmp_path):
+        from brain_sync.manifest import MANIFEST_VERSION, SourceManifest, ensure_manifest_dir, write_source_manifest
+
         root = tmp_path / "root"
         root.mkdir()
         target_path = "project"
 
         key = _source_key(FAKE_URL)
+
+        # Create manifest (v21+: intent fields come from manifests, not DB)
+        ensure_manifest_dir(root)
+        write_source_manifest(
+            root,
+            SourceManifest(
+                manifest_version=MANIFEST_VERSION,
+                canonical_id=key,
+                source_url=FAKE_URL,
+                source_type="confluence",
+                materialized_path="",
+                fetch_children=False,
+                sync_attachments=False,
+                target_path=target_path,
+            ),
+        )
+
         state = SyncState()
         state.sources[key] = SourceState(
             canonical_id=key,

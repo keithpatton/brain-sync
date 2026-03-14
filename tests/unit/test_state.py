@@ -28,6 +28,23 @@ pytestmark = pytest.mark.unit
 
 class TestStatePersistence:
     def test_save_and_load_round_trip(self, tmp_path):
+        from brain_sync.manifest import SourceManifest, write_source_manifest
+
+        # In v21, load_state merges manifest intent + sync_cache progress.
+        # Create a manifest so the source is discoverable by load_state.
+        write_source_manifest(
+            tmp_path,
+            SourceManifest(
+                manifest_version=1,
+                canonical_id="confluence:123",
+                source_url="https://example.com",
+                source_type="confluence",
+                materialized_path="c123-page.md",
+                fetch_children=False,
+                sync_attachments=False,
+            ),
+        )
+
         state = SyncState()
         state.sources["confluence:123"] = SourceState(
             canonical_id="confluence:123",
@@ -51,7 +68,7 @@ class TestStatePersistence:
     def test_load_missing_db_returns_fresh(self, tmp_path):
         state = load_state(tmp_path)
         assert state.sources == {}
-        assert state.version == 20
+        assert state.version == 21
 
     def test_multiple_save_load_cycles(self, tmp_path):
         state = SyncState()
@@ -321,14 +338,26 @@ class TestSchemaV3Migration:
         conn.commit()
         conn.close()
 
-        # Now load_state triggers migration
-        state = load_state(tmp_path)
+        # Now _connect triggers migration all the way to v21.
+        # Patch synchronize_sidecars_from_db to avoid recursion.
+        from brain_sync.state import _connect
 
-        assert "confluence:12345" in state.sources
-        ss = state.sources["confluence:12345"]
-        assert ss.source_url == "https://test.atlassian.net/wiki/spaces/X/pages/12345/Page"
-        assert ss.content_hash == "hash123"
-        assert ss.metadata_fingerprint == "5"
+        conn = _connect(tmp_path)
+
+        # After v21 migration, sources table is dropped and replaced with sync_cache
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        assert version == "21"
+
+        # Data should have migrated through v3 (sources_v3) then into sync_cache (v21)
+        row = conn.execute(
+            "SELECT canonical_id, content_hash, metadata_fingerprint FROM sync_cache "
+            "WHERE canonical_id = 'confluence:12345'"
+        ).fetchone()
+        assert row is not None
+        assert row[1] == "hash123"
+        assert row[2] == "5"
+
+        conn.close()
 
     def test_v2_to_v3_deduplication(self, tmp_path):
         """Two v2 rows for the same page resolve to one source row."""
@@ -419,10 +448,17 @@ class TestSchemaV3Migration:
         conn.commit()
         conn.close()
 
-        state = load_state(tmp_path)
-        # Should have exactly one source row
-        assert len(state.sources) == 1
-        assert "confluence:99999" in state.sources
+        # Trigger migration to v21 via _connect, patching to avoid recursion
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+
+        # After full migration, sync_cache should have exactly one row
+        rows = conn.execute("SELECT canonical_id FROM sync_cache").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "confluence:99999"
+
+        conn.close()
 
 
 class TestSchemaV4Migration:
@@ -513,15 +549,18 @@ class TestSchemaV4Migration:
         conn.commit()
         conn.close()
 
-        # load_state triggers v3→v4→v5 migration
-        load_state(tmp_path)
+        # _connect triggers v3→...→v21 migration
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
 
         # Verify schema version after full migration chain
-        conn = sqlite3.connect(str(db_path))
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "20"
+        assert version == "21"
 
-        # Data preserved
+        conn.close()
+
+        # Data preserved (using API which opens a fresh _connect)
         rels = load_relationships_for_primary(tmp_path, "confluence:1")
         assert len(rels) == 1
         assert rels[0].canonical_id == "confluence-attachment:100"
@@ -529,8 +568,6 @@ class TestSchemaV4Migration:
         doc = load_document(tmp_path, "confluence:100")
         assert doc is not None
         assert doc.title == "Page"
-
-        conn.close()
 
     def test_documents_url_unique_enforced(self, tmp_path):
         """After v4, inserting duplicate URL into documents raises."""
@@ -599,6 +636,10 @@ class TestInsightStatePathNormalization:
         assert load_insight_state(tmp_path, "teams/product") is None
 
     def test_update_normalizes_paths(self, tmp_path):
+        # Create insights/ dirs for sidecar write/read
+        (tmp_path / "insights" / "old" / "path").mkdir(parents=True)
+        (tmp_path / "insights" / "new" / "path").mkdir(parents=True)
+
         save_insight_state(
             tmp_path,
             InsightState(
@@ -608,6 +649,14 @@ class TestInsightStatePathNormalization:
             ),
         )
         update_insight_path(tmp_path, "old\\path", "new\\path")
+
+        # regen_locks row moved to new path; sidecar remains at old path.
+        # load_insight_state at old/path: no regen_locks row, but sidecar exists
+        # → returns InsightState with hashes only (from sidecar). Delete sidecar too.
+        from brain_sync.sidecar import delete_regen_meta
+
+        delete_regen_meta(tmp_path / "insights" / "old" / "path")
+
         assert load_insight_state(tmp_path, "old/path") is None
         assert load_insight_state(tmp_path, "new/path") is not None
 
@@ -727,7 +776,7 @@ class TestPathNormalizationOnLoad:
 
         conn = _connect(tmp_path)
         conn.execute(
-            "INSERT INTO insight_state (knowledge_path, regen_status) VALUES (?, 'idle')",
+            "INSERT INTO regen_locks (knowledge_path, regen_status) VALUES (?, 'idle')",
             ("initiatives\\B4B\\Platform PRD",),
         )
         conn.commit()
@@ -768,26 +817,30 @@ class TestSchemaV15V16Migration:
         assert "idx_token_events_resource_session" in indexes
         conn.close()
 
-    def test_fresh_db_insight_state_no_token_columns(self, tmp_path):
-        """Fresh DB insight_state has no token columns."""
+    def test_fresh_db_has_regen_locks_not_insight_state(self, tmp_path):
+        """Fresh v21 DB has regen_locks (lifecycle-only), not insight_state."""
         from brain_sync.state import _connect
 
         conn = _connect(tmp_path)
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
-        assert "input_tokens" not in cols
-        assert "output_tokens" not in cols
-        assert "num_turns" not in cols
-        assert "model" not in cols
-        # These should still exist
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "regen_locks" in tables
+        assert "insight_state" not in tables
+
+        # regen_locks has lifecycle columns only (no hash columns)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(regen_locks)").fetchall()}
         assert "knowledge_path" in cols
-        assert "content_hash" in cols
         assert "regen_status" in cols
         assert "owner_id" in cols
         assert "error_reason" in cols
+        assert "regen_started_utc" in cols
+        # Hashes are in sidecars, not in regen_locks
+        assert "content_hash" not in cols
+        assert "summary_hash" not in cols
+        assert "structure_hash" not in cols
         conn.close()
 
     def test_v14_to_v16_migration(self, tmp_path):
-        """v14 DB migrates to v16: creates token_events, rebuilds insight_state."""
+        """v14 DB migrates through v16 to v21: token_events created, insight_state replaced by regen_locks."""
         import sqlite3
 
         db_path = tmp_path / ".sync-state.sqlite"
@@ -864,29 +917,25 @@ class TestSchemaV15V16Migration:
 
         conn = _connect(tmp_path)
 
-        # Check version
+        # Check version — full migration goes to v21
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "20"
+        assert version == "21"
 
         # token_events table exists
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert "token_events" in tables
 
-        # insight_state no longer has token columns
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
-        assert "input_tokens" not in cols
-        assert "output_tokens" not in cols
-        assert "num_turns" not in cols
-        assert "model" not in cols
+        # insight_state is DROPPED in v21, replaced by regen_locks
+        assert "insight_state" not in tables
+        assert "regen_locks" in tables
 
-        # Data preserved (non-token fields)
+        # Lifecycle data migrated to regen_locks (all reset to 'idle')
         row = conn.execute(
-            "SELECT knowledge_path, content_hash, regen_status FROM insight_state WHERE knowledge_path = 'area/foo'"
+            "SELECT knowledge_path, regen_status FROM regen_locks WHERE knowledge_path = 'area/foo'"
         ).fetchone()
         assert row is not None
         assert row[0] == "area/foo"
-        assert row[1] == "hash123"
-        assert row[2] == "idle"
+        assert row[1] == "idle"
 
         conn.close()
 
@@ -905,7 +954,7 @@ class TestSchemaV17Migration:
     """Tests for dropping local_path from relationships (v17)."""
 
     def test_v16_to_v17_migration(self, tmp_path):
-        """v16 DB migrates to v17: local_path column is dropped from relationships."""
+        """v16 DB migrates through v17 to v21: local_path dropped, insight_state replaced."""
         import sqlite3
 
         db_path = tmp_path / ".sync-state.sqlite"
@@ -992,9 +1041,9 @@ class TestSchemaV17Migration:
 
         conn = _connect(tmp_path)
 
-        # Version updated
+        # Version updated to v21
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "20"
+        assert version == "21"
 
         # local_path column is gone
         cols = {r[1] for r in conn.execute("PRAGMA table_info(relationships)").fetchall()}
@@ -1033,7 +1082,7 @@ class TestV17ToV18Migration:
     """Tests for adding structure_hash to insight_state (v18)."""
 
     def test_v17_to_v18_migration(self, tmp_path):
-        """v17 DB migrates to v18: structure_hash column is added to insight_state."""
+        """v17 DB migrates through v18 to v21: structure_hash added then table replaced."""
         import sqlite3
 
         db_path = tmp_path / ".sync-state.sqlite"
@@ -1117,30 +1166,36 @@ class TestV17ToV18Migration:
 
         conn = _connect(tmp_path)
 
-        # Version updated
+        # Version updated to v21
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "20"
+        assert version == "21"
 
-        # structure_hash column exists
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
-        assert "structure_hash" in cols
+        # insight_state is dropped in v21, replaced by regen_locks
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "insight_state" not in tables
+        assert "regen_locks" in tables
 
-        # Existing data preserved, structure_hash is NULL
-        row = conn.execute("SELECT knowledge_path, content_hash, structure_hash FROM insight_state").fetchone()
+        # Lifecycle data migrated to regen_locks
+        row = conn.execute(
+            "SELECT knowledge_path, regen_status FROM regen_locks WHERE knowledge_path = 'test/area'"
+        ).fetchone()
         assert row is not None
         assert row[0] == "test/area"
-        assert row[1] == "hash123"
-        assert row[2] is None  # new column defaults to NULL
+        assert row[1] == "idle"
 
         conn.close()
 
-    def test_fresh_db_has_structure_hash(self, tmp_path):
-        """Fresh DB insight_state table has structure_hash column."""
+    def test_fresh_db_has_regen_locks_table(self, tmp_path):
+        """Fresh v21 DB has regen_locks table (lifecycle-only, no hash columns)."""
         from brain_sync.state import _connect
 
         conn = _connect(tmp_path)
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(insight_state)").fetchall()}
-        assert "structure_hash" in cols
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "regen_locks" in tables
+        assert "insight_state" not in tables
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(regen_locks)").fetchall()}
+        assert "knowledge_path" in cols
+        assert "regen_status" in cols
         conn.close()
 
     def test_save_and_load_structure_hash(self, tmp_path):
@@ -1252,13 +1307,263 @@ class TestV19Migration:
         conn = _connect(tmp_path)
 
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert version == "20"
+        assert version == "21"
 
-        # structure_hash is now NULL, content_hash preserved
-        row = conn.execute("SELECT knowledge_path, content_hash, structure_hash FROM insight_state").fetchone()
+        # insight_state is dropped in v21, replaced by regen_locks
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "insight_state" not in tables
+        assert "regen_locks" in tables
+
+        # Lifecycle data migrated to regen_locks (all reset to idle)
+        row = conn.execute(
+            "SELECT knowledge_path, regen_status FROM regen_locks WHERE knowledge_path = 'test/area'"
+        ).fetchone()
         assert row is not None
         assert row[0] == "test/area"
-        assert row[1] == "old-algo-hash"  # content_hash unchanged by migration
-        assert row[2] is None  # structure_hash reset to NULL
+        assert row[1] == "idle"
 
         conn.close()
+
+
+class TestV21MigrationSidecarExport:
+    """Tests for v20→v21 migration: real sidecar export path (no patching)."""
+
+    def _create_v20_db(self, root):
+        """Create a v20 DB with insight_state rows containing hashes."""
+        import sqlite3
+
+        db_path = root / ".sync-state.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sources (
+                canonical_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                next_check_utc TEXT,
+                interval_seconds INTEGER,
+                target_path TEXT NOT NULL DEFAULT '',
+                fetch_children INTEGER NOT NULL DEFAULT 0,
+                sync_attachments INTEGER NOT NULL DEFAULT 0,
+                child_path TEXT
+            );
+            CREATE TABLE documents (
+                canonical_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                title TEXT,
+                last_checked_utc TEXT,
+                last_changed_utc TEXT,
+                content_hash TEXT,
+                metadata_fingerprint TEXT,
+                mime_type TEXT
+            );
+            CREATE TABLE relationships (
+                parent_canonical_id TEXT NOT NULL,
+                canonical_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                first_seen_utc TEXT,
+                last_seen_utc TEXT,
+                PRIMARY KEY (parent_canonical_id, canonical_id)
+            );
+            CREATE TABLE insight_state (
+                knowledge_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                summary_hash TEXT,
+                structure_hash TEXT,
+                regen_started_utc TEXT,
+                last_regen_utc TEXT,
+                regen_status TEXT NOT NULL DEFAULT 'idle',
+                owner_id TEXT,
+                error_reason TEXT
+            );
+            CREATE TABLE daemon_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                status TEXT NOT NULL DEFAULT 'stopped',
+                pid INTEGER,
+                started_utc TEXT,
+                last_heartbeat_utc TEXT
+            );
+            CREATE TABLE token_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                operation_type TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                is_chunk INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                duration_ms INTEGER,
+                num_turns INTEGER,
+                success INTEGER NOT NULL,
+                created_utc TEXT NOT NULL
+            );
+        """)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '20')")
+        return conn
+
+    def test_sidecar_export_writes_hashes(self, tmp_path):
+        """v20→v21 migration exports insight_state hashes to sidecar files."""
+        conn = self._create_v20_db(tmp_path)
+
+        # Create insights dir with summary (migration only writes sidecars for existing dirs)
+        insights_dir = tmp_path / "insights" / "project"
+        insights_dir.mkdir(parents=True)
+        (insights_dir / "summary.md").write_text("# Summary")
+
+        # Insert insight_state row with hashes
+        conn.execute(
+            "INSERT INTO insight_state "
+            "(knowledge_path, content_hash, summary_hash, structure_hash, last_regen_utc, regen_status) "
+            "VALUES ('project', 'ch1', 'sh1', 'sth1', '2026-01-01T00:00:00Z', 'idle')"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        conn.close()
+
+        # Verify sidecar was written with correct hashes
+        from brain_sync.sidecar import read_regen_meta
+
+        meta = read_regen_meta(insights_dir)
+        assert meta is not None
+        assert meta.content_hash == "ch1"
+        assert meta.summary_hash == "sh1"
+        assert meta.structure_hash == "sth1"
+        assert meta.last_regen_utc == "2026-01-01T00:00:00Z"
+
+    def test_sidecar_export_skips_missing_insights_dir(self, tmp_path):
+        """v20→v21 migration skips sidecar export for paths without insights/ dir."""
+        conn = self._create_v20_db(tmp_path)
+
+        # Insert insight_state row but do NOT create the insights directory
+        conn.execute(
+            "INSERT INTO insight_state "
+            "(knowledge_path, content_hash, summary_hash, structure_hash, regen_status) "
+            "VALUES ('missing-area', 'ch1', 'sh1', 'sth1', 'idle')"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        conn.close()
+
+        # No sidecar should exist
+        sidecar = tmp_path / "insights" / "missing-area" / ".regen-meta.json"
+        assert not sidecar.exists()
+
+    def test_sidecar_export_preserves_existing_matching_sidecar(self, tmp_path):
+        """v20→v21 migration does not overwrite sidecar if hashes already match."""
+        from brain_sync.sidecar import RegenMeta, write_regen_meta
+
+        conn = self._create_v20_db(tmp_path)
+
+        insights_dir = tmp_path / "insights" / "area"
+        insights_dir.mkdir(parents=True)
+        (insights_dir / "summary.md").write_text("# Summary")
+
+        # Pre-write a sidecar with matching hashes
+        write_regen_meta(insights_dir, RegenMeta(content_hash="ch1", summary_hash="sh1", structure_hash="sth1"))
+        original_mtime = (insights_dir / ".regen-meta.json").stat().st_mtime
+
+        conn.execute(
+            "INSERT INTO insight_state "
+            "(knowledge_path, content_hash, summary_hash, structure_hash, regen_status) "
+            "VALUES ('area', 'ch1', 'sh1', 'sth1', 'idle')"
+        )
+        conn.commit()
+        conn.close()
+
+        import time
+
+        time.sleep(0.05)  # ensure mtime would differ if rewritten
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+        conn.close()
+
+        # Sidecar should not have been rewritten (mtime unchanged)
+        new_mtime = (insights_dir / ".regen-meta.json").stat().st_mtime
+        assert new_mtime == original_mtime
+
+    def test_migration_creates_regen_locks_and_sync_cache(self, tmp_path):
+        """v20→v21 migration creates both new tables with correct data."""
+        conn = self._create_v20_db(tmp_path)
+
+        conn.execute("INSERT INTO insight_state (knowledge_path, regen_status) VALUES ('area-a', 'idle')")
+        conn.execute(
+            "INSERT INTO sources "
+            "(canonical_id, source_url, source_type, content_hash, next_check_utc) "
+            "VALUES ('confluence:123', 'https://acme.atlassian.net/wiki/spaces/ENG/pages/123', "
+            "'confluence', 'hash1', '2026-01-01T00:00:00Z')"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        conn = _connect(tmp_path)
+
+        # Old tables gone
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "insight_state" not in tables
+        assert "sources" not in tables
+        assert "regen_locks" in tables
+        assert "sync_cache" in tables
+
+        # Lifecycle migrated to regen_locks
+        row = conn.execute("SELECT regen_status FROM regen_locks WHERE knowledge_path = 'area-a'").fetchone()
+        assert row is not None
+        assert row[0] == "idle"
+
+        # Sync progress migrated to sync_cache
+        row = conn.execute("SELECT content_hash FROM sync_cache WHERE canonical_id = 'confluence:123'").fetchone()
+        assert row is not None
+        assert row[0] == "hash1"
+
+        conn.close()
+
+    def test_manifest_bootstrap_during_migration(self, tmp_path):
+        """v20→v21 migration bootstraps manifests from DB sources without recursion."""
+        conn = self._create_v20_db(tmp_path)
+
+        conn.execute(
+            "INSERT INTO sources "
+            "(canonical_id, source_url, source_type, target_path, fetch_children, sync_attachments) "
+            "VALUES ('confluence:456', 'https://acme.atlassian.net/wiki/spaces/ENG/pages/456', "
+            "'confluence', 'engineering', 0, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        from brain_sync.state import _connect
+
+        # This must not raise (recursion would cause RecursionError or OperationalError)
+        conn = _connect(tmp_path)
+        conn.close()
+
+        # Verify manifest was bootstrapped
+        from brain_sync.manifest import read_all_source_manifests
+
+        manifests = read_all_source_manifests(tmp_path)
+        assert "confluence:456" in manifests
+        m = manifests["confluence:456"]
+        assert m.source_url == "https://acme.atlassian.net/wiki/spaces/ENG/pages/456"
+        assert m.source_type == "confluence"
+        assert m.target_path == "engineering"

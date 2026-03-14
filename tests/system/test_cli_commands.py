@@ -114,7 +114,7 @@ class TestRemove:
 
         # Verify removed from DB
         conn = sqlite3.connect(str(brain_root / ".sync-state.sqlite"))
-        row = conn.execute("SELECT 1 FROM sources WHERE canonical_id = 'test:rm1'").fetchone()
+        row = conn.execute("SELECT 1 FROM sync_cache WHERE canonical_id = 'test:rm1'").fetchone()
         conn.close()
         assert row is None
 

@@ -9,13 +9,9 @@ from watchdog.events import DirMovedEvent
 
 from brain_sync.state import (
     InsightState,
-    SourceState,
-    SyncState,
     _connect,
     load_insight_state,
-    load_state,
     save_insight_state,
-    save_state,
 )
 from brain_sync.watcher import FolderMove, KnowledgeEventHandler, mirror_folder_move
 
@@ -85,23 +81,33 @@ class TestMirrorFolderMove:
         assert load_insight_state(brain, "new-name/sub") is not None
 
     def test_updates_source_target_paths(self, brain):
-        """Source target_paths updated after move."""
-        state = SyncState()
-        state.sources["test:123"] = SourceState(
-            canonical_id="test:123",
-            source_url="https://example.com/page",
-            source_type="confluence",
-            target_path="old-name",
-            last_checked_utc="2026-01-01T00:00:00",
+        """Source target_paths updated in manifests after move."""
+        from brain_sync.manifest import (
+            MANIFEST_VERSION,
+            SourceManifest,
+            ensure_manifest_dir,
+            read_source_manifest,
+            write_source_manifest,
         )
-        state.sources["test:456"] = SourceState(
-            canonical_id="test:456",
-            source_url="https://example.com/page2",
-            source_type="confluence",
-            target_path="old-name/sub",
-            last_checked_utc="2026-01-01T00:00:00",
-        )
-        save_state(brain, state)
+
+        ensure_manifest_dir(brain)
+        for cid, url, tp in [
+            ("test:123", "https://example.com/page", "old-name"),
+            ("test:456", "https://example.com/page2", "old-name/sub"),
+        ]:
+            write_source_manifest(
+                brain,
+                SourceManifest(
+                    manifest_version=MANIFEST_VERSION,
+                    canonical_id=cid,
+                    source_url=url,
+                    source_type="confluence",
+                    materialized_path="",
+                    fetch_children=False,
+                    sync_attachments=False,
+                    target_path=tp,
+                ),
+            )
 
         k_old = brain / "knowledge" / "old-name"
         k_old.mkdir()
@@ -110,9 +116,12 @@ class TestMirrorFolderMove:
         move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
         mirror_folder_move(brain, move)
 
-        loaded = load_state(brain)
-        assert loaded.sources["test:123"].target_path == "new-name"
-        assert loaded.sources["test:456"].target_path == "new-name/sub"
+        m1 = read_source_manifest(brain, "test:123")
+        m2 = read_source_manifest(brain, "test:456")
+        assert m1 is not None
+        assert m2 is not None
+        assert m1.target_path == "new-name"
+        assert m2.target_path == "new-name/sub"
 
     def test_no_insights_to_mirror(self, brain):
         """Move succeeds even when there are no insights to mirror."""

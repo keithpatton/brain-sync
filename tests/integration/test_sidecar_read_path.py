@@ -1,4 +1,11 @@
-"""Integration tests for Phase 5a sidecar read path — synchronization + authoritative reads."""
+"""Integration tests for sidecar-authoritative read path (v21+).
+
+In v21, sidecars are the sole authority for regen hashes.
+- save_insight_state() writes hashes to sidecars directly
+- delete_insight_state() removes both sidecar and regen_locks row
+- synchronize_sidecars_from_db() is a no-op (reads from sidecars, compares to sidecars)
+- load_regen_hashes() reads sidecar-first (DB fallback is circular in v21)
+"""
 
 from __future__ import annotations
 
@@ -14,7 +21,7 @@ from brain_sync.sidecar import (
     synchronize_sidecars_from_db,
     write_regen_meta,
 )
-from brain_sync.state import InsightState, delete_insight_state, save_insight_state
+from brain_sync.state import InsightState, save_insight_state
 
 pytestmark = pytest.mark.integration
 
@@ -23,12 +30,11 @@ def _config() -> RegenConfig:
     return RegenConfig(model="fake-model", effort="low", timeout=30)
 
 
-class TestSynchronizeSidecars:
-    """Tests for synchronize_sidecars_from_db — one-time authority transfer."""
+class TestSynchronizeSidecarsV21:
+    """In v21, synchronize_sidecars_from_db is a no-op — save_insight_state writes sidecars directly."""
 
-    def test_writes_missing_sidecars(self, brain: Path) -> None:
-        """DB rows with hashes but no sidecars -> sidecars created."""
-        # Create insights dir and DB row
+    def test_save_writes_sidecar_directly(self, brain: Path) -> None:
+        """save_insight_state() writes sidecar — no sync needed."""
         insights_dir = brain / "insights" / "project"
         insights_dir.mkdir(parents=True)
         save_insight_state(
@@ -42,44 +48,31 @@ class TestSynchronizeSidecars:
             ),
         )
 
-        count = synchronize_sidecars_from_db(brain)
-        assert count == 1
-
         meta = read_regen_meta(insights_dir)
         assert meta is not None
         assert meta.content_hash == "ch1"
         assert meta.summary_hash == "sh1"
         assert meta.structure_hash == "st1"
 
-    def test_repairs_stale_sidecars(self, brain: Path) -> None:
-        """DB has hash X, sidecar has hash Y -> sidecar overwritten with X."""
+    def test_sync_is_noop_in_v21(self, brain: Path) -> None:
+        """synchronize_sidecars_from_db returns 0 in v21 (sidecar already written by save)."""
         insights_dir = brain / "insights" / "project"
         insights_dir.mkdir(parents=True)
-
-        # Write stale sidecar
-        write_regen_meta(insights_dir, RegenMeta(content_hash="stale", summary_hash="old_sum"))
-
-        # DB has different values
         save_insight_state(
             brain,
             InsightState(
                 knowledge_path="project",
-                content_hash="fresh",
-                summary_hash="new_sum",
-                structure_hash="new_struct",
+                content_hash="ch1",
+                summary_hash="sh1",
+                structure_hash="st1",
             ),
         )
 
         count = synchronize_sidecars_from_db(brain)
-        assert count == 1
+        assert count == 0
 
-        meta = read_regen_meta(insights_dir)
-        assert meta is not None
-        assert meta.content_hash == "fresh"
-        assert meta.summary_hash == "new_sum"
-
-    def test_noop_when_matching(self, brain: Path) -> None:
-        """DB and sidecar agree -> no writes (mtime unchanged)."""
+    def test_sync_noop_when_matching(self, brain: Path) -> None:
+        """Sidecar and regen state agree -> sync is no-op."""
         insights_dir = brain / "insights" / "project"
         insights_dir.mkdir(parents=True)
 
@@ -92,11 +85,10 @@ class TestSynchronizeSidecars:
                 structure_hash="st1",
             ),
         )
-        write_regen_meta(insights_dir, RegenMeta(content_hash="ch1", summary_hash="sh1", structure_hash="st1"))
 
         import time
 
-        time.sleep(0.05)  # ensure mtime would differ if rewritten
+        time.sleep(0.05)
         mtime_before = (insights_dir / ".regen-meta.json").stat().st_mtime
 
         count = synchronize_sidecars_from_db(brain)
@@ -104,7 +96,7 @@ class TestSynchronizeSidecars:
         assert (insights_dir / ".regen-meta.json").stat().st_mtime == mtime_before
 
     def test_skips_no_insights_dir(self, brain: Path) -> None:
-        """DB row exists but no insights dir -> no sidecar created."""
+        """Regen state exists but no insights dir -> sync skips."""
         save_insight_state(
             brain,
             InsightState(knowledge_path="missing", content_hash="ch1", summary_hash="sh1"),
@@ -113,7 +105,7 @@ class TestSynchronizeSidecars:
         assert count == 0
 
     def test_skips_no_content_hash(self, brain: Path) -> None:
-        """DB row with null content_hash -> skipped."""
+        """Regen state with null content_hash -> skipped."""
         insights_dir = brain / "insights" / "empty"
         insights_dir.mkdir(parents=True)
         save_insight_state(brain, InsightState(knowledge_path="empty"))
@@ -122,33 +114,10 @@ class TestSynchronizeSidecars:
 
 
 class TestClassifyReadsFromSidecar:
-    """After sync, classify_folder_change reads from sidecar."""
+    """Classify reads hashes from sidecars (the sole authority in v21)."""
 
     def test_classify_reads_from_sidecar(self, brain: Path) -> None:
-        """After sync, delete DB row, verify classify still uses sidecar hashes."""
-        kdir = brain / "knowledge" / "project"
-        kdir.mkdir(parents=True)
-        (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
-
-        backend = FakeBackend(mode="stable")
-        config = _config()
-
-        # Regen to establish both DB and sidecar
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(
-            regen_single_folder(brain, "project", config=config, backend=backend)
-        )
-
-        # Delete DB row — sidecar should still provide hashes
-        delete_insight_state(brain, "project")
-
-        event, _, _ = classify_folder_change(brain, "project")
-        # Content hasn't changed, so should be "none"
-        assert event.change_type == "none"
-
-    def test_classify_falls_back_to_db(self, brain: Path) -> None:
-        """No sidecar, DB has hashes -> classification works via DB fallback."""
+        """After regen, sidecar provides hashes. Content unchanged -> 'none'."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
@@ -162,19 +131,26 @@ class TestClassifyReadsFromSidecar:
             regen_single_folder(brain, "project", config=config, backend=backend)
         )
 
-        # Delete sidecar — DB should still provide hashes
-        sidecar_path = brain / "insights" / "project" / ".regen-meta.json"
-        sidecar_path.unlink()
-
+        # Sidecar exists and has hashes — content unchanged
         event, _, _ = classify_folder_change(brain, "project")
         assert event.change_type == "none"
+
+    def test_no_sidecar_means_new_content(self, brain: Path) -> None:
+        """Without sidecar, classify sees new content (no prior hashes)."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
+
+        # No regen done -> no sidecar -> classify sees content change
+        event, _, _ = classify_folder_change(brain, "project")
+        assert event.change_type == "content"
 
 
 class TestRegenSkipsUnchangedFromSidecar:
     """Regen reads hashes from sidecar, skips when unchanged."""
 
     async def test_regen_skips_unchanged_from_sidecar(self, brain: Path) -> None:
-        """Delete DB, keep sidecars, run regen_single_folder -> skipped_unchanged."""
+        """Delete regen_locks row only, keep sidecar -> regen still skips."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
@@ -182,12 +158,19 @@ class TestRegenSkipsUnchangedFromSidecar:
         backend = FakeBackend(mode="stable")
         config = _config()
 
-        # First regen establishes sidecar + DB
+        # First regen establishes sidecar + regen_locks
         result1 = await regen_single_folder(brain, "project", config=config, backend=backend)
         assert result1.action == "regenerated"
 
-        # Delete DB row
-        delete_insight_state(brain, "project")
+        # Delete regen_locks row only (keep sidecar) via raw SQL
+        from brain_sync.state import _connect
+
+        conn = _connect(brain)
+        try:
+            conn.execute("DELETE FROM regen_locks WHERE knowledge_path = ?", ("project",))
+            conn.commit()
+        finally:
+            conn.close()
 
         # Second regen — sidecar provides hashes, should skip
         result2 = await regen_single_folder(brain, "project", config=config, backend=backend)
@@ -216,10 +199,10 @@ class TestRegenSkipsUnchangedFromSidecar:
 
 
 class TestStaleSidecarRepair:
-    """Stale Phase 4 sidecar does not cause unnecessary regen after synchronize."""
+    """Stale sidecar written directly does not persist after regen overwrites it."""
 
-    async def test_stale_sidecar_does_not_cause_regen(self, brain: Path) -> None:
-        """Phase 4 sidecar stale vs DB -> synchronize -> no unnecessary regen."""
+    async def test_regen_overwrites_stale_sidecar(self, brain: Path) -> None:
+        """After regen, a manually-overwritten sidecar triggers re-regen."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
@@ -227,34 +210,31 @@ class TestStaleSidecarRepair:
         backend = FakeBackend(mode="stable")
         config = _config()
 
-        # Regen to establish DB + sidecar
+        # Regen to establish correct sidecar
         result1 = await regen_single_folder(brain, "project", config=config, backend=backend)
         assert result1.action == "regenerated"
 
-        # Write stale sidecar (simulate Phase 4 stale export)
+        # Write stale sidecar (simulate corruption — include structure_hash to avoid backfill path)
         write_regen_meta(
             brain / "insights" / "project",
-            RegenMeta(content_hash="stale_hash", summary_hash="stale_sum"),
+            RegenMeta(content_hash="stale_hash", summary_hash="stale_sum", structure_hash="stale_struct"),
         )
 
-        # Synchronize — DB overwrites stale sidecar
-        count = synchronize_sidecars_from_db(brain)
-        assert count == 1
-
-        # Regen should skip (sidecar now matches actual state)
+        # Regen should see content change (stale hashes don't match current content)
         result2 = await regen_single_folder(brain, "project", config=config, backend=backend)
-        assert result2.action == "skipped_unchanged"
+        assert result2.action == "regenerated"
+
+        # After re-regen, sidecar should have correct hashes again
+        meta = read_regen_meta(brain / "insights" / "project")
+        assert meta is not None
+        assert meta.content_hash != "stale_hash"
 
 
 class TestDoctorWithStaleSidecar:
-    """Doctor must not be misled by stale Phase 4 sidecars."""
+    """Doctor detects content change when sidecar has stale hashes."""
 
-    async def test_doctor_repairs_stale_sidecar_before_checks(self, brain: Path) -> None:
-        """Doctor runs synchronize_sidecars_from_db before regen-change detection.
-
-        Without synchronization, a stale sidecar would cause doctor to
-        incorrectly report a content change (would-trigger-regen).
-        """
+    async def test_doctor_detects_stale_sidecar_as_content_change(self, brain: Path) -> None:
+        """Stale sidecar causes doctor to report would-trigger-regen."""
         from brain_sync.commands.doctor import doctor as run_doctor
 
         kdir = brain / "knowledge" / "project"
@@ -264,19 +244,19 @@ class TestDoctorWithStaleSidecar:
         backend = FakeBackend(mode="stable")
         config = _config()
 
-        # Regen to establish DB + sidecar
+        # Regen to establish correct sidecar
         await regen_single_folder(brain, "project", config=config, backend=backend)
 
-        # Write stale sidecar (simulate Phase 4 stale export)
+        # Write stale sidecar (include structure_hash to avoid backfill path)
         write_regen_meta(
             brain / "insights" / "project",
-            RegenMeta(content_hash="stale_hash", summary_hash="stale_sum"),
+            RegenMeta(content_hash="stale_hash", summary_hash="stale_sum", structure_hash="stale_struct"),
         )
 
-        # Doctor should repair the stale sidecar before checking, so no
-        # would-trigger-regen findings should appear for "project"
+        # Doctor should detect the stale sidecar as a content change
         result = run_doctor(brain, fix=False)
         regen_findings = [
             f for f in result.findings if f.check == "regen_change_detection" and f.knowledge_path == "project"
         ]
-        assert len(regen_findings) == 0, f"Doctor incorrectly reported regen findings: {regen_findings}"
+        # In v21, stale sidecar means classify sees a content change
+        assert len(regen_findings) == 1

@@ -64,22 +64,35 @@ def seed_knowledge_tree(root: Path, structure: dict) -> None:
 
 
 def seed_sources(root: Path, sources: list[dict]) -> None:
-    """Insert source rows directly into the brain's SQLite database."""
+    """Register sources via manifests + sync_cache rows."""
     import sqlite3
 
+    from brain_sync.manifest import MANIFEST_VERSION, SourceManifest, ensure_manifest_dir, write_source_manifest
+
+    ensure_manifest_dir(root)
     db = root / ".sync-state.sqlite"
     conn = sqlite3.connect(str(db))
     for src in sources:
-        conn.execute(
-            """INSERT OR REPLACE INTO sources
-            (canonical_id, source_type, source_url, target_path)
-            VALUES (?, ?, ?, ?)""",
-            (
-                src["canonical_id"],
-                src.get("source_type", "confluence"),
-                src.get("source_url", "https://acme.atlassian.net/wiki/spaces/ENG/pages/123"),
-                src.get("target_path", ""),
+        cid = src["canonical_id"]
+        url = src.get("source_url", "https://acme.atlassian.net/wiki/spaces/ENG/pages/123")
+        stype = src.get("source_type", "confluence")
+        tp = src.get("target_path", "")
+        write_source_manifest(
+            root,
+            SourceManifest(
+                manifest_version=MANIFEST_VERSION,
+                canonical_id=cid,
+                source_url=url,
+                source_type=stype,
+                materialized_path="",
+                fetch_children=False,
+                sync_attachments=False,
+                target_path=tp,
             ),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_cache (canonical_id) VALUES (?)",
+            (cid,),
         )
     conn.commit()
     conn.close()

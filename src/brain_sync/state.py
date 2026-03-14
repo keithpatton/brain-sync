@@ -15,7 +15,7 @@ from brain_sync.fs_utils import normalize_path
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -129,6 +129,29 @@ CREATE TABLE IF NOT EXISTS daemon_status (
     pid       INTEGER NOT NULL,
     started_at TEXT NOT NULL,
     status     TEXT NOT NULL
+);
+"""
+
+_SYNC_CACHE_DDL = """
+CREATE TABLE IF NOT EXISTS sync_cache (
+    canonical_id TEXT PRIMARY KEY,
+    last_checked_utc TEXT,
+    last_changed_utc TEXT,
+    current_interval_secs INTEGER NOT NULL DEFAULT 1800,
+    content_hash TEXT,
+    metadata_fingerprint TEXT,
+    next_check_utc TEXT,
+    interval_seconds INTEGER
+);
+"""
+
+_REGEN_LOCKS_DDL = """
+CREATE TABLE IF NOT EXISTS regen_locks (
+    knowledge_path TEXT PRIMARY KEY,
+    regen_status TEXT NOT NULL DEFAULT 'idle',
+    regen_started_utc TEXT,
+    owner_id TEXT,
+    error_reason TEXT
 );
 """
 
@@ -254,6 +277,19 @@ class InsightState(_PathNormalized):
     regen_started_utc: str | None = None
     last_regen_utc: str | None = None
     regen_status: str = "idle"
+    owner_id: str | None = None
+    error_reason: str | None = None
+
+
+@dataclass
+class RegenLock(_PathNormalized):
+    """Lifecycle-only regen state stored in regen_locks table (v21+)."""
+
+    _PATH_FIELDS: ClassVar[set[str]] = {"knowledge_path"}
+
+    knowledge_path: str
+    regen_status: str = "idle"
+    regen_started_utc: str | None = None
     owner_id: str | None = None
     error_reason: str | None = None
 
@@ -750,6 +786,121 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         log.info("Migrated DB schema to v20: added daemon_status table")
         from_version = 20
 
+    if from_version < 21:
+        # v20 → v21: Replace insight_state with regen_locks, sources with sync_cache.
+        # Sidecars become authoritative for hashes; DB becomes lifecycle-only + sync-progress.
+        #
+        # Step 1: Export insight_state hashes to sidecars.
+        # IMPORTANT: Read directly from `conn` (the open migration connection).
+        # Do NOT call synchronize_sidecars_from_db() — it calls _connect()
+        # which would recurse back into _migrate().
+        if root is not None:
+            from brain_sync.sidecar import RegenMeta, read_regen_meta, write_regen_meta
+
+            insight_rows = conn.execute(
+                "SELECT knowledge_path, content_hash, summary_hash, "
+                "structure_hash, last_regen_utc "
+                "FROM insight_state WHERE content_hash IS NOT NULL"
+            ).fetchall()
+            sidecar_count = 0
+            for kp, ch, sh, sth, lru in insight_rows:
+                insights_dir = root / "insights" / kp if kp else root / "insights"
+                if not insights_dir.is_dir():
+                    continue
+                existing = read_regen_meta(insights_dir)
+                db_meta = RegenMeta(
+                    content_hash=ch,
+                    summary_hash=sh,
+                    structure_hash=sth,
+                    last_regen_utc=lru,
+                )
+                if existing is None or (
+                    existing.content_hash != db_meta.content_hash
+                    or existing.summary_hash != db_meta.summary_hash
+                    or existing.structure_hash != db_meta.structure_hash
+                ):
+                    try:
+                        write_regen_meta(insights_dir, db_meta)
+                        sidecar_count += 1
+                    except Exception:
+                        log.warning("v20→v21: Failed to write sidecar for %s", kp, exc_info=True)
+            log.info("v20→v21: Exported %d insight_state hashes to sidecars", sidecar_count)
+
+        # Step 2: Ensure manifests exist (guard for pre-Phase-2 brains).
+        if root is not None:
+            manifest_dir = root / Path(".brain-sync") / "sources"
+            if not manifest_dir.is_dir() or not any(manifest_dir.glob("*.json")):
+                try:
+                    from brain_sync.commands.sources import _bootstrap_manifests_from_db
+
+                    # Build a minimal SyncState from DB for bootstrap
+                    rows = conn.execute(
+                        "SELECT canonical_id, source_url, source_type, "
+                        "last_checked_utc, last_changed_utc, current_interval_secs, "
+                        "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
+                        "target_path, fetch_children, sync_attachments, child_path "
+                        "FROM sources"
+                    ).fetchall()
+                    db_sources: dict[str, SourceState] = {}
+                    for r in rows:
+                        db_sources[r[0]] = SourceState(
+                            canonical_id=r[0],
+                            source_url=r[1],
+                            source_type=r[2],
+                            last_checked_utc=r[3],
+                            last_changed_utc=r[4],
+                            current_interval_secs=r[5],
+                            content_hash=r[6],
+                            metadata_fingerprint=r[7],
+                            next_check_utc=r[8],
+                            interval_seconds=r[9],
+                            target_path=r[10] or "",
+                            fetch_children=bool(r[11]),
+                            sync_attachments=bool(r[12]),
+                            child_path=r[13],
+                        )
+                    if db_sources:
+                        _bootstrap_manifests_from_db(root, SyncState(sources=db_sources))
+                        log.info("v20→v21: Bootstrapped manifests from DB sources")
+                except Exception as e:
+                    log.warning("v20→v21: Failed to bootstrap manifests: %s", e)
+
+        # Step 3: Create sync_cache from sources progress columns.
+        conn.executescript(_SYNC_CACHE_DDL)
+        # Check if sources table exists before copying
+        if "sources" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}:
+            conn.execute(
+                "INSERT OR IGNORE INTO sync_cache "
+                "(canonical_id, last_checked_utc, last_changed_utc, "
+                "current_interval_secs, content_hash, metadata_fingerprint, "
+                "next_check_utc, interval_seconds) "
+                "SELECT canonical_id, last_checked_utc, last_changed_utc, "
+                "current_interval_secs, content_hash, metadata_fingerprint, "
+                "next_check_utc, interval_seconds "
+                "FROM sources"
+            )
+
+        # Step 4: Create regen_locks from insight_state — reset all lifecycle to idle.
+        conn.executescript(_REGEN_LOCKS_DDL)
+        if "insight_state" in {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }:
+            conn.execute(
+                "INSERT OR IGNORE INTO regen_locks (knowledge_path, regen_status) "
+                "SELECT knowledge_path, 'idle' FROM insight_state"
+            )
+
+        # Step 5-6: Drop old tables.
+        conn.execute("DROP TABLE IF EXISTS insight_state")
+        conn.execute("DROP TABLE IF EXISTS sources")
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '21')",
+        )
+        conn.commit()
+        log.info("Migrated DB schema to v21: replaced insight_state+sources with regen_locks+sync_cache")
+        from_version = 21
+
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
 
 
@@ -772,10 +923,10 @@ def _connect(root: Path) -> sqlite3.Connection:
                 value TEXT NOT NULL
             )
         """)
-        conn.executescript(_SOURCES_DDL)
+        conn.executescript(_SYNC_CACHE_DDL)
         conn.executescript(_DOCUMENTS_DDL)
         conn.executescript(_RELATIONSHIPS_DDL)
-        conn.executescript(_INSIGHT_STATE_DDL)
+        conn.executescript(_REGEN_LOCKS_DDL)
         conn.executescript(_TOKEN_EVENTS_DDL)
         conn.executescript(_DAEMON_STATUS_DDL)
         conn.execute(
@@ -794,7 +945,12 @@ def _connect(root: Path) -> sqlite3.Connection:
 
 
 def _load_db_sync_progress(root: Path) -> dict[str, SourceState]:
-    """Read all source rows from the DB. Returns {canonical_id: SourceState}."""
+    """Read all sync_cache rows from the DB. Returns {canonical_id: partial SourceState}.
+
+    The returned SourceState objects contain only sync-progress fields.
+    Intent fields (source_url, source_type, target_path, flags) are empty/defaults
+    and must be populated from manifests by load_state().
+    """
     try:
         conn = _connect(root)
     except Exception as e:
@@ -804,28 +960,23 @@ def _load_db_sync_progress(root: Path) -> dict[str, SourceState]:
     result: dict[str, SourceState] = {}
     try:
         rows = conn.execute(
-            "SELECT canonical_id, source_url, source_type, "
-            "last_checked_utc, last_changed_utc, current_interval_secs, "
-            "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
-            "target_path, fetch_children, sync_attachments, child_path "
-            "FROM sources"
+            "SELECT canonical_id, last_checked_utc, last_changed_utc, "
+            "current_interval_secs, content_hash, metadata_fingerprint, "
+            "next_check_utc, interval_seconds "
+            "FROM sync_cache"
         ).fetchall()
         for row in rows:
             result[row[0]] = SourceState(
                 canonical_id=row[0],
-                source_url=row[1],
-                source_type=row[2],
-                last_checked_utc=row[3],
-                last_changed_utc=row[4],
-                current_interval_secs=row[5],
-                content_hash=row[6],
-                metadata_fingerprint=row[7],
-                next_check_utc=row[8],
-                interval_seconds=row[9],
-                target_path=row[10] or "",
-                fetch_children=bool(row[11]),
-                sync_attachments=bool(row[12]),
-                child_path=row[13],
+                source_url="",
+                source_type="",
+                last_checked_utc=row[1],
+                last_changed_utc=row[2],
+                current_interval_secs=row[3],
+                content_hash=row[4],
+                metadata_fingerprint=row[5],
+                next_check_utc=row[6],
+                interval_seconds=row[7],
             )
     except Exception as e:
         log.warning("Error reading sync state: %s", e)
@@ -962,24 +1113,32 @@ def load_state(root: Path) -> SyncState:
 
 
 def save_state(root: Path, state: SyncState) -> None:
-    """Save sync progress for all sources.
+    """Save sync progress for all sources to sync_cache.
 
-    Uses UPDATE for existing rows to preserve CLI-managed config fields
-    (target_path, fetch_children, sync_attachments, child_path).
-    Only inserts if the source doesn't exist yet.
+    sync_cache stores only progress fields (no intent — that's in manifests).
+    Uses UPSERT pattern: INSERT OR REPLACE to keep it simple.
     """
     conn = _connect(root)
     try:
         for key, ss in state.sources.items():
-            # Try UPDATE first — only touch sync-progress fields
-            cur = conn.execute(
-                "UPDATE sources SET "
-                "last_checked_utc = ?, last_changed_utc = ?, "
-                "current_interval_secs = ?, content_hash = ?, "
-                "metadata_fingerprint = ?, next_check_utc = ?, "
-                "interval_seconds = ? "
-                "WHERE canonical_id = ?",
+            if not _has_sync_progress(ss):
+                continue
+            conn.execute(
+                "INSERT INTO sync_cache "
+                "(canonical_id, last_checked_utc, last_changed_utc, "
+                "current_interval_secs, content_hash, metadata_fingerprint, "
+                "next_check_utc, interval_seconds) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(canonical_id) DO UPDATE SET "
+                "last_checked_utc=excluded.last_checked_utc, "
+                "last_changed_utc=excluded.last_changed_utc, "
+                "current_interval_secs=excluded.current_interval_secs, "
+                "content_hash=excluded.content_hash, "
+                "metadata_fingerprint=excluded.metadata_fingerprint, "
+                "next_check_utc=excluded.next_check_utc, "
+                "interval_seconds=excluded.interval_seconds",
                 (
+                    key,
                     ss.last_checked_utc,
                     ss.last_changed_utc,
                     ss.current_interval_secs,
@@ -987,60 +1146,27 @@ def save_state(root: Path, state: SyncState) -> None:
                     ss.metadata_fingerprint,
                     ss.next_check_utc,
                     ss.interval_seconds,
-                    key,
                 ),
             )
-            if cur.rowcount == 0 and _has_sync_progress(ss):
-                # New source with real sync progress — full insert.
-                # Manifest-only sources with no progress don't belong in the DB.
-                conn.execute(
-                    "INSERT INTO sources "
-                    "(canonical_id, source_url, source_type, "
-                    "last_checked_utc, last_changed_utc, current_interval_secs, "
-                    "content_hash, metadata_fingerprint, next_check_utc, interval_seconds, "
-                    "target_path, fetch_children, sync_attachments, child_path) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        key,
-                        ss.source_url,
-                        ss.source_type,
-                        ss.last_checked_utc,
-                        ss.last_changed_utc,
-                        ss.current_interval_secs,
-                        ss.content_hash,
-                        ss.metadata_fingerprint,
-                        ss.next_check_utc,
-                        ss.interval_seconds,
-                        normalize_path(ss.target_path),
-                        int(ss.fetch_children),
-                        int(ss.sync_attachments),
-                        ss.child_path,
-                    ),
-                )
         conn.commit()
     finally:
         conn.close()
 
 
 def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:
-    """Update a source's target_path directly in the DB."""
-    new_target_path = normalize_path(new_target_path)
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "UPDATE sources SET target_path = ? WHERE canonical_id = ?",
-            (new_target_path, canonical_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """No-op: target_path is now manifest-only (v21+).
+
+    Kept as a stub for callers that haven't been updated yet.
+    """
+    # target_path lives in manifests now, not in the DB.
+    pass
 
 
 def delete_source(root: Path, canonical_id: str) -> None:
-    """Delete a source row from the DB by canonical ID."""
+    """Delete a sync_cache row from the DB by canonical ID."""
     conn = _connect(root)
     try:
-        conn.execute("DELETE FROM sources WHERE canonical_id = ?", (canonical_id,))
+        conn.execute("DELETE FROM sync_cache WHERE canonical_id = ?", (canonical_id,))
         conn.commit()
     finally:
         conn.close()
@@ -1054,49 +1180,26 @@ def update_source_flags(
     sync_attachments: bool | None = None,
     child_path: str | None = ...,  # type: ignore[assignment]  # sentinel
 ) -> None:
-    """Update config flags for a source directly in the DB.
+    """No-op: source flags are now manifest-only (v21+).
 
-    Only the flags that are explicitly provided (not None / not sentinel) are changed.
-    child_path uses ... as sentinel so None is a valid "clear" value.
+    Kept as a stub for callers that haven't been updated yet.
     """
-    sets: list[str] = []
-    values: list[int | str | None] = []
-    if fetch_children is not None:
-        sets.append("fetch_children = ?")
-        values.append(int(fetch_children))
-    if sync_attachments is not None:
-        sets.append("sync_attachments = ?")
-        values.append(int(sync_attachments))
-    if child_path is not ...:
-        sets.append("child_path = ?")
-        values.append(child_path)
-    if not sets:
-        return
-
-    set_clause = ", ".join(sets)
-    values.append(canonical_id)
-    conn = _connect(root)
-    try:
-        conn.execute(
-            f"UPDATE sources SET {set_clause} WHERE canonical_id = ?",
-            values,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    # Flags live in manifests now, not in the DB.
+    pass
 
 
 def clear_children_flag(root: Path, canonical_id: str) -> None:
-    """Clear the one-shot fetch_children flag and child_path after processing."""
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "UPDATE sources SET fetch_children = 0, child_path = NULL WHERE canonical_id = ?",
-            (canonical_id,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """Clear the one-shot fetch_children flag and child_path after processing.
+
+    In v21+, these flags live in manifests. This updates the manifest directly.
+    """
+    from brain_sync.manifest import read_source_manifest, write_source_manifest
+
+    m = read_source_manifest(root, canonical_id)
+    if m is not None:
+        m.fetch_children = False
+        m.child_path = None
+        write_source_manifest(root, m)
 
 
 def ensure_db(root: Path) -> None:
@@ -1109,10 +1212,10 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
     """Remove rows from the DB that are no longer active."""
     conn = _connect(root)
     try:
-        existing = {row[0] for row in conn.execute("SELECT canonical_id FROM sources").fetchall()}
+        existing = {row[0] for row in conn.execute("SELECT canonical_id FROM sync_cache").fetchall()}
         stale = existing - active_keys
         for key in stale:
-            conn.execute("DELETE FROM sources WHERE canonical_id = ?", (key,))
+            conn.execute("DELETE FROM sync_cache WHERE canonical_id = ?", (key,))
             log.info("Pruned DB row for removed source: %s", key)
         if stale:
             conn.commit()
@@ -1292,63 +1395,83 @@ def _clamp_error_reason(reason: str | None) -> str | None:
 
 
 def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
-    """Load insight state for a knowledge path."""
+    """Load insight state: hashes from sidecar, lifecycle from regen_locks."""
+    from brain_sync.sidecar import read_regen_meta
+
     knowledge_path = normalize_path(knowledge_path)
+
+    # Read lifecycle from regen_locks
     conn = _connect(root)
     try:
         row = conn.execute(
-            "SELECT knowledge_path, content_hash, summary_hash, "
-            "structure_hash, regen_started_utc, last_regen_utc, regen_status, "
+            "SELECT knowledge_path, regen_status, regen_started_utc, "
             "owner_id, error_reason "
-            "FROM insight_state WHERE knowledge_path = ?",
+            "FROM regen_locks WHERE knowledge_path = ?",
             (knowledge_path,),
         ).fetchone()
-        if row is None:
-            return None
-        return InsightState(
-            knowledge_path=row[0],
-            content_hash=row[1],
-            summary_hash=row[2],
-            structure_hash=row[3],
-            regen_started_utc=row[4],
-            last_regen_utc=row[5],
-            regen_status=row[6],
-            owner_id=row[7],
-            error_reason=row[8],
-        )
     finally:
         conn.close()
 
+    # Read hashes from sidecar
+    insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+    meta = read_regen_meta(insights_dir)
+
+    if row is None and meta is None:
+        return None
+
+    return InsightState(
+        knowledge_path=knowledge_path,
+        content_hash=meta.content_hash if meta else None,
+        summary_hash=meta.summary_hash if meta else None,
+        structure_hash=meta.structure_hash if meta else None,
+        regen_started_utc=row[2] if row else None,
+        last_regen_utc=meta.last_regen_utc if meta else None,
+        regen_status=row[1] if row else "idle",
+        owner_id=row[3] if row else None,
+        error_reason=row[4] if row else None,
+    )
+
 
 def save_insight_state(root: Path, istate: InsightState) -> None:
-    """UPSERT insight state for a knowledge path."""
+    """Save insight state: hashes to sidecar, lifecycle to regen_locks."""
+    from brain_sync.sidecar import RegenMeta, write_regen_meta
+
     kp = normalize_path(istate.knowledge_path)
     error_reason = _clamp_error_reason(istate.error_reason)
+
+    # Write hashes to sidecar
+    insights_dir = root / "insights" / kp if kp else root / "insights"
+    if istate.content_hash is not None:
+        try:
+            write_regen_meta(
+                insights_dir,
+                RegenMeta(
+                    content_hash=istate.content_hash,
+                    summary_hash=istate.summary_hash,
+                    structure_hash=istate.structure_hash,
+                    last_regen_utc=istate.last_regen_utc,
+                ),
+            )
+        except Exception:
+            log.warning("Failed to write sidecar for %s", kp, exc_info=True)
+
+    # Write lifecycle to regen_locks
     conn = _connect(root)
     try:
         conn.execute(
-            "INSERT INTO insight_state "
-            "(knowledge_path, content_hash, summary_hash, structure_hash, "
-            "regen_started_utc, last_regen_utc, regen_status, "
+            "INSERT INTO regen_locks "
+            "(knowledge_path, regen_status, regen_started_utc, "
             "owner_id, error_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(knowledge_path) DO UPDATE SET "
-            "content_hash=excluded.content_hash, "
-            "summary_hash=excluded.summary_hash, "
-            "structure_hash=excluded.structure_hash, "
-            "regen_started_utc=excluded.regen_started_utc, "
-            "last_regen_utc=excluded.last_regen_utc, "
             "regen_status=excluded.regen_status, "
+            "regen_started_utc=excluded.regen_started_utc, "
             "owner_id=excluded.owner_id, "
             "error_reason=excluded.error_reason",
             (
                 kp,
-                istate.content_hash,
-                istate.summary_hash,
-                istate.structure_hash,
-                istate.regen_started_utc,
-                istate.last_regen_utc,
                 istate.regen_status,
+                istate.regen_started_utc,
                 istate.owner_id,
                 error_reason,
             ),
@@ -1359,40 +1482,64 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
 
 
 def load_all_insight_states(root: Path) -> list[InsightState]:
-    """Load all insight states."""
+    """Load all insight states: hashes from sidecars, lifecycle from regen_locks."""
+    from brain_sync.sidecar import read_all_regen_meta
+
+    # Read all sidecars
+    insights_root = root / "insights"
+    all_meta = read_all_regen_meta(insights_root)
+
+    # Read all regen_locks
     conn = _connect(root)
     try:
         rows = conn.execute(
-            "SELECT knowledge_path, content_hash, summary_hash, "
-            "structure_hash, regen_started_utc, last_regen_utc, regen_status, "
-            "owner_id, error_reason "
-            "FROM insight_state"
+            "SELECT knowledge_path, regen_status, regen_started_utc, owner_id, error_reason FROM regen_locks"
         ).fetchall()
-        return [
-            InsightState(
-                knowledge_path=r[0],
-                content_hash=r[1],
-                summary_hash=r[2],
-                structure_hash=r[3],
-                regen_started_utc=r[4],
-                last_regen_utc=r[5],
-                regen_status=r[6],
-                owner_id=r[7],
-                error_reason=r[8],
-            )
-            for r in rows
-        ]
     finally:
         conn.close()
 
+    locks_by_path: dict[str, tuple] = {r[0]: r for r in rows}
+
+    # Merge: union of all paths from both sources
+    all_paths = set(all_meta.keys()) | set(locks_by_path.keys())
+    result: list[InsightState] = []
+    for kp in all_paths:
+        meta = all_meta.get(kp)
+        lock = locks_by_path.get(kp)
+        result.append(
+            InsightState(
+                knowledge_path=kp,
+                content_hash=meta.content_hash if meta else None,
+                summary_hash=meta.summary_hash if meta else None,
+                structure_hash=meta.structure_hash if meta else None,
+                regen_started_utc=lock[2] if lock else None,
+                last_regen_utc=meta.last_regen_utc if meta else None,
+                regen_status=lock[1] if lock else "idle",
+                owner_id=lock[3] if lock else None,
+                error_reason=lock[4] if lock else None,
+            )
+        )
+    return result
+
 
 def delete_insight_state(root: Path, knowledge_path: str) -> None:
-    """Delete an insight_state entry."""
+    """Delete regen_locks row + sidecar for a knowledge path."""
+    from brain_sync.sidecar import delete_regen_meta
+
     knowledge_path = normalize_path(knowledge_path)
+
+    # Delete sidecar
+    insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+    try:
+        delete_regen_meta(insights_dir)
+    except Exception:
+        log.warning("Failed to delete sidecar for %s", knowledge_path, exc_info=True)
+
+    # Delete regen_locks row
     conn = _connect(root)
     try:
         conn.execute(
-            "DELETE FROM insight_state WHERE knowledge_path = ?",
+            "DELETE FROM regen_locks WHERE knowledge_path = ?",
             (knowledge_path,),
         )
         conn.commit()
@@ -1419,12 +1566,12 @@ def acquire_regen_ownership(
     try:
         # Ensure row exists (no-op if already present)
         conn.execute(
-            "INSERT OR IGNORE INTO insight_state (knowledge_path, regen_status) VALUES (?, 'idle')",
+            "INSERT OR IGNORE INTO regen_locks (knowledge_path, regen_status) VALUES (?, 'idle')",
             (knowledge_path,),
         )
         # Atomically claim ownership if available, already ours, or stale
         cur = conn.execute(
-            "UPDATE insight_state "
+            "UPDATE regen_locks "
             "SET owner_id = ?, regen_status = 'running', regen_started_utc = ? "
             "WHERE knowledge_path = ? "
             "  AND (owner_id IS NULL "
@@ -1453,7 +1600,7 @@ def reclaim_stale_running_states(root: Path, stale_threshold_secs: float = 600.0
     conn = _connect(root)
     try:
         rows = conn.execute(
-            "SELECT knowledge_path, regen_started_utc FROM insight_state WHERE regen_status = 'running'"
+            "SELECT knowledge_path, regen_started_utc FROM regen_locks WHERE regen_status = 'running'"
         ).fetchall()
         stale_paths: list[str] = []
         for kp, started_utc in rows:
@@ -1475,7 +1622,7 @@ def reclaim_stale_running_states(root: Path, stale_threshold_secs: float = 600.0
                 stale_paths.append(kp)
         if stale_paths:
             conn.executemany(
-                "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL WHERE knowledge_path = ?",
+                "UPDATE regen_locks SET regen_status = 'idle', owner_id = NULL WHERE knowledge_path = ?",
                 [(kp,) for kp in stale_paths],
             )
             conn.commit()
@@ -1498,7 +1645,7 @@ def release_owned_running_states(root: Path, owner_id: str) -> int:
     conn = _connect(root)
     try:
         cur = conn.execute(
-            "UPDATE insight_state SET regen_status = 'idle', owner_id = NULL "
+            "UPDATE regen_locks SET regen_status = 'idle', owner_id = NULL "
             "WHERE regen_status = 'running' AND owner_id = ?",
             (owner_id,),
         )
@@ -1516,7 +1663,7 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
     conn = _connect(root)
     try:
         running_rows = conn.execute(
-            "SELECT knowledge_path, regen_started_utc FROM insight_state WHERE regen_status = 'running'"
+            "SELECT knowledge_path, regen_started_utc FROM regen_locks WHERE regen_status = 'running'"
         ).fetchall()
         stale_running = 0
         for _, started_utc in running_rows:
@@ -1530,7 +1677,7 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
                 stale_running += 1
 
         failed_rows = conn.execute(
-            "SELECT knowledge_path, error_reason, last_regen_utc FROM insight_state WHERE regen_status = 'failed'"
+            "SELECT knowledge_path, error_reason FROM regen_locks WHERE regen_status = 'failed'"
         ).fetchall()
         return {
             "stale_running": stale_running,
@@ -1540,7 +1687,6 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
                 {
                     "knowledge_path": r[0],
                     "error_reason": r[1],
-                    "last_regen_utc": r[2],
                 }
                 for r in failed_rows
             ],
@@ -1550,13 +1696,13 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
 
 
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
-    """Update a knowledge_path in insight_state (for folder renames)."""
+    """Update a knowledge_path in regen_locks (for folder renames)."""
     old_path = normalize_path(old_path)
     new_path = normalize_path(new_path)
     conn = _connect(root)
     try:
         conn.execute(
-            "UPDATE insight_state SET knowledge_path = ? WHERE knowledge_path = ?",
+            "UPDATE regen_locks SET knowledge_path = ? WHERE knowledge_path = ?",
             (new_path, old_path),
         )
         conn.commit()

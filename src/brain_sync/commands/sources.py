@@ -490,7 +490,8 @@ def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
     """One-time migration: export existing DB sources to manifests.
 
     Only runs when .brain-sync/sources/ is empty but DB has sources.
-    Reads DB directly (not from state, which may be manifest-filtered).
+    Uses the provided ``state`` directly — callers (including ``_migrate()``)
+    must pre-populate it from whatever connection they already hold.
     Returns the number of manifests written.
     """
     manifest_dir = root / MANIFEST_DIR
@@ -501,15 +502,14 @@ def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
     if existing:
         return 0  # manifests already exist — not a migration scenario
 
-    # Read DB directly — state may be empty if manifest dir exists but is empty
-    from brain_sync.state import _load_db_sync_progress
-
-    db_sources = _load_db_sync_progress(root)
-    if not db_sources:
+    if not state.sources:
         return 0
 
     count = 0
-    for cid, ss in db_sources.items():
+    for cid, ss in state.sources.items():
+        # v21+: sync_cache has no intent fields — skip rows without source_url
+        if not ss.source_url:
+            continue
         # Discover the actual file path for materialized_path
         knowledge_root = root / "knowledge"
         materialized = ""

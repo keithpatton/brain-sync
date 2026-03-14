@@ -93,7 +93,7 @@ class TestReclaimStaleRunningStates:
         conn = _connect(brain)
         try:
             row = conn.execute(
-                "SELECT regen_status, owner_id FROM insight_state WHERE knowledge_path = ?",
+                "SELECT regen_status, owner_id FROM regen_locks WHERE knowledge_path = ?",
                 ("area/topic",),
             ).fetchone()
             assert row[0] == "idle"
@@ -161,11 +161,11 @@ class TestReleaseOwnedRunningStates:
         conn = _connect(brain)
         try:
             mine = conn.execute(
-                "SELECT regen_status FROM insight_state WHERE knowledge_path = ?",
+                "SELECT regen_status FROM regen_locks WHERE knowledge_path = ?",
                 ("area/mine",),
             ).fetchone()
             theirs = conn.execute(
-                "SELECT regen_status FROM insight_state WHERE knowledge_path = ?",
+                "SELECT regen_status FROM regen_locks WHERE knowledge_path = ?",
                 ("area/theirs",),
             ).fetchone()
             assert mine[0] == "idle"

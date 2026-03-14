@@ -1,9 +1,9 @@
 """Startup knowledge-tree reconciliation.
 
-Compares the knowledge/ folder tree against the insight_state DB table to
-detect offline structural changes (folder rename/delete/move, file add/delete).
-Cleans stale DB rows and orphan insight directories, and identifies paths
-needing regen.
+Compares the knowledge/ folder tree against the regen_locks DB table and
+sidecars to detect offline structural changes (folder rename/delete/move,
+file add/delete).  Cleans stale DB rows and orphan insight directories,
+and identifies paths needing regen.
 """
 
 from __future__ import annotations
@@ -16,11 +16,8 @@ from pathlib import Path
 from brain_sync.fs_utils import find_all_content_paths
 from brain_sync.regen import classify_folder_change
 from brain_sync.state import (
-    InsightState,
     delete_insight_state,
     load_all_insight_states,
-    load_insight_state,
-    save_insight_state,
 )
 
 log = logging.getLogger(__name__)
@@ -34,7 +31,7 @@ class TreeReconcileResult:
 
 
 def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
-    """Reconcile knowledge/ folder tree against insight_state DB.
+    """Reconcile knowledge/ folder tree against regen_locks DB + sidecars.
 
     Three-part algorithm:
     A) Clean orphan state — DB rows pointing to non-existent knowledge dirs
@@ -60,7 +57,7 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
         if orphan_insights.is_dir():
             shutil.rmtree(str(orphan_insights))
             log.info("Cleaned orphan insights dir: insights/%s", orphan)
-        log.info("Cleaned orphan insight_state: %s", orphan)
+        log.info("Cleaned orphan regen state: %s", orphan)
         result.orphans_cleaned.append(orphan)
 
     # Part B: Hash-check tracked folders (offline file add/delete detection)
@@ -92,16 +89,6 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
         # Rule 2: orphans were cleaned → brain state disrupted by offline mutations
         if orphan_db_paths:
             result.enqueued_paths.append(path)
-
-    # Seed minimal insight_state rows for enqueued paths that already have
-    # summaries (e.g. moved insights dirs). This ensures three-domain consistency
-    # holds immediately, before regen runs and updates with correct hashes.
-    for path in result.enqueued_paths:
-        if load_insight_state(root, path) is None:
-            summary = insights_root / path / "summary.md"
-            if summary.is_file():
-                save_insight_state(root, InsightState(knowledge_path=path, regen_status="idle"))
-                log.debug("Seeded insight_state for enqueued path with existing summary: %s", path)
 
     if result.orphans_cleaned or result.content_changed or result.enqueued_paths:
         log.info(

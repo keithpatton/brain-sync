@@ -21,7 +21,7 @@ from brain_sync.commands.doctor import (
     check_orphan_insights,
     check_path_normalization,
     check_regen_change_detection,
-    check_sidecar_db_consistency,
+    check_sidecar_integrity,
     check_stale_summaries,
     check_summaries_without_db_rows,
     check_unregistered_synced_files,
@@ -238,8 +238,8 @@ class TestCheckDbSourceConsistency:
         conn = _connect(brain)
         try:
             conn.execute(
-                "INSERT INTO sources (canonical_id, source_url, source_type, target_path) VALUES (?, ?, ?, ?)",
-                ("confluence:999", "https://acme.atlassian.net/wiki/spaces/ENG/pages/999", "confluence", ""),
+                "INSERT INTO sync_cache (canonical_id, current_interval_secs) VALUES (?, ?)",
+                ("confluence:999", 1800),
             )
             conn.commit()
         finally:
@@ -425,7 +425,7 @@ class TestCheckDbPathNormalization:
         assert len(findings) == 0
 
     def test_backslashes_drift(self, brain: Path) -> None:
-        # Both InsightState and SourceState auto-normalize paths via _PathNormalized.
+        # Both InsightState and RegenLock auto-normalize paths via _PathNormalized.
         # The check reads through these dataclasses, so backslashes inserted directly
         # in the DB get normalized on read. Verify the check does not produce false
         # positives, and would catch a path with leading slash (not auto-normalized).
@@ -433,7 +433,7 @@ class TestCheckDbPathNormalization:
         try:
             # Leading slash is not normalized away by _PathNormalized
             conn.execute(
-                "INSERT OR REPLACE INTO insight_state (knowledge_path, regen_status) VALUES (?, ?)",
+                "INSERT OR REPLACE INTO regen_locks (knowledge_path, regen_status) VALUES (?, ?)",
                 ("/project/area", "idle"),
             )
             conn.commit()
@@ -495,42 +495,25 @@ class TestCheckMissingSidecars:
 # ---------------------------------------------------------------------------
 
 
-class TestCheckSidecarDbConsistency:
-    def test_matching_hashes_ok(self, brain: Path) -> None:
+class TestCheckSidecarIntegrity:
+    def test_sidecar_with_regen_state_ok(self, brain: Path) -> None:
         kp = "project"
         save_insight_state(
             brain,
             InsightState(knowledge_path=kp, content_hash="abc", summary_hash="def", structure_hash="ghi"),
         )
-        write_regen_meta(
-            brain / "insights" / kp,
-            RegenMeta(content_hash="abc", summary_hash="def", structure_hash="ghi"),
-        )
-        findings = check_sidecar_db_consistency(brain)
+        # save_insight_state writes sidecar + regen_locks row — no orphans
+        findings = check_sidecar_integrity(brain)
         assert len(findings) == 0
 
-    def test_mismatched_hashes_drift(self, brain: Path) -> None:
+    def test_sidecar_no_regen_state_drift(self, brain: Path) -> None:
         kp = "project"
-        save_insight_state(
-            brain,
-            InsightState(knowledge_path=kp, content_hash="abc", summary_hash="def", structure_hash="ghi"),
-        )
-        write_regen_meta(
-            brain / "insights" / kp,
-            RegenMeta(content_hash="WRONG", summary_hash="def", structure_hash="ghi"),
-        )
-        findings = check_sidecar_db_consistency(brain)
-        assert len(findings) == 1
-        assert findings[0].severity == Severity.DRIFT
-        assert "content_hash" in findings[0].message
-
-    def test_sidecar_no_db_row_drift(self, brain: Path) -> None:
-        kp = "project"
+        # Write sidecar directly (no regen_locks row)
         write_regen_meta(
             brain / "insights" / kp,
             RegenMeta(content_hash="abc"),
         )
-        findings = check_sidecar_db_consistency(brain)
+        findings = check_sidecar_integrity(brain)
         assert len(findings) == 1
         assert findings[0].severity == Severity.DRIFT
-        assert "no DB row" in findings[0].message
+        assert "no regen state" in findings[0].message

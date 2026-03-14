@@ -20,28 +20,28 @@ def assert_summary_exists(root: Path, knowledge_path: str) -> str:
 
 
 def assert_db_source(root: Path, canonical_id: str, **expected: object) -> dict:
-    """Query sources table and assert expected column values."""
+    """Query sync_cache table and assert expected column values."""
     conn = sqlite3.connect(str(root / ".sync-state.sqlite"))
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM sources WHERE canonical_id = ?", (canonical_id,)).fetchone()
+    row = conn.execute("SELECT * FROM sync_cache WHERE canonical_id = ?", (canonical_id,)).fetchone()
     conn.close()
-    assert row is not None, f"Source not found: {canonical_id}"
+    assert row is not None, f"Source not found in sync_cache: {canonical_id}"
     d = dict(row)
     for key, val in expected.items():
-        assert d[key] == val, f"sources.{key}: expected {val!r}, got {d[key]!r}"
+        assert d[key] == val, f"sync_cache.{key}: expected {val!r}, got {d[key]!r}"
     return d
 
 
-def assert_db_insight_state(root: Path, knowledge_path: str, **expected: object) -> dict:
-    """Query insight_state table and assert expected column values."""
+def assert_db_regen_lock(root: Path, knowledge_path: str, **expected: object) -> dict:
+    """Query regen_locks table and assert expected column values."""
     conn = sqlite3.connect(str(root / ".sync-state.sqlite"))
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM insight_state WHERE knowledge_path = ?", (knowledge_path,)).fetchone()
+    row = conn.execute("SELECT * FROM regen_locks WHERE knowledge_path = ?", (knowledge_path,)).fetchone()
     conn.close()
-    assert row is not None, f"Insight state not found: {knowledge_path}"
+    assert row is not None, f"Regen lock not found: {knowledge_path}"
     d = dict(row)
     for key, val in expected.items():
-        assert d[key] == val, f"insight_state.{key}: expected {val!r}, got {d[key]!r}"
+        assert d[key] == val, f"regen_locks.{key}: expected {val!r}, got {d[key]!r}"
     return d
 
 
@@ -62,13 +62,13 @@ def assert_no_orphan_insights(root: Path) -> None:
 
 
 def assert_no_duplicate_insights(root: Path) -> None:
-    """No duplicate paths in insight_state table."""
+    """No duplicate paths in regen_locks table."""
     conn = sqlite3.connect(str(root / ".sync-state.sqlite"))
     rows = conn.execute(
-        "SELECT knowledge_path, COUNT(*) c FROM insight_state GROUP BY knowledge_path HAVING c > 1"
+        "SELECT knowledge_path, COUNT(*) c FROM regen_locks GROUP BY knowledge_path HAVING c > 1"
     ).fetchall()
     conn.close()
-    assert not rows, f"Duplicate insight_state entries: {rows}"
+    assert not rows, f"Duplicate regen_locks entries: {rows}"
 
 
 def assert_prompt_contains(capture_dir: Path, substring: str) -> None:
@@ -88,20 +88,27 @@ def assert_prompt_contains(capture_dir: Path, substring: str) -> None:
 
 def _assert_no_duplicate_insight_rows(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
-        "SELECT knowledge_path, COUNT(*) c FROM insight_state GROUP BY knowledge_path HAVING c > 1"
+        "SELECT knowledge_path, COUNT(*) c FROM regen_locks GROUP BY knowledge_path HAVING c > 1"
     ).fetchall()
-    assert not rows, f"Duplicate insight_state rows: {rows}"
+    assert not rows, f"Duplicate regen_locks rows: {rows}"
 
 
 def _assert_db_paths_exist_in_knowledge(conn: sqlite3.Connection, knowledge: Path) -> None:
-    rows = conn.execute("SELECT knowledge_path FROM insight_state").fetchall()
+    rows = conn.execute("SELECT knowledge_path FROM regen_locks").fetchall()
     for (kp,) in rows:
         if not kp:
             continue  # root entry
-        assert (knowledge / kp).exists(), f"insight_state.knowledge_path '{kp}' not found in knowledge/"
+        assert (knowledge / kp).exists(), f"regen_locks.knowledge_path '{kp}' not found in knowledge/"
 
 
 def _assert_summaries_have_db_rows(conn: sqlite3.Connection, insights: Path) -> None:
+    """Every summary must have either a regen_locks row or a sidecar.
+
+    In v21, sidecars are the authority for regen hashes and regen_locks rows
+    are created lazily when regen actually runs.  A moved sidecar (offline
+    folder rename) legitimately exists without a regen_locks row until the
+    next regen cycle.
+    """
     if not insights.exists():
         return
     for summary in insights.rglob("summary.md"):
@@ -113,8 +120,14 @@ def _assert_summaries_have_db_rows(conn: sqlite3.Connection, insights: Path) -> 
         parts = rel.parts if rel.parts else ()
         if any(p.startswith("_") for p in parts):
             continue
-        row = conn.execute("SELECT 1 FROM insight_state WHERE knowledge_path = ?", (rel_str,)).fetchone()
-        assert row is not None, f"insights/{rel_str}/summary.md exists but no insight_state row for '{rel_str}'"
+        row = conn.execute("SELECT 1 FROM regen_locks WHERE knowledge_path = ?", (rel_str,)).fetchone()
+        if row is not None:
+            continue
+        # Accept sidecar-only paths (v21: regen_locks created lazily)
+        sidecar = summary.parent / ".regen-meta.json"
+        assert sidecar.exists(), (
+            f"insights/{rel_str}/summary.md exists but no regen_locks row and no sidecar for '{rel_str}'"
+        )
 
 
 def _assert_no_stale_summaries(knowledge: Path, insights: Path) -> None:
@@ -133,23 +146,17 @@ def _assert_no_stale_summaries(knowledge: Path, insights: Path) -> None:
 
 
 def _assert_no_running_regen_states(conn: sqlite3.Connection) -> None:
-    rows = conn.execute("SELECT knowledge_path FROM insight_state WHERE regen_status = 'running'").fetchall()
+    rows = conn.execute("SELECT knowledge_path FROM regen_locks WHERE regen_status = 'running'").fetchall()
     assert not rows, f"Running regen states after shutdown: {[r[0] for r in rows]}"
 
 
 def _assert_single_regen_owner_per_path(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         "SELECT knowledge_path, COUNT(DISTINCT owner_id) c "
-        "FROM insight_state WHERE owner_id IS NOT NULL "
+        "FROM regen_locks WHERE owner_id IS NOT NULL "
         "GROUP BY knowledge_path HAVING c > 1"
     ).fetchall()
     assert not rows, f"Multiple regen owners for same path: {rows}"
-
-
-def _assert_source_targets_exist(conn: sqlite3.Connection, knowledge: Path) -> None:
-    rows = conn.execute("SELECT canonical_id, target_path FROM sources WHERE target_path != ''").fetchall()
-    for cid, tp in rows:
-        assert (knowledge / tp).exists(), f"Source {cid} target_path '{tp}' not found in knowledge/"
 
 
 def _assert_insight_tree_mirrors_knowledge(knowledge: Path, insights: Path) -> None:
@@ -173,7 +180,7 @@ def _assert_insight_tree_mirrors_knowledge(knowledge: Path, insights: Path) -> N
 
 
 def _assert_db_paths_normalized(conn: sqlite3.Connection) -> None:
-    for table, col in [("insight_state", "knowledge_path"), ("sources", "target_path")]:
+    for table, col in [("regen_locks", "knowledge_path")]:
         rows = conn.execute(f"SELECT [{col}] FROM [{table}]").fetchall()
         for (val,) in rows:
             if val is None:
@@ -184,7 +191,7 @@ def _assert_db_paths_normalized(conn: sqlite3.Connection) -> None:
 
 
 def _assert_knowledge_path_casing(conn: sqlite3.Connection, knowledge: Path) -> None:
-    rows = conn.execute("SELECT knowledge_path FROM insight_state WHERE knowledge_path != ''").fetchall()
+    rows = conn.execute("SELECT knowledge_path FROM regen_locks WHERE knowledge_path != ''").fetchall()
     for (kp,) in rows:
         actual = knowledge / kp
         if not actual.exists():
@@ -220,7 +227,6 @@ def assert_brain_consistent(root: Path) -> None:
         _assert_no_stale_summaries(knowledge, insights)
         _assert_no_running_regen_states(conn)
         _assert_single_regen_owner_per_path(conn)
-        _assert_source_targets_exist(conn, knowledge)
         _assert_insight_tree_mirrors_knowledge(knowledge, insights)
         _assert_db_paths_normalized(conn)
         _assert_knowledge_path_casing(conn, knowledge)

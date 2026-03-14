@@ -125,9 +125,8 @@ class TestUpdateSourceUpdatesManifest:
 
 
 class TestReconcileBootstrapsMigration:
-    def test_bootstraps_manifests_from_db(self, brain: Path):
-        """When DB has sources but no manifests, reconcile exports them."""
-        # Simulate a pre-Phase-2 brain: source in DB with progress, no manifests
+    def test_no_bootstrap_from_sync_cache_in_v21(self, brain: Path):
+        """In v21, sync_cache has no intent — bootstrap from DB produces nothing."""
         from brain_sync.state import SourceState, SyncState, save_state
 
         state = SyncState()
@@ -139,22 +138,19 @@ class TestReconcileBootstrapsMigration:
             last_checked_utc="2026-01-01T00:00:00",
         )
         save_state(brain, state)
-        # Ensure no manifests exist (delete dir if add_source created it)
         import shutil
 
         manifest_dir = brain / ".brain-sync" / "sources"
         if manifest_dir.exists():
             shutil.rmtree(manifest_dir)
+        manifest_dir.mkdir(parents=True)
         assert read_all_source_manifests(brain) == {}
 
         reconcile_sources(brain)
 
+        # v21: sync_cache has no intent fields, bootstrap can't create manifests
         manifests = read_all_source_manifests(brain)
-        assert len(manifests) == 1
-        assert CONFLUENCE_CID in manifests
-        m = manifests[CONFLUENCE_CID]
-        assert m.source_url == CONFLUENCE_URL
-        assert m.source_type == "confluence"
+        assert len(manifests) == 0
 
     def test_does_not_bootstrap_when_manifests_exist(self, brain: Path):
         """If manifests already exist, bootstrap is a no-op."""

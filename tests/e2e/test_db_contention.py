@@ -133,7 +133,7 @@ class TestStaleSessionReclaim:
         # Manually insert a stale running state
         conn = sqlite3.connect(str(brain.db_path))
         conn.execute(
-            "UPDATE insight_state SET regen_status = 'running', "
+            "UPDATE regen_locks SET regen_status = 'running', "
             "regen_started_utc = '2020-01-01T00:00:00+00:00', "
             "owner_id = 'stale-owner' "
             "WHERE knowledge_path = 'area'"
@@ -148,7 +148,7 @@ class TestStaleSessionReclaim:
 
         # Verify no running states remain
         conn = sqlite3.connect(str(brain.db_path))
-        rows = conn.execute("SELECT regen_status FROM insight_state WHERE knowledge_path = 'area'").fetchall()
+        rows = conn.execute("SELECT regen_status FROM regen_locks WHERE knowledge_path = 'area'").fetchall()
         conn.close()
         assert all(r[0] != "running" for r in rows), "Stale running state not reclaimed"
 

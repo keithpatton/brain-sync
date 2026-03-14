@@ -1,4 +1,4 @@
-"""Integration tests for legacy (pre-Phase-2) fallback behavior."""
+"""Integration tests for legacy (pre-Phase-2) fallback and v21 manifest-authoritative behavior."""
 
 from __future__ import annotations
 
@@ -8,8 +8,13 @@ from pathlib import Path
 import pytest
 
 from brain_sync.commands.init import init_brain
-from brain_sync.commands.sources import _bootstrap_manifests_from_db
-from brain_sync.manifest import read_all_source_manifests
+from brain_sync.manifest import (
+    MANIFEST_VERSION,
+    SourceManifest,
+    delete_source_manifest,
+    read_all_source_manifests,
+    write_source_manifest,
+)
 from brain_sync.state import (
     SourceState,
     SyncState,
@@ -31,10 +36,26 @@ def brain(tmp_path: Path) -> Path:
     return root
 
 
+def _make_manifest(cid: str, url: str, tp: str = "") -> SourceManifest:
+    return SourceManifest(
+        manifest_version=MANIFEST_VERSION,
+        canonical_id=cid,
+        source_url=url,
+        source_type="confluence",
+        materialized_path="",
+        fetch_children=False,
+        sync_attachments=False,
+        target_path=tp,
+    )
+
+
 class TestLegacyFallback:
     def test_no_manifest_dir_returns_db_only(self, brain: Path):
-        """No .brain-sync/sources/ → load_state returns DB-only state."""
-        # Remove manifest dir to simulate pre-Phase-2 brain
+        """No .brain-sync/sources/ → load_state returns sync_cache progress-only state.
+
+        In v21, sync_cache has no intent fields, so returned SourceStates have
+        empty source_url/source_type. target_path is manifest-only.
+        """
         manifest_dir = brain / ".brain-sync" / "sources"
         if manifest_dir.is_dir():
             shutil.rmtree(manifest_dir)
@@ -51,11 +72,14 @@ class TestLegacyFallback:
 
         loaded = load_state(brain)
         assert CONFLUENCE_CID in loaded.sources
-        assert loaded.sources[CONFLUENCE_CID].target_path == "area"
+        # v21: sync_cache has no intent fields, so they're empty in DB-only mode
+        assert loaded.sources[CONFLUENCE_CID].source_url == ""
+        assert loaded.sources[CONFLUENCE_CID].last_checked_utc == "2026-03-14T10:00:00"
 
-    def test_bootstrap_then_manifest_authority(self, brain: Path):
-        """After bootstrap, subsequent load_state uses manifest authority."""
-        # Create DB source
+    def test_manifest_authority_with_db_progress(self, brain: Path):
+        """Manifests provide intent, DB provides progress — merged correctly."""
+        write_source_manifest(brain, _make_manifest(CONFLUENCE_CID, CONFLUENCE_URL, "area"))
+
         state = SyncState()
         state.sources[CONFLUENCE_CID] = SourceState(
             canonical_id=CONFLUENCE_CID,
@@ -66,42 +90,35 @@ class TestLegacyFallback:
         )
         save_state(brain, state)
 
-        # Bootstrap creates manifests
-        _bootstrap_manifests_from_db(brain, state)
-
-        manifests = read_all_source_manifests(brain)
-        assert len(manifests) == 1
-        assert CONFLUENCE_CID in manifests
-
-        # Subsequent load_state uses manifest authority
         loaded = load_state(brain)
         assert CONFLUENCE_CID in loaded.sources
+        # Intent from manifest
+        assert loaded.sources[CONFLUENCE_CID].source_url == CONFLUENCE_URL
+        assert loaded.sources[CONFLUENCE_CID].target_path == "area"
+        # Progress from DB
+        assert loaded.sources[CONFLUENCE_CID].last_checked_utc == "2026-03-14T10:00:00"
 
-    def test_after_bootstrap_db_only_sources_excluded(self, brain: Path):
-        """After bootstrap, DB-only sources (no manifest) are excluded."""
-        # Create two DB sources
+    def test_after_manifest_deletion_source_excluded(self, brain: Path):
+        """After manifest deletion, source is excluded from load_state."""
+        write_source_manifest(brain, _make_manifest(CONFLUENCE_CID, CONFLUENCE_URL, "area"))
+        write_source_manifest(
+            brain,
+            _make_manifest(
+                "confluence:99999",
+                "https://example.atlassian.net/wiki/spaces/TEAM/pages/99999",
+                "other",
+            ),
+        )
+
         state = SyncState()
-        state.sources[CONFLUENCE_CID] = SourceState(
-            canonical_id=CONFLUENCE_CID,
-            source_url=CONFLUENCE_URL,
-            source_type="confluence",
-            target_path="area",
-            last_checked_utc="2026-01-01T00:00:00",
-        )
-        state.sources["confluence:99999"] = SourceState(
-            canonical_id="confluence:99999",
-            source_url="https://example.atlassian.net/wiki/spaces/TEAM/pages/99999",
-            source_type="confluence",
-            target_path="other",
-            last_checked_utc="2026-01-01T00:00:00",
-        )
+        for cid in [CONFLUENCE_CID, "confluence:99999"]:
+            state.sources[cid] = SourceState(
+                canonical_id=cid,
+                source_url="",
+                source_type="",
+                last_checked_utc="2026-01-01T00:00:00",
+            )
         save_state(brain, state)
-
-        # Bootstrap only creates manifests for existing DB sources
-        _bootstrap_manifests_from_db(brain, state)
-
-        # Delete one manifest to simulate a source that was removed from manifests
-        from brain_sync.manifest import delete_source_manifest
 
         delete_source_manifest(brain, "confluence:99999")
 
@@ -109,15 +126,13 @@ class TestLegacyFallback:
         assert CONFLUENCE_CID in loaded.sources
         assert "confluence:99999" not in loaded.sources
 
-    def test_empty_manifest_dir_with_db_sources_bootstraps(self, brain: Path):
-        """Empty .brain-sync/sources/ dir + DB rows → load_state bootstraps manifests."""
-        # Remove any existing manifests (init_brain may create the dir)
+    def test_empty_manifest_dir_with_sync_cache_only(self, brain: Path):
+        """Empty manifest dir + sync_cache rows → no bootstrap (v21 has no intent in DB)."""
         manifest_dir = brain / ".brain-sync" / "sources"
         if manifest_dir.is_dir():
             shutil.rmtree(manifest_dir)
         manifest_dir.mkdir(parents=True)
 
-        # Create a DB source with progress
         state = SyncState()
         state.sources[CONFLUENCE_CID] = SourceState(
             canonical_id=CONFLUENCE_CID,
@@ -129,12 +144,9 @@ class TestLegacyFallback:
         )
         save_state(brain, state)
 
-        # load_state should bootstrap and return the source
+        # v21: sync_cache has no intent → bootstrap can't create manifests → no sources
         loaded = load_state(brain)
-        assert CONFLUENCE_CID in loaded.sources
-        assert loaded.sources[CONFLUENCE_CID].target_path == "eng"
-        assert loaded.sources[CONFLUENCE_CID].content_hash == "abc"
+        assert len(loaded.sources) == 0
 
-        # Manifests should now exist
         manifests = read_all_source_manifests(brain)
-        assert CONFLUENCE_CID in manifests
+        assert len(manifests) == 0

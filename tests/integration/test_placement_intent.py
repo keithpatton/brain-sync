@@ -48,39 +48,22 @@ class TestPlacementIntent:
         assert CONFLUENCE_CID in loaded.sources
         assert loaded.sources[CONFLUENCE_CID].target_path == "engineering"
 
-    def test_phase1_manifest_backfill_from_db(self, brain: Path):
-        """Phase 1 manifest without target_path + DB has target_path → backfill."""
-        from brain_sync.state import SourceState, SyncState
-
+    def test_manifest_without_target_path_stays_empty(self, brain: Path):
+        """Manifest without target_path — no DB backfill in v21+ (target_path is manifest-only)."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="engineering")
 
-        # Simulate a DB row with target_path and progress (as if previously synced)
-        state = SyncState()
-        state.sources[CONFLUENCE_CID] = SourceState(
-            canonical_id=CONFLUENCE_CID,
-            source_url=CONFLUENCE_URL,
-            source_type="confluence",
-            target_path="engineering",
-            last_checked_utc="2026-03-14T10:00:00",
-        )
-        save_state(brain, state)
-
-        # Write a v1 manifest without target_path (simulates Phase 1 manifest)
+        # Write a manifest without target_path (simulates Phase 1 manifest)
         m = read_source_manifest(brain, CONFLUENCE_CID)
         assert m is not None
         m.target_path = ""
         m.materialized_path = ""
         write_source_manifest(brain, m)
 
-        # load_state should backfill target_path from DB
+        # v21+: sync_cache has no target_path, so load_state cannot backfill from DB.
+        # target_path stays empty.
         loaded = load_state(brain)
         ss = loaded.sources[CONFLUENCE_CID]
-        assert ss.target_path == "engineering"
-
-        # Manifest should now have target_path backfilled
-        m2 = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m2 is not None
-        assert m2.target_path == "engineering"
+        assert ss.target_path == ""
 
     def test_phase1_manifest_materialized_derives_target(self, brain: Path):
         """Phase 1 manifest with materialized_path but no target_path → derives from parent."""
@@ -123,17 +106,18 @@ class TestPlacementIntent:
         ss.interval_seconds = 1800
         save_state(brain, state)
 
-        # Simulate v1 manifest (no target_path)
+        # In v21, target_path is manifest-only. Clearing it in the manifest means
+        # it stays empty (no DB backfill possible from sync_cache).
         m = read_source_manifest(brain, CONFLUENCE_CID)
         assert m is not None
         m.target_path = ""
         m.materialized_path = ""
         write_source_manifest(brain, m)
 
-        # Load triggers backfill
         loaded = load_state(brain)
         ss2 = loaded.sources[CONFLUENCE_CID]
-        assert ss2.target_path == "engineering"
+        # v21: no DB backfill, target_path stays empty
+        assert ss2.target_path == ""
         # Progress fields unchanged
         assert ss2.last_checked_utc == "2026-03-14T10:00:00"
         assert ss2.next_check_utc == "2026-03-14T10:30:00"
