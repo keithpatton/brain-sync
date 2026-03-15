@@ -1,11 +1,10 @@
 # Architecture
 
-This document is the canonical description of the brain-sync system architecture.
-It defines module structure, responsibilities, known technical debt,
-and the intended hardening direction of the system.
+This document explains the current brain-sync system architecture.
 
-Both human contributors and AI agents should treat this document
-as the authoritative architectural reference for the repository.
+Use it for design intent, module responsibilities, state models, rationale,
+and technical debt. For the normative portable contract, see
+`docs/brain-format/`. Dependency direction rules are defined in `AGENTS.md`.
 
 ---
 
@@ -15,123 +14,140 @@ All source lives under `src/brain_sync/`.
 
 | Group | Modules | Purpose |
 |---|---|---|
-| Entry points | `__main__`, `mcp` | Daemon loop, MCP stdio server |
-| Commands / CLI | `commands/`, `cli/` | User-facing operations (add, add-file, remove, remove-file, list, move, init, doctor) |
-| Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, and write knowledge files |
-| Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind `SourceAdapter` protocol |
-| REST clients | `confluence_rest` | Confluence REST API wrapper (used by adapter + attachments) |
-| LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, Claude CLI transport, deterministic test fake |
-| Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration (leaf → ancestor) |
-| State | `state`, `token_tracking` | SQLite WAL persistence (sync_cache, documents, relationships, regen_locks, token events) |
-| Manifests | `manifest` | Source manifest read/write (`.brain-sync/sources/*.json`) |
-| Sidecars | `sidecar` | Insight regen hash read/write (`insights/**/.regen-meta.json`) |
-| MCP | `mcp` | FastMCP tool interface over stdio |
-| Attachments | `attachments`, `area_index` | Attachment sync lifecycle, area indexing |
+| Entry points | `__main__`, `mcp` | Daemon loop and MCP stdio server |
+| Commands / CLI | `commands/`, `cli/` | User-facing operations and CLI wiring |
+| Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, materialize, and update source content |
+| Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind the adapter protocol |
+| REST clients | `confluence_rest` | Confluence REST API wrapper used by adapters and attachment flows |
+| LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
+| Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration and queueing |
+| State | `state`, `token_tracking` | Runtime DB access, daemon status, and telemetry |
+| Layout helpers | `layout` | Centralized path and version helpers for Brain Format `1.0` |
+| Manifests | `manifest` | Source manifest read/write under `.brain-sync/sources/` |
+| Sidecars | `sidecar` | Per-area insight state read/write under `knowledge/**/.brain-sync/insights/` |
+| Attachments / indexing | `attachments`, `area_index` | Attachment storage and area search indexing |
 | Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
-| Watcher | `watcher` | Filesystem event monitoring, insight folder mirroring |
-| Reconcile | `reconcile` | Startup knowledge-tree reconciliation (orphan cleanup, hash-check, enqueue) |
-
-Dependency direction rules are defined in `CLAUDE.md`.
+| Watcher | `watcher` | Filesystem event monitoring and path-update coordination |
+| Reconcile | `reconcile` | Startup filesystem reconciliation against manifest and regen state |
 
 ---
 
 ## 2. Module Responsibilities
 
-**Utilities** — stateless helpers: path operations, logging setup, retry logic, scheduling. No domain knowledge. `config` is the canonical source for `CONFIG_DIR`, `CONFIG_FILE`, `load_config()`, and `save_config()` — all config access must go through this module.
+**Utilities** are low-level helpers. `config.py` is the canonical source for
+the user-level config directory, config file, runtime DB path, and daemon
+status path.
 
-**Core modules** — domain logic: sync pipeline fetches and converts sources; regen produces insights from knowledge; state persists all sync and regen metadata in SQLite. Journal entries are generated alongside summaries via structured XML output. Journal writing is independent of the summary similarity guard — temporal events are recorded even when the summary abstraction doesn't change. Controlled by `write_journal` config flag.
+**Core modules** implement sync, reconciliation, and regeneration. The sync
+pipeline fetches and materializes source content into `knowledge/`. Regen
+produces derived summaries, journals, and per-area insight state from the
+knowledge tree.
 
-**Interfaces** — MCP server exposes brain operations as tools over stdio; watcher monitors the filesystem and queues regen work.
+**Interfaces** expose the system to users and tools. The CLI commands operate
+on the same core modules as the MCP tools. The watcher provides online change
+detection; reconciliation provides the equivalent correction path for offline
+changes.
 
-**Commands / CLI** — orchestrate core modules into user-facing operations. Commands are the public API consumed by both CLI handlers and MCP tools. Two command families: **sync source management** (`add`/`remove`/`list`/`update`/`move`) for URL-based sources tracked in the database, and **file management** (`add-file`/`remove-file`) for local `.md`/`.txt` files placed directly in knowledge/ with no DB tracking. Includes `commands/placement.py` for document placement suggestions and filename helpers (used by both MCP tools and CLI commands). The `doctor` command is a consistency checker and recovery lever covering both source manifests and regen state — it can detect drift, report what work the daemon would do on next run, and optionally repair fixable issues or rebuild the DB from manifests.
-
-**Entry points** — `__main__` runs the daemon loop; `mcp` runs the FastMCP stdio server. Both wire together commands, scheduling, and interfaces.
+**Entry points** wire everything together. `__main__.py` runs the daemon loop;
+`mcp.py` exposes repository-safe tool access over stdio.
 
 ### Startup Reconcile Lifecycle
 
-When `brain-sync run` starts, it reconciles offline filesystem changes before entering the sync loop:
+When `brain-sync run` starts, it reconciles filesystem truth before entering
+the normal sync loop:
 
+```text
+reconcile_sources()        -> manifest-driven file resolution and missing-source handling
+reconcile_knowledge_tree() -> regen-state cleanup and offline content-change detection
+load_state()               -> manifest-authoritative merge with runtime progress cache
+regen_session()            -> acquire regen ownership
+RegenQueue()               -> enqueue reconciled paths
+watcher.start()            -> begin filesystem monitoring
+sync loop                  -> normal operation
 ```
-reconcile_sources()          → manifest-driven: 3-tier file resolution, two-stage missing, orphan DB pruning
-reconcile_knowledge_tree()   → tree reconcile: orphan cleanup, hash-check tracked folders, scoped enqueue
-load_state()                 → manifest-authoritative merge (manifests + DB progress cache)
-regen_session()              → acquire regen ownership
-RegenQueue()                 → create queue, enqueue reconciled + tree-reconciled paths
-watcher.start()              → begin filesystem monitoring (after reconcile to avoid spurious events)
-sync loop                    → normal operation
-```
 
-**`reconcile_knowledge_tree()`** compares the `knowledge/` folder tree against the `regen_locks` DB table and sidecars:
-1. **Orphan cleanup** — DB rows pointing to non-existent knowledge dirs are deleted, along with their orphan insight directories
-2. **Hash-check tracked folders** — for folders in both DB and FS, recomputes content hash to detect offline file additions/deletions
-3. **Scoped enqueue** — untracked folders are enqueued if they have existing insight directories (Rule 1: moved folder) or if orphans were cleaned (Rule 2: brain state disrupted by offline mutations)
+`reconcile_knowledge_tree()` compares the live `knowledge/` tree with
+per-area insight state and `regen_locks` rows:
 
-**Ownership model:**
+1. prune rows for deleted areas
+2. detect offline content changes for tracked areas
+3. enqueue newly relevant areas when filesystem state implies regen work
+
+Because v23 co-locates managed area state under `knowledge/<area>/.brain-sync/`,
+folder moves carry summaries and attachment directories with them
+automatically. The system repairs manifests and runtime state, but no longer
+maintains a separate top-level insight mirror.
+
+### Ownership Model
 
 | Layer | Owner | Responsibility |
 |---|---|---|
-| `knowledge/` + manifests + `sync_cache` | sync / reconcile / watcher | Source-of-truth document locations |
-| `insights/` + sidecars + `regen_locks` | regen | Derived artifacts from knowledge |
+| `knowledge/` plus source manifests plus `sync_cache` | sync / reconcile / watcher | Source-of-truth document locations and durable registration intent |
+| `knowledge/**/.brain-sync/insights` plus journals plus per-area attachments plus `regen_locks` | regen | Derived meaning and regen coordination |
+| `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
-Reconcile is a manifest-driven state-repair operation. It iterates all manifests (including missing-status), uses 3-tier file resolution (materialized_path → identity header → prefix glob), implements two-stage missing protocol, and prunes orphan DB rows. `load_state()` merges manifest intent with DB sync progress — manifests are authoritative for registration, the DB is a disposable cache. Missing-status sources are excluded from runtime state (not schedulable). Regen detects path changes on its next run and rebuilds insights at the correct locations.
+The filesystem remains authoritative. Runtime state is disposable and must be
+rebuildable from manifests and per-area insight state.
 
 ### Attachment Storage
 
-Attachments (binary files downloaded alongside a synced source) are stored at area level under `_attachments/{page_id}/`. The `_attachments` directory is reserved — it is excluded from content discovery, regen, and watching (listed in `EXCLUDED_DIRS` alongside `_core`).
+Attachments are stored inside each area's managed subtree:
 
-```
+```text
 knowledge/area/
-  _attachments/
-    c12345/                    ← keyed by canonical prefix (stable, collision-safe)
-      a67890-diagram.png
-  c12345-gap-analysis.md
+  c12345-page.md
+  .brain-sync/
+    attachments/
+      c12345/
+        a67890-diagram.png
 ```
 
-Path computation is centralised in `attachments.attachment_local_path()` — used by sync, remove, move, and inline `attachment-ref:` resolution.
-
-Inline images from Google Docs are discovered via `DiscoveredImage` (in `sources/base.py`) and processed by the source-agnostic `attachments.process_inline_images()`. The adapter populates `SourceFetchResult.inline_images` during fetch; the pipeline gates download behind `sync_attachments=True`. Canonical IDs use the format `gdoc-image:{docId}:{objectId}` to avoid cross-document collision. In markdown, images are referenced as `attachment-ref:{canonicalId}` and resolved by the same regex as Confluence attachment refs.
+This per-source directory isolation is the key v23 simplification. Attachments
+move with their area, and removing a source's attachments is a simple
+directory cleanup rather than a relationship-tracking exercise.
 
 ### Architectural Principles
 
-**Import purity** — Modules may define behavior at import time, but must not resolve environment-dependent runtime state at import time. Filesystem access, config resolution, and index construction must be deferred to explicit startup/lifespan hooks.
+**Import purity**: modules may define constants and helpers at import time, but
+must not resolve environment-dependent runtime state during import.
 
-**MCP runtime ownership** — `BrainRuntime` is the single owner of MCP process state (root path, area index, concurrency locks). Module-level variables in `mcp.py` must remain pure definitions (constants, helper functions, tool registrations). Any variable whose value depends on filesystem state, configuration, or runtime execution must live in `BrainRuntime`. Future contributors adding new runtime state (connections, caches, locks) must add it to `BrainRuntime`, not as a new module global.
+**Single managed namespace**: `.brain-sync/` is the only reserved managed
+namespace. Code that walks the knowledge tree must consistently exclude it from
+readable-content discovery and hashing.
+
+**Manifest-authoritative registration**: manifests are the durable record of
+what sources exist; runtime tables only cache progress and coordination.
+
+**Co-located managed state**: area summaries, insight state, journals, and
+attachments live with the area they describe. That removes the old mirror-tree
+coupling.
 
 ### LLM Backend Abstraction
 
-All LLM invocations go through `LlmBackend.invoke()` (protocol in `llm/base.py`). Two implementations:
+All LLM invocations go through `LlmBackend.invoke()` in `llm/base.py`.
 
-- **`ClaudeCliBackend`** (`llm/claude_cli.py`) — Production backend. Spawns `claude --print` subprocess, parses NDJSON stream output, handles timeouts.
-- **`FakeBackend`** (`llm/fake.py`) — Test backend. Deterministic output from prompt hash. Modes: `stable`, `rewrite`, `fail`, `timeout`, `malformed`, `partial-stream`, `large-output`.
+- `ClaudeCliBackend` is the production backend.
+- `FakeBackend` is the deterministic test backend.
 
-Backend resolution: `get_backend()` checks `BRAIN_SYNC_LLM_BACKEND` env var (`fake` → `FakeBackend`, default → `ClaudeCliBackend`). Backend is resolved once at regen entry points (`regen_path`, `regen_all`) and threaded through the call chain as a `backend` parameter. No function below the entry point calls `get_backend()`.
-
-For backward compatibility, `regen_single_folder` defaults to `_InvokeClaudeShim` when no backend is passed, routing through `invoke_claude()` so existing test patches continue to work. New tests should pass `FakeBackend` directly.
-
-Telemetry recording (`_record_telemetry`) wraps `backend.invoke()` results — it is not part of the backend protocol.
-
-Prompt capture: when `BRAIN_SYNC_CAPTURE_PROMPTS` env var is set to a directory path, both backends write each prompt to `{dir}/{timestamp}_{hash}.prompt.txt`.
+Backend resolution happens at regen entry points and is then threaded through
+the call chain. Telemetry is recorded alongside backend results but is not part
+of the backend protocol itself.
 
 ### Source Adapter Pattern
 
-The sync pipeline uses a `SourceAdapter` protocol (`sources/base.py`) to abstract per-source fetch logic. Each source type (Confluence, Google Docs) implements the protocol as a package under `sources/`.
+The sync pipeline is source-type-agnostic. Source-specific behavior lives under
+`src/brain_sync/sources/<type>/`.
 
-```
-sources/base.py        — SourceAdapter protocol, AuthProvider protocol, shared dataclasses
-sources/registry.py    — Lazy dict registry: get_adapter(SourceType) → SourceAdapter
-sources/confluence/    — ConfluenceAdapter (wraps confluence_rest.py)
-sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent, HTML export)
-```
+Key abstractions:
 
-**Key abstractions:**
-- `SourceCapabilities` — declares what a source supports (version check, comments, attachments, children)
-- `UpdateCheckResult` — cheap pre-fetch check; `adapter_state` passes opaque data to `fetch()` to avoid duplicate API calls
-- `SourceFetchResult` — full fetch result with markdown, comments, title, optional source HTML, inline images, and download headers
-- `AuthProvider` — per-source auth (Confluence: config/env credentials; Google Docs: native OAuth2 via browser consent)
+- `SourceAdapter`
+- `SourceCapabilities`
+- `UpdateCheckResult`
+- `SourceFetchResult`
+- `AuthProvider`
 
-**Pipeline orchestration:** `pipeline.process_source()` is source-agnostic. It calls `get_adapter()`, gates behaviour on `capabilities`, and delegates fetch/check to the adapter. Attachment sync is gated by `supports_attachments`; child discovery by `supports_children`.
-
-**Registry:** Lazy instantiation with no startup wiring. Adapters are created on first access and cached. `reset_registry()` available for testing.
+This lets shared modules materialize, place, reconcile, and remove sources
+without branching on provider-specific behavior.
 
 ---
 
@@ -139,131 +155,131 @@ sources/googledocs/    — GoogleDocsAdapter (native OAuth2 via browser consent,
 
 ### Authority Hierarchy
 
-The system uses a tiered authority model where filesystem artifacts are authoritative for intent and portable state, while SQLite serves as a disposable performance cache.
+The system uses a tiered authority model:
 
-| State Class | Authoritative Location | Portable | Rebuildable |
+| State class | Authoritative location | Portable | Rebuildable |
 |---|---|---|---|
-| Source registration (intent) | `.brain-sync/sources/*.json` manifests | Yes (git) | From DB (migration only) |
-| Source sync progress | `sync_cache` DB table | No | Loss triggers re-sync; `sync_hint` in manifests seeds timing |
-| Insight hashes | `insights/**/.regen-meta.json` sidecars | Yes (git) | Written on every regen |
-| Regen lifecycle | `regen_locks` DB table | No | Reset to idle on startup |
-| Document metadata | `documents` DB table | No | Re-discovered on sync |
-| Relationships | `relationships` DB table | No | Re-discovered on sync |
-| Token telemetry | `token_events` DB table | No | Historical loss accepted |
+| Source registration intent | `.brain-sync/sources/*.json` | Yes | No |
+| Source sync freshness hint | manifest `sync_hint` plus `sync_cache` | Hint yes, DB no | Yes |
+| Insight hashes | `knowledge/**/.brain-sync/insights/insight-state.json` | Yes | Yes |
+| Regen lifecycle | `regen_locks` | No | Yes |
+| Token telemetry | `token_events` | No | Loss accepted |
+| Runtime DB schema marker | `meta` | No | Yes |
+
+Portable state lives in the brain root. Runtime state lives under the user
+config directory and may be deleted without invalidating the brain.
 
 ### Managed-File Identity
 
-Synced files carry an embedded identity header that binds them to their source registration:
+Materialized synced documents carry YAML frontmatter identity:
 
-```markdown
-<!-- brain-sync-source: confluence:123456 -->
-<!-- brain-sync-managed: local edits may be overwritten -->
+```yaml
+---
+brain_sync_source: confluence
+brain_sync_canonical_id: confluence:123456
+brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/ENG/pages/123456
+---
 ```
 
-The `brain-sync-source` line is the primary identity binding — reconciliation reads this to map files to manifests without relying on filename conventions. The `brain-sync-managed` line is a human-readable warning.
+Reconciliation uses a three-tier resolution chain:
 
-Identity resolution chain (ordered by priority):
-1. **Manifest `materialized_path`** — direct file path from `.brain-sync/sources/*.json`
-2. **Embedded identity header** — `<!-- brain-sync-source: {canonical_id} -->` scan
-3. **Canonical prefix fallback** — filename prefix match (e.g., `c12345-`) for legacy/migration
+1. manifest `materialized_path`
+2. frontmatter identity scan
+3. canonical-prefix filename fallback
+
+Readers may still tolerate legacy HTML comment markers as a fallback, but new
+writes use YAML frontmatter only.
 
 ### Source Manifests
 
-Each registered source has a JSON manifest at `.brain-sync/sources/{canonical_id_safe}.json`:
+Each synced source has a manifest at `.brain-sync/sources/<source_dir_id>.json`.
 
-```json
-{
-  "manifest_version": 1,
-  "canonical_id": "confluence:123456",
-  "source_url": "https://acme.atlassian.net/wiki/spaces/ENG/pages/123456",
-  "source_type": "confluence",
-  "materialized_path": "engineering/architecture/c123456-some-page.md",
-  "target_path": "engineering/architecture",
-  "fetch_children": false,
-  "sync_attachments": true,
-  "child_path": null,
-  "status": "active",
-  "sync_hint": {
-    "content_hash": "abc123...",
-    "last_synced_utc": "2026-03-14T10:00:00+00:00"
-  }
-}
-```
+v23 durable fields:
 
-`target_path` preserves placement intent independently of `materialized_path`. When the DB is deleted, `target_path` ensures the first sync writes to the correct area. `materialized_path` is the relative file path within `knowledge/`; `target_path` is the containing directory. `target_path == ""` means knowledge root. `materialized_path == ""` means the source has not yet been synced to a file (unmaterialized).
+- `version`
+- `canonical_id`
+- `source_url`
+- `source_type`
+- `materialized_path`
+- `target_path`
+- `sync_attachments`
+- `status`
+- optional `missing_since_utc`
+- optional `sync_hint`
 
-### Brain Control Plane Directory
+Operational one-shot flags such as `fetch_children` and `child_path` are no
+longer part of the durable manifest contract.
 
-```
+### Brain Control Plane
+
+The portable brain root contains:
+
+```text
 {brain_root}/
-├── .brain-sync/
-│   ├── version.json           # {"manifest_version": 1}
-│   └── sources/               # one manifest per registered source
-│       └── confluence-123456.json
-├── .sync-state.sqlite         # disposable cache (gitignored)
-├── knowledge/
-└── insights/
+  .brain-sync/
+    brain.json
+    sources/
+  knowledge/
 ```
 
-### Architectural Invariants (Source Authority)
+The runtime DB and daemon status are intentionally outside the brain root:
 
-1. **Identity invariant** — A synced source is identified by its canonical ID, not by its filesystem path.
-2. **Move invariant** — Moving a synced file relocates the materialization. No content is re-fetched.
-3. **Delete invariant** — Deleting a synced file triggers two-stage deregistration via manifests (first reconcile marks missing, second reconcile deletes).
-4. **Edit invariant** — Edits to synced files are overwritten by the next upstream sync.
-5. **No auto-registration** — Files with identity headers but no manifest are ignored.
-6. **No DB resurrection** — DB state must never recreate deleted filesystem content. UNCHANGED + missing file → skip.
-7. **Manifest-first writes** — Commands write manifests before DB to ensure crash recovery favours disk truth.
+```text
+~/.brain-sync/
+  config.json
+  daemon.json
+  db/brain-sync.sqlite
+```
+
+That separation is what keeps the brain root fully portable and safe to commit.
 
 ### DB Table Justifications
 
-Every remaining DB table must justify its existence. If deleted, the consequence column describes what happens on next startup.
+v23 runtime DB tables:
 
-| Table | Performance/Operational Problem Solved | If Deleted |
+| Table | Purpose | If deleted |
 |---|---|---|
-| `sync_cache` | Caches sync progress (last_checked, content_hash, intervals) to avoid re-fetching; `load_state()` merges manifest intent + DB progress | Rebuilt from `.brain-sync/sources/*.json` manifests; `_seed_from_hint()` seeds timing from `sync_hint` so matching sources skip re-fetch; orphan DB rows (no manifest) are pruned during reconcile |
-| `regen_locks` | Regen lifecycle ownership (session ID, status) for crash recovery and concurrent access | Reset to idle on startup; no data loss |
-| `documents` | Caches discovered page/attachment metadata to avoid redundant API calls during child/attachment discovery | Re-discovered on next sync cycle; no data loss, slight increase in API calls |
-| `relationships` | Caches parent-child links between sources/documents for orphan cleanup and child discovery deduplication | Rebuilt from next fetch results; orphan detection delayed until rebuild completes |
-| `token_events` | Append-only LLM cost telemetry for usage dashboards and budget monitoring | Historical telemetry lost; new events recorded normally; no operational impact |
-| `daemon_status` | Single-row runtime state for `brain-sync status` CLI; detects stale daemon PIDs | Recreated on next daemon start; `status` command shows "unknown" until daemon writes |
-| `meta` | Stores schema version for migration gating | DB recreated from scratch at current schema version; no migration needed |
+| `meta` | Runtime schema marker | Recreated |
+| `sync_cache` | Polling schedule and sync progress cache | Rebuilt from manifests and sync hints |
+| `regen_locks` | Cross-process regen coordination | Reset to idle |
+| `token_events` | Local telemetry history | History lost only |
 
 ### Startup Tree Walk
 
-The startup reconciliation walk (reading manifests, scanning knowledge/ for moved files, reading sidecars) is a **correctness operation**, not cache warming. Its purpose is to detect offline filesystem changes (moves, deletes, additions) and bring the DB cache into agreement with disk truth. Skipping or short-circuiting this walk risks the DB containing stale paths, ghost sources, or missing hashes — all of which produce incorrect sync and regen behaviour.
+The startup reconciliation walk is a correctness path, not cache warming. Its
+job is to bring runtime state back into agreement with filesystem truth after
+offline changes.
 
 ---
 
 ## 3. Known Technical Debt
 
-**Watcher edge cases** — Windows symlink handling and rapid sequential move events are not fully robust.
+**Watcher edge cases**: Windows symlink handling and rapid sequential move
+events still need hardening.
 
-**Regen complexity** — `regen.py` is the largest module with many private helpers; candidates for extraction exist.
+**Regen complexity**: `regen.py` remains one of the largest modules and is a
+candidate for further decomposition.
 
-**AreaIndex staleness model** — `AreaIndex.is_stale()` only checks `insights/**/summary.md` mtimes, but the index depends on more: knowledge file presence, directory structure, children changes. The index can be stale without `is_stale()` detecting it. This is a performance hint, not an authoritative freshness contract. Next MCP correctness debt item.
+**AreaIndex staleness model**: `AreaIndex.is_stale()` is still a best-effort
+performance hint rather than a full correctness proof.
 
 ### Derived State Inventory
 
-| View | Source of Truth | Owner | Refresh Trigger | Correctness Role |
+| View | Source of truth | Owner | Refresh trigger | Correctness role |
 |---|---|---|---|---|
-| Global context cache | `knowledge/_core/`, `schemas/`, `insights/_core/` files | `regen.py` | `invalidate_global_context_cache()` — called by watcher on `_core/` changes and by daemon on `_core/` sync | Correctness-critical (stale cache → regen uses wrong context) |
-| AreaIndex | `insights/**/summary.md` + `knowledge/` structure | `BrainRuntime` (MCP) | `is_stale()` mtime check before each query | Performance-only (stale index → search misses, not data corruption) |
+| Global context cache | `knowledge/_core/` | `regen.py` | invalidated on `_core` changes | Correctness-critical |
+| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `BrainRuntime` | staleness check before queries | Performance-only |
 
 ### Resolved (2026-03)
 
-- **Config duplication** — all config constants and I/O centralised in `config.py`; consumers import from there (Phase B)
-- **Dependency direction violations** — `regen.py` no longer imports from `commands.context` (Phase B/C)
-- **Dead v1 manifest system** — `manifest.py` and related test code removed; v2 uses SQLite state exclusively (Phase E)
-- **Silent exception swallowing** — retry, pipeline, regen, and MCP modules now log at debug level instead of silently passing (Phase G)
-- **Atomic file writes** — `fileops.atomic_write_bytes` uses `os.fsync()` and directory fsync for crash safety (Phase A)
-- **Thread-safe config** — `config.py` uses `threading.Lock` for concurrent access from watcher thread (Phase A/B)
-- **Module-level side effects in `mcp.py`** — `resolve_root()` and `AreaIndex.build()` moved from import-time to server lifespan via `BrainRuntime` dataclass
-- **AreaIndex in entry point** — `AreaIndex` and `AreaIndexEntry` extracted from `mcp.py` (entry point) to `area_index.py` (core layer) so command modules can use the index without importing from an entry point
-- **State persistence coupling** — `state._connect` no longer imported by command modules; replaced with public API (`delete_source`, `update_source_flags`, `ensure_db`, `update_source_target_path`)
-- **Cache invalidation race** — `process_source()` in daemon loop now invalidates global context cache when `_core/` sources change, closing the race between sync writes and regen reads
-- **Dead alias** — `_find_all_content_paths` alias removed from `regen.py`; callers use `find_all_content_paths` from `fs_utils` directly
-- **LLM coupling** — `invoke_claude()` subprocess logic extracted to `llm/claude_cli.py` behind `LlmBackend` protocol; deterministic `FakeBackend` enables integration tests without subprocess overhead
+- Config and runtime-path helpers are centralized in `config.py` and `layout.py`.
+- `regen.py` no longer imports from command-layer modules.
+- Manifests are the authoritative durable registration layer in v23.
+- Atomic file writes use fsync-based crash-safe behavior.
+- `mcp.py` runtime state moved out of import-time globals.
+- `AreaIndex` was extracted from the entrypoint layer into `area_index.py`.
+- Public state APIs replaced several direct command-layer uses of private DB helpers.
+- Deterministic `FakeBackend` support reduced subprocess overhead in tests.
 
 ---
 
@@ -273,57 +289,26 @@ The startup reconciliation walk (reading manifests, scanning knowledge/ for move
 
 | System | Location | Purpose | Lifetime |
 |---|---|---|---|
-| Content state | `insights/**/.regen-meta.json` sidecars | Content/summary/structure hashes | Per-resource, updated each regen |
-| Concurrency lock | `regen_locks` DB table | Regen ownership for crash recovery | Transient, cleared on completion |
-| Invocation telemetry | `token_events` DB table | Append-only LLM cost accounting | Retained for configurable period (default 90 days) |
+| Content state | `knowledge/**/.brain-sync/insights/insight-state.json` | Content, structure, and summary hashes | Durable |
+| Concurrency lock | `regen_locks` | Regen ownership and recovery | Transient |
+| Invocation telemetry | `token_events` | Append-only LLM accounting | Local history |
 
-`token_events` is a cross-cutting telemetry store for all LLM workflows — regen, query, classify, and any future agent operations. Token usage is recorded exclusively here. Content hashes live in sidecars (filesystem-authoritative); `regen_locks` holds only lifecycle coordination fields.
+`session_id` groups related regen calls for usage analysis. `owner_id` is the
+cross-process lock identity. They serve different purposes even when their
+lifetimes often align.
 
-### Identity Model
-
-`session_id` and `owner_id` are generated independently in `regen_lifecycle.py`. `session_id` groups all LLM invocations within one regen session for cost aggregation. `owner_id` manages concurrent regen slot ownership. Their lifetimes currently align but they serve different purposes.
-
-### Resource Abstraction
-
-`token_events` uses `resource_type`/`resource_id` to remain workflow-agnostic:
-
-| Workflow | resource_type | resource_id |
-|---|---|---|
-| Regen (chunk or final) | `"knowledge"` | knowledge path |
-| Future query | `"query"` | query identifier |
-| Future classify | `"document"` | document ID |
-
-### Timing
-
-`duration_ms` measures provider invocation time for a single attempt. Retry backoff delays are excluded — each retry attempt gets its own `token_events` row with its own `duration_ms`.
-
-### Retention
-
-Old `token_events` rows are pruned on daemon startup. Default retention: 90 days. Configurable via `token_events.retention_days` in `~/.brain-sync/config.json`:
-
-```json
-{ "token_events": { "retention_days": 90 } }
-```
-
-### Extension Model
-
-New LLM workflows should:
-1. Use operation type constants from `token_tracking.py` (`OP_REGEN`, `OP_QUERY`, `OP_CLASSIFY`)
-2. Resolve a backend via `get_backend()` and call `backend.invoke()`, then record telemetry via `_record_telemetry()`
-3. Query via MCP `brain_sync_usage` tool or CLI `brain-sync status`
+Telemetry is workflow-agnostic via `resource_type` and `resource_id`.
 
 ---
 
 ## 4. Hardening Roadmap
 
-Planned architecture evolution, in order:
+Planned future work:
 
-1. **AreaIndex staleness model** — make `is_stale()` aware of knowledge file presence and directory structure changes
-2. **Regen modularisation** — extract private helpers from `regen.py` into focused sub-modules
-3. **Watcher robustness** — harden filesystem event handling for platform edge cases
-4. **Exception narrowing** — replace broad `except Exception` handlers with specific exception types
-
-This roadmap is informational and guides future refactors.
+1. improve `AreaIndex` staleness detection
+2. split `regen.py` into smaller focused modules
+3. harden watcher event handling further
+4. narrow broad exception handling where safe
 
 ---
 
@@ -334,24 +319,24 @@ This roadmap is informational and guides future refactors.
 | Symbol | Consumer | Notes |
 |---|---|---|
 | `scheduler._scheduled_keys` | `__main__.py` | Attribute access, not import |
-| `commands.context._require_root` | `commands/sources.py` | Intra-package (both in `commands/`) |
-| `confluence_rest._request` | `sources/confluence/comments.py` | Reuses REST client retry logic |
+| `commands.context._require_root` | `commands/sources.py` | Intra-package use |
+| `confluence_rest._request` | `sources/confluence/comments.py` | Reuses retry behavior |
 
-### Test code (acceptable)
+### Test code
 
 | Symbol(s) | Consumer |
 |---|---|
-| `state._connect` | `test_commands`, `test_regen_queue`, `test_watcher_moves` |
-| `regen._preprocess_content`, `_split_markdown_chunks`, `_build_chunk_prompt`, `_first_heading`, `_REGEN_INSTRUCTIONS`, `_parse_structured_output`, `_write_journal_entry` | `test_regen` |
+| `state._connect` | Selected unit tests |
+| selected private `regen.py` helpers | `tests/unit/test_regen.py` |
 
-Tests may access private helpers for direct validation.
-Production modules should avoid this coupling — each entry above is a candidate for future refactoring.
+Tests may validate private helpers directly. Production code should avoid
+growing new cross-module private coupling.
 
 ---
 
 ## 6. Maintenance
 
-This document should remain concise and focused on architectural structure.
-It must not contain task plans or temporary refactoring instructions.
+This document should remain concise and explanatory.
 
-Agents must update this document whenever a change modifies module responsibilities, dependency direction, architectural phases, or structural constraints.
+It should be updated whenever module responsibilities, authority models,
+dependency direction, or major structural constraints change.

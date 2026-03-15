@@ -1,13 +1,27 @@
 # brain-sync
 
-A brain engine that syncs external knowledge sources, watches for changes, and maintains AI-generated insight summaries. Point it at a root folder and it handles: folder structure setup, source syncing, file watching, and autonomous insight regeneration via Claude.
+brain-sync syncs external knowledge sources into a filesystem-based brain and
+maintains AI-generated summaries for each knowledge area.
 
-## Getting started
+It gives you:
+
+- a portable brain rooted in normal files and folders
+- source sync into `knowledge/`
+- automatic reconciliation of online and offline changes
+- co-located summaries, journals, and attachments under `.brain-sync/`
+- an MCP server for chat-based access and management
+
+For the normative on-disk contract, see `docs/brain-format/`.
+
+## Getting Started
 
 ### Prerequisites
 
-- **Python 3.11+**
-- **Claude CLI** — required for insight regeneration. Install and authenticate [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+- Python `3.11+`
+- Claude CLI for regeneration
+
+Install and authenticate Claude Code first:
+[Anthropic Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
 
 ### Install
 
@@ -15,29 +29,31 @@ A brain engine that syncs external knowledge sources, watches for changes, and m
 pip install -e .
 ```
 
-For Google Docs syncing, include the `google` extra:
+For Google Docs syncing:
 
 ```bash
 pip install -e ".[google]"
 ```
 
-### Initialise a brain
+### Initialize a Brain
 
 ```bash
 brain-sync init ~/my-brain
 ```
 
-This creates the folder structure, initialises the SQLite state database, and installs the Claude Code skill to `~/.claude/skills/brain-sync/`.
+This creates the baseline brain structure:
 
-Recommended: make your brain a private git repository, nobody wants to lose their mind 🤯
+- `.brain-sync/brain.json`
+- `.brain-sync/sources/`
+- `knowledge/`
+- `knowledge/_core/`
 
-### Configure sources
+It also installs the Claude skill to `~/.claude/skills/brain-sync/` and
+registers the brain in `~/.brain-sync/config.json`.
 
-After initialising, configure credentials for each source type you want to sync from.
+### Configure Sources
 
 #### Confluence
-
-Create an API token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens), then:
 
 ```bash
 brain-sync config confluence \
@@ -46,508 +62,278 @@ brain-sync config confluence \
   --token your-api-token
 ```
 
-This writes credentials to `~/.brain-sync/config.json`. Alternatively, set environment variables: `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN`.
+Credentials are stored in `~/.brain-sync/config.json`. You can also use
+`CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, and `CONFLUENCE_TOKEN`.
 
 #### Google Docs
-
-Requires the `google` extra (`pip install -e ".[google]"`). Then authenticate:
 
 ```bash
 brain-sync config google
 ```
 
-This opens a browser for consent. The token is cached in `~/.brain-sync/config.json`.
-To re-authenticate: `brain-sync config google --reauth`
+This opens a browser for OAuth consent and stores the token in
+`~/.brain-sync/config.json`.
 
-### Start the daemon
+### Start the Daemon
 
 ```bash
 brain-sync run --root ~/my-brain
 ```
 
-The daemon syncs sources, watches `knowledge/` for changes, and enqueues insight regeneration when content changes.
+The daemon reconciles offline changes, syncs sources, watches `knowledge/`,
+and regenerates summaries as needed.
 
-### Add a source
-
-#### CLI
+### Add a Source
 
 ```bash
-# Confluence page (with context discovery)
 brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
   --path initiatives/my-project \
-  --fetch-children --sync-attachments
+  --fetch-children \
+  --sync-attachments
 
-# Google Doc
-brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area/
+brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area
 ```
 
-`--path` is optional. If omitted, brain-sync will analyse your brain structure and suggest a placement based on existing folders and context.
+`--path` is optional. If omitted, brain-sync can suggest placement based on
+your existing tree.
 
-Comments are synced for Confluence; Google Docs comments are not yet supported.
+`--fetch-children` and `--sync-attachments` are execution-time sync options.
 
-`--fetch-children` and `--sync-attachments` are Confluence-only.
-
-#### Via chat
-
-Just paste one or more links into the conversation and ask to add them to your brain. You can mention options naturally — e.g. "add this page and fetch its children" or "sync attachments too". Claude will call the right MCP tools on your behalf.
-
-In Claude Desktop you can also attach a local document (drag-and-drop or the **+** button) and ask to add it to your brain.
-
-### Talk to your brain
-
-#### Claude Code
-
-1. **Register the MCP server** (one-time, across all projects):
-
-   ```bash
-   claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
-   ```
-
-   Alternatively, the project includes `.mcp.json` at the repo root which Claude Code picks up automatically when working in this repo.
-
-2. **Restart Claude Code.** Invoke with `/brain-sync` or mention "brain" in conversation.
-
-**Examples — managing sources:**
-
-> "Add https://acme.atlassian.net/wiki/spaces/ENG/pages/123456 to my brain in initiatives/platform — fetch children and sync attachments"
-
-> "Remove the Platform ERD page from my brain"
-
-> "Update the product roadmap doc to sync attachments too"
-
-**Examples — querying and analysis:**
-
-> "What do my brain's insights say has changed across my initiatives in the last month?"
-
-> "Looking across the board meeting notes and company performance docs in my brain, based on my role what should I be focusing on for my upcoming presentation?"
-
-> "Prepare me for tomorrow's architecture review — pull together everything relevant from the Platform AAA area"
-
-> "What gaps exist in the Project X documentation? What's been discussed but never written down?"
-
-**Examples — brain-augmented development:**
-
-> "Compare the source code in src/ against the architectural standards and ERD in my brain — produce a compliance report with specific violations"
-
-> "Based on the API contract docs in my brain, generate integration tests for the traveller profile service"
-
-> "Review this diff against the coding guidelines and ADRs in my brain before I open a PR"
-
-> "The deployment runbook in my brain is out of date — read the current Terraform configs and update the runbook to match"
-
-#### Claude Desktop
-
-1. **Install the skill:** Customize > Skills > **+** > Upload a skill, then select `src/brain_sync/skills/brain_sync/SKILL.md` from the brain-sync repo.
-
-2. **Register the MCP server:** Settings > Developer > Edit Config, and add:
-
-   ```json
-   {
-     "mcpServers": {
-       "brain-sync": {
-         "command": "python",
-         "args": ["-m", "brain_sync.mcp"]
-       }
-     }
-   }
-   ```
-
-3. **Restart Claude Desktop.** Mention "brain" in conversation or paste URLs to sync.
-
-Claude Desktop adds project context and conversational memory on top of brain-sync, making interactions highly personalised. It also has the best UX for managing sources — paste URLs, attach files, or just describe what you want in natural language.
-
-**Examples — managing sources:**
-
-> "Add this to my brain in initiatives/platform" *(paste one or more URLs — brain-sync handles them together)*
-
-> "Sync this Google Doc and its attachments into the product area"
-
-> "Here are the five planning docs for Q3 — add them all under initiatives/q3-planning" *(attach multiple files at once)*
-
-**Examples — adding local files (Claude Desktop only):**
-
-Attach a `.md` or `.txt` file via the **+** button or drag-and-drop, then ask Claude to add it to your brain. Claude will suggest where to place it based on your existing folder structure.
-
-> [Attach meeting-notes.md] "Add this to my brain — suggest where it should go"
-
-> [Attach notes.txt] "Put this in initiatives/platform"
-
-Supported file types for local add: `.md`, `.txt`. Other formats (`.docx`, `.pdf`, images) are not currently supported — use `brain-sync convert` to produce markdown first. Images are synced automatically as attachments from Confluence and Google Docs sources.
-
-**Examples — conversational analysis:**
-
-> "Looking across last half year's board meeting notes and the company performance docs, based on my role what should I be focusing on for my presentation?"
-
-> "Summarise everything my brain knows about Project X — what's the current state, what are the risks, and what decisions are pending?"
-
-> "I just came out of a meeting where they mentioned the 'Observer Pattern migration' — what does my brain know about that? Give me the full picture."
-
-> "Compare the Q2 and Q3 planning docs in my brain — what commitments shifted and what's new?"
-
-> "Based on everything in my brain about the platform team, draft a stakeholder update email covering the last two weeks"
-
-## Updating brain-sync
-
-brain-sync is currently installed from source. To update to the latest version:
-
-### 1. Stop brain-sync
-
-### 2. Pull the latest code
-
-### 3. Update the skill
+### Add a Local File
 
 ```bash
-brain-sync update-skill
+brain-sync add-file ./notes.md --path area
 ```
 
-This re-deploys `SKILL.md` to `~/.claude/skills/brain-sync/`. Safe to run every time.
+Supported direct file imports: `.md`, `.txt`
 
-**Claude Desktop:** The skill must also be re-imported manually — Customize > Skills > **+** > Upload a skill, then select `SKILL.md` from `~/.claude/skills/brain-sync/`.
+For `.docx`, use `brain-sync convert` first.
 
-### 4. Restart MCP clients
-
-Each MCP client (Claude Code, Claude Desktop) spawns its own brain-sync MCP server subprocess. After a code update, these processes run stale code until the client restarts them.
-
-- **Claude Code:** Restart the editor, or run `claude mcp restart brain-sync`
-- **Claude Desktop:** Fully quit and relaunch the app (closing the window is not enough — use system tray > Quit, or kill the process). Re-import the skill if it changed in step 3.
-
-### 5. Start brain-sync
-
-```bash
-brain-sync run
-```
-
-The daemon reconciles any offline changes, syncs sources, and runs insight regeneration as needed.
-
-## Folder structure
+## Folder Structure
 
 ### After `brain-sync init`
 
-```
-my-brain/                               ← you choose the name
-  .sync-state.sqlite                    ← managed by brain-sync
-  knowledge/                            ← your content goes here
-    _core/                              ← global context you maintain
-  insights/                             ← agent-generated, don't edit
-    _core/
-  schemas/                              ← managed by brain-sync
-    insights/
-      summary.md
-```
-
-Init also installs the Claude Code skill to `~/.claude/skills/brain-sync/` and registers the brain in `~/.brain-sync/config.json`.
-
-### In practice — human, synced, and generated content
-
-```
-acme-brain/
-  .sync-state.sqlite
+```text
+my-brain/
+  .brain-sync/
+    brain.json
+    sources/
   knowledge/
-    _core/                              ← you write and maintain these
-      about-me.md
-      org.md
-      taxonomy.md
-    initiatives/                        ← your folder structure, any depth
-      Platform - AAA/
-        ERD/
-          c123456-erd.md                ← synced from Confluence by brain-sync
-          _attachments/                 ← auto-managed by brain-sync
-            c123456/
-              a789-diagram.png
-        Meetings/
-          notes.md                      ← manually added by you
-  insights/                             ← all agent-generated, mirrors knowledge/
     _core/
-      summary.md
+```
+
+Runtime state is intentionally outside the brain root:
+
+```text
+~/.brain-sync/
+  config.json
+  daemon.json
+  db/brain-sync.sqlite
+```
+
+### In Practice
+
+```text
+acme-brain/
+  .brain-sync/
+    brain.json
+    sources/
+      c123456.json
+  knowledge/
+    _core/
+      mission.md
     initiatives/
-      Platform - AAA/
-        summary.md
-        ERD/
-          summary.md
+      platform/
+        c123456-erd.md
+        notes.md
+        .brain-sync/
+          insights/
+            summary.md
+            insight-state.json
           journal/
             2026-03/
-              2026-03-07.md
-  schemas/
-    insights/
-      summary.md                        ← deployed by init
+              2026-03-15.md
+          attachments/
+            c123456/
+              a789-diagram.png
 ```
 
-**`knowledge/`** is human-owned. You organise folders however you like. brain-sync writes synced pages here; you can also add files manually via `brain-sync add-file <file>`.
+### Ownership Rules
 
-Restrictions:
-- `_core/` is reserved for always-loaded global context (top-level only)
-- `_attachments/` directories are managed by brain-sync — do not edit or modify their contents
-- Do not rename synced source files — filenames are ID-anchored (e.g. `c12345-page-title.md`) and renaming breaks the link between the file and its sync source
-- Filenames starting with `_` or `.` are excluded from insight generation
-- Supported formats: `.md`, `.txt` (`.docx` via `brain-sync convert`)
+- `knowledge/` is where your documents live.
+- `.brain-sync/` is the reserved managed namespace.
+- Synced source files are managed content and may be overwritten on the next
+  sync.
+- Co-located summaries and attachments move with their area automatically.
+- `_core/` is the optional global context area.
 
-**`insights/`** is agent-owned. brain-sync triggers regeneration; the insights agent writes summaries and journal entries. Mirrors `knowledge/` 1:1.
+## Talk To Your Brain
 
-**`schemas/`** defines the structure of insight artifacts. Currently only `summary.md` is used. Deployed by `brain-sync init`.
+### Claude Code
 
-## MCP server
+Register the MCP server once:
 
-brain-sync includes an MCP server that provides complete brain access — querying, searching, reading, source management, and insight regeneration. All brain interaction goes through MCP tools — no filesystem access required.
+```bash
+claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
+```
 
-Registration is covered in [Talk to your brain](#talk-to-your-brain) above. The following tools are available:
+Then restart Claude Code and invoke `/brain-sync` or mention your brain in the
+conversation.
 
-#### Brain query tools
+### Claude Desktop
+
+1. Install the skill from `src/brain_sync/skills/brain_sync/SKILL.md`
+2. Register the MCP server:
+
+```json
+{
+  "mcpServers": {
+    "brain-sync": {
+      "command": "python",
+      "args": ["-m", "brain_sync.mcp"]
+    }
+  }
+}
+```
+
+3. Restart Claude Desktop
+
+### Example Requests
+
+- "Add this Confluence page to initiatives/platform and sync attachments"
+- "Summarize what my brain knows about Project X"
+- "Open the platform area and show me the current summary"
+- "Compare the docs in my brain with this code change"
+
+## MCP Server
+
+brain-sync exposes an MCP server for querying, reading, and managing the brain.
+
+Primary tools:
 
 | Tool | Description |
-|------|-------------|
-| `brain_sync_query` | **Primary entrypoint.** Search for areas matching a query. Set `include_global=True` for core context. |
-| `brain_sync_get_context` | Load global context (knowledge/_core, schemas, insights/_core) for broad orientation. |
-| `brain_sync_open_area` | Load full insight context for a specific area — summary, artifacts, children. |
-| `brain_sync_open_file` | Read a specific text file from the brain (.md, .txt, .json, .yaml, .yml). |
-
-#### Source management tools
-
-| Tool | Description |
-|------|-------------|
-| `brain_sync_list` | List registered sources (optional `filter_path`) |
-| `brain_sync_add` | Register a URL for syncing |
-| `brain_sync_add_file` | Add a local `.md` or `.txt` file to knowledge/ |
-| `brain_sync_suggest_placement` | Suggest brain areas for placing a new document |
-| `brain_sync_update` | Update settings for a source (pass only the flags to change) |
-| `brain_sync_remove` | Unregister a sync source |
-| `brain_sync_remove_file` | Remove a local file from knowledge/ |
+|---|---|
+| `brain_sync_query` | Search areas by query |
+| `brain_sync_get_context` | Load global context from `knowledge/_core/` |
+| `brain_sync_open_area` | Load an area's summary, artifacts, and children |
+| `brain_sync_open_file` | Read a text file from the brain |
+| `brain_sync_list` | List registered sources |
+| `brain_sync_add` | Register a sync source |
+| `brain_sync_add_file` | Add a local markdown or text file |
+| `brain_sync_update` | Update source settings |
+| `brain_sync_remove` | Remove a sync source |
 | `brain_sync_move` | Move a source to a new path |
-| `brain_sync_reconcile` | Reconcile DB target paths with filesystem after offline moves |
-| `brain_sync_regen` | Regenerate insights (optional `path`, omit for all) |
+| `brain_sync_reconcile` | Reconcile filesystem moves |
+| `brain_sync_regen` | Regenerate summaries |
 
-All tools return `{"status": "ok", ...}` on success or `{"status": "error", "error": "<type>", ...}` on failure.
-
-Token budgets are enforced server-side — responses are deterministically capped to prevent prompt explosion.
-
-### Run manually
+Run manually:
 
 ```bash
 python -m brain_sync.mcp
 ```
 
-The server communicates over stdio using the MCP JSON-RPC protocol.
-
-## CLI reference
+## CLI Reference
 
 | Command | Description |
 |---|---|
-| `brain-sync init <root>` | Create folder structure, install skill, init SQLite |
-| `brain-sync run [--root <path>]` | Start the daemon (sync + watch + regen) |
-| `brain-sync add <url> [--path <path>] [--fetch-children] [--child-path <path>] [--sync-attachments] [--dry-run] [--subtree <path>]` | Register a URL for ongoing sync (suggests placement when `--path` omitted) |
-| `brain-sync add-file <file> [--path <path>] [--move] [--dry-run] [--subtree <path>]` | Import a local `.md` or `.txt` file into knowledge/ (copies by default) |
-| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Unregister a sync source |
-| `brain-sync remove-file <path>` | Remove a file from knowledge/ (path relative to knowledge/) |
+| `brain-sync init <root>` | Initialize a brain |
+| `brain-sync run [--root <path>]` | Start the daemon |
+| `brain-sync add <url> [...]` | Register a URL for sync |
+| `brain-sync add-file <file> [...]` | Import a local markdown or text file |
+| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source |
+| `brain-sync remove-file <path>` | Remove a local file from `knowledge/` |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
-| `brain-sync move <canonical-id> --to <new-path>` | Move a source to a new knowledge path |
-| `brain-sync update <canonical-id-or-url> [--fetch-children] [--child-path <path>] [--sync-attachments\|--no-sync-attachments]` | Update source settings without re-adding |
-| `brain-sync reconcile [--root <path>]` | Update DB target paths to match where files actually are on disk |
-| `brain-sync migrate [--root <path>]` | Manual migration of legacy controlled brain-sync folders to the latest approved layout |
+| `brain-sync move <canonical-id> --to <new-path>` | Move a source |
+| `brain-sync update <canonical-id-or-url> [...]` | Update source settings |
+| `brain-sync reconcile [--root <path>]` | Reconcile filesystem moves |
 | `brain-sync status [--root <path>]` | Show daemon and sync status |
-| `brain-sync regen [<knowledge-path>]` | Manually trigger insight regeneration (all paths if omitted) |
-| `brain-sync config confluence --domain <d> --email <e> --token <t>` | Configure Confluence credentials |
-| `brain-sync config google [--reauth]` | Authenticate with Google for Google Docs syncing |
-| `brain-sync convert <file> [--comments-from <docx>]` | Convert .docx to markdown, or append comments from .docx to .md |
-| `brain-sync update-skill` | Re-install skill and instruction files to `~/.claude/skills/brain-sync/` |
+| `brain-sync regen [<knowledge-path>]` | Trigger regeneration |
+| `brain-sync doctor [--fix|--rebuild-db]` | Validate or repair a brain |
+| `brain-sync config confluence ...` | Configure Confluence credentials |
+| `brain-sync config google [--reauth]` | Authenticate Google Docs access |
+| `brain-sync convert <file> [--comments-from <docx>]` | Convert `.docx` to markdown |
+| `brain-sync migrate [--root <path>]` | Legacy attachment-layout migration helper |
+| `brain-sync update-skill` | Re-install the Claude skill |
 
-All commands accept `--root <path>` (defaults to current directory) and `--log-level` (DEBUG, INFO, WARNING).
+All commands accept `--log-level`. Commands that operate on a brain root accept
+`--root`.
 
-## How it works
+## Updating brain-sync
 
-### Sync engine
+1. Stop the daemon
+2. Pull the latest code
+3. Update the skill:
 
-The daemon polls registered sources on an adaptive schedule:
+```bash
+brain-sync update-skill
+```
 
-| Unchanged duration | Check interval |
-|---|---|
-| Recently changed | 30 minutes |
-| 1+ week | 1 hour |
-| 2+ weeks | 4 hours |
-| 3+ weeks | 12 hours |
-| 3+ months | 24 hours |
-
-When content changes, the interval resets to 30 minutes. Confluence sources get a cheap version check (REST API) before a full fetch, so unchanged pages are fast. Google Docs does not support version checks — every sync does a full fetch via HTML export.
-
-### Children and attachments
-
-When a Confluence source has `--fetch-children` or `--sync-attachments` enabled, the daemon discovers related content:
-
-| Flag | Discovers | Behaviour |
-|---|---|---|
-| `--fetch-children` | Direct child pages in the page tree | One-shot: children are added as independent primary sources on first sync, then the flag is cleared |
-| `--sync-attachments` | Attached files (images, PDFs, etc.) | Stored in `_attachments/{source_dir_id}/` (e.g. `c12345`), incrementally maintained |
-
-Use `--child-path` to control where discovered children are placed (default: a subfolder named after the parent page). Children become fully independent sources — they can be moved, removed, and have their own attachments.
-
-### Knowledge watcher
-
-The daemon watches `knowledge/` recursively for file changes:
-
-- 30-second debounce window (batches rapid changes)
-- Ignores `_attachments/`, temp files, and `insights/`
-- On change: enqueues insight regeneration for the affected folder
-- On folder move: mirrors the move to `insights/` and updates source paths in the database
-
-### Insight regeneration
-
-Regeneration works like a build system (Make/Bazel), not an AI reasoning chain. The engine is deterministic — the LLM's only job is to write good summaries.
-
-**How it works:**
-
-1. A knowledge folder changes (detected by watcher or manual `brain-sync regen`)
-2. Compute content hash of all `.md` files in the folder
-3. If hash matches the last regen — skip (nothing changed)
-4. Invoke Claude CLI headless to read the knowledge files and write `summary.md`
-5. If the new summary is >97% similar to the old one — discard (prevents LLM rewording drift)
-6. Walk up to the parent folder and repeat (parent reads child summaries, never raw knowledge)
-7. Stop when a summary is unchanged
-
-**Leaf summaries** read raw knowledge files. **Parent summaries** read only child summaries. This creates a compression pyramid where each level abstracts the level below.
-
-The insights agent also writes **journal entries** at `insights/<path>/journal/YYYY-MM/YYYY-MM-DD.md` when knowledge changes are significant, capturing what changed and why it matters.
-
-**Timing and tokens** are tracked in the database (`token_events` table) for observability.
-
-### Insight regeneration vs agent skill
-
-brain-sync has two distinct agent roles:
-
-| | Insights agent | Skill agent |
-|---|---|---|
-| **When** | Triggered by brain-sync (daemon or `regen` command) | Triggered by user in Claude Code |
-| **How** | Claude CLI headless (`--print --dangerously-skip-permissions`) | Interactive Claude Code session |
-| **Access** | Reads `knowledge/`, `schemas/`, writes `insights/` | Reads everything, writes nothing |
-| **Purpose** | Maintain summaries and journal entries | Answer questions, navigate context |
-| **Instructions** | INSIGHT_INSTRUCTIONS.md (embedded in prompt) | SKILL.md (in `~/.claude/skills/`) |
-
-The skill agent benefits from the insights agent's work — it loads pre-computed summaries instead of reading raw knowledge files, enabling fast progressive disclosure.
+4. Restart your MCP client
+5. Start `brain-sync run` again
 
 ## Configuration
 
-brain-sync stores configuration in `~/.brain-sync/config.json`:
+brain-sync stores machine-local configuration in `~/.brain-sync/config.json`.
 
-```json
-{
-  "brains": ["/path/to/my-brain"],
-  "log_level": "INFO",
-  "confluence": {
-    "domain": "yourcompany.atlassian.net",
-    "email": "you@example.com",
-    "token": "your-api-token"
-  },
-  "google": {
-    "token": "<managed by brain-sync config google>"
-  },
-  "regen": {
-    "model": "claude-sonnet-4-6",
-    "effort": "medium",
-    "timeout": 300,
-    "max_turns": 50,
-    "similarity_threshold": 0.97
-  }
-}
-```
+Typical fields include:
 
-The `brains` list is written by `brain-sync init`. The `log_level` applies to both the daemon and MCP server (DEBUG, INFO, WARNING). The `confluence` section stores Confluence REST API credentials (can also be set via `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, `CONFLUENCE_TOKEN` env vars). The `google` section stores the OAuth token managed by `brain-sync config google`. The `regen` section is optional — defaults are used if omitted.
+- registered brain roots
+- log level
+- Confluence credentials
+- Google token
+- regen settings
+- token retention settings
 
-## Converting .docx files
+## Converting .docx Files
 
-Google Docs comments are only preserved in `.docx` exports (not markdown). The `convert` command extracts comments and produces markdown files the regen engine can process.
+Google Docs comments survive best through `.docx` exports.
 
-**Hybrid mode** (recommended) — export from Google Docs as both `.md` and `.docx`, then merge:
+Hybrid mode:
 
 ```bash
 brain-sync convert document.md --comments-from document.docx
 ```
 
-This appends a `## Comments` section to the markdown with author, date, annotated text, and comment body. Idempotent — re-running replaces the existing comments section.
-
-**Full conversion** — when only `.docx` is available:
+Full conversion:
 
 ```bash
 brain-sync convert document.docx
 ```
 
-Converts body text to markdown and appends comments. Writes `document.md` alongside the original.
+## State and Recovery
 
-Options: `--output <path>` to write to a specific location.
+brain-sync uses three broad state layers:
 
-## Filename convention
+1. durable manifests in `.brain-sync/sources/`
+2. durable per-area insight state in `knowledge/**/.brain-sync/insights/`
+3. machine-local runtime DB and daemon state in `~/.brain-sync/`
 
-All synced files use ID-anchored filenames for stability across title changes:
+If the runtime DB is lost, it can be rebuilt from the durable brain state.
 
-| Source | Pattern | Example |
-|---|---|---|
-| Confluence | `c{page_id}-{slug}.md` | `c123456-traveller-profile-service-erd.md` |
-| Google Docs | `g{doc_id}-{slug}.md` | `g1A2B3C-product-prd.md` |
-| Attachments | `a{attachment_id}-{filename}` | `a456789-architecture-diagram.png` |
+Run `brain-sync doctor` after upgrades or if the brain looks inconsistent.
 
-## Offline knowledge management
+## Offline Knowledge Management
 
-You own `knowledge/` — you can restructure it while the daemon is stopped and brain-sync will reconcile on next startup.
+You can move, rename, create, and delete files under `knowledge/` while the
+daemon is stopped.
 
-### Safe offline operations
+On the next `brain-sync run`:
 
-| Action | Why it works |
-|---|---|
-| Move folders between areas | Reconcile detects files by ID-anchored filename |
-| Move individual files to different folders | Same — ID prefix enables rediscovery |
-| Delete synced files | Recreated on next sync (idempotent) |
-| Create your own files in `knowledge/` | Never touched by sync (no ID-anchor match) |
-| Rename files (keeping the ID prefix) | Rediscovery matches on prefix, e.g. `c12345-old.md` to `c12345-new-name.md` |
-
-### Operations that break things
-
-| Action | Why it breaks |
-|---|---|
-| Remove the ID prefix from a synced filename (e.g. `c12345-page.md` to `page.md`) | Reconcile cannot find it — file is orphaned, sync recreates a duplicate |
-| Edit synced file content | Synced files are managed artifacts — treat them as read-only. Next sync overwrites without merge or backup |
-| Move `_attachments/` contents outside their parent folder | Relationship paths break, attachments are re-fetched from scratch |
-| Change the ID portion of a filename (e.g. `c12345` to `c99999`) | File becomes unfindable, orphaned |
-
-### How reconcile works
-
-- `brain-sync run` performs: reconcile, enqueue regen, sync, regen — so insights rebuild automatically in the same run after offline moves
-- `brain-sync reconcile` is available as a manual CLI command (updates the database only, does not trigger regen)
-- `brain_sync_reconcile` MCP tool is available from Claude (same — database only, no regen)
-- `insights/` is derived state managed by regen — reconcile updates source paths, then regen rebuilds insights at the correct locations and cleans up orphaned state
-
-## State
-
-brain-sync uses a three-tier state model:
-
-1. **Manifests** (`.brain-sync/sources/*.json`) — authoritative for source registration intent. Track in git.
-2. **Sidecars** (`insights/**/.regen-meta.json`) — authoritative for insight regen hashes. Track in git.
-3. **DB** (`.sync-state.sqlite`) — disposable performance cache. Add to `.gitignore`.
-
-The SQLite database (WAL mode) contains:
-
-- **sync_cache** — per-source scheduling, content hash, intervals
-- **regen_locks** — regen lifecycle ownership
-- **documents** — canonical ID, URL, title, content hash for all synced documents
-- **relationships** — parent-child links between primary sources and context documents
-- **token_events** — LLM invocation telemetry
-
-The DB is rebuilt automatically from manifests and sidecars on first run. If lost, the daemon starts fresh — `sync_hint` in manifests seeds timing so matching sources skip re-fetch, and sidecars preserve regen hashes so unchanged folders skip regen.
-
-### Upgrade and recovery
-
-- `.sync-state.sqlite` is local and rebuildable — safe to `.gitignore`
-- `.brain-sync/` should be tracked in version control (contains manifests + version metadata)
-- Fresh clone: DB is rebuilt from manifests + sidecars on first `brain-sync run`
-- Run `brain-sync doctor` after upgrading from older versions to validate consistency
+- manifests are reconciled with filesystem truth
+- moved synced files are rediscovered
+- changed areas are re-queued for regeneration
+- co-located summaries and attachments already move with their folders
 
 ## Development
 
 ```bash
 pip install -e ".[dev,google]"
-python -m pytest
+python -m pytest -n auto
 ```
 
-1100+ tests covering: state persistence, schema migrations, file operations, scheduler, context discovery, link rewriting, regen engine (including prompt construction), regen queue, watcher moves, docx conversion, MCP server, source adapters, and integration tests.
-
-## Supported sources
+## Supported Sources
 
 | Source | Status | Auth |
 |---|---|---|
-| Confluence | Working | REST API (basic auth via config or env vars) |
-| Google Docs | Working | Native OAuth2 (browser consent via `brain-sync config google`) |
+| Confluence | Working | REST API credentials via config or env |
+| Google Docs | Working | Native OAuth browser consent |
