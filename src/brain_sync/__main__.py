@@ -108,7 +108,7 @@ async def run(root: Path) -> None:
         if reconcile_result.updated:
             for entry in reconcile_result.updated:
                 regen_queue.enqueue(entry.new_path)
-                # Invalidate global context cache if _core/ involved
+                # Invalidate the _core-derived global context cache if _core/ is involved.
                 for path in (entry.old_path, entry.new_path):
                     if path == "_core" or path.startswith("_core/"):
                         from brain_sync.regen import invalidate_global_context_cache
@@ -180,7 +180,7 @@ async def run(root: Path) -> None:
                             # Enqueue regen if content changed
                             if changed and ss.target_path:
                                 regen_queue.enqueue(ss.target_path)
-                                # Invalidate global context cache if source targets _core/
+                                # Invalidate the _core-derived global context cache if the source targets _core/.
                                 if ss.target_path == "_core" or ss.target_path.startswith("_core/"):
                                     from brain_sync.regen import invalidate_global_context_cache
 

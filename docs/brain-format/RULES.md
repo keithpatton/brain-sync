@@ -271,10 +271,9 @@ user-authored file in the same area.
 | Delete folder | All contained synced sources enter missing protocol; area insights cleaned up; journals preserved if possible | Reconciliation handles each contained source individually |
 | Delete empty folder | No action (was not an area) | No action |
 
-**v23 simplification:** Because generated meaning lives under
-`knowledge/<area>/.brain-sync/`, folder moves automatically carry
-insights with them. No separate mirror operation is needed (unlike v21
-where `insights/` was a separate tree that had to be moved in parallel).
+Because generated meaning lives under `knowledge/<area>/.brain-sync/`,
+folder moves automatically carry insights with them. No separate mirror
+operation is needed.
 
 ### Attachments
 
@@ -285,9 +284,9 @@ where `insights/` was a separate tree that had to be moved in parallel).
 | User deletes attachment file | System may re-download on next sync if source still active | Same |
 | User deletes attachment directory | System may re-download on next sync | Same |
 
-**v23 simplification:** Attachments are stored per-source under
+Attachments are stored per-source under
 `.brain-sync/attachments/<source_dir_id>/` in the area where the source
-lives. Each source's attachments are physically isolated — no
+lives. Each source's attachments are physically isolated, so no
 cross-source reference counting is needed. Deleting a source's
 attachments is a simple `rmtree` of its directory.
 
@@ -524,14 +523,14 @@ Journals are:
 
 ## Schema Evaluation
 
-This section defines the minimal schema set for v23 and evaluates each
-against current usage.
+This section defines the minimal schema set for Brain Format 1.0 and
+evaluates each against current usage.
 
 ### Source Manifest Schema
 
 Path: `.brain-sync/sources/<source_dir_id>.json`
 
-v23 fields:
+Current fields:
 
 | Field | Type | Required | Purpose |
 |---|---|---|---|
@@ -546,14 +545,13 @@ v23 fields:
 | `missing_since_utc` | string | no | Timestamp when file first detected missing (only when status=missing) |
 | `sync_hint` | object | no | Advisory freshness hint |
 
-**Removed from v21:**
+Fields intentionally absent:
 
-- `fetch_children` — one-shot operational flag. In v21 this is set to
-  `true` on add, consumed during the first sync, then cleared to
-  `false`. It is a command parameter, not durable source state. v23
-  makes it a parameter of the `add` and `sync` commands only.
+- `fetch_children` — one-shot operational flag. It is a command
+  parameter, not durable source state, so it belongs to the `add` and
+  `sync` commands rather than the manifest.
 - `child_path` — one-shot placement hint for discovered children.
-  Same reasoning as `fetch_children`. v23 makes it a command parameter.
+  Same reasoning as `fetch_children`; it is not durable manifest state.
 - `manifest_version` — renamed to `version` for consistency across all
   manifests.
 
@@ -619,7 +617,7 @@ Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
 [brain-sync user directory](GLOSSARY.md#brain-sync-user-directory),
 **not** inside the brain root)
 
-v23 retains 4 tables (reduced from 7 in v21):
+The runtime database contains 4 tables:
 
 | Table | Purpose | Authoritative |
 |---|---|---|
@@ -628,20 +626,20 @@ v23 retains 4 tables (reduced from 7 in v21):
 | `regen_locks` | Cross-process regen coordination | No — transient per daemon session |
 | `token_events` | Append-only LLM cost telemetry | No — machine-local observability, persisted for local inspection only |
 
-**Removed from v21:**
+Earlier runtime-only tables are intentionally absent:
 
 - `documents` — tracked synced documents and attachments with content
-  hashes, URLs, titles. v23 removes this because: source identity lives
+  hashes, URLs, titles. This is absent because source identity lives
   in manifests, sync progress lives in `sync_cache`, and attachment
   identity is derived from the filesystem
   (`.brain-sync/attachments/<source_dir_id>/`).
 - `relationships` — tracked parent-child attachment relationships for
   reference counting (don't delete an attachment if another source
-  references it). v23 removes this because: attachments are physically
+  references it). This is absent because attachments are physically
   isolated per source in their own `<source_dir_id>/` directory,
   eliminating the need for cross-source reference counting. Deleting a
   source's attachments is a simple `rmtree`.
-- `daemon_status` — tracked daemon PID and health. v23 moves this to
+- `daemon_status` — tracked daemon PID and health. This now lives in
   the [brain-sync user directory](GLOSSARY.md#brain-sync-user-directory)
   (`~/.brain-sync/daemon.json`) since it is per-machine process state,
   not brain state.
@@ -654,12 +652,6 @@ at runtime — not deployed to the brain root.
 
 Users who want to influence regen behaviour should add instructions to
 [core knowledge](GLOSSARY.md#core-knowledge) (`knowledge/_core/`).
-
-> **v21 note:** Templates are currently deployed to `schemas/insights/`
-> in the brain root by `brain-sync init`. v23 internalises them —
-> they ship with the package and are not written to disk. This removes
-> a deployment step, eliminates stale-schema drift, and keeps the brain
-> root focused on user knowledge and source registration.
 
 ---
 
@@ -719,50 +711,39 @@ Files that carry a `version` field:
 
 ---
 
-## v23 Simplifications Over v21
+## Structural Simplifications
 
-This section summarises the structural simplifications that v23
-introduces. These are not rules themselves but context for planning.
+This section summarises the current structural model behind the Brain
+Format 1.0 rules.
 
-### Co-located insights eliminate mirror moves
+### Co-located insights move with their area
 
-In v21, `insights/` is a separate top-level tree that mirrors
-`knowledge/`. Folder moves require a parallel move of the insights tree,
-plus updates to all manifests and DB rows. This is the most fragile
-operation in v21.
+Insights live under `knowledge/<area>/.brain-sync/`. When a user moves
+or renames a folder, the managed insight state travels with it
+automatically. The watcher only needs to update manifest paths and DB
+state rather than coordinate a second mirrored tree.
 
-In v23, insights live under `knowledge/<area>/.brain-sync/`. When a
-user moves or renames a folder, insights travel with it automatically.
-The watcher only needs to update manifest paths and DB state — no
-separate tree surgery.
+### Directory-based attachment isolation
 
-### Directory-based attachment isolation eliminates reference counting
-
-In v21, attachments live at `knowledge/<area>/_attachments/` and the
-`documents` + `relationships` DB tables track cross-source attachment
-ownership with reference counting.
-
-In v23, attachments live at
+Attachments live at
 `knowledge/<area>/.brain-sync/attachments/<source_dir_id>/`. Each
-source's attachments are physically isolated. Cleanup is a simple
-`rmtree` of the source's directory. No reference counting needed; two
-DB tables eliminated.
+source's attachments are physically isolated, so cleanup is a simple
+`rmtree` of that source's directory and does not require cross-source
+reference counting.
 
 ### Single reserved namespace
 
-In v21, managed state is scattered: `_attachments/`, `_sync-context/`,
-`insights/`, `schemas/`, `.sync-state.sqlite`, `.brain-sync/`.
-
-In v23, `.brain-sync/` is the single reserved namespace at every level.
-All managed state lives under it. The dot-prefix provides automatic
+`.brain-sync/` is the single reserved namespace at every level. All
+managed state lives under it. The dot-prefix provides automatic
 exclusion from content discovery, regen scanning, and filesystem
 watching.
 
-### Operational flags removed from manifests
+### Operational flags stay out of manifests
 
 `fetch_children` and `child_path` are one-shot operational commands, not
-durable source state. v23 makes them command parameters consumed at
-execution time, keeping manifests focused on durable registration intent.
+durable source state. Brain Format 1.0 treats them as command
+parameters consumed at execution time, keeping manifests focused on
+durable registration intent.
 
 ---
 

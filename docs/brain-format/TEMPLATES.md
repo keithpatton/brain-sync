@@ -11,10 +11,6 @@ Templates are **internal to the brain-sync package** — they are bundled
 in source code and loaded at runtime. They are not deployed to the brain
 root. This document describes their structure and content for reference.
 
-> **v21 note:** Templates are currently deployed to `schemas/insights/`
-> in the brain root by `brain-sync init`. v23 internalises them to
-> eliminate deployment drift and reduce brain root surface area.
-
 ---
 
 ## Summary
@@ -40,10 +36,6 @@ Examples:
 - `knowledge/_core/.brain-sync/insights/summary.md`
 - `knowledge/teams/platform/.brain-sync/insights/summary.md`
 
-> **v21 current**: Summaries live at `insights/<area>/summary.md` in a
-> separate top-level `insights/` directory. v23 moves them under
-> `knowledge/<area>/.brain-sync/insights/`.
-
 **Template description**
 
 The summary represents the current semantic understanding of an area. It is
@@ -51,7 +43,8 @@ rebuilt from:
 
 - readable files in the area (for leaf areas)
 - child area summaries (for parent areas — compression pyramid)
-- global context where relevant (`_core`)
+- raw `_core` files when regenerating `_core` itself
+- `_core`'s distilled summary when regenerating any other area
 
 It should be concise, stable, and oriented toward quick understanding rather
 than document inventory. Summary stability is enforced by a similarity guard
@@ -80,7 +73,7 @@ from the materialized markdown.
 **Current implementation**:
 [regen.py](../../src/brain_sync/regen.py),
 [INSIGHT_INSTRUCTIONS.md](../../src/brain_sync/instructions/INSIGHT_INSTRUCTIONS.md),
-[schemas/insights/summary.md](../../src/brain_sync/schemas/insights/summary.md)
+[templates/insights/summary.md](../../src/brain_sync/templates/insights/summary.md)
 
 ---
 
@@ -102,9 +95,6 @@ Examples:
 
 - `knowledge/teams/platform/.brain-sync/journal/2026-03/2026-03-15.md`
 - `knowledge/.brain-sync/journal/2026-03/2026-03-15.md` (root area)
-
-> **v21 current**: Journals live at `insights/<area>/journal/YYYY-MM/...`.
-> v23 moves them under `knowledge/<area>/.brain-sync/journal/`.
 
 **Template description**
 

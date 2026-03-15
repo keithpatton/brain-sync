@@ -1,7 +1,7 @@
 # Brain Format v1 — Glossary
 
 This glossary defines the canonical terms used when describing the
-brain-sync filesystem format (v23). Terms are alphabetised.
+brain-sync Brain Format 1.0 filesystem contract. Terms are alphabetised.
 
 ---
 
@@ -15,10 +15,6 @@ Attachments are stored under the [knowledge area's](#knowledge-area)
 `.brain-sync/attachments/<source_dir_id>/`.
 
 Example: `knowledge/teams/platform/.brain-sync/attachments/c987654/a4736286723-architecture-diagram.png`
-
-> **v21 current**: Attachments live at `knowledge/<area>/_attachments/...`.
-
----
 
 ## Brain
 
@@ -83,12 +79,6 @@ of the portable [brain state](#brain-state). Everything in it is
 loss of [user knowledge](#user-knowledge) or
 [generated meaning](#generated-meaning).
 
-> **v21 current**: The database lives at `.sync-state.sqlite` in the
-> brain root. Daemon status lives in a DB table. v23 moves both to
-> `~/.brain-sync/`.
-
----
-
 ## Brain-Sync Database
 
 The **brain-sync database** is a machine-local SQLite database used for
@@ -101,7 +91,7 @@ Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
 The database is **not** inside the brain root. It is
 [runtime state](#runtime-state).
 
-v23 target tables:
+Current tables:
 
 
 | Table          | Purpose                                                                                                 |
@@ -110,15 +100,6 @@ v23 target tables:
 | `sync_cache`   | Machine-local polling schedule state                                                                    |
 | `regen_locks`  | Cross-process regen coordination                                                                        |
 | `token_events` | Append-only LLM cost telemetry persisted for local observability; not part of core brain-state recovery |
-
-
-> **v21 current**: The database has 7 tables including `documents`,
-> `relationships`, and `daemon_status` which v23 removes. The DB lives
-> at `.sync-state.sqlite` in the brain root. v23 moves it to the
-> brain-sync user directory so the brain root contains no runtime
-> artifacts and needs no `.gitignore` exceptions.
-
----
 
 ## Brain-Sync Managed Files
 
@@ -172,7 +153,7 @@ The canonical ID appears in:
 filesystem-safe derivative used for manifest filenames and per-source
 attachment directories, e.g. `c987654`)
 
-v23 standardises the canonical ID as the single identity primitive across
+Brain Format 1.0 standardises the canonical ID as the single identity primitive across
 all source types and contexts. The filename prefix is always derived
 deterministically from the canonical ID.
 
@@ -292,8 +273,9 @@ brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/PT/pages/987654
 
 See also: [manifest](#manifest) (the other way a schema can be instantiated).
 
-> **v21 current**: Identity is embedded as HTML comments
-> (`<!-- brain-sync-source: ... -->`). v23 proposes YAML frontmatter.
+During transition and repair, readers may still accept legacy HTML
+comment identity markers as a fallback. New writes use YAML
+frontmatter only.
 
 ---
 
@@ -544,7 +526,7 @@ Schemas define fields, required structure, and interpretation rules.
 A schema is instantiated as either a [manifest](#manifest) (standalone JSON)
 or as [frontmatter](#frontmatter) (YAML embedded in markdown).
 
-Schemas defined in v23:
+Schemas defined in Brain Format 1.0:
 
 - synced source schema → synced source manifest
 - brain schema → brain manifest
@@ -618,7 +600,7 @@ A **template** defines the layout of generated content — a form of
 Templates describe the shape of [generated meaning](#generated-meaning)
 rather than state fields.
 
-Templates defined in v23:
+Templates defined in Brain Format 1.0:
 
 - summary — area summary (`summary.md`)
 - journal — daily temporal record

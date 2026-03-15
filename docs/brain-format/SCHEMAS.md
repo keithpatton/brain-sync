@@ -6,9 +6,6 @@ brain-sync. Each schema may be instantiated as a
 [frontmatter](GLOSSARY.md#frontmatter) (YAML embedded in a markdown
 document). See [GLOSSARY.md](GLOSSARY.md) for all term definitions.
 
-> **Status**: Aspirational v23 target. Current-vs-proposed differences are
-> noted inline.
-
 ---
 
 ## Synced Source Schema
@@ -35,7 +32,7 @@ Examples:
 - `.brain-sync/sources/g1zo3CY98lXDGsagjHUHRciomGysWHdzgt5BAXfljhzvU.json`
 
 `source_dir_id` is the deterministic filesystem-safe derivative of the
-source's canonical ID. It is normative in v23 and is used consistently
+source's canonical ID. It is normative in Brain Format 1.0 and is used consistently
 for:
 
 - source manifest filenames
@@ -95,13 +92,6 @@ for a live instance. Inline:
 }
 ```
 
-> **v21 current**: Source manifests use `manifest_version` instead of
-> `version` and include `fetch_children` and `child_path` as persisted
-> flags. v23 standardises the version field name and removes
-> `fetch_children` and `child_path` (they become command parameters
-> consumed at execution time rather than durable manifest state).
-> See [RULES.md — Schema Evaluation](RULES.md#schema-evaluation).
-
 **Current implementation**:
 [manifest.py](../../src/brain_sync/manifest.py),
 [pipeline.py](../../src/brain_sync/pipeline.py)
@@ -138,11 +128,6 @@ for a live instance. Inline:
   "version": 1
 }
 ```
-
-> **v21 current**: The equivalent file is `.brain-sync/version.json` with
-> `{"manifest_version": 1}`. v23 renames to `brain.json` with `version`.
-
-**New in v23** — no v21 equivalent exists under this name.
 
 ---
 
@@ -192,11 +177,6 @@ for a live instance. Inline:
   "last_regen_utc": "2026-03-15T08:46:00Z"
 }
 ```
-
-> **v21 current**: Regen state lives at `insights/<area>/.regen-meta.json`
-> (a separate top-level `insights/` directory mirroring `knowledge/`).
-> The file uses the same fields but is named `.regen-meta.json`. v23
-> moves this to `knowledge/<area>/.brain-sync/insights/insight-state.json`.
 
 **Current implementation**:
 [sidecar.py](../../src/brain_sync/sidecar.py),
@@ -251,18 +231,9 @@ brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/PT/pages/987654/At
 # Attachment Handling
 ```
 
-> **v21 current**: Identity is embedded as HTML comments rather than YAML
-> frontmatter:
-> ```html
-> <!-- brain-sync-source: confluence:987654 -->
-> <!-- brain-sync-managed: local edits may be overwritten -->
-> ```
-> v23 proposes YAML frontmatter for cleaner parsing and standard tooling
-> compatibility.
->
-> During transition and repair, readers may still accept legacy HTML
-> comment identity markers as a fallback. New writes use YAML
-> frontmatter only.
+During transition and repair, readers may still accept legacy HTML
+comment identity markers as a fallback. New writes use YAML
+frontmatter only.
 
 **Current implementation**:
 [pipeline.py](../../src/brain_sync/pipeline.py),

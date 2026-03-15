@@ -71,7 +71,7 @@ class KnowledgeEventHandler(FileSystemEventHandler):
         path = Path(str(event.src_path))
         if _should_ignore(path, self._knowledge_root):
             return
-        # Invalidate global context cache if change is in _core/
+        # Invalidate the _core-derived global context cache if a change lands in _core/.
         try:
             rel = path.relative_to(self._knowledge_root)
             if rel.parts and rel.parts[0] == "_core":
