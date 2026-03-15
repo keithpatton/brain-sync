@@ -120,8 +120,8 @@ def reconcile(
     discovered: list[DiscoveredDoc],
     existing_rels: list[object],
 ) -> tuple[list[DiscoveredDoc], list[DiscoveredDoc], set[str]]:
-    discovered_ids = {d.canonical_id for d in discovered}
-    existing_ids = {getattr(r, "canonical_id", r) for r in existing_rels}
+    discovered_ids: set[str] = {d.canonical_id for d in discovered}
+    existing_ids: set[str] = {str(getattr(r, "canonical_id", r)) for r in existing_rels}
     to_add = [d for d in discovered if d.canonical_id not in existing_ids]
     to_check = [d for d in discovered if d.canonical_id in existing_ids]
     to_remove_ids = existing_ids - discovered_ids
