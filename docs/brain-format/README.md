@@ -10,12 +10,12 @@ rules for Brain Format `1.0`. This README is only an index into that spec set.
 
 | Document | Purpose |
 |---|---|
-| `RULES.md` | Behavioral invariants and system guarantees for a valid brain |
-| `SCHEMAS.md` | Schema-defined manifests, frontmatter, and runtime DB shape |
-| `VERSIONING.md` | Brain Format, runtime DB, and app version model |
-| `COMPATIBILITY.md` | Supported compatibility row and legacy handling policy |
-| `GLOSSARY.md` | Shared terminology used across the spec |
-| `TEMPLATES.md` | Regeneration template and packaged-instruction rules |
+| [`RULES.md`](./RULES.md) | Behavioral invariants and system guarantees for a valid brain |
+| [`SCHEMAS.md`](./SCHEMAS.md) | Schema-defined manifests, frontmatter, and runtime DB shape |
+| [`VERSIONING.md`](./VERSIONING.md) | Brain Format, runtime DB, and app version model |
+| [`COMPATIBILITY.md`](./COMPATIBILITY.md) | Supported compatibility row and legacy handling policy |
+| [`GLOSSARY.md`](./GLOSSARY.md) | Shared terminology used across the spec |
+| [`TEMPLATES.md`](./TEMPLATES.md) | Regeneration template and packaged-instruction rules |
 
 ## Governance
 

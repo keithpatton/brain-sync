@@ -269,7 +269,31 @@ async def run(root: Path) -> None:
                     await asyncio.sleep(max(0.1, sleep_for))
 
             finally:
+                try:
+                    # Flush any queued folder moves before shutting down. This
+                    # keeps runtime state consistent when SIGINT lands while the
+                    # main loop is asleep and the filesystem move has already
+                    # happened on disk.
+                    for move in watcher.drain_moves():
+                        mirror_folder_move(root, move)
+                except Exception:
+                    log.warning("Failed to flush pending watcher moves on shutdown", exc_info=True)
+
                 watcher.stop()
+                try:
+                    for move in watcher.drain_moves():
+                        mirror_folder_move(root, move)
+                except Exception:
+                    log.warning("Failed to flush watcher moves after stop", exc_info=True)
+                try:
+                    # Final shutdown reconcile keeps runtime state consistent
+                    # even if a filesystem rename landed on disk without the
+                    # watcher loop processing the corresponding move event.
+                    from brain_sync.reconcile import reconcile_knowledge_tree
+
+                    reconcile_knowledge_tree(root)
+                except Exception:
+                    log.warning("Failed shutdown reconcile", exc_info=True)
                 try:
                     write_daemon_status(root, pid, "stopped")
                 except Exception:
