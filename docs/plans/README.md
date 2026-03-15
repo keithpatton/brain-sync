@@ -220,6 +220,42 @@ Supporting inputs:
 
 When present, they should be treated as supplementary input to the planning artifacts, similar to context for the planner or reviewer.
 
+## Implementation Notes
+
+Any agent involved in the execution of a plan may add material implementation
+notes such as approved variations or clarifications in date/time-descending
+fashion so there is a visible trail. Record these in the relevant plan notes
+file when one exists. Commit messages and PRs should also be used where
+necessary to record the same.
+
+Implementation notes file:
+
+```text
+plan_<id>_<iteration>_notes.md
+```
+
+Implementation notes should:
+
+- use one notes file per approved plan version
+- append new notes at the top so the newest entry is seen first
+- record only material execution-relevant decisions, clarifications, or approved variations
+
+Example:
+
+```md
+# Plan v23.3 Implementation Notes
+
+2026-03-16T09:12:00
+Change: `_core` context for non-`_core` regen now uses summary only.
+Reason: Token determinism and prompt pressure reduction.
+Status: Implemented.
+
+2026-03-15T18:40:00
+Change: Approval trail requires an `_approved_<datetime>` artifact before implementation.
+Reason: Keep the planning gate explicit.
+Status: Clarified.
+```
+
 ## Filename Rules
 
 Use uppercase only for the canonical root plan:
