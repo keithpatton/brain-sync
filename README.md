@@ -133,30 +133,10 @@ Runtime state is intentionally outside the brain root:
 
 ### In Practice
 
-```text
-acme-brain/
-  .brain-sync/
-    brain.json
-    sources/
-      c123456.json
-  knowledge/
-    _core/
-      mission.md
-    initiatives/
-      platform/
-        c123456-erd.md
-        notes.md
-        .brain-sync/
-          insights/
-            summary.md
-            insight-state.json
-          journal/
-            2026-03/
-              2026-03-15.md
-          attachments/
-            c123456/
-              a789-diagram.png
-```
+Not sure how to structure your brain? See the
+[Brain Tree Structure Guide](./BRAIN_TREE_STRUCTURE_GUIDE.md) for a shareable,
+generic example of top-level buckets, folder sizing, and practical placement
+rules.
 
 ### Ownership Rules
 
