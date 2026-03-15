@@ -26,16 +26,25 @@ Update triggers:
 - Update `AGENTS.md` when long-lived repository workflow rules change.
 - Update `README.md` when user-facing setup or operation changes.
 
+Prefer a single authoritative home for detailed rules. Use summary-plus-link
+here when the detailed procedure already lives in a more specific document.
+Avoid copying volatile bullet lists into multiple docs; duplicate only stable
+headings or short summaries that are unlikely to change when the linked
+document evolves.
+
+## Plan Approval Workflow
+
+When using the `docs/plans/` workflow, agents must preserve separate planner,
+reviewer, and approver artifacts.
+
+Follow [`docs/plans/README.md`](docs/plans/README.md) for the approval gate,
+artifact naming, and the rule that implementation must not skip the approval
+artifact unless the user explicitly asks to bypass the planning trail.
+
 ## Brain Format Contract
 
-For format questions, the highest authority is the brain-format spec set:
-
-- `docs/brain-format/RULES.md`
-- `docs/brain-format/SCHEMAS.md`
-- `docs/brain-format/VERSIONING.md`
-- `docs/brain-format/COMPATIBILITY.md`
-- `docs/brain-format/GLOSSARY.md`
-- `docs/brain-format/TEMPLATES.md`
+For format questions, the highest authority is the Brain Format spec index:
+[`docs/brain-format/README.md`](docs/brain-format/README.md).
 
 Before making format-affecting changes:
 

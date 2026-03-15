@@ -15,6 +15,12 @@ Each plan moves through only these stages:
 
 Reviews always attach to a specific plan version. Revisions create a new plan file rather than overwriting the previous one. Approval is represented as a final suffix on the approved plan version.
 
+Review artifacts may recommend approval, but they are never approval themselves.
+A plan is approved only when the corresponding
+`plan_<id>_<iteration>_approved_<datetime>.md` artifact exists. Implementation
+begins only after that approval artifact exists, unless the user explicitly
+asks to bypass the planning trail.
+
 Supporting inputs may exist alongside the plan trail when a planner needs extra implementation context. They inform a plan, but they are not part of the plan → review → revision → approval lifecycle.
 
 ## Schema
@@ -96,6 +102,9 @@ Reviews may contain:
 
 The reviewer must never modify the plan file being reviewed.
 
+The reviewer must not treat a review artifact as approval or as permission to
+begin implementation.
+
 ### Approver
 
 The approver determines whether a plan revision is acceptable.
@@ -109,6 +118,10 @@ The approval file is created by copying the approved plan revision and adding th
 Only the most recent plan revision may be approved. If a review identifies issues, the planner must produce a new revision before approval can occur.
 
 Approval must not modify the original plan file.
+
+If the approver finds the plan acceptable, the next required action is to
+create the approval artifact. The approver should stop after creating that
+artifact unless separately asked to implement the plan.
 
 ## Approval Attestation
 
@@ -132,6 +145,61 @@ Notes:
 ```
 
 This keeps approval visible while preserving the approved plan text as a separate append-only artifact.
+
+## Implementation Gate
+
+The planning workflow has a hard boundary between review, approval, and
+implementation:
+
+- a review artifact may recommend approval
+- a review artifact is not an approval artifact
+- approval is complete only when `plan_<id>_<iteration>_approved_<datetime>.md` exists
+- implementation must not begin from a review artifact alone
+
+If a reviewer finds a plan acceptable, the next required action is to create
+the approval artifact. Agents must not treat phrases inside a review file as
+permission to skip that step.
+
+If the user explicitly asks to bypass the planning trail, that instruction
+overrides this default workflow.
+
+## Review Wording Guidance
+
+To keep the gate unambiguous:
+
+- do not use verdicts such as `Approved for execution`
+- do not end a review artifact by telling the next agent to implement
+- prefer explicit wording such as `Approval recommended; create plan_<id>_<iteration>_approved_<datetime>.md before implementation`
+
+Example review verdict:
+
+```md
+## Verdict
+
+Approval recommended.
+
+Create `plan_<id>_<iteration>_approved_<datetime>.md` before implementation.
+This review artifact does not itself approve the plan.
+```
+
+Example approval artifact:
+
+```md
+# Approval
+
+Approved: 2026-03-15T06-47-00
+Approved by: reviewer-agent
+
+Notes:
+- no unresolved risks remain
+
+---
+
+<copy of approved plan follows>
+```
+
+Use `plan_v23_3_approved_2026-03-15T06-47.md` in this directory as the
+concrete pattern to mirror for future approval artifacts.
 
 ## Supporting Inputs
 
