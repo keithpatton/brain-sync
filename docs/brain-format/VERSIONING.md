@@ -92,7 +92,7 @@ brain. DB schema versioning therefore remains important for engineering,
 but it must not be used as the public definition of "what version of
 brain this is".
 
-Although the v23 runtime schema is a clean break from earlier migration
+Although the `v23` runtime schema is a clean break from earlier migration
 history, the numeric schema value is still `23` rather than resetting to
 `1`. This keeps the implementation constant aligned with the supported
 compatibility row and avoids ambiguity between the public `v23` label and
@@ -162,11 +162,11 @@ This lets the suite distinguish:
 
 ## Current Baseline
 
-The baseline established by the v23 refactor is:
+The current baseline is:
 
 - Brain Format: `1.0`
 - Runtime DB schema: `v23`
 - App version: `0.5.0`
 
-Pre-v23 development layouts are not part of Brain Format `1.0`. They are
+Pre-Brain Format `1.0` development layouts are not part of Brain Format `1.0`. They are
 legacy internal layouts, not supported portable versions.

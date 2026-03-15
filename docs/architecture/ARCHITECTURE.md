@@ -73,7 +73,7 @@ per-area insight state and `regen_locks` rows:
 2. detect offline content changes for tracked areas
 3. enqueue newly relevant areas when filesystem state implies regen work
 
-Because v23 co-locates managed area state under `knowledge/<area>/.brain-sync/`,
+Because Brain Format `1.0` co-locates managed area state under `knowledge/<area>/.brain-sync/`,
 folder moves carry summaries and attachment directories with them
 automatically. The system repairs manifests and runtime state, but no longer
 maintains a separate top-level insight mirror.
@@ -102,7 +102,8 @@ knowledge/area/
         a67890-diagram.png
 ```
 
-This per-source directory isolation is the key v23 simplification. Attachments
+This per-source directory isolation is a key simplification in the current
+layout. Attachments
 move with their area, and removing a source's attachments is a simple
 directory cleanup rather than a relationship-tracking exercise.
 
@@ -194,7 +195,7 @@ writes use YAML frontmatter only.
 
 Each synced source has a manifest at `.brain-sync/sources/<source_dir_id>.json`.
 
-v23 durable fields:
+Current durable fields:
 
 - `version`
 - `canonical_id`
@@ -235,7 +236,7 @@ That separation is what keeps the brain root fully portable and safe to commit.
 
 ### DB Table Justifications
 
-v23 runtime DB tables:
+Current runtime DB tables:
 
 | Table | Purpose | If deleted |
 |---|---|---|

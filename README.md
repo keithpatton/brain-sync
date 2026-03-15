@@ -214,7 +214,7 @@ Primary tools:
 | Tool | Description |
 |---|---|
 | `brain_sync_query` | Search areas by query |
-| `brain_sync_get_context` | Load global context from `knowledge/_core/.brain-sync/insights/summary.md` |
+| `brain_sync_get_context` | Load global context from the `_core` summary at `knowledge/_core/.brain-sync/insights/summary.md` |
 | `brain_sync_open_area` | Load an area's summary, artifacts, and children |
 | `brain_sync_open_file` | Read a text file from the brain |
 | `brain_sync_list` | List registered sources |

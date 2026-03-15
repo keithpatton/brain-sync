@@ -43,14 +43,14 @@ This support applies to brains already in Brain Format `1.0`.
 
 ## Unsupported Legacy Inputs
 
-Pre-v23 development layouts are **not** supported upgrade targets for
+Pre-Brain Format `1.0` development layouts are **not** supported upgrade targets for
 the first supportable release.
 
 This means:
 
 - they are not considered Brain Format `1.0`
 - `doctor --fix` is not a legacy layout conversion tool in this release
-- users with pre-v23 development brains must re-initialise into a fresh
+- users with pre-Brain Format `1.0` development brains must re-initialise into a fresh
   Brain Format `1.0` brain
 
 The product may later introduce format-to-format upgrade guarantees, but
@@ -75,7 +75,7 @@ For the initial baseline, this means tests should cover:
 - fresh Brain Format `1.0` conformance
 - Brain Format `1.0` drift repair
 - Brain Format `1.0` runtime rebuild
-- unsupported pre-v23 legacy detection / re-init guidance
+- unsupported pre-Brain Format `1.0` legacy detection / re-init guidance
 
 ---
 
@@ -126,7 +126,7 @@ At that point, compatibility tests should expand to include:
 
 ## Current Product Direction
 
-For the v23 rewrite specifically:
+For the current support baseline:
 
 - Brain Format `1.0` is the first supportable portable format
 - runtime DB schema `v23` is the first supportable runtime cache schema
