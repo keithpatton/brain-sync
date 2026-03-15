@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 
+from brain_sync.layout import brain_sync_user_dir, daemon_status_path, runtime_db_path
+
 log = logging.getLogger(__name__)
 
-CONFIG_DIR: Path = (
-    Path(os.environ["BRAIN_SYNC_CONFIG_DIR"]) if "BRAIN_SYNC_CONFIG_DIR" in os.environ else Path.home() / ".brain-sync"
-)
+CONFIG_DIR: Path = brain_sync_user_dir()
 CONFIG_FILE: Path = CONFIG_DIR / "config.json"
+RUNTIME_DB_FILE: Path = runtime_db_path()
+DAEMON_STATUS_FILE: Path = daemon_status_path()
 
 _lock = threading.Lock()
 

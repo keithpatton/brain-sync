@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from brain_sync.fs_utils import find_all_content_paths as _find_all_content_paths
+from brain_sync.layout import area_insights_dir, area_summary_path, brain_manifest_path
 from brain_sync.regen import (
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
@@ -75,11 +76,21 @@ def brain(tmp_path):
     root = tmp_path / "brain"
     root.mkdir()
     (root / "knowledge").mkdir()
-    (root / "insights").mkdir()
+    brain_manifest = brain_manifest_path(root)
+    brain_manifest.parent.mkdir(parents=True, exist_ok=True)
+    brain_manifest.write_text(json.dumps({"version": 1}) + "\n", encoding="utf-8")
     # Initialize SQLite
     conn = _connect(root)
     conn.close()
     return root
+
+
+def managed_insights(root: Path, knowledge_path: str = "") -> Path:
+    return area_insights_dir(root, knowledge_path)
+
+
+def managed_summary(root: Path, knowledge_path: str = "") -> Path:
+    return area_summary_path(root, knowledge_path)
 
 
 class TestComputeContentHash:
@@ -303,7 +314,7 @@ class TestClassifyFolderChange:
         (kdir / "doc.md").write_text("hello", encoding="utf-8")
 
         # Create existing summary on disk
-        idir = brain / "insights" / "area"
+        idir = managed_insights(brain, "area")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("# Existing Summary", encoding="utf-8")
 
@@ -444,7 +455,7 @@ class TestRegenPath:
             count = asyncio.run(regen_path(brain, "project"))
 
         assert count >= 1
-        summary = brain / "insights" / "project" / "summary.md"
+        summary = managed_summary(brain, "project")
         assert summary.exists()
 
         # Check insight state was saved
@@ -488,7 +499,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc Content V2", encoding="utf-8")
 
-        idir = brain / "insights" / "project"
+        idir = managed_insights(brain, "project")
         idir.mkdir(parents=True)
         old_summary = "# Project Summary\n\nThis is the existing summary about the project."
         (idir / "summary.md").write_text(old_summary, encoding="utf-8")
@@ -529,7 +540,7 @@ class TestRegenPath:
             kdir.mkdir(parents=True)
             (kdir / "doc.md").write_text(f"# {child} content", encoding="utf-8")
 
-            idir = brain / "insights" / "parent" / child
+            idir = managed_insights(brain, f"parent/{child}")
             idir.mkdir(parents=True)
             (idir / "summary.md").write_text(f"# {child} Summary\nDetails.", encoding="utf-8")
 
@@ -556,7 +567,7 @@ class TestRegenPath:
     def test_nonexistent_knowledge_dir_cleans_up(self, brain):
         """Regen for a nonexistent knowledge dir cleans up stale insights."""
         # Create stale insights with no corresponding knowledge
-        idir = brain / "insights" / "deleted"
+        idir = managed_insights(brain, "deleted")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("stale", encoding="utf-8")
         save_insight_state(
@@ -581,7 +592,7 @@ class TestRegenPath:
         kdir = brain / "knowledge" / "empty"
         kdir.mkdir(parents=True)
         # Create stale insight
-        idir = brain / "insights" / "empty"
+        idir = managed_insights(brain, "empty")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("stale", encoding="utf-8")
         save_insight_state(
@@ -612,7 +623,7 @@ class TestRegenPath:
         (child_kdir / "notes.md").write_text("# Meeting Notes", encoding="utf-8")
 
         # Pre-create child summary
-        child_idir = brain / "insights" / "initiative" / "meetings"
+        child_idir = managed_insights(brain, "initiative/meetings")
         child_idir.mkdir(parents=True)
         (child_idir / "summary.md").write_text("# Meetings Summary", encoding="utf-8")
 
@@ -642,7 +653,7 @@ class TestRegenPath:
         (child_kdir / "notes.md").write_text("# Notes", encoding="utf-8")
 
         # Pre-create child summary
-        child_idir = brain / "insights" / "initiative" / "meetings"
+        child_idir = managed_insights(brain, "initiative/meetings")
         child_idir.mkdir(parents=True)
         (child_idir / "summary.md").write_text("# Meetings Summary", encoding="utf-8")
 
@@ -675,7 +686,7 @@ class TestRegenPath:
         (kdir / "doc.md").write_text("content", encoding="utf-8")
 
         # Create insight for child
-        idir = brain / "insights" / "parent" / "child"
+        idir = managed_insights(brain, "parent/child")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("child summary", encoding="utf-8")
         save_insight_state(
@@ -707,7 +718,7 @@ class TestRegenPath:
         (child_kdir / "doc.md").write_text("content", encoding="utf-8")
 
         # Create insights for child
-        child_idir = brain / "insights" / "area" / "sub"
+        child_idir = managed_insights(brain, "area/sub")
         child_idir.mkdir(parents=True)
         (child_idir / "summary.md").write_text("summary", encoding="utf-8")
         save_insight_state(
@@ -839,7 +850,7 @@ class TestRegenPath:
         (kdir / "doc.md").write_text("# Content", encoding="utf-8")
 
         # Create existing summary
-        idir = brain / "insights" / "project"
+        idir = managed_insights(brain, "project")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("# Existing Summary", encoding="utf-8")
 
@@ -869,7 +880,7 @@ class TestRegenPath:
             kdir = brain / "knowledge" / leaf
             kdir.mkdir(parents=True)
             (kdir / "doc.md").write_text(f"content for {leaf}", encoding="utf-8")
-            idir = brain / "insights" / leaf
+            idir = managed_insights(brain, leaf)
             idir.mkdir(parents=True)
             (idir / "summary.md").write_text(f"# Summary for {leaf}", encoding="utf-8")
             save_insight_state(
@@ -878,7 +889,7 @@ class TestRegenPath:
             )
 
         # Parent also has pre-v18 state
-        pdir = brain / "insights" / "parent"
+        pdir = managed_insights(brain, "parent")
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "summary.md").write_text("# Parent Summary", encoding="utf-8")
         save_insight_state(
@@ -980,11 +991,11 @@ class TestCollectChildSummaries:
         child_b = kdir / "beta"
         child_b.mkdir()
 
-        idir_a = brain / "insights" / "parent" / "alpha"
+        idir_a = managed_insights(brain, "parent/alpha")
         idir_a.mkdir(parents=True)
         (idir_a / "summary.md").write_text("Alpha summary", encoding="utf-8")
 
-        idir_b = brain / "insights" / "parent" / "beta"
+        idir_b = managed_insights(brain, "parent/beta")
         idir_b.mkdir(parents=True)
         (idir_b / "summary.md").write_text("Beta summary", encoding="utf-8")
 
@@ -1006,7 +1017,7 @@ class TestCollectChildSummaries:
         child = brain / "knowledge" / "area"
         child.mkdir(parents=True)
 
-        idir = brain / "insights" / "area"
+        idir = managed_insights(brain, "area")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("Area summary", encoding="utf-8")
 
@@ -1086,7 +1097,7 @@ class TestStructuralHash:
         (child_a / "doc.md").write_text("content", encoding="utf-8")
 
         # Create child summary
-        idir = brain / "insights" / "parent" / "child-a"
+        idir = managed_insights(brain, "parent/child-a")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("summary a", encoding="utf-8")
 
@@ -1104,7 +1115,7 @@ class TestStructuralHash:
         child_b = kdir / "child-b"
         child_b.mkdir()
         (child_b / "doc.md").write_text("content b", encoding="utf-8")
-        child_b_idir = brain / "insights" / "parent" / "child-b"
+        child_b_idir = managed_insights(brain, "parent/child-b")
         child_b_idir.mkdir(parents=True)
         (child_b_idir / "summary.md").write_text("summary b", encoding="utf-8")
 
@@ -1335,31 +1346,31 @@ class TestGlobalContext:
         assert "knowledge/_core" in ctx
         assert "About Me" in ctx
 
-    def test_collects_schemas(self, brain):
-        """Global context inlines schemas files."""
+    def test_ignores_legacy_schemas(self, brain):
+        """Legacy top-level schemas files are ignored by v23 global context."""
         schemas = brain / "schemas" / "insights"
         schemas.mkdir(parents=True)
         (schemas / "summary.md").write_text("# Summary Schema", encoding="utf-8")
 
         invalidate_global_context_cache()
         ctx = _collect_global_context(brain, "some/path")
-        assert "schemas" in ctx
-        assert "Summary Schema" in ctx
+        assert "schemas" not in ctx
+        assert "Summary Schema" not in ctx
 
     def test_collects_insights_core(self, brain):
-        """Global context inlines insights/_core files."""
-        icore = brain / "insights" / "_core"
+        """Global context inlines co-located _core insights files."""
+        icore = managed_insights(brain, "_core")
         icore.mkdir(parents=True)
         (icore / "summary.md").write_text("# Core Summary", encoding="utf-8")
 
         invalidate_global_context_cache()
         ctx = _collect_global_context(brain, "some/path")
-        assert "insights/_core" in ctx
+        assert "knowledge/_core/.brain-sync/insights" in ctx
         assert "Core Summary" in ctx
 
     def test_excludes_journal(self, brain):
-        """Global context excludes insights/_core/journal."""
-        icore = brain / "insights" / "_core"
+        """Global context excludes co-located _core journal entries."""
+        icore = managed_insights(brain, "_core")
         journal = icore / "journal" / "2026-03"
         journal.mkdir(parents=True)
         (journal / "2026-03-08.md").write_text("# Journal entry", encoding="utf-8")
@@ -1369,8 +1380,8 @@ class TestGlobalContext:
         assert "Journal entry" not in ctx
 
     def test_skips_self_for_core_regen(self, brain):
-        """When regenerating _core, insights/_core/summary.md is excluded."""
-        icore = brain / "insights" / "_core"
+        """When regenerating _core, its own co-located summary is excluded."""
+        icore = managed_insights(brain, "_core")
         icore.mkdir(parents=True)
         (icore / "summary.md").write_text("# Self Reference", encoding="utf-8")
         (icore / "glossary.md").write_text("# Glossary", encoding="utf-8")
@@ -1404,7 +1415,7 @@ class TestPromptResult:
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-        idir = brain / "insights" / "leaf"
+        idir = managed_insights(brain, "leaf")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1418,7 +1429,7 @@ class TestPromptResult:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
         (kdir / "diagram.png").write_bytes(b"\x89PNG")
-        idir = brain / "insights" / "leaf"
+        idir = managed_insights(brain, "leaf")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1432,7 +1443,7 @@ class TestJournalOptIn:
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-        idir = brain / "insights" / "leaf"
+        idir = managed_insights(brain, "leaf")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1446,7 +1457,7 @@ class TestJournalOptIn:
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-        idir = brain / "insights" / "leaf"
+        idir = managed_insights(brain, "leaf")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1476,7 +1487,7 @@ class TestPromptVersionAndContent:
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-        idir = brain / "insights" / "leaf"
+        idir = managed_insights(brain, "leaf")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1489,7 +1500,7 @@ class TestPromptVersionAndContent:
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
-        idir = brain / "insights" / "leaf"
+        idir = managed_insights(brain, "leaf")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1523,7 +1534,7 @@ class TestOutputValidation:
         with patch("brain_sync.regen.invoke_claude", side_effect=valid_output):
             asyncio.run(regen_path(brain, "project"))
 
-        summary_path = brain / "insights" / "project" / "summary.md"
+        summary_path = managed_summary(brain, "project")
         assert summary_path.exists()
         assert "valid summary" in summary_path.read_text(encoding="utf-8")
 
@@ -1672,7 +1683,7 @@ class TestOversizedDetection:
         kdir = brain / "knowledge" / "big"
         kdir.mkdir(parents=True)
         (kdir / "huge.md").write_text("# Huge\n" + "x" * (CHUNK_TARGET_CHARS + 1000), encoding="utf-8")
-        idir = brain / "insights" / "big"
+        idir = managed_insights(brain, "big")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1686,7 +1697,7 @@ class TestOversizedDetection:
         kdir = brain / "knowledge" / "small"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Small doc\nSome content.", encoding="utf-8")
-        idir = brain / "insights" / "small"
+        idir = managed_insights(brain, "small")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1701,7 +1712,7 @@ class TestOversizedDetection:
         kdir = brain / "knowledge" / "b64"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text(content, encoding="utf-8")
-        idir = brain / "insights" / "b64"
+        idir = managed_insights(brain, "b64")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1743,7 +1754,7 @@ class TestChunkedRegenFlow:
         assert count >= 1
         # Should have been called multiple times: chunk calls + final merge
         assert call_count > 1
-        summary_path = brain / "insights" / "prd" / "summary.md"
+        summary_path = managed_summary(brain, "prd")
         assert summary_path.exists()
 
     def test_token_tracking_across_chunks(self, brain):
@@ -1798,7 +1809,7 @@ class TestTokenBudgetEnforcement:
         kdir.mkdir(parents=True)
         for i in range(20):
             (kdir / f"doc{i:02d}.md").write_text(f"# Doc {i}\n" + "x" * 25_000, encoding="utf-8")
-        idir = brain / "insights" / "many"
+        idir = managed_insights(brain, "many")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1815,7 +1826,7 @@ class TestTokenBudgetEnforcement:
         (kdir / "medium.md").write_text("# Medium\n" + "b" * 10_000, encoding="utf-8")
         (kdir / "large.md").write_text("# Large\n" + "c" * 50_000, encoding="utf-8")
         (kdir / "huge.md").write_text("# Huge\n" + "d" * 80_000, encoding="utf-8")
-        idir = brain / "insights" / "vary"
+        idir = managed_insights(brain, "vary")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1833,7 +1844,7 @@ class TestTokenBudgetEnforcement:
         kdir.mkdir(parents=True)
         for i in range(5):
             (kdir / f"f{i}.md").write_text(f"# File {i}\nShort content.", encoding="utf-8")
-        idir = brain / "insights" / "tiny"
+        idir = managed_insights(brain, "tiny")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1845,7 +1856,7 @@ class TestTokenBudgetEnforcement:
         kdir = brain / "knowledge" / "defer"
         kdir.mkdir(parents=True)
         (kdir / "big.md").write_text("# Big\n" + "x" * 50_000, encoding="utf-8")
-        idir = brain / "insights" / "defer"
+        idir = managed_insights(brain, "defer")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1863,7 +1874,7 @@ class TestTokenBudgetEnforcement:
         kdir.mkdir(parents=True)
         # Create a small file that fits easily
         (kdir / "fits.md").write_text("# Fits\nok", encoding="utf-8")
-        idir = brain / "insights" / "exact"
+        idir = managed_insights(brain, "exact")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1877,7 +1888,7 @@ class TestTokenBudgetEnforcement:
         kdir.mkdir(parents=True)
         for i in range(3):
             (kdir / f"big{i}.md").write_text(f"# Big {i}\n" + "z" * 30_000, encoding="utf-8")
-        idir = brain / "insights" / "allbig"
+        idir = managed_insights(brain, "allbig")
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
@@ -1918,7 +1929,7 @@ class TestTokenBudgetEnforcement:
         assert count >= 1
         # Multiple calls: chunk calls for deferred files + final merge
         assert call_count > 1
-        summary_path = brain / "insights" / "e2e" / "summary.md"
+        summary_path = managed_summary(brain, "e2e")
         assert summary_path.exists()
 
 
@@ -1986,12 +1997,12 @@ class TestJournalWriting:
             asyncio.run(regen_path(brain, "project", config=config))
 
         # Summary written
-        summary_path = brain / "insights" / "project" / "summary.md"
+        summary_path = managed_summary(brain, "project")
         assert summary_path.exists()
         assert "MCP decision" in summary_path.read_text(encoding="utf-8")
 
         # Journal written
-        journal_dir = brain / "insights" / "project" / "journal"
+        journal_dir = managed_insights(brain, "project") / "journal"
         assert journal_dir.exists()
         journal_files = list(journal_dir.rglob("*.md"))
         assert len(journal_files) == 1
@@ -2004,16 +2015,14 @@ class TestJournalWriting:
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc\nSome content here.", encoding="utf-8")
-        idir = brain / "insights" / "project"
+        idir = managed_insights(brain, "project")
         idir.mkdir(parents=True)
         # Write an existing summary that will be near-identical to Claude's output
         existing = "# Project Summary\nThis is the existing summary."
         (idir / "summary.md").write_text(existing, encoding="utf-8")
 
         # Claude returns near-identical summary but with a journal entry
-        structured_output = (
-            f"<summary>\n{existing}\n</summary>\n\n" "<journal>\nMinor context update noted.\n</journal>"
-        )
+        structured_output = f"<summary>\n{existing}\n</summary>\n\n<journal>\nMinor context update noted.\n</journal>"
 
         async def mock_invoke(prompt, cwd, **kwargs):
             return ClaudeResult(success=True, output=structured_output)
@@ -2033,7 +2042,7 @@ class TestJournalWriting:
 
     def test_journal_append_same_day(self, tmp_path):
         """Two journal writes on the same day append to the same file."""
-        insights_dir = tmp_path / "insights" / "area"
+        insights_dir = managed_insights(tmp_path, "area")
         insights_dir.mkdir(parents=True)
 
         _write_journal_entry(insights_dir, "First entry.", "abc123", "area")
@@ -2063,10 +2072,10 @@ class TestJournalWriting:
             asyncio.run(regen_path(brain, "project", config=config))
 
         # Summary written
-        assert (brain / "insights" / "project" / "summary.md").exists()
+        assert managed_summary(brain, "project").exists()
 
         # No journal directory created
-        journal_dir = brain / "insights" / "project" / "journal"
+        journal_dir = managed_insights(brain, "project") / "journal"
         assert not journal_dir.exists()
 
 
@@ -2318,7 +2327,7 @@ class TestRegenSingleFolder:
 
         assert result.action == "regenerated"
         assert result.knowledge_path == "project"
-        assert (brain / "insights" / "project" / "summary.md").exists()
+        assert managed_summary(brain, "project").exists()
 
     def test_unchanged_returns_skipped(self, brain):
         """Matching content hash returns 'skipped_unchanged'."""
@@ -2366,16 +2375,11 @@ class TestRegenSingleFolder:
         assert result.action == "skipped_no_content"
 
     def test_cleaned_up_when_folder_missing(self, brain):
-        """Missing folder with stale insights returns 'cleaned_up'."""
-        # Create insights without knowledge
-        idir = brain / "insights" / "gone"
-        idir.mkdir(parents=True)
-        (idir / "summary.md").write_text("old", encoding="utf-8")
-        save_insight_state(brain, InsightState(knowledge_path="gone", content_hash="abc"))
+        """Missing folder clears stale state and returns 'cleaned_up'."""
+        save_insight_state(brain, InsightState(knowledge_path="gone", content_hash=None, regen_status="idle"))
 
         result = asyncio.run(regen_single_folder(brain, "gone"))
         assert result.action == "cleaned_up"
-        assert not idir.exists()
         assert load_insight_state(brain, "gone") is None
 
     def test_similarity_returns_skipped_similarity(self, brain):
@@ -2405,7 +2409,7 @@ class TestRegenSingleFolder:
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Content", encoding="utf-8")
-        idir = brain / "insights" / "project"
+        idir = managed_insights(brain, "project")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("# Old Summary", encoding="utf-8")
 
@@ -2597,7 +2601,7 @@ class TestRegenAllWave:
         (sub / "doc.md").write_text("# Sub", encoding="utf-8")
 
         # Create pre-v18 state for sub (with existing summary)
-        idir = brain / "insights" / "area" / "sub"
+        idir = managed_insights(brain, "area/sub")
         idir.mkdir(parents=True)
         (idir / "summary.md").write_text("# Existing Summary", encoding="utf-8")
         save_insight_state(
@@ -2611,7 +2615,8 @@ class TestRegenAllWave:
             ),
         )
         # Also create pre-v18 state for parent
-        pdir = brain / "insights" / "area"
+        pdir = managed_insights(brain, "area")
+        pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "summary.md").write_text("# Parent Summary", encoding="utf-8")
         save_insight_state(
             brain,

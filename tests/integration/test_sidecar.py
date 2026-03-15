@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_insights_dir, area_summary_path
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
 from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
@@ -16,6 +17,10 @@ pytestmark = pytest.mark.integration
 
 def _config() -> RegenConfig:
     return RegenConfig(model="fake-model", effort="low", timeout=30)
+
+
+def _insights_dir(root: Path, knowledge_path: str) -> Path:
+    return area_insights_dir(root, knowledge_path)
 
 
 class TestSidecarAfterRegen:
@@ -29,7 +34,7 @@ class TestSidecarAfterRegen:
         result = await regen_single_folder(brain, "project", config=_config(), backend=FakeBackend(mode="stable"))
         assert result.action == "regenerated"
 
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         assert meta.content_hash is not None
         assert meta.summary_hash is not None
@@ -43,7 +48,7 @@ class TestSidecarAfterRegen:
 
         await regen_single_folder(brain, "project", config=_config(), backend=FakeBackend(mode="stable"))
 
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         istate = load_insight_state(brain, "project")
         assert meta is not None
         assert istate is not None
@@ -59,7 +64,7 @@ class TestSidecarAfterRegen:
         config = _config()
 
         await regen_single_folder(brain, "project", config=config, backend=backend)
-        sidecar_path = brain / "insights" / "project" / SIDECAR_FILENAME
+        sidecar_path = _insights_dir(brain, "project") / SIDECAR_FILENAME
         mtime_before = sidecar_path.stat().st_mtime
 
         # Second run — unchanged
@@ -76,7 +81,7 @@ class TestSidecarAfterRegen:
         config = _config()
 
         await regen_single_folder(brain, "project", config=config, backend=backend)
-        meta1 = read_regen_meta(brain / "insights" / "project")
+        meta1 = read_regen_meta(_insights_dir(brain, "project"))
         assert meta1 is not None
 
         # Add a new child dir (causes structure change without content change)
@@ -87,7 +92,7 @@ class TestSidecarAfterRegen:
         await regen_single_folder(brain, "project", config=config, backend=backend)
         # This is a content change since child summaries are part of content
         # But let's check sidecar was updated regardless
-        meta2 = read_regen_meta(brain / "insights" / "project")
+        meta2 = read_regen_meta(_insights_dir(brain, "project"))
         assert meta2 is not None
         assert meta2.structure_hash != meta1.structure_hash
 
@@ -99,7 +104,7 @@ class TestSidecarAfterRegen:
         config = _config()
 
         await regen_single_folder(brain, "project", config=config, backend=backend)
-        assert read_regen_meta(brain / "insights" / "project") is not None
+        assert read_regen_meta(_insights_dir(brain, "project")) is not None
 
         # Delete knowledge dir
         import shutil
@@ -108,7 +113,7 @@ class TestSidecarAfterRegen:
 
         result = await regen_single_folder(brain, "project", config=config, backend=backend)
         assert result.action == "cleaned_up"
-        assert not (brain / "insights" / "project" / SIDECAR_FILENAME).exists()
+        assert not (_insights_dir(brain, "project") / SIDECAR_FILENAME).exists()
 
     async def test_sidecar_write_failure_does_not_block_regen(self, brain: Path) -> None:
         from unittest.mock import patch
@@ -128,7 +133,7 @@ class TestSidecarAfterRegen:
 
         assert result.action == "regenerated"
         # Summary should still exist despite sidecar failure
-        assert (brain / "insights" / "project" / "summary.md").exists()
+        assert area_summary_path(brain, "project").exists()
         # regen_locks should still be updated (lifecycle persists even when sidecar fails)
         from brain_sync.state import _connect
 
@@ -141,7 +146,7 @@ class TestSidecarAfterRegen:
         finally:
             conn.close()
         # Sidecar should NOT exist (write was blocked)
-        assert not (brain / "insights" / "project" / SIDECAR_FILENAME).exists()
+        assert not (_insights_dir(brain, "project") / SIDECAR_FILENAME).exists()
 
     async def test_backfill_writes_sidecar(self, brain: Path) -> None:
         kdir = brain / "knowledge" / "project"
@@ -158,7 +163,7 @@ class TestSidecarAfterRegen:
         istate = load_insight_state(brain, "project")
         assert istate is not None
         write_regen_meta(
-            brain / "insights" / "project",
+            _insights_dir(brain, "project"),
             RegenMeta(
                 content_hash=istate.content_hash,
                 summary_hash=istate.summary_hash,
@@ -170,7 +175,7 @@ class TestSidecarAfterRegen:
         result = await regen_single_folder(brain, "project", config=config, backend=backend)
         assert result.action == "skipped_backfill"
 
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         assert meta.structure_hash is not None
         assert meta.content_hash is not None
@@ -206,16 +211,11 @@ class TestSidecarPartialMerge:
         child_new = kdir / "sub-renamed"
         child.rename(child_new)
         # Also move insights to match
-        i_sub = brain / "insights" / "project" / "sub"
-        i_sub_new = brain / "insights" / "project" / "sub-renamed"
-        if i_sub.exists():
-            i_sub.rename(i_sub_new)
-
         result = await regen_single_folder(brain, "project", config=config, backend=backend)
         # This should be skipped_rename (structure changed, content unchanged)
         assert result.action == "skipped_rename"
 
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         # content_hash and summary_hash come from DB (unchanged)
         assert meta.content_hash == istate_before.content_hash

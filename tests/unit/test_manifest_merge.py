@@ -34,7 +34,8 @@ def brain(tmp_path: Path) -> Path:
     root = tmp_path / "brain"
     root.mkdir()
     (root / "knowledge").mkdir()
-    (root / "insights").mkdir()
+    (root / ".brain-sync" / "sources").mkdir(parents=True)
+    (root / ".brain-sync" / "brain.json").write_text('{"version": 1}\n', encoding="utf-8")
     from brain_sync.state import _connect
 
     conn = _connect(root)
@@ -81,8 +82,7 @@ class TestLoadStateMerge:
 
         loaded = load_state(brain)
         ss = loaded.sources[CONFLUENCE_CID]
-        # Intent from manifest
-        assert ss.fetch_children is True
+        # Durable intent from manifest
         assert ss.target_path == "eng"
         # Progress from DB
         assert ss.last_checked_utc == "2026-03-14T10:00:00"

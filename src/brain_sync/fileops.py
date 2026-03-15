@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from brain_sync.layout import INSIGHT_STATE_FILENAME, MANAGED_DIRNAME, SUMMARY_FILENAME
+
 # Canonical whitelist of file formats processed from knowledge/.
 # Text formats are inlined in regen prompts; images are passed to Claude
 # multimodal. Everything else is ignored.
@@ -17,9 +19,7 @@ KNOWLEDGE_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
 ADDFILE_EXTENSIONS = {".md", ".txt"}
 
 # Directories excluded from content discovery, regen, and watching.
-# _attachments/ contains binary attachments managed by the sync engine.
-# _sync-context/ is the legacy location (kept during transition period).
-EXCLUDED_DIRS = frozenset({"_attachments", "_sync-context"})
+EXCLUDED_DIRS = frozenset({MANAGED_DIRNAME, "_attachments", "_sync-context"})
 
 
 def win_long_path(p: Path) -> Path:
@@ -88,7 +88,7 @@ def write_if_changed(target: Path, markdown: str) -> bool:
 
 # Only these files are regenerable and safe to delete during cleanup.
 # Everything else (journal entries, future artifact types) is preserved automatically.
-REGENERABLE_FILES = frozenset({"summary.md", ".regen-meta.json"})
+REGENERABLE_FILES = frozenset({SUMMARY_FILENAME, INSIGHT_STATE_FILENAME})
 
 # Subdirectories within insights/ that contain non-regenerable artifacts.
 # These are NOT mirrors of knowledge/ folders and must be excluded from

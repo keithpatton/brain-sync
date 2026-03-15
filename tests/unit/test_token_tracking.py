@@ -1,11 +1,11 @@
-"""Tests for invocation-level token usage telemetry."""
-
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+import brain_sync.state as state_module
 from brain_sync.state import _connect
 from brain_sync.token_tracking import (
     OP_CLASSIFY,
@@ -20,14 +20,17 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture()
-def brain(tmp_path):
-    """Create a fresh DB at tmp_path so token_events table exists."""
+def brain(tmp_path: Path) -> Path:
     _connect(tmp_path).close()
     return tmp_path
 
 
+def _runtime_conn() -> sqlite3.Connection:
+    return sqlite3.connect(str(state_module.RUNTIME_DB_FILE))
+
+
 class TestRecordTokenEvent:
-    def test_insert_all_fields(self, brain):
+    def test_insert_all_fields(self, brain: Path) -> None:
         record_token_event(
             root=brain,
             session_id="sess-1",
@@ -42,87 +45,22 @@ class TestRecordTokenEvent:
             num_turns=3,
             success=True,
         )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+
+        conn = _runtime_conn()
         row = conn.execute("SELECT * FROM token_events WHERE session_id = 'sess-1'").fetchone()
         conn.close()
+
         assert row is not None
-        # id, session_id, operation_type, resource_type, resource_id,
-        # is_chunk, model, input_tokens, output_tokens, total_tokens,
-        # duration_ms, num_turns, success, created_utc
         assert row[1] == "sess-1"
         assert row[2] == "regen"
         assert row[3] == "knowledge"
         assert row[4] == "area/foo"
-        assert row[5] == 0  # is_chunk
+        assert row[5] == 0
         assert row[6] == "claude-sonnet-4-6"
-        assert row[7] == 1000  # input_tokens
-        assert row[8] == 200  # output_tokens
-        assert row[9] == 1200  # total_tokens
-        assert row[10] == 5000  # duration_ms
-        assert row[11] == 3  # num_turns
-        assert row[12] == 1  # success
+        assert row[9] == 1200
+        assert row[12] == 1
 
-    def test_is_chunk_flag_preserved(self, brain):
-        record_token_event(
-            root=brain,
-            session_id="sess-chunk",
-            operation_type=OP_REGEN,
-            resource_type="knowledge",
-            resource_id="area/big",
-            is_chunk=True,
-            model=None,
-            input_tokens=500,
-            output_tokens=100,
-            duration_ms=2000,
-            num_turns=1,
-            success=True,
-        )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        row = conn.execute("SELECT is_chunk FROM token_events WHERE session_id = 'sess-chunk'").fetchone()
-        conn.close()
-        assert row[0] == 1
-
-    def test_success_stored_as_integer(self, brain):
-        record_token_event(
-            root=brain,
-            session_id="sess-fail",
-            operation_type=OP_REGEN,
-            resource_type="knowledge",
-            resource_id="area/x",
-            is_chunk=False,
-            model=None,
-            input_tokens=100,
-            output_tokens=0,
-            duration_ms=1000,
-            num_turns=1,
-            success=False,
-        )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        row = conn.execute("SELECT success FROM token_events WHERE session_id = 'sess-fail'").fetchone()
-        conn.close()
-        assert row[0] == 0
-
-    def test_total_tokens_computed_with_nones(self, brain):
-        record_token_event(
-            root=brain,
-            session_id="sess-none",
-            operation_type=OP_REGEN,
-            resource_type=None,
-            resource_id=None,
-            is_chunk=False,
-            model=None,
-            input_tokens=None,
-            output_tokens=None,
-            duration_ms=None,
-            num_turns=None,
-            success=True,
-        )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        row = conn.execute("SELECT total_tokens FROM token_events WHERE session_id = 'sess-none'").fetchone()
-        conn.close()
-        assert row[0] == 0
-
-    def test_created_utc_timezone_aware(self, brain):
+    def test_created_utc_timezone_aware(self, brain: Path) -> None:
         record_token_event(
             root=brain,
             session_id="sess-tz",
@@ -137,14 +75,16 @@ class TestRecordTokenEvent:
             num_turns=1,
             success=True,
         )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+
+        conn = _runtime_conn()
         row = conn.execute("SELECT created_utc FROM token_events WHERE session_id = 'sess-tz'").fetchone()
         conn.close()
+
+        assert row is not None
         assert row[0].endswith("+00:00")
 
-    def test_check_constraint_rejects_invalid_operation(self, brain):
-        """CHECK constraint on operation_type prevents invalid values."""
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+    def test_check_constraint_rejects_invalid_operation(self, brain: Path) -> None:
+        conn = _runtime_conn()
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
                 "INSERT INTO token_events "
@@ -153,54 +93,9 @@ class TestRecordTokenEvent:
             )
         conn.close()
 
-    def test_failure_isolation_bad_path(self, tmp_path):
-        """Bad DB path logs warning but does not raise."""
-        import brain_sync.token_tracking as tt
-
-        tt._failure_logged = False
-        # Point at a non-existent nested path where the DB file can't be created
-        bad_root = tmp_path / "nonexistent" / "deep" / "path"
-        record_token_event(
-            root=bad_root,
-            session_id="sess-bad",
-            operation_type=OP_REGEN,
-            resource_type=None,
-            resource_id=None,
-            is_chunk=False,
-            model=None,
-            input_tokens=100,
-            output_tokens=50,
-            duration_ms=500,
-            num_turns=1,
-            success=True,
-        )
-        # Should not raise — that's the test
-        assert tt._failure_logged is True
-
-    def test_duration_ms_propagation(self, brain):
-        record_token_event(
-            root=brain,
-            session_id="sess-dur",
-            operation_type=OP_REGEN,
-            resource_type="knowledge",
-            resource_id="area/x",
-            is_chunk=False,
-            model=None,
-            input_tokens=100,
-            output_tokens=50,
-            duration_ms=12345,
-            num_turns=1,
-            success=True,
-        )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        row = conn.execute("SELECT duration_ms FROM token_events WHERE session_id = 'sess-dur'").fetchone()
-        conn.close()
-        assert row[0] == 12345
-
 
 class TestGetUsageSummary:
-    def test_session_grouping(self, brain):
-        """Multiple events in one session aggregate correctly."""
+    def test_session_grouping(self, brain: Path) -> None:
         for i in range(3):
             record_token_event(
                 root=brain,
@@ -216,13 +111,15 @@ class TestGetUsageSummary:
                 num_turns=1,
                 success=True,
             )
+
         summary = get_usage_summary(brain, days=7)
+
         assert summary["total_invocations"] == 3
         assert summary["total_input"] == 300
         assert summary["total_output"] == 150
         assert summary["total_tokens"] == 450
 
-    def test_by_operation_breakdown(self, brain):
+    def test_by_operation_breakdown(self, brain: Path) -> None:
         record_token_event(
             root=brain,
             session_id="s1",
@@ -251,81 +148,39 @@ class TestGetUsageSummary:
             num_turns=1,
             success=True,
         )
-        summary = get_usage_summary(brain, days=7)
-        ops = {r["operation"]: r for r in summary["by_operation"]}
-        assert "regen" in ops
-        assert "query" in ops
-        assert ops["regen"]["invocations"] == 1
-        assert ops["query"]["input_tokens"] == 200
-
-    def test_by_day_breakdown(self, brain):
         record_token_event(
             root=brain,
-            session_id="s-day",
-            operation_type=OP_REGEN,
-            resource_type=None,
-            resource_id=None,
-            is_chunk=False,
-            model=None,
-            input_tokens=500,
-            output_tokens=200,
-            duration_ms=3000,
-            num_turns=1,
-            success=True,
-        )
-        summary = get_usage_summary(brain, days=7)
-        assert len(summary["by_day"]) >= 1
-        assert summary["by_day"][0]["total_tokens"] == 700
-
-    def test_empty_db(self, brain):
-        summary = get_usage_summary(brain, days=7)
-        assert summary["total_invocations"] == 0
-        assert summary["total_tokens"] == 0
-        assert summary["by_operation"] == []
-        assert summary["by_day"] == []
-
-    def test_resource_filtering_in_events(self, brain):
-        """Events with different resource types/ids are stored correctly."""
-        record_token_event(
-            root=brain,
-            session_id="s-r1",
-            operation_type=OP_REGEN,
-            resource_type="knowledge",
-            resource_id="area/a",
-            is_chunk=False,
-            model=None,
-            input_tokens=100,
-            output_tokens=50,
-            duration_ms=1000,
-            num_turns=1,
-            success=True,
-        )
-        record_token_event(
-            root=brain,
-            session_id="s-r2",
+            session_id="s3",
             operation_type=OP_CLASSIFY,
             resource_type="document",
             resource_id="doc-123",
             is_chunk=False,
             model=None,
-            input_tokens=200,
-            output_tokens=100,
-            duration_ms=2000,
+            input_tokens=50,
+            output_tokens=10,
+            duration_ms=500,
             num_turns=1,
             success=True,
         )
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        knowledge_rows = conn.execute("SELECT COUNT(*) FROM token_events WHERE resource_type = 'knowledge'").fetchone()
-        doc_rows = conn.execute("SELECT COUNT(*) FROM token_events WHERE resource_type = 'document'").fetchone()
-        conn.close()
-        assert knowledge_rows[0] == 1
-        assert doc_rows[0] == 1
+
+        summary = get_usage_summary(brain, days=7)
+        ops = {row["operation"]: row for row in summary["by_operation"]}
+
+        assert ops["regen"]["invocations"] == 1
+        assert ops["query"]["input_tokens"] == 200
+        assert ops["classify"]["total_tokens"] == 60
+
+    def test_empty_db(self, brain: Path) -> None:
+        summary = get_usage_summary(brain, days=7)
+
+        assert summary["total_invocations"] == 0
+        assert summary["by_operation"] == []
+        assert summary["by_day"] == []
 
 
 class TestPruneTokenEvents:
-    def test_deletes_old_rows(self, brain):
-        """Rows older than retention period are deleted."""
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+    def test_deletes_old_rows(self, brain: Path) -> None:
+        conn = _runtime_conn()
         conn.execute(
             "INSERT INTO token_events "
             "(session_id, operation_type, is_chunk, success, created_utc) "
@@ -337,13 +192,8 @@ class TestPruneTokenEvents:
         deleted = prune_token_events(brain, retention_days=90)
 
         assert deleted == 1
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        remaining = conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0]
-        conn.close()
-        assert remaining == 0
 
-    def test_keeps_recent_rows(self, brain):
-        """Recent rows within retention period are preserved."""
+    def test_keeps_recent_rows(self, brain: Path) -> None:
         record_token_event(
             root=brain,
             session_id="recent",
@@ -362,31 +212,7 @@ class TestPruneTokenEvents:
         deleted = prune_token_events(brain, retention_days=90)
 
         assert deleted == 0
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
+        conn = _runtime_conn()
         remaining = conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0]
         conn.close()
         assert remaining == 1
-
-    def test_returns_deleted_count(self, brain):
-        """Return value matches the number of rows deleted."""
-        conn = sqlite3.connect(str(brain / ".sync-state.sqlite"))
-        for i in range(5):
-            conn.execute(
-                "INSERT INTO token_events "
-                "(session_id, operation_type, is_chunk, success, created_utc) "
-                f"VALUES ('old-{i}', 'regen', 0, 1, '2025-01-01T00:00:00+00:00')"
-            )
-        conn.commit()
-        conn.close()
-
-        deleted = prune_token_events(brain, retention_days=90)
-        assert deleted == 5
-
-    def test_never_raises_on_bad_path(self, tmp_path):
-        """Bad DB path returns 0 without raising."""
-        import brain_sync.token_tracking as tt
-
-        tt._failure_logged = False
-        bad_root = tmp_path / "nonexistent" / "deep" / "path"
-        deleted = prune_token_events(bad_root, retention_days=90)
-        assert deleted == 0

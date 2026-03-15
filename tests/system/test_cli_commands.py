@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_summary_path
+from brain_sync.manifest import read_source_manifest
 from tests.e2e.harness.cli import CliRunner
 
 pytestmark = pytest.mark.system
@@ -21,13 +23,13 @@ class TestInit:
     """brain-sync init via subprocess."""
 
     def test_creates_structure(self, cli: CliRunner, brain_root: Path):
-        """Init creates the full directory tree and DB."""
+        """Init creates the v23 managed brain structure."""
         result = cli.run("init", str(brain_root))
         assert result.returncode == 0, f"Init failed: {result.stderr}"
         assert (brain_root / "knowledge").is_dir()
-        assert (brain_root / "insights").is_dir()
+        assert not (brain_root / "insights").exists()
         assert (brain_root / "knowledge" / "_core").is_dir()
-        assert (brain_root / ".sync-state.sqlite").exists()
+        assert (brain_root / ".brain-sync" / "brain.json").is_file()
 
     def test_idempotent(self, cli: CliRunner, brain_root: Path):
         """Running init twice succeeds without error."""
@@ -73,14 +75,10 @@ class TestAdd:
         )
         assert result.returncode == 0, f"Add failed: {result.stderr}"
 
-        # Verify manifest exists (Phase 2: manifests are authoritative, not DB)
-        import json
-
-        manifest_path = brain_root / ".brain-sync" / "sources" / "test-123.json"
-        assert manifest_path.exists(), "Manifest not found"
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert data["canonical_id"] == "test:123"
-        assert data["target_path"] == "area"
+        manifest = read_source_manifest(brain_root, "test:123")
+        assert manifest is not None
+        assert manifest.canonical_id == "test:123"
+        assert manifest.target_path == "area"
 
     def test_add_duplicate_rejects(self, cli: CliRunner, brain_root: Path):
         """Adding the same source twice does not crash (warns instead)."""
@@ -105,7 +103,7 @@ class TestAdd:
 class TestRemove:
     """brain-sync remove via subprocess."""
 
-    def test_remove_existing(self, cli: CliRunner, brain_root: Path):
+    def test_remove_existing(self, cli: CliRunner, brain_root: Path, config_dir: Path):
         """Remove a registered source succeeds."""
         cli.run("init", str(brain_root))
         cli.run("add", "test://doc/rm1", "--path", "area", "--root", str(brain_root))
@@ -113,7 +111,7 @@ class TestRemove:
         assert result.returncode == 0
 
         # Verify removed from DB
-        conn = sqlite3.connect(str(brain_root / ".sync-state.sqlite"))
+        conn = sqlite3.connect(str(config_dir / "db" / "brain-sync.sqlite"))
         row = conn.execute("SELECT 1 FROM sync_cache WHERE canonical_id = 'test:rm1'").fetchone()
         conn.close()
         assert row is None
@@ -141,13 +139,9 @@ class TestMove:
         result = cli.run("move", "test:mv1", "--to", "new-area", "--root", str(brain_root))
         assert result.returncode == 0, f"Move failed: {result.stderr}"
 
-        # Verify manifest has updated target_path (Phase 2: manifests are authoritative)
-        import json
-
-        manifest_path = brain_root / ".brain-sync" / "sources" / "test-mv1.json"
-        assert manifest_path.exists(), "Manifest not found"
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert data["target_path"] == "new-area"
+        manifest = read_source_manifest(brain_root, "test:mv1")
+        assert manifest is not None
+        assert manifest.target_path == "new-area"
 
     def test_move_nonexistent_exits_cleanly(self, cli: CliRunner, brain_root: Path):
         """Moving a nonexistent source exits cleanly."""
@@ -254,7 +248,7 @@ class TestRegen:
     """brain-sync regen via subprocess with fake backend."""
 
     def test_regen_creates_summary(self, cli: CliRunner, brain_root: Path):
-        """Regen via subprocess creates summary.md."""
+        """Regen via subprocess creates the co-located summary."""
         cli.run("init", str(brain_root))
         kdir = brain_root / "knowledge" / "project"
         kdir.mkdir(parents=True)
@@ -262,7 +256,7 @@ class TestRegen:
 
         result = cli.run("regen", "--root", str(brain_root), "project")
         assert result.returncode == 0, f"Regen failed: {result.stderr}"
-        summary = brain_root / "insights" / "project" / "summary.md"
+        summary = area_summary_path(brain_root, "project")
         assert summary.exists()
 
     def test_regen_all(self, cli: CliRunner, brain_root: Path):
@@ -315,10 +309,11 @@ class TestErrorPaths:
         # We just verify it didn't hang or produce a Python traceback
         assert "Traceback" not in result.stderr
 
-    def test_cli_handles_corrupt_db(self, cli: CliRunner, brain_root: Path):
+    def test_cli_handles_corrupt_db(self, cli: CliRunner, brain_root: Path, config_dir: Path):
         """CLI handles a corrupt DB gracefully."""
         cli.run("init", str(brain_root))
-        db_path = brain_root / ".sync-state.sqlite"
+        db_path = config_dir / "db" / "brain-sync.sqlite"
+        cli.run("list", "--root", str(brain_root))
         # Corrupt the DB by dropping a table
         conn = sqlite3.connect(str(db_path))
         conn.execute("DROP TABLE IF EXISTS sources")

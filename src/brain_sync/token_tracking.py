@@ -11,8 +11,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from brain_sync.config import load_config
-from brain_sync.state import STATE_FILENAME
+from brain_sync.config import RUNTIME_DB_FILE, load_config
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ _failure_logged = False
 
 
 def _db_path(root: Path) -> Path:
-    return root / STATE_FILENAME
+    return RUNTIME_DB_FILE
 
 
 def record_token_event(

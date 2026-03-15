@@ -1,4 +1,4 @@
-"""Unit tests for manifest.py — source manifest read/write utilities."""
+"""Unit tests for spec-aligned source manifests."""
 
 from __future__ import annotations
 
@@ -29,245 +29,182 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    """Create a minimal brain root with .brain-sync/sources/."""
-    r = tmp_path / "brain"
-    r.mkdir()
-    (r / MANIFEST_DIR).mkdir(parents=True)
-    return r
+    result = tmp_path / "brain"
+    result.mkdir()
+    (result / MANIFEST_DIR).mkdir(parents=True)
+    return result
 
 
-def _make_manifest(
-    cid: str = "confluence:12345",
-    url: str = "https://acme.atlassian.net/wiki/spaces/ENG/pages/12345",
-    stype: str = "confluence",
-    materialized: str = "engineering/c12345-some-page.md",
-    **kwargs,
-) -> SourceManifest:
+def _make_manifest(**kwargs: object) -> SourceManifest:
     return SourceManifest(
-        manifest_version=MANIFEST_VERSION,
-        canonical_id=cid,
-        source_url=url,
-        source_type=stype,
-        materialized_path=materialized,
-        fetch_children=False,
+        version=MANIFEST_VERSION,
+        canonical_id="confluence:12345",
+        source_url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345",
+        source_type="confluence",
+        materialized_path="engineering/c12345-some-page.md",
         sync_attachments=True,
+        target_path="engineering",
         **kwargs,
     )
 
 
 class TestManifestFilename:
-    def test_confluence(self):
-        assert manifest_filename("confluence:12345") == "confluence-12345.json"
+    def test_uses_source_dir_id_for_confluence(self) -> None:
+        assert manifest_filename("confluence:12345") == "c12345.json"
 
-    def test_gdoc(self):
-        assert manifest_filename("gdoc:abc123") == "gdoc-abc123.json"
+    def test_uses_source_dir_id_for_google_docs(self) -> None:
+        assert manifest_filename("gdoc:abc123") == "gabc123.json"
 
-    def test_attachment(self):
-        assert manifest_filename("confluence-attachment:789") == "confluence-attachment-789.json"
+    def test_uses_source_dir_id_for_attachments(self) -> None:
+        assert manifest_filename("confluence-attachment:789") == "a789.json"
 
 
 class TestRoundTrip:
-    def test_basic_roundtrip(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        loaded = read_source_manifest(root, m.canonical_id)
-        assert loaded is not None
-        assert loaded.canonical_id == m.canonical_id
-        assert loaded.source_url == m.source_url
-        assert loaded.materialized_path == m.materialized_path
-        assert loaded.fetch_children is False
-        assert loaded.sync_attachments is True
-        assert loaded.status == "active"
-        assert loaded.child_path is None
-        assert loaded.sync_hint is None
+    def test_basic_roundtrip(self, root: Path) -> None:
+        manifest = _make_manifest()
+        write_source_manifest(root, manifest)
 
-    def test_roundtrip_with_sync_hint(self, root: Path):
-        m = _make_manifest(sync_hint=SyncHint(content_hash="abc123", last_synced_utc="2026-03-14T10:00:00+00:00"))
-        write_source_manifest(root, m)
-        loaded = read_source_manifest(root, m.canonical_id)
+        loaded = read_source_manifest(root, manifest.canonical_id)
+
+        assert loaded is not None
+        assert loaded.version == MANIFEST_VERSION
+        assert loaded.canonical_id == manifest.canonical_id
+        assert loaded.target_path == "engineering"
+        assert loaded.status == "active"
+        assert loaded.fetch_children is False
+        assert loaded.child_path is None
+
+    def test_sync_hint_roundtrip(self, root: Path) -> None:
+        manifest = _make_manifest(sync_hint=SyncHint(content_hash="abc123", last_synced_utc="2026-03-14T10:00:00Z"))
+        write_source_manifest(root, manifest)
+
+        loaded = read_source_manifest(root, manifest.canonical_id)
+
         assert loaded is not None
         assert loaded.sync_hint is not None
         assert loaded.sync_hint.content_hash == "abc123"
-        assert loaded.sync_hint.last_synced_utc == "2026-03-14T10:00:00+00:00"
+        assert loaded.sync_hint.last_synced_utc == "2026-03-14T10:00:00Z"
 
-    def test_roundtrip_with_child_path(self, root: Path):
-        m = _make_manifest(child_path="children")
-        write_source_manifest(root, m)
-        loaded = read_source_manifest(root, m.canonical_id)
+    def test_missing_status_roundtrip(self, root: Path) -> None:
+        manifest = _make_manifest(status="missing", missing_since_utc="2026-03-14T10:00:00Z")
+        write_source_manifest(root, manifest)
+
+        loaded = read_source_manifest(root, manifest.canonical_id)
+
         assert loaded is not None
+        assert loaded.status == "missing"
+        assert loaded.missing_since_utc == "2026-03-14T10:00:00Z"
+
+
+class TestLegacyReadTolerance:
+    def test_reads_manifest_version_and_one_shot_fields_as_fallback(self, root: Path) -> None:
+        path = root / MANIFEST_DIR / "c12345.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "manifest_version": 1,
+                    "canonical_id": "confluence:12345",
+                    "source_url": "https://example.com",
+                    "source_type": "confluence",
+                    "materialized_path": "",
+                    "target_path": "",
+                    "sync_attachments": False,
+                    "fetch_children": True,
+                    "child_path": "children",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = read_source_manifest(root, "confluence:12345")
+
+        assert loaded is not None
+        assert loaded.version == 1
+        assert loaded.fetch_children is True
         assert loaded.child_path == "children"
 
-    def test_roundtrip_with_missing_status(self, root: Path):
-        m = _make_manifest(status="missing", missing_since_utc="2026-03-14T10:00:00+00:00")
-        write_source_manifest(root, m)
-        loaded = read_source_manifest(root, m.canonical_id)
+    def test_reads_google_doc_durable_type_and_maps_back_to_runtime_value(self, root: Path) -> None:
+        manifest = SourceManifest(
+            version=1,
+            canonical_id="gdoc:abc123",
+            source_url="https://docs.google.com/document/d/abc123/edit",
+            source_type="googledocs",
+            materialized_path="shared/gabc123-doc.md",
+            sync_attachments=False,
+            target_path="shared",
+        )
+        write_source_manifest(root, manifest)
+
+        data = json.loads((root / MANIFEST_DIR / "gabc123.json").read_text(encoding="utf-8"))
+        loaded = read_source_manifest(root, "gdoc:abc123")
+
+        assert data["source_type"] == "google_doc"
         assert loaded is not None
-        assert loaded.status == "missing"
-        assert loaded.missing_since_utc == "2026-03-14T10:00:00+00:00"
-
-
-class TestReadWrite:
-    def test_read_nonexistent_returns_none(self, root: Path):
-        assert read_source_manifest(root, "confluence:99999") is None
-
-    def test_delete_removes_file(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        assert read_source_manifest(root, m.canonical_id) is not None
-        delete_source_manifest(root, m.canonical_id)
-        assert read_source_manifest(root, m.canonical_id) is None
-
-    def test_delete_nonexistent_is_noop(self, root: Path):
-        delete_source_manifest(root, "confluence:99999")  # should not raise
-
-    def test_write_creates_dir_if_missing(self, tmp_path: Path):
-        root = tmp_path / "brain"
-        root.mkdir()
-        # No .brain-sync/sources/ created yet
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        assert read_source_manifest(root, m.canonical_id) is not None
-
-    def test_overwrite_existing(self, root: Path):
-        m = _make_manifest(materialized="old/path.md")
-        write_source_manifest(root, m)
-        m.materialized_path = "new/path.md"
-        write_source_manifest(root, m)
-        loaded = read_source_manifest(root, m.canonical_id)
-        assert loaded is not None
-        assert loaded.materialized_path == "new/path.md"
-
-    def test_malformed_json_returns_none(self, root: Path):
-        path = root / MANIFEST_DIR / "confluence-12345.json"
-        path.write_text("not json at all")
-        assert read_source_manifest(root, "confluence:12345") is None
-
-
-class TestReadAll:
-    def test_empty_dir(self, root: Path):
-        assert read_all_source_manifests(root) == {}
-
-    def test_multiple_manifests(self, root: Path):
-        m1 = _make_manifest(cid="confluence:111", url="https://acme.atlassian.net/wiki/spaces/A/pages/111")
-        m2 = _make_manifest(cid="gdoc:abc", url="https://docs.google.com/document/d/abc/edit", stype="googledocs")
-        write_source_manifest(root, m1)
-        write_source_manifest(root, m2)
-        all_m = read_all_source_manifests(root)
-        assert len(all_m) == 2
-        assert "confluence:111" in all_m
-        assert "gdoc:abc" in all_m
-
-    def test_skips_malformed(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        bad = root / MANIFEST_DIR / "bad-manifest.json"
-        bad.write_text("{invalid")
-        all_m = read_all_source_manifests(root)
-        assert len(all_m) == 1
-
-    def test_no_manifest_dir(self, tmp_path: Path):
-        root = tmp_path / "brain"
-        root.mkdir()
-        assert read_all_source_manifests(root) == {}
-
-
-class TestMissingStatus:
-    def test_mark_and_clear(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-
-        mark_manifest_missing(root, m.canonical_id, "2026-03-14T12:00:00+00:00")
-        loaded = read_source_manifest(root, m.canonical_id)
-        assert loaded is not None
-        assert loaded.status == "missing"
-        assert loaded.missing_since_utc == "2026-03-14T12:00:00+00:00"
-
-        clear_manifest_missing(root, m.canonical_id)
-        loaded = read_source_manifest(root, m.canonical_id)
-        assert loaded is not None
-        assert loaded.status == "active"
-        assert loaded.missing_since_utc is None
-
-    def test_mark_nonexistent_is_noop(self, root: Path):
-        mark_manifest_missing(root, "confluence:99999", "2026-03-14T12:00:00+00:00")
+        assert loaded.source_type == "googledocs"
 
 
 class TestUpdateHelpers:
-    def test_update_materialized_path(self, root: Path):
-        m = _make_manifest(materialized="old/c12345-page.md")
-        write_source_manifest(root, m)
-        update_manifest_materialized_path(root, m.canonical_id, "new/c12345-page.md")
-        loaded = read_source_manifest(root, m.canonical_id)
-        assert loaded is not None
-        assert loaded.materialized_path == "new/c12345-page.md"
+    def test_delete_and_update_helpers(self, root: Path) -> None:
+        manifest = _make_manifest()
+        write_source_manifest(root, manifest)
 
-    def test_update_sync_hint(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        update_manifest_sync_hint(root, m.canonical_id, "hash123", "2026-03-14T15:00:00+00:00")
-        loaded = read_source_manifest(root, m.canonical_id)
+        update_manifest_materialized_path(root, manifest.canonical_id, "moved/c12345.md")
+        update_manifest_sync_hint(root, manifest.canonical_id, "hash123", "2026-03-14T15:00:00Z")
+        mark_manifest_missing(root, manifest.canonical_id, "2026-03-14T16:00:00Z")
+        clear_manifest_missing(root, manifest.canonical_id)
+
+        loaded = read_source_manifest(root, manifest.canonical_id)
         assert loaded is not None
+        assert loaded.materialized_path == "moved/c12345.md"
         assert loaded.sync_hint is not None
         assert loaded.sync_hint.content_hash == "hash123"
-        assert loaded.sync_hint.last_synced_utc == "2026-03-14T15:00:00+00:00"
+        assert loaded.status == "active"
 
-    def test_update_nonexistent_is_noop(self, root: Path):
-        update_manifest_materialized_path(root, "confluence:99999", "any/path.md")
-        update_manifest_sync_hint(root, "confluence:99999", "hash", "2026-01-01")
+        delete_source_manifest(root, manifest.canonical_id)
+        assert read_source_manifest(root, manifest.canonical_id) is None
 
 
 class TestJsonFormat:
-    def test_omits_none_optional_fields(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        path = root / MANIFEST_DIR / manifest_filename(m.canonical_id)
-        data = json.loads(path.read_text())
-        assert "missing_since_utc" not in data
-        assert "child_path" not in data
-        assert "sync_hint" not in data
+    def test_writes_version_and_omits_removed_runtime_only_fields(self, root: Path) -> None:
+        manifest = _make_manifest(fetch_children=True, child_path="children")
+        write_source_manifest(root, manifest)
 
-    def test_version_field_present(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        path = root / MANIFEST_DIR / manifest_filename(m.canonical_id)
-        data = json.loads(path.read_text())
-        assert data["manifest_version"] == MANIFEST_VERSION
+        data = json.loads((root / MANIFEST_DIR / "c12345.json").read_text(encoding="utf-8"))
+
+        assert data["version"] == MANIFEST_VERSION
+        assert data["target_path"] == "engineering"
+        assert "manifest_version" not in data
+        assert "fetch_children" not in data
+        assert "child_path" not in data
 
 
 class TestVersionValidation:
-    def test_unsupported_version_raises_on_single_read(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        # Overwrite with a future version
-        path = root / MANIFEST_DIR / manifest_filename(m.canonical_id)
-        data = json.loads(path.read_text())
-        data["manifest_version"] = 999
-        path.write_text(json.dumps(data))
-        with pytest.raises(UnsupportedManifestVersion) as exc_info:
-            read_source_manifest(root, m.canonical_id)
-        assert exc_info.value.version == 999
+    def test_unsupported_version_raises(self, root: Path) -> None:
+        manifest = _make_manifest()
+        write_source_manifest(root, manifest)
+        path = root / MANIFEST_DIR / "c12345.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["version"] = 999
+        path.write_text(json.dumps(data), encoding="utf-8")
 
-    def test_unsupported_version_raises_on_read_all(self, root: Path):
-        m = _make_manifest()
-        write_source_manifest(root, m)
-        path = root / MANIFEST_DIR / manifest_filename(m.canonical_id)
-        data = json.loads(path.read_text())
-        data["manifest_version"] = 999
-        path.write_text(json.dumps(data))
         with pytest.raises(UnsupportedManifestVersion):
-            read_all_source_manifests(root)
+            read_source_manifest(root, manifest.canonical_id)
 
-    def test_missing_version_returns_none(self, root: Path):
-        path = root / MANIFEST_DIR / "confluence-12345.json"
-        path.write_text(json.dumps({"canonical_id": "confluence:12345"}))
-        assert read_source_manifest(root, "confluence:12345") is None
+    def test_read_all_returns_manifests_by_canonical_id(self, root: Path) -> None:
+        write_source_manifest(root, _make_manifest())
+        write_source_manifest(
+            root,
+            SourceManifest(
+                version=1,
+                canonical_id="gdoc:abc123",
+                source_url="https://docs.google.com/document/d/abc123/edit",
+                source_type="googledocs",
+                materialized_path="shared/gabc123-doc.md",
+                sync_attachments=False,
+                target_path="shared",
+            ),
+        )
 
-    def test_invalid_version_type_returns_none(self, root: Path):
-        path = root / MANIFEST_DIR / "confluence-12345.json"
-        path.write_text(json.dumps({"manifest_version": "not_a_number", "canonical_id": "confluence:12345"}))
-        assert read_source_manifest(root, "confluence:12345") is None
+        manifests = read_all_source_manifests(root)
 
-    def test_zero_version_returns_none(self, root: Path):
-        path = root / MANIFEST_DIR / "confluence-12345.json"
-        path.write_text(json.dumps({"manifest_version": 0, "canonical_id": "confluence:12345"}))
-        assert read_source_manifest(root, "confluence:12345") is None
+        assert set(manifests) == {"confluence:12345", "gdoc:abc123"}

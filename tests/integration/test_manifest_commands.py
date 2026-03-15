@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.commands.init import init_brain
 from brain_sync.commands.sources import (
     add_source,
     move_source,
@@ -24,12 +25,10 @@ CONFLUENCE_CID = "confluence:12345"
 
 @pytest.fixture
 def brain(tmp_path: Path) -> Path:
-    """Create a brain with .brain-sync/sources/ and SQLite initialized."""
+    """Create a valid v23 brain with runtime DB initialized."""
     root = tmp_path / "brain"
     root.mkdir()
-    (root / "knowledge").mkdir()
-    (root / "insights").mkdir()
-    (root / ".brain-sync" / "sources").mkdir(parents=True)
+    init_brain(root)
     conn = _connect(root)
     conn.close()
     return root
@@ -64,9 +63,9 @@ class TestAddSourceWritesManifest:
         )
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
-        assert manifest.fetch_children is True
         assert manifest.sync_attachments is True
-        assert manifest.child_path == "children"
+        assert manifest.fetch_children is False
+        assert manifest.child_path is None
 
 
 class TestRemoveSourceDeletesManifest:
@@ -121,7 +120,7 @@ class TestUpdateSourceUpdatesManifest:
         update_source(brain, source=result.canonical_id, child_path="kids")
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
-        assert manifest.child_path == "kids"
+        assert manifest.child_path is None
 
 
 class TestReconcileBootstrapsMigration:

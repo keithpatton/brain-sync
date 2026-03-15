@@ -33,6 +33,7 @@ from brain_sync.fs_utils import (
     is_content_dir,
     is_readable_file,
 )
+from brain_sync.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
 from brain_sync.sidecar import RegenMeta, delete_regen_meta, load_regen_hashes, write_regen_meta
@@ -570,22 +571,20 @@ def _hash_directory(directory: Path) -> str:
 
 
 def _collect_global_context(root: Path, current_path: str) -> str:
-    """Collect and inline global context from knowledge/_core, schemas, insights/_core.
+    """Collect and inline global context from knowledge/_core and its managed insights.
 
     Uses a module-level cache keyed by content hash. Rebuilt only when files change.
     """
     global _global_context_cache
 
     core_dir = root / "knowledge" / "_core"
-    schemas_dir = root / "schemas"
-    insights_core_dir = root / "insights" / "_core"
+    insights_core_dir = area_insights_dir(root, "_core")
 
     # Fast path: if cache exists, validate via content hash before rebuilding
     with _context_cache_lock:
         if _global_context_cache is not None:
             combined = hashlib.sha256()
             combined.update(_hash_directory(core_dir).encode())
-            combined.update(_hash_directory(schemas_dir).encode())
             combined.update(_hash_directory(insights_core_dir).encode())
             content_hash = combined.hexdigest()
             if _global_context_cache.content_hash == content_hash:
@@ -600,7 +599,12 @@ def _collect_global_context(root: Path, current_path: str) -> str:
         parts: list[str] = []
         count = 0
         for p in sorted(core_dir.rglob("*")):
-            if p.is_file() and p.suffix.lower() in TEXT_EXTENSIONS and not p.name.startswith(("_", ".")):
+            if (
+                p.is_file()
+                and p.suffix.lower() in TEXT_EXTENSIONS
+                and not p.name.startswith(("_", "."))
+                and MANAGED_DIRNAME not in p.parts
+            ):
                 try:
                     content = p.read_text(encoding="utf-8")
                     rel = p.relative_to(core_dir)
@@ -612,24 +616,7 @@ def _collect_global_context(root: Path, current_path: str) -> str:
             sections.append("## Global Context: knowledge/_core\n" + "\n\n".join(parts))
             log.debug("Global context: %d files from knowledge/_core", count)
 
-    # 2. schemas
-    if schemas_dir.is_dir():
-        parts = []
-        count = 0
-        for p in sorted(schemas_dir.rglob("*")):
-            if p.is_file() and p.suffix.lower() in {".md", ".txt"} and not p.name.startswith("."):
-                try:
-                    content = p.read_text(encoding="utf-8")
-                    rel = p.relative_to(schemas_dir)
-                    parts.append(f"### {rel}\n```\n{content}\n```")
-                    count += 1
-                except (OSError, UnicodeDecodeError) as exc:
-                    log.debug("Skipping unreadable file %s: %s", p, exc)
-        if parts:
-            sections.append("## Global Context: schemas\n" + "\n\n".join(parts))
-            log.debug("Global context: %d files from schemas", count)
-
-    # 3. insights/_core (excluding journal/)
+    # 2. knowledge/_core/.brain-sync/insights (excluding journal/)
     if insights_core_dir.is_dir():
         parts = []
         count = 0
@@ -649,15 +636,14 @@ def _collect_global_context(root: Path, current_path: str) -> str:
                 except (OSError, UnicodeDecodeError) as exc:
                     log.debug("Skipping unreadable file %s: %s", p, exc)
         if parts:
-            sections.append("## Global Context: insights/_core\n" + "\n\n".join(parts))
-            log.debug("Global context: %d files from insights/_core", count)
+            sections.append("## Global Context: knowledge/_core/.brain-sync/insights\n" + "\n\n".join(parts))
+            log.debug("Global context: %d files from knowledge/_core/.brain-sync/insights", count)
 
     compiled = "\n\n".join(sections)
 
     # Compute hash for the freshly-built content to store in cache
     combined = hashlib.sha256()
     combined.update(_hash_directory(core_dir).encode())
-    combined.update(_hash_directory(schemas_dir).encode())
     combined.update(_hash_directory(insights_core_dir).encode())
     content_hash = combined.hexdigest()
 
@@ -1141,11 +1127,11 @@ def _collect_child_summaries(
     current_path: str,
     child_dirs: list[Path],
 ) -> dict[str, str]:
-    """Read existing child summaries from insights/."""
+    """Read existing child summaries from co-located area insights."""
     child_summaries: dict[str, str] = {}
     for child in child_dirs:
         child_rel = current_path + "/" + child.name if current_path else child.name
-        child_summary_path = root / "insights" / child_rel / "summary.md"
+        child_summary_path = area_summary_path(root, child_rel)
         if child_summary_path.exists():
             child_summaries[child.name] = child_summary_path.read_text(encoding="utf-8")
     return child_summaries
@@ -1183,7 +1169,7 @@ def classify_folder_change(
 
     # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
     if meta.structure_hash is None:
-        insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+        insights_dir = area_insights_dir(root, knowledge_path)
         if (insights_dir / "summary.md").exists():
             log.info("Backfilling structure_hash for %s (post-v18 migration)", knowledge_path or "(root)")
             # Load full DB state for lifecycle fields, update hashes
@@ -1274,7 +1260,7 @@ async def regen_single_folder(
     similarity_threshold = config.similarity_threshold
     current_path = knowledge_path
     knowledge_dir = root / "knowledge" / current_path if current_path else root / "knowledge"
-    insights_dir = root / "insights" / current_path if current_path else root / "insights"
+    insights_dir = area_insights_dir(root, current_path)
 
     # Guard: if knowledge dir doesn't exist, clean up stale insights
     if not knowledge_dir.is_dir():

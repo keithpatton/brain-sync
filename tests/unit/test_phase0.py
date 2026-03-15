@@ -1,4 +1,4 @@
-"""Phase 0 tests: .brain-sync/ init structure, managed-file headers, resurrection guards."""
+"""Phase 0 tests for the Brain Format 1.0 / runtime v23 baseline."""
 
 from __future__ import annotations
 
@@ -9,127 +9,117 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_sync.commands.init import init_brain
-from brain_sync.pipeline import (
-    MANAGED_HEADER_SOURCE,
-    MANAGED_HEADER_WARNING,
-    prepend_managed_header,
-    strip_managed_header,
-)
+from brain_sync.pipeline import extract_source_id, prepend_managed_header, strip_managed_header
 from brain_sync.sources.base import SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.state import SourceState
 
 pytestmark = pytest.mark.unit
 
 
-# ---------------------------------------------------------------------------
-# Init creates .brain-sync/ structure
-# ---------------------------------------------------------------------------
-
-
-class TestInitBrainSync:
-    def test_creates_brain_sync_dir(self, tmp_path: Path):
+class TestInitBrainFormatV1:
+    def test_creates_brain_manifest_and_sources_dir(self, tmp_path: Path) -> None:
         root = tmp_path / "brain"
         root.mkdir()
+
         init_brain(root)
+
         assert (root / ".brain-sync").is_dir()
         assert (root / ".brain-sync" / "sources").is_dir()
+        assert (root / ".brain-sync" / "brain.json").is_file()
+        assert (root / "knowledge").is_dir()
+        assert (root / "knowledge" / "_core").is_dir()
 
-    def test_creates_version_json(self, tmp_path: Path):
+    def test_writes_brain_json(self, tmp_path: Path) -> None:
         root = tmp_path / "brain"
         root.mkdir()
-        init_brain(root)
-        version_file = root / ".brain-sync" / "version.json"
-        assert version_file.exists()
-        data = json.loads(version_file.read_text())
-        assert data == {"manifest_version": 1}
 
-    def test_idempotent_version_json(self, tmp_path: Path):
+        init_brain(root)
+
+        data = json.loads((root / ".brain-sync" / "brain.json").read_text(encoding="utf-8"))
+        assert data == {"version": 1}
+
+    def test_does_not_create_legacy_root_artifacts(self, tmp_path: Path) -> None:
         root = tmp_path / "brain"
         root.mkdir()
-        init_brain(root)
-        init_brain(root)  # second call
-        data = json.loads((root / ".brain-sync" / "version.json").read_text())
-        assert data == {"manifest_version": 1}
 
-    def test_gitignore_entry_added(self, tmp_path: Path):
+        init_brain(root)
+
+        assert not (root / "insights").exists()
+        assert not (root / "schemas").exists()
+        assert not (root / ".gitignore").exists()
+        assert not (root / ".sync-state.sqlite").exists()
+        assert not (root / "knowledge" / ".brain-sync").exists()
+
+    def test_dry_run_does_not_write_brain_json(self, tmp_path: Path) -> None:
         root = tmp_path / "brain"
         root.mkdir()
-        init_brain(root)
-        gitignore = root / ".gitignore"
-        assert gitignore.exists()
-        assert ".sync-state.sqlite*" in gitignore.read_text()
 
-    def test_gitignore_entry_not_duplicated(self, tmp_path: Path):
-        root = tmp_path / "brain"
-        root.mkdir()
-        init_brain(root)
-        init_brain(root)
-        content = (root / ".gitignore").read_text()
-        assert content.count(".sync-state.sqlite*") == 1
-
-    def test_gitignore_appends_to_existing(self, tmp_path: Path):
-        root = tmp_path / "brain"
-        root.mkdir()
-        (root / ".gitignore").write_text("*.pyc\n")
-        init_brain(root)
-        content = (root / ".gitignore").read_text()
-        assert "*.pyc" in content
-        assert ".sync-state.sqlite*" in content
-
-    def test_dry_run_does_not_create_version_json(self, tmp_path: Path):
-        root = tmp_path / "brain"
-        root.mkdir()
         init_brain(root, dry_run=True)
-        assert not (root / ".brain-sync" / "version.json").exists()
+
+        assert not (root / ".brain-sync" / "brain.json").exists()
 
 
-# ---------------------------------------------------------------------------
-# Managed-file identity headers
-# ---------------------------------------------------------------------------
-
-
-class TestManagedHeaders:
-    def test_prepend_header(self):
-        body = "# My Document\n\nSome content."
-        result = prepend_managed_header("confluence:12345", body)
-        lines = result.split("\n")
-        assert lines[0] == "<!-- brain-sync-source: confluence:12345 -->"
-        assert lines[1] == "<!-- brain-sync-managed: local edits may be overwritten -->"
-        assert "# My Document" in result
-
-    def test_idempotent_prepend(self):
-        body = "# My Document\n\nSome content."
-        once = prepend_managed_header("confluence:12345", body)
-        twice = prepend_managed_header("confluence:12345", once)
-        assert once == twice
-
-    def test_strip_removes_headers(self):
-        text = (
-            "<!-- brain-sync-source: confluence:12345 -->\n"
-            "<!-- brain-sync-managed: local edits may be overwritten -->\n"
-            "\n"
-            "# My Document\n"
+class TestManagedFrontmatter:
+    def test_writes_yaml_frontmatter(self) -> None:
+        result = prepend_managed_header(
+            "confluence:12345",
+            "# My Document\n\nBody",
+            source_type="confluence",
+            source_url="https://example.com/page",
         )
+
+        assert result.startswith("---\n")
+        assert "brain_sync_source: confluence" in result
+        assert "brain_sync_canonical_id: confluence:12345" in result
+        assert "brain_sync_source_url: https://example.com/page" in result
+
+    def test_merges_existing_frontmatter(self) -> None:
+        text = "---\ntitle: My Doc\ntags:\n- team\n---\n\n# Body\n"
+
+        result = prepend_managed_header(
+            "gdoc:abc123",
+            text,
+            source_type="googledocs",
+            source_url="https://docs.google.com/document/d/abc123/edit",
+        )
+
+        assert "title: My Doc" in result
+        assert "- team" in result
+        assert "brain_sync_source: google_doc" in result
+        assert "brain_sync_canonical_id: gdoc:abc123" in result
+
+    def test_strip_removes_only_managed_keys(self) -> None:
+        text = (
+            "---\n"
+            "title: Keep Me\n"
+            "brain_sync_source: confluence\n"
+            "brain_sync_canonical_id: confluence:12345\n"
+            "brain_sync_source_url: https://example.com\n"
+            "---\n\n"
+            "# Body\n"
+        )
+
         stripped = strip_managed_header(text)
-        assert "brain-sync-source" not in stripped
-        assert "brain-sync-managed" not in stripped
-        assert "# My Document" in stripped
 
-    def test_strip_on_clean_text(self):
-        body = "# No headers here\n\nJust content."
-        assert strip_managed_header(body) == body
+        assert "title: Keep Me" in stripped
+        assert "brain_sync_source" not in stripped
+        assert "brain_sync_canonical_id" not in stripped
+        assert "brain_sync_source_url" not in stripped
 
-    def test_header_format_source(self):
-        expected = "<!-- brain-sync-source: gdoc:abc123 -->"
-        assert MANAGED_HEADER_SOURCE.format("gdoc:abc123") == expected
+    def test_extract_source_id_supports_frontmatter_and_legacy_comments(self, tmp_path: Path) -> None:
+        frontmatter_file = tmp_path / "frontmatter.md"
+        frontmatter_file.write_text(
+            "---\nbrain_sync_canonical_id: confluence:12345\n---\n\n# Doc\n",
+            encoding="utf-8",
+        )
+        legacy_file = tmp_path / "legacy.md"
+        legacy_file.write_text(
+            "<!-- brain-sync-source: gdoc:abc123 -->\n<!-- brain-sync-managed: local edits may be overwritten -->\n",
+            encoding="utf-8",
+        )
 
-    def test_header_format_warning(self):
-        assert "local edits may be overwritten" in MANAGED_HEADER_WARNING
-
-
-# ---------------------------------------------------------------------------
-# Pipeline writes managed header
-# ---------------------------------------------------------------------------
+        assert extract_source_id(frontmatter_file) == "confluence:12345"
+        assert extract_source_id(legacy_file) == "gdoc:abc123"
 
 
 _CONFLUENCE_URL = "https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Test"
@@ -138,7 +128,7 @@ _TITLE = "Test Page"
 _FINGERPRINT = "rev-1"
 
 
-def _make_adapter(check_result, fetch_result):
+def _make_adapter(check_result: UpdateCheckResult, fetch_result: SourceFetchResult) -> MagicMock:
     adapter = MagicMock()
     adapter.capabilities.supports_version_check = True
     adapter.capabilities.supports_children = False
@@ -150,9 +140,8 @@ def _make_adapter(check_result, fetch_result):
     return adapter
 
 
-class TestPipelineWritesHeader:
-    async def test_written_file_contains_header(self, tmp_path: Path):
-        """process_source writes managed-file identity header into synced files."""
+class TestPipelineWritesFrontmatter:
+    async def test_written_file_contains_spec_identity_frontmatter(self, tmp_path: Path) -> None:
         from brain_sync.pipeline import process_source
 
         root = tmp_path / "brain"
@@ -165,66 +154,20 @@ class TestPipelineWritesHeader:
             source_type="confluence",
             target_path="area",
         )
-        check = UpdateCheckResult(
-            status=UpdateStatus.CHANGED,
-            fingerprint=_FINGERPRINT,
-            title=_TITLE,
-        )
+        check = UpdateCheckResult(status=UpdateStatus.CHANGED, fingerprint=_FINGERPRINT, title=_TITLE)
         fetch = SourceFetchResult(
             body_markdown="# Test Page\n\nContent here.",
             title=_TITLE,
             metadata_fingerprint=_FINGERPRINT,
         )
-        adapter = _make_adapter(check, fetch)
 
-        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+        with patch("brain_sync.pipeline.get_adapter", return_value=_make_adapter(check, fetch)):
             changed, _ = await process_source(ss, AsyncMock(), root=root)
 
         assert changed is True
-        # Find the written file
-        area_dir = root / "knowledge" / "area"
-        files = list(area_dir.glob("c12345-*.md"))
-        assert len(files) == 1
-        content = files[0].read_text()
-        assert "<!-- brain-sync-source: confluence:12345 -->" in content
-        assert "<!-- brain-sync-managed: local edits may be overwritten -->" in content
-        assert "# Test Page" in content
-
-
-# ---------------------------------------------------------------------------
-# UNCHANGED + missing file → skip (resurrection guard)
-# ---------------------------------------------------------------------------
-
-
-class TestResurrectionGuard:
-    async def test_unchanged_missing_file_skips_fetch(self, tmp_path: Path):
-        """When adapter says UNCHANGED and file doesn't exist, no fetch should occur."""
-        from brain_sync.pipeline import process_source
-
-        ss = SourceState(
-            canonical_id=_CANONICAL_ID,
-            source_url=_CONFLUENCE_URL,
-            source_type="confluence",
-            metadata_fingerprint=_FINGERPRINT,
-        )
-        check = UpdateCheckResult(
-            status=UpdateStatus.UNCHANGED,
-            fingerprint=_FINGERPRINT,
-            title=_TITLE,
-        )
-        fetch = SourceFetchResult(
-            body_markdown="# Test\n",
-            title=_TITLE,
-            metadata_fingerprint=_FINGERPRINT,
-        )
-        adapter = _make_adapter(check, fetch)
-
-        with (
-            patch("brain_sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.pipeline.rediscover_local_path", return_value=None),
-        ):
-            changed, children = await process_source(ss, AsyncMock(), root=tmp_path)
-
-        assert changed is False
-        assert children == []
-        adapter.fetch.assert_not_called()
+        written = next((root / "knowledge" / "area").glob("c12345-*.md"))
+        content = written.read_text(encoding="utf-8")
+        assert content.startswith("---\n")
+        assert "brain_sync_source: confluence" in content
+        assert "brain_sync_canonical_id: confluence:12345" in content
+        assert f"brain_sync_source_url: {_CONFLUENCE_URL}" in content

@@ -11,6 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_insights_dir
+
+
+def _runtime_db_path() -> Path:
+    from brain_sync import config as runtime_config
+
+    return runtime_config.RUNTIME_DB_FILE
+
 
 def _tree_listing(directory: Path, prefix: str = "") -> str:
     """Generate a tree-style listing of a directory."""
@@ -65,12 +73,12 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):  # type
     brain = Path(tmp_path) / "brain"
     if brain.exists():
         knowledge = brain / "knowledge"
-        insights = brain / "insights"
+        insights = area_insights_dir(brain)
         (artifacts / "knowledge_tree.txt").write_text(_tree_listing(knowledge), encoding="utf-8")
         (artifacts / "insights_tree.txt").write_text(_tree_listing(insights), encoding="utf-8")
 
         # SQLite dump
-        db_path = brain / ".sync-state.sqlite"
+        db_path = _runtime_db_path()
         (artifacts / "db_dump.txt").write_text(_dump_sqlite(db_path), encoding="utf-8")
 
     # Daemon stdout/stderr (shut down if still running so pipes can be read)

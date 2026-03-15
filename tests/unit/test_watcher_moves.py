@@ -1,99 +1,71 @@
-"""Tests for watcher folder move mirroring."""
-
 from __future__ import annotations
 
 import queue
+import shutil
+from pathlib import Path
 
 import pytest
 from watchdog.events import DirMovedEvent
 
-from brain_sync.state import (
-    InsightState,
-    _connect,
-    load_insight_state,
-    save_insight_state,
+from brain_sync.manifest import (
+    MANIFEST_VERSION,
+    SourceManifest,
+    ensure_manifest_dir,
+    read_source_manifest,
+    write_source_manifest,
 )
+from brain_sync.state import InsightState, _connect, load_insight_state, save_insight_state
 from brain_sync.watcher import FolderMove, KnowledgeEventHandler, mirror_folder_move
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def brain(tmp_path):
+def brain(tmp_path: Path) -> Path:
     root = tmp_path / "brain"
-    root.mkdir()
-    (root / "knowledge").mkdir()
-    (root / "insights").mkdir()
+    (root / "knowledge").mkdir(parents=True)
+    (root / ".brain-sync" / "brain.json").parent.mkdir(parents=True, exist_ok=True)
+    (root / ".brain-sync" / "brain.json").write_text('{"version": 1}\n', encoding="utf-8")
     conn = _connect(root)
     conn.close()
     return root
 
 
 class TestMirrorFolderMove:
-    def test_mirrors_insights_folder(self, brain):
-        """Folder rename in knowledge/ mirrors to insights/."""
-        # Setup
-        k_old = brain / "knowledge" / "old-name"
-        k_old.mkdir()
-        (k_old / "doc.md").write_text("content", encoding="utf-8")
+    def test_updates_colocated_summary_paths_by_real_fs_move(self, brain: Path) -> None:
+        old_dir = brain / "knowledge" / "old-name"
+        old_dir.mkdir(parents=True)
+        (old_dir / ".brain-sync" / "insights").mkdir(parents=True)
+        (old_dir / ".brain-sync" / "insights" / "summary.md").write_text("summary", encoding="utf-8")
 
-        i_old = brain / "insights" / "old-name"
-        i_old.mkdir()
-        (i_old / "summary.md").write_text("summary", encoding="utf-8")
+        new_dir = brain / "knowledge" / "new-name"
+        shutil.move(str(old_dir), str(new_dir))
 
-        k_new = brain / "knowledge" / "new-name"
+        mirror_folder_move(brain, FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
 
-        move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
-        mirror_folder_move(brain, move)
+        assert not (brain / "knowledge" / "old-name").exists()
+        assert (brain / "knowledge" / "new-name" / ".brain-sync" / "insights" / "summary.md").exists()
 
-        # Insights should have moved
-        assert not (brain / "insights" / "old-name").exists()
-        assert (brain / "insights" / "new-name" / "summary.md").exists()
+    def test_updates_insight_state_path(self, brain: Path) -> None:
+        old_dir = brain / "knowledge" / "old-name"
+        (old_dir / ".brain-sync" / "insights").mkdir(parents=True)
+        save_insight_state(brain, InsightState(knowledge_path="old-name", content_hash="abc", regen_status="idle"))
+        save_insight_state(brain, InsightState(knowledge_path="old-name/sub", content_hash="def", regen_status="idle"))
 
-    def test_updates_insight_state_path(self, brain):
-        """insight_state DB rows updated after move."""
-        save_insight_state(
-            brain,
-            InsightState(
-                knowledge_path="old-name",
-                content_hash="abc",
-                regen_status="idle",
-            ),
-        )
-        save_insight_state(
-            brain,
-            InsightState(
-                knowledge_path="old-name/sub",
-                content_hash="def",
-                regen_status="idle",
-            ),
-        )
+        new_dir = brain / "knowledge" / "new-name"
+        shutil.move(str(old_dir), str(new_dir))
 
-        k_old = brain / "knowledge" / "old-name"
-        k_old.mkdir()
-        k_new = brain / "knowledge" / "new-name"
-
-        move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
-        mirror_folder_move(brain, move)
+        mirror_folder_move(brain, FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
 
         assert load_insight_state(brain, "old-name") is None
         assert load_insight_state(brain, "new-name") is not None
         assert load_insight_state(brain, "new-name/sub") is not None
 
-    def test_updates_source_target_paths(self, brain):
-        """Source target_paths updated in manifests after move."""
-        from brain_sync.manifest import (
-            MANIFEST_VERSION,
-            SourceManifest,
-            ensure_manifest_dir,
-            read_source_manifest,
-            write_source_manifest,
-        )
-
+    def test_updates_source_target_paths_in_manifests(self, brain: Path) -> None:
         ensure_manifest_dir(brain)
-        for cid, url, tp in [
-            ("test:123", "https://example.com/page", "old-name"),
-            ("test:456", "https://example.com/page2", "old-name/sub"),
+        for cid, url, target_path in [
+            ("confluence:123", "https://example.com/123", "old-name"),
+            ("confluence:456", "https://example.com/456", "old-name/sub"),
         ]:
             write_source_manifest(
                 brain,
@@ -103,81 +75,47 @@ class TestMirrorFolderMove:
                     source_url=url,
                     source_type="confluence",
                     materialized_path="",
-                    fetch_children=False,
                     sync_attachments=False,
-                    target_path=tp,
+                    target_path=target_path,
                 ),
             )
 
-        k_old = brain / "knowledge" / "old-name"
-        k_old.mkdir()
-        k_new = brain / "knowledge" / "new-name"
+        old_dir = brain / "knowledge" / "old-name"
+        old_dir.mkdir(parents=True)
+        new_dir = brain / "knowledge" / "new-name"
+        shutil.move(str(old_dir), str(new_dir))
 
-        move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
-        mirror_folder_move(brain, move)
+        mirror_folder_move(brain, FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
 
-        m1 = read_source_manifest(brain, "test:123")
-        m2 = read_source_manifest(brain, "test:456")
-        assert m1 is not None
-        assert m2 is not None
-        assert m1.target_path == "new-name"
-        assert m2.target_path == "new-name/sub"
+        m1 = read_source_manifest(brain, "confluence:123")
+        m2 = read_source_manifest(brain, "confluence:456")
 
-    def test_no_insights_to_mirror(self, brain):
-        """Move succeeds even when there are no insights to mirror."""
-        k_old = brain / "knowledge" / "old-name"
-        k_old.mkdir()
-        k_new = brain / "knowledge" / "new-name"
+        assert m1 is not None and m1.target_path == "new-name"
+        assert m2 is not None and m2.target_path == "new-name/sub"
 
-        move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
-        mirror_folder_move(brain, move)  # Should not raise
+    def test_noop_when_move_not_within_knowledge(self, brain: Path) -> None:
+        outside_src = brain.parent / "outside-old"
+        outside_dest = brain.parent / "outside-new"
+        outside_src.mkdir()
 
-    def test_nested_folder_move(self, brain):
-        """Nested folder renames mirror correctly."""
-        k_old = brain / "knowledge" / "parent" / "old-child"
-        k_old.mkdir(parents=True)
+        mirror_folder_move(brain, FolderMove(src=outside_src.resolve(), dest=outside_dest.resolve()))
 
-        i_old = brain / "insights" / "parent" / "old-child"
-        i_old.mkdir(parents=True)
-        (i_old / "summary.md").write_text("child summary", encoding="utf-8")
-
-        save_insight_state(
-            brain,
-            InsightState(
-                knowledge_path="parent/old-child",
-                content_hash="abc",
-            ),
-        )
-
-        k_new = brain / "knowledge" / "parent" / "new-child"
-
-        move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
-        mirror_folder_move(brain, move)
-
-        assert (brain / "insights" / "parent" / "new-child" / "summary.md").exists()
-        assert load_insight_state(brain, "parent/new-child") is not None
-        assert load_insight_state(brain, "parent/old-child") is None
+        assert outside_src.exists()
 
 
 class TestOnMovedPreservesRawPaths:
-    """on_moved() must not resolve() DirMovedEvent paths (case-only rename fix)."""
-
-    def test_on_moved_preserves_raw_paths(self, brain):
+    def test_on_moved_preserves_raw_paths(self, brain: Path) -> None:
         event_q: queue.Queue = queue.Queue()
         move_q: queue.Queue = queue.Queue()
         knowledge_root = brain / "knowledge"
-
         handler = KnowledgeEventHandler(event_q, move_q, knowledge_root)
 
-        # Simulate a case-only rename event with different casing
         src = str(knowledge_root / "MyArea")
         dest = str(knowledge_root / "myarea")
         event = DirMovedEvent(src, dest)
 
         handler.on_moved(event)
 
-        assert not move_q.empty()
         move = move_q.get_nowait()
-        # Paths should preserve original casing, not be resolve()-d
         assert move.src.name == "MyArea"
         assert move.dest.name == "myarea"

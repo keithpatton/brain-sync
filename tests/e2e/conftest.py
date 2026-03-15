@@ -19,10 +19,8 @@ _brain_root_holder: dict[str, Path] = {}
 
 
 @pytest.fixture
-def brain(tmp_path: Path) -> BrainFixture:
+def brain(tmp_path: Path, config_dir: Path) -> BrainFixture:
     """Create a fresh brain for testing."""
-    config_dir = tmp_path / ".brain-sync"
-    config_dir.mkdir()
     config = {"brain_root": str(tmp_path / "brain")}
     (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     bf = create_brain(tmp_path)
@@ -32,10 +30,21 @@ def brain(tmp_path: Path) -> BrainFixture:
 
 
 @pytest.fixture
-def config_dir(tmp_path: Path) -> Path:
+def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolated config directory."""
     d = tmp_path / ".brain-sync"
     d.mkdir(exist_ok=True)
+    runtime_db_file = d / "db" / "brain-sync.sqlite"
+    daemon_status_file = d / "daemon.json"
+    config_file = d / "config.json"
+    monkeypatch.setenv("BRAIN_SYNC_CONFIG_DIR", str(d))
+    monkeypatch.setattr("brain_sync.config.CONFIG_DIR", d)
+    monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+    monkeypatch.setattr("brain_sync.config.RUNTIME_DB_FILE", runtime_db_file)
+    monkeypatch.setattr("brain_sync.config.DAEMON_STATUS_FILE", daemon_status_file)
+    monkeypatch.setattr("brain_sync.state.RUNTIME_DB_FILE", runtime_db_file)
+    monkeypatch.setattr("brain_sync.state.DAEMON_STATUS_FILE", daemon_status_file)
+    monkeypatch.setattr("brain_sync.token_tracking.RUNTIME_DB_FILE", runtime_db_file)
     return d
 
 

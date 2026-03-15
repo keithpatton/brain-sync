@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_summary_path
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
 from tests.e2e.harness.assertions import assert_no_duplicate_insights, assert_no_orphan_insights
@@ -38,12 +39,10 @@ class TestFolderMoveNoDuplicateInsights:
         config = RegenConfig(model="fake-model", effort="low", timeout=30)
 
         await regen_single_folder(root, "original", config=config, backend=backend)
-        assert (root / "insights" / "original" / "summary.md").exists()
+        assert area_summary_path(root, "original").exists()
 
         # Move knowledge folder
         shutil.move(str(root / "knowledge" / "original"), str(root / "knowledge" / "renamed"))
-        # Also move insights (simulate watcher mirror)
-        shutil.move(str(root / "insights" / "original"), str(root / "insights" / "renamed"))
 
         # Regen at new location
         await regen_single_folder(root, "renamed", config=config, backend=backend)

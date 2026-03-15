@@ -11,6 +11,7 @@ from brain_sync.fileops import (
     win_long_path,
     write_if_changed,
 )
+from brain_sync.layout import INSIGHT_STATE_FILENAME
 
 pytestmark = pytest.mark.unit
 
@@ -127,7 +128,7 @@ class TestCleanInsightsTree:
         d = tmp_path / "area"
         d.mkdir()
         (d / "summary.md").write_text("summary")
-        (d / ".regen-meta.json").write_text("{}")
+        (d / INSIGHT_STATE_FILENAME).write_text("{}")
         assert clean_insights_tree(d) is True
         assert not d.exists()
 
@@ -136,14 +137,14 @@ class TestCleanInsightsTree:
         d = tmp_path / "area"
         d.mkdir()
         (d / "summary.md").write_text("summary")
-        (d / ".regen-meta.json").write_text("{}")
+        (d / INSIGHT_STATE_FILENAME).write_text("{}")
         journal = d / "journal" / "2026-03"
         journal.mkdir(parents=True)
         (journal / "2026-03-11.md").write_text("entry")
 
         assert clean_insights_tree(d) is False
         assert not (d / "summary.md").exists()
-        assert not (d / ".regen-meta.json").exists()
+        assert not (d / INSIGHT_STATE_FILENAME).exists()
         assert (journal / "2026-03-11.md").read_text() == "entry"
 
     def test_recursive_subtree(self, tmp_path):
@@ -152,13 +153,13 @@ class TestCleanInsightsTree:
         sub = root / "subarea"
         sub.mkdir(parents=True)
         (sub / "summary.md").write_text("sub summary")
-        (sub / ".regen-meta.json").write_text("{}")
+        (sub / INSIGHT_STATE_FILENAME).write_text("{}")
         journal = sub / "journal" / "2026-03"
         journal.mkdir(parents=True)
         (journal / "2026-03-11.md").write_text("entry")
 
         (root / "summary.md").write_text("root summary")
-        (root / ".regen-meta.json").write_text("{}")
+        (root / INSIGHT_STATE_FILENAME).write_text("{}")
 
         assert clean_insights_tree(root) is False
         # Regenerable files removed at both levels

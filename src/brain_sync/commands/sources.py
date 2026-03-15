@@ -11,6 +11,7 @@ from pathlib import Path
 from brain_sync.commands.context import _require_root
 from brain_sync.fileops import canonical_prefix, rediscover_local_path
 from brain_sync.fs_utils import normalize_path
+from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.manifest import (
     MANIFEST_DIR,
     MANIFEST_VERSION,
@@ -29,11 +30,7 @@ from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import (
     SourceState,
     SyncState,
-    count_relationships_for_doc,
-    load_relationships_for_primary,
     load_state,
-    remove_document_if_orphaned,
-    remove_relationship,
     save_sync_progress,
     update_source_flags,
     update_source_target_path,
@@ -253,9 +250,9 @@ def remove_source(
                     f.unlink()
                     files_deleted = True
 
-            # Clean up _attachments/{source_dir_id}/ for this source
+            # Clean up .brain-sync/attachments/{source_dir_id}/ for this source
             source_dir_id = canonical_prefix(cid).rstrip("-")
-            att_dir = target_dir / "_attachments" / source_dir_id
+            att_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
             if att_dir.is_dir():
                 shutil.rmtree(att_dir)
                 files_deleted = True
@@ -272,14 +269,6 @@ def remove_source(
                     dirpath.rmdir()
             if target_dir.exists() and not any(target_dir.iterdir()):
                 target_dir.rmdir()
-
-    # --- DB cleanup: relationships and orphaned documents ---
-    rels = load_relationships_for_primary(root, cid)
-    for rel in rels:
-        remove_relationship(root, cid, rel.canonical_id)
-        if count_relationships_for_doc(root, rel.canonical_id) == 0:
-            remove_document_if_orphaned(root, rel.canonical_id)
-    remove_document_if_orphaned(root, cid)
 
     state.sources.pop(cid, None)
     save_sync_progress(root, state)
@@ -358,12 +347,12 @@ def move_source(
         shutil.move(str(old_dir), str(new_dir))
         files_moved = True
 
-    # Move _attachments/{page_id}/ if it exists (already moved with parent dir above,
+    # Move .brain-sync/attachments/{source_dir_id}/ if it exists (already moved with parent dir above,
     # but handle case where old_dir == new_dir or partial moves)
     if not files_moved:
         source_dir_id = canonical_prefix(cid).rstrip("-")
-        old_att = old_dir / "_attachments" / source_dir_id
-        new_att = new_dir / "_attachments" / source_dir_id
+        old_att = old_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
+        new_att = new_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
         if old_att.is_dir() and not new_att.exists():
             new_att.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(old_att), str(new_att))
@@ -685,10 +674,10 @@ class MigrateResult:
 
 
 def migrate_sources(root: Path | None = None) -> MigrateResult:
-    """Migrate all sources to the current _attachments/{source_dir_id}/ layout.
+    """Migrate all sources to the current .brain-sync/attachments/{source_dir_id}/ layout.
 
     Handles both legacy _sync-context/ dirs and bare-ID _attachments/{bare_id}/ dirs.
-    Also cleans up stale _sync-context/ directories in knowledge/ and insights/.
+    Also cleans up stale _sync-context/ directories under knowledge/.
     """
     import shutil
 
@@ -721,12 +710,10 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
         else:
             sources_migrated += 1  # still cleaned up the empty dir
 
-    # Clean up any remaining _sync-context/ dirs (orphaned or in insights/)
+    # Clean up any remaining _sync-context/ dirs under knowledge/
     dirs_cleaned = 0
-    for search_root in [knowledge_root, root / "insights"]:
-        if not search_root.is_dir():
-            continue
-        for legacy in list(search_root.rglob(LEGACY_CONTEXT_DIR)):
+    if knowledge_root.is_dir():
+        for legacy in list(knowledge_root.rglob(LEGACY_CONTEXT_DIR)):
             if legacy.is_dir():
                 shutil.rmtree(legacy)
                 dirs_cleaned += 1

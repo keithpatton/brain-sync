@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
-import sqlite3
 import subprocess
 import sys
 import time
@@ -58,10 +58,10 @@ class DaemonProcess:
         )
 
     def wait_for_ready(self, timeout: float = 15) -> None:
-        """Poll daemon_status table until status='ready' for this PID and session."""
+        """Poll the daemon status file until status='ready' for this process."""
         if self._proc is None:
             raise RuntimeError("Daemon not started")
-        db_path = self.brain_root / ".sync-state.sqlite"
+        status_path = self.config_dir / "daemon.json"
         pid = self._proc.pid
         launch_time = self._launch_time
         deadline = time.monotonic() + timeout
@@ -69,17 +69,18 @@ class DaemonProcess:
             if not self.is_running():
                 stderr = self.stderr_text
                 raise RuntimeError(f"Daemon exited before becoming ready. stderr:\n{stderr}")
-            if db_path.exists():
+            if status_path.exists():
                 try:
-                    conn = sqlite3.connect(str(db_path), timeout=1)
-                    rows = conn.execute(
-                        "SELECT started_at FROM daemon_status WHERE pid = ? AND status = 'ready' AND started_at >= ?",
-                        (pid, launch_time),
-                    ).fetchall()
-                    conn.close()
-                    if rows:
+                    payload = json.loads(status_path.read_text(encoding="utf-8"))
+                    if (
+                        payload.get("pid") == pid
+                        and payload.get("status") == "ready"
+                        and payload.get("started_at")
+                        and launch_time
+                        and payload["started_at"] >= launch_time
+                    ):
                         return
-                except (sqlite3.OperationalError, sqlite3.DatabaseError):
+                except (json.JSONDecodeError, OSError):
                     pass
             time.sleep(0.5)
         raise TimeoutError(f"Daemon not ready after {timeout}s")

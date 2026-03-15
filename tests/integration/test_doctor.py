@@ -14,6 +14,7 @@ from brain_sync.commands.doctor import (
     rebuild_db,
 )
 from brain_sync.commands.sources import add_source
+from brain_sync.layout import area_attachments_root, area_insights_dir, area_summary_path
 from brain_sync.manifest import (
     read_all_source_manifests,
     write_source_manifest,
@@ -41,10 +42,14 @@ def _write_knowledge(root: Path, rel: str, content: str) -> Path:
 
 
 def _write_insight_summary(root: Path, kpath: str, content: str = "# Summary\nContent.") -> Path:
-    p = root / "insights" / kpath / "summary.md"
+    p = area_summary_path(root, kpath)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return p
+
+
+def _insights_dir(root: Path, kpath: str = "") -> Path:
+    return area_insights_dir(root, kpath)
 
 
 def _add_synced_source(root: Path, cid: str = "confluence:12345", target: str = "project") -> None:
@@ -106,7 +111,8 @@ class TestDoctorFixMissingHeader:
 
         # Verify header is restored
         content = file_path.read_text(encoding="utf-8")
-        assert "brain-sync-source: confluence:12345" in content
+        assert "brain_sync_source: confluence" in content
+        assert "brain_sync_canonical_id: confluence:12345" in content
 
 
 class TestDoctorRebuildDb:
@@ -190,25 +196,24 @@ class TestDoctorRebuildDbNoRegenBurn:
 
 
 class TestDoctorRebuildDbTelemetryLoss:
-    def test_telemetry_tables_dropped(self, brain: Path) -> None:
-        # Insert data into cache tables
+    def test_rebuild_resets_runtime_db_to_supported_tables(self, brain: Path) -> None:
+        # Create an unexpected table to prove rebuild resets the runtime DB.
         conn = _connect(brain)
         try:
-            conn.execute(
-                "INSERT INTO documents (canonical_id, source_type, url, title, content_hash) VALUES (?, ?, ?, ?, ?)",
-                ("confluence:999", "confluence", "https://acme.atlassian.net/wiki/spaces/ENG/pages/999", "Doc", "hash"),
-            )
+            conn.execute("CREATE TABLE scratch (id INTEGER PRIMARY KEY, note TEXT)")
+            conn.execute("INSERT INTO scratch (note) VALUES ('stale')")
             conn.commit()
         finally:
             conn.close()
 
         rebuild_db(brain)
 
-        # Documents table should be empty after rebuild
+        # Rebuild should restore the clean v23 runtime table set.
         conn = _connect(brain)
         try:
-            count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-            assert count == 0
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            assert "scratch" not in tables
+            assert {"meta", "sync_cache", "regen_locks", "token_events"} <= tables
         finally:
             conn.close()
 
@@ -233,7 +238,7 @@ class TestDoctorDeregisterMissing:
 
 class TestDoctorOrphanAttachments:
     def test_fix_orphan_attachments(self, brain: Path) -> None:
-        orphan = brain / "knowledge" / "area" / "_attachments" / "c999"
+        orphan = area_attachments_root(brain, "area") / "c999"
         orphan.mkdir(parents=True)
         (orphan / "file.png").write_bytes(b"data")
 
@@ -262,21 +267,21 @@ class TestDoctorOrphanDbRows:
 
 
 class TestDoctorOrphanInsights:
-    def test_fix_orphan_insights_dir(self, brain: Path) -> None:
+    def test_legacy_top_level_insights_reported(self, brain: Path) -> None:
         (brain / "insights" / "orphan" / "summary.md").parent.mkdir(parents=True)
         (brain / "insights" / "orphan" / "summary.md").write_text("# Summary")
 
         result = doctor(brain, fix=True)
-        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
-        assert len(fixed) >= 1
-        assert not (brain / "insights" / "orphan").exists()
+        legacy = [f for f in result.findings if f.check == "unsupported_legacy_layout"]
+        assert len(legacy) >= 1
+        assert (brain / "insights" / "orphan").exists()
 
 
 class TestDoctorJournalNotOrphan:
     def test_journal_subdir_not_flagged_as_orphan(self, brain: Path) -> None:
-        """insights/area/journal/ is an artifact dir, not a knowledge mirror — no orphan finding."""
+        """Co-located journal/ is an artifact dir, not a knowledge mirror."""
         (brain / "knowledge" / "area").mkdir(parents=True)
-        journal = brain / "insights" / "area" / "journal" / "2026-03" / "2026-03-15.md"
+        journal = _insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-15.md"
         journal.parent.mkdir(parents=True)
         journal.write_text("# Journal Entry\nToday's notes.", encoding="utf-8")
 
@@ -288,52 +293,48 @@ class TestDoctorJournalNotOrphan:
 
 
 class TestDoctorOrphanInsightsWithNonRegenerableFiles:
-    def test_fix_removes_orphan_with_extra_files(self, brain: Path) -> None:
-        """Orphan insights dir with non-regenerable files must be fully deleted."""
+    def test_legacy_layout_with_extra_files_is_not_mutated(self, brain: Path) -> None:
+        """doctor refuses to mutate unsupported legacy top-level insights trees."""
         orphan = brain / "insights" / "orphan"
         orphan.mkdir(parents=True)
         (orphan / "summary.md").write_text("# Summary")
         (orphan / ".regen-meta.json").write_text("{}")
-        # Non-regenerable file that clean_insights_tree would preserve
         journal = orphan / "journal" / "2026-03"
         journal.mkdir(parents=True)
         (journal / "2026-03-15.md").write_text("# Entry")
 
         result = doctor(brain, fix=True)
-        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
-        assert len(fixed) >= 1
-        assert not orphan.exists(), "Orphan dir with non-regenerable files was not fully removed"
+        legacy = [f for f in result.findings if f.check == "unsupported_legacy_layout"]
+        assert len(legacy) >= 1
+        assert orphan.exists()
 
-    def test_fix_actually_removes_not_just_reports(self, brain: Path) -> None:
-        """Regression: fix must actually delete the dir, not just set fix_applied=True."""
+    def test_legacy_layout_remains_reported_until_migrated(self, brain: Path) -> None:
+        """Repeated doctor runs keep reporting unsupported legacy layout."""
         orphan = brain / "insights" / "ghost"
         orphan.mkdir(parents=True)
         (orphan / "random-file.txt").write_text("leftover")
 
         result = doctor(brain, fix=True)
-        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
-        assert len(fixed) >= 1
-        assert not orphan.exists(), "Orphan dir still exists after fix"
+        legacy = [f for f in result.findings if f.check == "unsupported_legacy_layout"]
+        assert len(legacy) >= 1
+        assert orphan.exists()
 
-        # Second run should be clean
         result2 = doctor(brain)
-        orphan_findings = [f for f in result2.findings if f.check == "orphan_insights"]
-        assert len(orphan_findings) == 0
+        legacy2 = [f for f in result2.findings if f.check == "unsupported_legacy_layout"]
+        assert len(legacy2) >= 1
 
 
 class TestDoctorNestedOrphanInsights:
-    def test_fix_nested_orphan(self, brain: Path) -> None:
-        """insights/project/orphan-sub/ with knowledge/project/ but no knowledge/project/orphan-sub/."""
+    def test_legacy_nested_orphan_reports_unsupported_layout(self, brain: Path) -> None:
+        """Legacy nested insight mirrors are reported as unsupported layout."""
         (brain / "knowledge" / "project").mkdir(parents=True)
         (brain / "insights" / "project" / "orphan-sub").mkdir(parents=True)
         (brain / "insights" / "project" / "orphan-sub" / "summary.md").write_text("# Summary")
 
         result = doctor(brain, fix=True)
-        fixed = [f for f in result.findings if f.fix_applied and f.check == "orphan_insights"]
-        assert len(fixed) >= 1
-        assert not (brain / "insights" / "project" / "orphan-sub").exists()
-        # Parent insights/project/ should still exist
-        assert (brain / "insights" / "project").is_dir()
+        legacy = [f for f in result.findings if f.check == "unsupported_legacy_layout"]
+        assert len(legacy) >= 1
+        assert (brain / "insights" / "project" / "orphan-sub").exists()
 
 
 class TestDoctorOrphanInsightState:
@@ -386,7 +387,7 @@ class TestDoctorSidecarChecks:
         result = doctor(brain)
         sidecar_findings = [f for f in result.findings if f.check == "missing_sidecars"]
         assert len(sidecar_findings) == 0
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         assert meta.content_hash == "abc"
 
@@ -408,7 +409,7 @@ class TestDoctorSidecarChecks:
 
         doctor(brain)
 
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         assert meta.content_hash == "abc"
         assert meta.summary_hash == "def"
@@ -426,7 +427,7 @@ class TestDoctorSidecarDbMismatch:
             InsightState(knowledge_path="project", content_hash="abc", structure_hash="st1"),
         )
         # Overwrite with wrong hashes — this IS the authority now
-        write_regen_meta(brain / "insights" / "project", RegenMeta(content_hash="WRONG", structure_hash="st1"))
+        write_regen_meta(_insights_dir(brain, "project"), RegenMeta(content_hash="WRONG", structure_hash="st1"))
 
         result = doctor(brain)
         # Doctor should detect content change (stale hash doesn't match actual content)
@@ -443,14 +444,14 @@ class TestDoctorSidecarDbMismatch:
             InsightState(knowledge_path="project", content_hash="abc", summary_hash="def", structure_hash="ghi"),
         )
         write_regen_meta(
-            brain / "insights" / "project",
+            _insights_dir(brain, "project"),
             RegenMeta(content_hash="WRONG", summary_hash="WRONG", structure_hash="st_wrong"),
         )
 
         doctor(brain)
 
         # Sidecar retains its values (it IS the authority in v21)
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         assert meta.content_hash == "WRONG"
 
@@ -462,7 +463,7 @@ class TestDoctorSidecarCorruption:
         _write_knowledge(brain, "project/doc.md", "content")
         _write_insight_summary(brain, "project")
         save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc"))
-        (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
+        (_insights_dir(brain, "project") / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
 
         result = doctor(brain)
         corrupt = [f for f in result.findings if f.check == "missing_sidecars" and f.severity == Severity.CORRUPTION]
@@ -475,7 +476,7 @@ class TestDoctorSidecarCorruption:
         _write_insight_summary(brain, "project")
         save_insight_state(brain, InsightState(knowledge_path="project", content_hash="abc", structure_hash="st1"))
         # Corrupt the sidecar AFTER save
-        (brain / "insights" / "project" / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
+        (_insights_dir(brain, "project") / SIDECAR_FILENAME).write_text("not json{{{", encoding="utf-8")
 
         result = doctor(brain, fix=True)
         # In v21, load_insight_state reads from sidecar (malformed → None), so fix may
@@ -516,7 +517,7 @@ class TestAdoptBaseline:
         assert "project" in adopted_paths
 
         # Parent content_hash should be non-empty (computed from child summaries)
-        parent_meta = read_regen_meta(brain / "insights" / "project")
+        parent_meta = read_regen_meta(_insights_dir(brain, "project"))
         assert parent_meta is not None
         assert parent_meta.content_hash is not None
         assert len(parent_meta.content_hash) == 64  # SHA-256 hex

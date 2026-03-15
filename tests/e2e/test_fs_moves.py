@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from brain_sync.layout import area_insights_dir, area_summary_path
 from tests.e2e.harness.brain import BrainFixture
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess
@@ -24,7 +25,7 @@ class TestFileRenames:
 
     @pytest.mark.timeout(60)
     def test_folder_rename_mirrors_to_insights(self, daemon: DaemonProcess, brain: BrainFixture, cli: CliRunner):
-        """Renaming a knowledge folder mirrors the rename to insights/."""
+        """Renaming a knowledge folder carries its co-located insights with it."""
         # Seed content and generate initial insights
         kdir = brain.knowledge / "old-name"
         kdir.mkdir()
@@ -33,7 +34,7 @@ class TestFileRenames:
         # Regen via CLI first
         result = cli.run("regen", "--root", str(brain.root), "old-name")
         assert result.returncode == 0
-        assert (brain.insights / "old-name" / "summary.md").exists()
+        assert area_summary_path(brain.root, "old-name").exists()
 
         # Start daemon and let watcher initialise
         daemon.start()
@@ -46,10 +47,10 @@ class TestFileRenames:
         # Rename the folder
         shutil.move(str(brain.knowledge / "old-name"), str(brain.knowledge / "new-name"))
 
-        # Wait for insights to be mirrored — but skip if daemon exits
+        # Wait for the co-located managed insights to move with the folder.
         try:
-            wait_for_file(brain.insights / "new-name" / "summary.md", timeout=30)
-            wait_for_no_file(brain.insights / "old-name", timeout=30)
+            wait_for_file(area_summary_path(brain.root, "new-name"), timeout=30)
+            wait_for_no_file(area_insights_dir(brain.root, "old-name"), timeout=30)
         except TimeoutError:
             if not daemon.is_running():
                 pytest.skip("Daemon exited during watcher test (no sources to sustain loop)")

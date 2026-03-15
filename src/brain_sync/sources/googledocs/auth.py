@@ -42,8 +42,7 @@ def _require_google() -> None:
         import google.auth  # noqa: F401
     except ImportError:
         raise ImportError(
-            "Google Docs support requires the 'google' extra.\n"
-            "Install with:  pip install brain-sync[google]"
+            "Google Docs support requires the 'google' extra.\nInstall with:  pip install brain-sync[google]"
         ) from None
 
 

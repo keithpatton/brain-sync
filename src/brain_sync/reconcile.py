@@ -14,6 +14,7 @@ from pathlib import Path
 
 from brain_sync.fileops import clean_insights_tree
 from brain_sync.fs_utils import find_all_content_paths
+from brain_sync.layout import area_insights_dir
 from brain_sync.regen import classify_folder_change
 from brain_sync.state import (
     delete_insight_state,
@@ -40,7 +41,6 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     """
     result = TreeReconcileResult()
     knowledge_root = root / "knowledge"
-    insights_root = root / "insights"
 
     if not knowledge_root.is_dir():
         return result
@@ -53,13 +53,13 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     orphan_db_paths = db_paths - fs_paths
     for orphan in orphan_db_paths:
         delete_insight_state(root, orphan)
-        orphan_insights = insights_root / orphan
+        orphan_insights = area_insights_dir(root, orphan)
         if orphan_insights.is_dir():
             fully_removed = clean_insights_tree(orphan_insights)
             if not fully_removed:
-                log.info("Preserved non-regenerable artifacts in insights/%s", orphan)
+                log.info("Preserved non-regenerable artifacts in knowledge/%s/.brain-sync/insights", orphan)
             else:
-                log.info("Cleaned orphan insights dir: insights/%s", orphan)
+                log.info("Cleaned orphan insights dir: knowledge/%s/.brain-sync/insights", orphan)
         log.info("Cleaned orphan regen state: %s", orphan)
         result.orphans_cleaned.append(orphan)
 
@@ -85,7 +85,7 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     untracked_paths = fs_paths - db_paths
     for path in untracked_paths:
         # Rule 1: insights/ dir exists → evidence of prior regen (moved folder)
-        if (insights_root / path).is_dir():
+        if area_insights_dir(root, path).is_dir():
             result.enqueued_paths.append(path)
             continue
 

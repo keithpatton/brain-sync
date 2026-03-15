@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_insights_dir
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, classify_folder_change, regen_single_folder
 from brain_sync.sidecar import (
@@ -28,12 +29,16 @@ def _config() -> RegenConfig:
     return RegenConfig(model="fake-model", effort="low", timeout=30)
 
 
+def _insights_dir(root: Path, knowledge_path: str) -> Path:
+    return area_insights_dir(root, knowledge_path)
+
+
 class TestSaveWritesSidecar:
     """save_insight_state() writes sidecar directly in v21+."""
 
     def test_save_writes_sidecar_directly(self, brain: Path) -> None:
         """save_insight_state() writes sidecar — no sync needed."""
-        insights_dir = brain / "insights" / "project"
+        insights_dir = _insights_dir(brain, "project")
         insights_dir.mkdir(parents=True)
         save_insight_state(
             brain,
@@ -122,11 +127,13 @@ class TestRegenSkipsUnchangedFromSidecar:
         config = _config()
 
         await regen_single_folder(brain, "area", config=config, backend=backend)
-        sidecar_before = read_regen_meta(brain / "insights" / "area")
+        sidecar_before = read_regen_meta(_insights_dir(brain, "area"))
         assert sidecar_before is not None
 
         # Nuke entire DB
-        db_path = brain / ".sync-state.sqlite"
+        from brain_sync import config as runtime_config
+
+        db_path = runtime_config.RUNTIME_DB_FILE
         if db_path.exists():
             db_path.unlink()
 
@@ -152,7 +159,7 @@ class TestStaleSidecarRepair:
 
         # Write stale sidecar (simulate corruption — include structure_hash to avoid backfill path)
         write_regen_meta(
-            brain / "insights" / "project",
+            _insights_dir(brain, "project"),
             RegenMeta(content_hash="stale_hash", summary_hash="stale_sum", structure_hash="stale_struct"),
         )
 
@@ -161,7 +168,7 @@ class TestStaleSidecarRepair:
         assert result2.action == "regenerated"
 
         # After re-regen, sidecar should have correct hashes again
-        meta = read_regen_meta(brain / "insights" / "project")
+        meta = read_regen_meta(_insights_dir(brain, "project"))
         assert meta is not None
         assert meta.content_hash != "stale_hash"
 
@@ -185,7 +192,7 @@ class TestDoctorWithStaleSidecar:
 
         # Write stale sidecar (include structure_hash to avoid backfill path)
         write_regen_meta(
-            brain / "insights" / "project",
+            _insights_dir(brain, "project"),
             RegenMeta(content_hash="stale_hash", summary_hash="stale_sum", structure_hash="stale_struct"),
         )
 

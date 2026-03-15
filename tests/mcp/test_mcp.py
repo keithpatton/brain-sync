@@ -24,7 +24,9 @@ from brain_sync.commands import (
     SourceInfo,
     SourceNotFoundError,
 )
+from brain_sync.commands.init import init_brain
 from brain_sync.commands.sources import ReconcileEntry
+from brain_sync.layout import area_insights_dir
 from brain_sync.sources import UnsupportedSourceError
 
 pytestmark = pytest.mark.mcp
@@ -86,6 +88,10 @@ def _make_ctx(root: Path) -> MagicMock:
     return ctx
 
 
+def _managed_insights(root: Path, knowledge_path: str = "") -> Path:
+    return area_insights_dir(root, knowledge_path)
+
+
 # ---------------------------------------------------------------------------
 # Fixture: brain filesystem for query tools
 # ---------------------------------------------------------------------------
@@ -95,24 +101,19 @@ def _make_ctx(root: Path) -> MagicMock:
 def brain_root(tmp_path: Path) -> Path:
     """Create a minimal brain structure for query tool tests."""
     root = tmp_path / "brain"
+    init_brain(root)
 
     # knowledge/_core
-    (root / "knowledge" / "_core").mkdir(parents=True)
     (root / "knowledge" / "_core" / "about-me.md").write_text("I am a test user.", encoding="utf-8")
 
-    # schemas
-    (root / "schemas" / "insights").mkdir(parents=True)
-    (root / "schemas" / "insights" / "summary.md").write_text(
-        "# Summary Schema\nTemplate for summaries.",
-        encoding="utf-8",
+    # knowledge/_core/.brain-sync/insights
+    (_managed_insights(root, "_core")).mkdir(parents=True, exist_ok=True)
+    (_managed_insights(root, "_core") / "summary.md").write_text(
+        "# Core Summary\nOverview of the brain.", encoding="utf-8"
     )
-
-    # insights/_core
-    (root / "insights" / "_core").mkdir(parents=True)
-    (root / "insights" / "_core" / "summary.md").write_text("# Core Summary\nOverview of the brain.", encoding="utf-8")
     # journal should be excluded
-    (root / "insights" / "_core" / "journal" / "2026-03").mkdir(parents=True)
-    (root / "insights" / "_core" / "journal" / "2026-03" / "2026-03-08.md").write_text(
+    (_managed_insights(root, "_core") / "journal" / "2026-03").mkdir(parents=True)
+    (_managed_insights(root, "_core") / "journal" / "2026-03" / "2026-03-08.md").write_text(
         "Journal entry.",
         encoding="utf-8",
     )
@@ -120,12 +121,12 @@ def brain_root(tmp_path: Path) -> Path:
     # Area: initiatives/AAA
     (root / "knowledge" / "initiatives" / "AAA").mkdir(parents=True)
     (root / "knowledge" / "initiatives" / "AAA" / "c12345-doc.md").write_text("AAA knowledge doc.", encoding="utf-8")
-    (root / "insights" / "initiatives" / "AAA").mkdir(parents=True)
-    (root / "insights" / "initiatives" / "AAA" / "summary.md").write_text(
+    (_managed_insights(root, "initiatives/AAA")).mkdir(parents=True)
+    (_managed_insights(root, "initiatives/AAA") / "summary.md").write_text(
         "# Platform AAA Summary\n\nAAA is the main platform initiative.\n\n## Architecture\n\nMicroservices.",
         encoding="utf-8",
     )
-    (root / "insights" / "initiatives" / "AAA" / "decisions.md").write_text(
+    (_managed_insights(root, "initiatives/AAA") / "decisions.md").write_text(
         "# Decisions\n\n- Chose microservices.",
         encoding="utf-8",
     )
@@ -136,8 +137,8 @@ def brain_root(tmp_path: Path) -> Path:
         "Accounts doc.",
         encoding="utf-8",
     )
-    (root / "insights" / "initiatives" / "AAA" / "Accounts Service").mkdir(parents=True)
-    (root / "insights" / "initiatives" / "AAA" / "Accounts Service" / "summary.md").write_text(
+    (_managed_insights(root, "initiatives/AAA/Accounts Service")).mkdir(parents=True)
+    (_managed_insights(root, "initiatives/AAA/Accounts Service") / "summary.md").write_text(
         "# Accounts Service\n\nHandles user accounts.",
         encoding="utf-8",
     )
@@ -145,8 +146,8 @@ def brain_root(tmp_path: Path) -> Path:
     # Area: initiatives/BBB
     (root / "knowledge" / "initiatives" / "BBB").mkdir(parents=True)
     (root / "knowledge" / "initiatives" / "BBB" / "doc.md").write_text("BBB knowledge doc.", encoding="utf-8")
-    (root / "insights" / "initiatives" / "BBB").mkdir(parents=True)
-    (root / "insights" / "initiatives" / "BBB" / "summary.md").write_text(
+    (_managed_insights(root, "initiatives/BBB")).mkdir(parents=True)
+    (_managed_insights(root, "initiatives/BBB") / "summary.md").write_text(
         "# Platform BBB\n\nBBB handles billing.",
         encoding="utf-8",
     )
@@ -160,8 +161,8 @@ def brain_with_many_children(brain_root: Path) -> Path:
     for i in range(20):
         name = f"Child-{i:02d}"
         (brain_root / "knowledge" / "initiatives" / "AAA" / name).mkdir(parents=True)
-        (brain_root / "insights" / "initiatives" / "AAA" / name).mkdir(parents=True)
-        (brain_root / "insights" / "initiatives" / "AAA" / name / "summary.md").write_text(
+        (_managed_insights(brain_root, f"initiatives/AAA/{name}")).mkdir(parents=True)
+        (_managed_insights(brain_root, f"initiatives/AAA/{name}") / "summary.md").write_text(
             f"# {name}\n\nSummary for {name}.",
             encoding="utf-8",
         )
@@ -615,7 +616,6 @@ class TestBrainSyncQuery:
         assert "global_context" in result
         gc = result["global_context"]
         assert "about-me.md" in gc["knowledge_core"]
-        assert "insights/summary.md" in gc["schemas"]
         assert "summary.md" in gc["insights_core"]
         # Journal should be excluded from insights_core
         assert not any("journal" in k for k in gc["insights_core"])
@@ -666,13 +666,13 @@ class TestBrainSyncQuery:
         from brain_sync.mcp import MAX_AREAS_LISTED, brain_sync_query
 
         root = tmp_path / "big-brain"
-        (root / "knowledge" / "_core").mkdir(parents=True)
-        (root / "schemas").mkdir(parents=True)
-        (root / "insights" / "_core").mkdir(parents=True)
-        # Create 60 areas (both knowledge/ and insights/ so index + areas listing both work)
+        init_brain(root)
+        (root / "knowledge" / "_core").mkdir(parents=True, exist_ok=True)
+        (_managed_insights(root, "_core")).mkdir(parents=True, exist_ok=True)
+        # Create 60 areas with co-located summaries so index + areas listing both work.
         for i in range(60):
             (root / "knowledge" / f"area-{i:03d}").mkdir(parents=True)
-            area = root / "insights" / f"area-{i:03d}"
+            area = _managed_insights(root, f"area-{i:03d}")
             area.mkdir(parents=True)
             (area / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
 
@@ -696,7 +696,6 @@ class TestBrainSyncGetContext:
         gc = result["global_context"]
         assert "about-me.md" in gc["knowledge_core"]
         assert gc["knowledge_core"]["about-me.md"] == "I am a test user."
-        assert "insights/summary.md" in gc["schemas"]
         assert "summary.md" in gc["insights_core"]
         assert result["total_areas"] > 0
 
@@ -705,14 +704,13 @@ class TestBrainSyncGetContext:
         from brain_sync.mcp import brain_sync_get_context
 
         root = tmp_path / "empty-brain"
-        root.mkdir()
+        init_brain(root)
 
         ctx = _make_ctx(root)
         result = brain_sync_get_context(ctx)
 
         assert result["status"] == "ok"
         assert result["global_context"]["knowledge_core"] == {}
-        assert result["global_context"]["schemas"] == {}
         assert result["global_context"]["insights_core"] == {}
         assert result["total_areas"] == 0
 
@@ -769,7 +767,7 @@ class TestBrainSyncOpenArea:
 
         # Write a large summary
         large_summary = "# Large Summary\n\n" + "x" * (MAX_SUMMARY_CHARS + 5000)
-        (brain_root / "insights" / "initiatives" / "AAA" / "summary.md").write_text(
+        (_managed_insights(brain_root, "initiatives/AAA") / "summary.md").write_text(
             large_summary,
             encoding="utf-8",
         )
@@ -799,7 +797,7 @@ class TestBrainSyncOpenArea:
         from brain_sync.mcp import TRUNCATION_MARKER, brain_sync_open_area
 
         # Write a very large summary and large artifacts
-        insights_dir = brain_root / "insights" / "initiatives" / "AAA"
+        insights_dir = _managed_insights(brain_root, "initiatives/AAA")
         (insights_dir / "summary.md").write_text("# Summary\n" + "s" * 30000, encoding="utf-8")
         for i in range(5):
             (insights_dir / f"artifact-{i}.md").write_text("a" * 8000, encoding="utf-8")
@@ -819,7 +817,7 @@ class TestBrainSyncOpenFile:
         from brain_sync.mcp import brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_open_file(ctx, path="insights/_core/summary.md")
+        result = brain_sync_open_file(ctx, path="knowledge/_core/.brain-sync/insights/summary.md")
 
         assert result["status"] == "ok"
         assert "Core Summary" in result["content"]
@@ -852,7 +850,7 @@ class TestBrainSyncOpenFile:
         from brain_sync.mcp import brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
-        result = brain_sync_open_file(ctx, path="insights/_core")
+        result = brain_sync_open_file(ctx, path="knowledge/_core/.brain-sync/insights")
 
         assert result["status"] == "error"
         assert result["error"] == "not_found"
@@ -944,7 +942,7 @@ class TestBrainSyncOpenFile:
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(
             ctx,
-            path="insights/_core/summary.md",
+            path="knowledge/_core/.brain-sync/insights/summary.md",
             offset=999999,
         )
 
@@ -959,7 +957,7 @@ class TestBrainSyncOpenFile:
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(
             ctx,
-            path="insights/_core/summary.md",
+            path="knowledge/_core/.brain-sync/insights/summary.md",
             limit=MAX_FILE_CHARS + 100,
         )
 
@@ -1013,8 +1011,9 @@ class TestAreaIndex:
         from brain_sync.mcp import AreaIndex
 
         root = tmp_path / "brain"
+        init_brain(root)
         (root / "knowledge" / "area-no-summary").mkdir(parents=True)
-        # No summary.md in insights/
+        # No co-located summary.md
 
         index = AreaIndex.build(root)
         assert len(index.entries) == 1
@@ -1027,13 +1026,14 @@ class TestAreaIndex:
         from brain_sync.mcp import AreaIndex
 
         root = tmp_path / "brain"
+        init_brain(root)
         # Real knowledge area
         (root / "knowledge" / "initiatives" / "project").mkdir(parents=True)
-        (root / "insights" / "initiatives" / "project").mkdir(parents=True)
-        (root / "insights" / "initiatives" / "project" / "summary.md").write_text("# Project", encoding="utf-8")
-        # Journal exists only in insights (not in knowledge)
-        (root / "insights" / "initiatives" / "project" / "journal" / "2026-03").mkdir(parents=True)
-        (root / "insights" / "initiatives" / "project" / "journal" / "2026-03" / "entry.md").write_text(
+        (_managed_insights(root, "initiatives/project")).mkdir(parents=True)
+        (_managed_insights(root, "initiatives/project") / "summary.md").write_text("# Project", encoding="utf-8")
+        # Journal exists only in managed insights (not as a knowledge area)
+        (_managed_insights(root, "initiatives/project") / "journal" / "2026-03").mkdir(parents=True)
+        (_managed_insights(root, "initiatives/project") / "journal" / "2026-03" / "entry.md").write_text(
             "Journal entry.", encoding="utf-8"
         )
 
@@ -1050,7 +1050,7 @@ class TestAreaIndex:
         assert not index.is_stale(brain_root)
 
         # Modify a summary
-        summary = brain_root / "insights" / "initiatives" / "AAA" / "summary.md"
+        summary = _managed_insights(brain_root, "initiatives/AAA") / "summary.md"
         import time
 
         time.sleep(0.05)  # ensure mtime changes
@@ -1128,8 +1128,7 @@ class TestSuggestPlacement:
         from brain_sync.mcp import brain_sync_suggest_placement
 
         root = tmp_path / "empty-brain"
-        (root / "knowledge").mkdir(parents=True)
-        (root / "insights").mkdir(parents=True)
+        init_brain(root)
         ctx = _make_ctx(root)
         result = brain_sync_suggest_placement(ctx, document_title="anything")
         assert result["status"] == "ok"

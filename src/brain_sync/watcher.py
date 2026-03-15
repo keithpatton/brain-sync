@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import queue
 import re
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,9 +107,8 @@ class KnowledgeEventHandler(FileSystemEventHandler):
 
 
 def mirror_folder_move(root: Path, move: FolderMove) -> None:
-    """Mirror a knowledge/ folder rename into insights/ and update DB state."""
+    """Update runtime and manifest paths after a knowledge/ folder rename."""
     knowledge_root = root / "knowledge"
-    insights_root = root / "insights"
 
     try:
         src_rel = move.src.relative_to(knowledge_root)
@@ -121,16 +119,6 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
 
     src_rel_str = normalize_path(src_rel)
     dest_rel_str = normalize_path(dest_rel)
-
-    insights_src = insights_root / src_rel
-    insights_dest = insights_root / dest_rel
-
-    if insights_src.is_dir():
-        insights_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(insights_src), str(insights_dest))
-        log.info("Mirrored insights move: %s -> %s", src_rel_str, dest_rel_str)
-    else:
-        log.debug("No insights to mirror for: %s", src_rel_str)
 
     # Update insight_state paths in DB
     try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
@@ -10,12 +11,15 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from brain_sync.manifest import SourceManifest
 
+from brain_sync.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
 from brain_sync.fs_utils import normalize_path
+from brain_sync.layout import RUNTIME_DB_SCHEMA_VERSION, area_insights_dir, knowledge_root
 
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = ".sync-state.sqlite"
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = RUNTIME_DB_SCHEMA_VERSION
+_ALLOWED_RUNTIME_TABLES = frozenset({"meta", "sync_cache", "regen_locks", "token_events"})
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -286,7 +290,33 @@ class Relationship:
 
 
 def _db_path(root: Path) -> Path:
-    return root / STATE_FILENAME
+    return RUNTIME_DB_FILE
+
+
+def _initialize_runtime_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.executescript(_SYNC_CACHE_DDL)
+    conn.executescript(_REGEN_LOCKS_DDL)
+    conn.executescript(_TOKEN_EVENTS_DDL)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+    conn.commit()
+
+
+def _reset_runtime_db(db: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        candidate = db.parent / f"{db.name}{suffix}"
+        if candidate.exists():
+            candidate.unlink()
 
 
 def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
@@ -888,41 +918,33 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 def _connect(root: Path) -> sqlite3.Connection:
     db = _db_path(root)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    while True:
+        conn = sqlite3.connect(str(db))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
 
-    # Check if DB is fresh (no tables yet)
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        unexpected_tables = tables - _ALLOWED_RUNTIME_TABLES - {"sqlite_sequence"}
 
-    if not tables or "meta" not in tables:
-        # Fresh DB — create current schema directly
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
-        conn.executescript(_SYNC_CACHE_DDL)
-        conn.executescript(_DOCUMENTS_DDL)
-        conn.executescript(_RELATIONSHIPS_DDL)
-        conn.executescript(_REGEN_LOCKS_DDL)
-        conn.executescript(_TOKEN_EVENTS_DDL)
-        conn.executescript(_DAEMON_STATUS_DDL)
-        conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        conn.commit()
-    else:
-        # Existing DB — check version and migrate if needed
+        if not tables or "meta" not in tables:
+            _initialize_runtime_db(conn)
+            return conn
+
         row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-        current_version = int(row[0]) if row else 1
-        if current_version < SCHEMA_VERSION:
-            _migrate(conn, current_version, root=root)
+        current_version = int(row[0]) if row and str(row[0]).isdigit() else None
+        if current_version == SCHEMA_VERSION and not unexpected_tables:
+            return conn
 
-    return conn
+        conn.close()
+        log.warning(
+            "Resetting runtime DB at %s to schema v%d (found version=%s, extra tables=%s)",
+            db,
+            SCHEMA_VERSION,
+            current_version,
+            sorted(unexpected_tables),
+        )
+        _reset_runtime_db(db)
 
 
 def _load_db_sync_progress(root: Path) -> dict[str, SourceState]:
@@ -1372,7 +1394,7 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
         conn.close()
 
     # Read hashes from sidecar
-    insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+    insights_dir = area_insights_dir(root, knowledge_path)
     meta = read_regen_meta(insights_dir)
 
     if row is None and meta is None:
@@ -1399,7 +1421,7 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
     error_reason = _clamp_error_reason(istate.error_reason)
 
     # Write hashes to sidecar
-    insights_dir = root / "insights" / kp if kp else root / "insights"
+    insights_dir = area_insights_dir(root, kp)
     if istate.content_hash is not None:
         try:
             write_regen_meta(
@@ -1445,8 +1467,7 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
     from brain_sync.sidecar import read_all_regen_meta
 
     # Read all sidecars
-    insights_root = root / "insights"
-    all_meta = read_all_regen_meta(insights_root)
+    all_meta = read_all_regen_meta(knowledge_root(root))
 
     # Read all regen_locks
     conn = _connect(root)
@@ -1488,7 +1509,7 @@ def delete_insight_state(root: Path, knowledge_path: str) -> None:
     knowledge_path = normalize_path(knowledge_path)
 
     # Delete sidecar
-    insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
+    insights_dir = area_insights_dir(root, knowledge_path)
     try:
         delete_regen_meta(insights_dir)
     except Exception:
@@ -1673,35 +1694,29 @@ def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
 
 
 def write_daemon_status(root: Path, pid: int, status: str) -> None:
-    """Write the daemon lifecycle status as a single-row table.
-
-    DELETE + INSERT on 'starting' keeps exactly one row.  On crash the
-    row remains as 'ready' or 'starting' — diagnostic evidence preserved.
-    """
+    """Write daemon lifecycle state to ~/.brain-sync/daemon.json."""
     from datetime import UTC, datetime
 
-    conn = _connect(root)
-    try:
-        if status == "starting":
-            # New lifecycle: clear previous row, insert fresh
-            conn.execute("DELETE FROM daemon_status")
-            conn.execute(
-                "INSERT INTO daemon_status (pid, started_at, status) VALUES (?, ?, ?)",
-                (pid, datetime.now(UTC).isoformat(), status),
-            )
-        else:
-            conn.execute("UPDATE daemon_status SET status = ? WHERE pid = ?", (status, pid))
-        conn.commit()
-    finally:
-        conn.close()
+    DAEMON_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": pid,
+        "started_at": datetime.now(UTC).isoformat() if status == "starting" else None,
+        "status": status,
+    }
+    if DAEMON_STATUS_FILE.exists() and status != "starting":
+        try:
+            current = json.loads(DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
+            payload["started_at"] = current.get("started_at")
+        except (json.JSONDecodeError, OSError):
+            pass
+    DAEMON_STATUS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def read_daemon_status(root: Path) -> dict | None:
-    """Read the single daemon_status row.  Returns dict or None."""
-    conn = _connect(root)
+    """Read daemon lifecycle state from ~/.brain-sync/daemon.json."""
+    if not DAEMON_STATUS_FILE.exists():
+        return None
     try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT pid, started_at, status FROM daemon_status").fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+        return json.loads(DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None

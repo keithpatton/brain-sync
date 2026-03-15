@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from brain_sync.fs_utils import get_child_dirs, is_content_dir
+from brain_sync.layout import MANAGED_DIRNAME, SUMMARY_FILENAME, area_summary_path
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +71,8 @@ class AreaIndex:
 
     @classmethod
     def build(cls, root: Path) -> AreaIndex:
-        """Build a fresh index by walking knowledge/ for structure, insights/ for summaries."""
+        """Build a fresh index by walking knowledge/ for structure and co-located summaries."""
         index = cls()
-        insights_root = root / "insights"
         knowledge_root = root / "knowledge"
 
         if not knowledge_root.is_dir():
@@ -96,8 +96,8 @@ class AreaIndex:
                     has_knowledge=True,  # walking knowledge/, so it exists by definition
                 )
 
-                # Summary from insights/<area>/summary.md
-                summary_path = insights_root / child_rel / "summary.md"
+                # Summary from knowledge/<area>/.brain-sync/insights/summary.md
+                summary_path = area_summary_path(root, child_rel)
                 if summary_path.is_file():
                     entry.has_summary = True
                     try:
@@ -130,13 +130,13 @@ class AreaIndex:
         return index
 
     def is_stale(self, root: Path) -> bool:
-        """Check if the index needs rebuilding by scanning summary.md mtimes."""
-        insights_root = root / "insights"
-        if not insights_root.is_dir():
-            return bool(self.entries)  # stale if we have entries but no insights dir
+        """Check if the index needs rebuilding by scanning managed summary mtimes."""
+        knowledge_root = root / "knowledge"
+        if not knowledge_root.is_dir():
+            return bool(self.entries)
         max_mtime = 0.0
-        for p in insights_root.rglob("summary.md"):
-            if p.is_file():
+        for p in knowledge_root.rglob(SUMMARY_FILENAME):
+            if p.is_file() and MANAGED_DIRNAME in p.parts:
                 try:
                     mtime = p.stat().st_mtime
                     if mtime > max_mtime:

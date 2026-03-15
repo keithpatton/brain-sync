@@ -92,8 +92,8 @@ class TestIsContentDir:
         d.mkdir()
         assert is_content_dir(d) is False
 
-    def test_sync_context_excluded(self, tmp_path):
-        d = tmp_path / "_sync-context"
+    def test_managed_namespace_excluded(self, tmp_path):
+        d = tmp_path / ".brain-sync"
         d.mkdir()
         assert is_content_dir(d) is False
 

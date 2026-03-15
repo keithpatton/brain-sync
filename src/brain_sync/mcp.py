@@ -39,6 +39,7 @@ from brain_sync.commands import (
 from brain_sync.commands.placement import suggest_placement
 from brain_sync.fileops import TEXT_EXTENSIONS
 from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
+from brain_sync.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
 from brain_sync.regen import RegenFailed, regen_all, regen_path
 from brain_sync.regen_lifecycle import regen_session
 from brain_sync.sources import UnsupportedSourceError
@@ -103,11 +104,10 @@ def _read_file_safe(path: Path, max_chars: int | None = None) -> str:
 def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
     """Load global context as structured dict for MCP responses.
 
-    Returns {"knowledge_core": {...}, "schemas": {...}, "insights_core": {...}}.
+    Returns {"knowledge_core": {...}, "insights_core": {...}}.
     """
     result: dict[str, dict[str, str]] = {
         "knowledge_core": {},
-        "schemas": {},
         "insights_core": {},
     }
 
@@ -119,16 +119,8 @@ def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
                 rel = normalize_path(p.relative_to(core_dir))
                 result["knowledge_core"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
 
-    # 2. schemas
-    schemas_dir = root / "schemas"
-    if schemas_dir.is_dir():
-        for p in sorted(schemas_dir.rglob("*")):
-            if p.is_file() and p.suffix.lower() in {".md", ".txt"} and not p.name.startswith("."):
-                rel = normalize_path(p.relative_to(schemas_dir))
-                result["schemas"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
-
-    # 3. insights/_core (excluding journal/)
-    insights_core = root / "insights" / "_core"
+    # 2. knowledge/_core/.brain-sync/insights (excluding journal/)
+    insights_core = area_insights_dir(root, "_core")
     if insights_core.is_dir():
         for p in sorted(insights_core.rglob("*")):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"} and not p.name.startswith("."):
@@ -144,8 +136,8 @@ def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
 def _collect_areas(root: Path) -> list[dict]:
     """Collect all insight areas with summary existence status."""
     areas: list[dict] = []
-    insights_root = root / "insights"
-    if not insights_root.is_dir():
+    knowledge_root = root / "knowledge"
+    if not knowledge_root.is_dir():
         return areas
 
     def _walk(directory: Path, prefix: str) -> None:
@@ -155,11 +147,11 @@ def _collect_areas(root: Path) -> list[dict]:
             if child.name == "_core":
                 continue
             child_rel = prefix + "/" + child.name if prefix else child.name
-            has_summary = (child / "summary.md").is_file()
+            has_summary = area_summary_path(root, child_rel).is_file()
             areas.append({"path": child_rel, "has_summary": has_summary})
             _walk(child, child_rel)
 
-    _walk(insights_root, "")
+    _walk(knowledge_root, "")
     return areas
 
 
@@ -602,7 +594,7 @@ def brain_sync_suggest_placement(
     description=(
         "Primary brain entrypoint. Search for areas matching a query. "
         "Set include_global=True to also load core context (knowledge/_core, "
-        "schemas, insights/_core). Use brain_sync_open_area to drill into a match."
+        "knowledge/_core/.brain-sync/insights). Use brain_sync_open_area to drill into a match."
     ),
 )
 def brain_sync_query(
@@ -647,6 +639,7 @@ def brain_sync_query(
     description=(
         "Load global brain context: knowledge/_core, schemas, insights/_core. "
         "Use when you need broad brain orientation. For area-specific queries, "
+        "Managed insight summaries are read from knowledge/**/.brain-sync/insights/. "
         "use brain_sync_query instead."
     ),
 )
@@ -684,7 +677,7 @@ def brain_sync_open_area(
 ) -> dict:
     """Load full insight context for a brain area."""
     rt = _runtime(ctx)
-    insights_dir = _safe_resolve(rt.root, "insights/" + path)
+    insights_dir = area_insights_dir(rt.root, path)
     if insights_dir is None or not insights_dir.is_dir():
         return {"status": "error", "error": "not_found", "path": path}
 
@@ -702,7 +695,7 @@ def brain_sync_open_area(
         if "journal" in rel_parts:
             continue
 
-        if p.name == "summary.md":
+        if p.name == SUMMARY_FILENAME:
             content = _read_file_safe(p, MAX_SUMMARY_CHARS)
         else:
             content = _read_file_safe(p, MAX_INSIGHT_FILE_CHARS)
@@ -711,13 +704,14 @@ def brain_sync_open_area(
         payload_size += len(content)
 
     # Children listing (always)
-    child_dirs = get_child_dirs(insights_dir)
+    child_dirs = get_child_dirs(knowledge_dir) if knowledge_dir is not None and knowledge_dir.is_dir() else []
     children: list[dict] = []
     for d in sorted(child_dirs, key=lambda d: d.name):
+        child_path = f"{path}/{d.name}" if path else d.name
         children.append(
             {
                 "name": d.name,
-                "has_summary": (d / "summary.md").is_file(),
+                "has_summary": area_summary_path(rt.root, child_path).is_file(),
             }
         )
     total_children = len(children)
@@ -730,7 +724,8 @@ def brain_sync_open_area(
             if i >= MAX_CHILDREN:
                 children_truncated = True
                 break
-            summary_path = d / "summary.md"
+            child_path = f"{path}/{d.name}" if path else d.name
+            summary_path = area_summary_path(rt.root, child_path)
             if summary_path.is_file():
                 content = _read_file_safe(summary_path, MAX_CHILD_SUMMARY_CHARS)
                 child_summaries[d.name] = content
@@ -747,7 +742,7 @@ def brain_sync_open_area(
     if payload_size > MAX_AREA_PAYLOAD:
         # Step 1: Drop non-summary insight artifacts
         for key in list(insights.keys()):
-            if key != "summary.md":
+            if key != SUMMARY_FILENAME:
                 payload_size -= len(insights[key])
                 insights[key] = TRUNCATION_MARKER
                 payload_size += len(TRUNCATION_MARKER)
@@ -762,10 +757,10 @@ def brain_sync_open_area(
 
     if payload_size > MAX_AREA_PAYLOAD:
         # Step 3: Truncate summary as last resort
-        if "summary.md" in insights:
-            old_len = len(insights["summary.md"])
-            insights["summary.md"] = _truncate(insights["summary.md"], MAX_AREA_PAYLOAD // 2)
-            payload_size -= old_len - len(insights["summary.md"])
+        if SUMMARY_FILENAME in insights:
+            old_len = len(insights[SUMMARY_FILENAME])
+            insights[SUMMARY_FILENAME] = _truncate(insights[SUMMARY_FILENAME], MAX_AREA_PAYLOAD // 2)
+            payload_size -= old_len - len(insights[SUMMARY_FILENAME])
 
     result: dict = {
         "status": "ok",
@@ -794,7 +789,7 @@ def brain_sync_open_area(
     name="brain_sync_open_file",
     description=(
         "Read a specific text file from the brain by relative path "
-        "(e.g. 'insights/_core/summary.md', 'knowledge/initiatives/AAA/doc.md'). "
+        "(e.g. 'knowledge/_core/.brain-sync/insights/summary.md', 'knowledge/initiatives/AAA/doc.md'). "
         "Returns file content. Supports .md, .txt, .json, .yaml, .yml files only. "
         "For large files, use offset (0-based char position) to paginate. "
         "Default limit is 200000 chars per call."

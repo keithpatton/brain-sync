@@ -11,6 +11,7 @@ from pathlib import Path
 
 from brain_sync.config import CONFIG_FILE, load_config, save_config
 from brain_sync.fileops import atomic_write_bytes
+from brain_sync.layout import BRAIN_MANIFEST_VERSION, brain_manifest_path, source_manifests_dir
 
 log = logging.getLogger(__name__)
 
@@ -51,28 +52,6 @@ def _ensure_dir(path: Path, dry_run: bool = False) -> bool:
     path.mkdir(parents=True, exist_ok=True)
     log.info("Created %s", path)
     return True
-
-
-def _ensure_gitignore_entry(root: Path, pattern: str, dry_run: bool = False) -> None:
-    """Add a pattern to .gitignore if not already present."""
-    gitignore = root / ".gitignore"
-    if gitignore.exists():
-        content = gitignore.read_text(encoding="utf-8")
-        if pattern in content.splitlines():
-            return
-    else:
-        content = ""
-
-    if dry_run:
-        log.info("[dry-run] Would add '%s' to .gitignore", pattern)
-        return
-
-    lines = content.splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    lines.append(pattern + "\n")
-    gitignore.write_text("".join(lines), encoding="utf-8")
-    log.info("Added '%s' to .gitignore", pattern)
 
 
 def _register_brain_root(
@@ -123,7 +102,7 @@ def init_brain(
     """Initialise a brain at the given root directory."""
     root = root.resolve()
 
-    if root.name in ("knowledge", "insights") and (root.parent / ".sync-state.sqlite").exists():
+    if root.name == "knowledge" and (root.parent / ".brain-sync" / "brain.json").exists():
         raise ValueError(
             f"Path appears to be the '{root.name}/' folder inside an existing brain at {root.parent}. "
             f"Use the parent directory instead: brain-sync init {root.parent}"
@@ -138,33 +117,19 @@ def init_brain(
     for rel in [
         "knowledge",
         "knowledge/_core",
-        "insights",
-        "insights/_core",
-        "schemas/insights",
         ".brain-sync",
         ".brain-sync/sources",
     ]:
         if _ensure_dir(root / rel, dry_run):
             dirs_created.append(rel)
 
-    # Write .brain-sync/version.json (idempotent — always overwrite to latest)
+    # Write .brain-sync/brain.json (idempotent — always overwrite to latest)
     if not dry_run:
-        version_file = root / ".brain-sync" / "version.json"
-        version_data = json.dumps({"manifest_version": 1}, indent=2) + "\n"
-        atomic_write_bytes(version_file, version_data.encode("utf-8"))
-        log.info("Wrote %s", version_file)
-
-    # Ensure .sync-state.sqlite is in .gitignore
-    _ensure_gitignore_entry(root, ".sync-state.sqlite*", dry_run)
-
-    # Deploy insight schemas to brain root
-    for schema in ["summary.md", "decisions.md", "glossary.md", "status.md"]:
-        _copy_resource(
-            "brain_sync.schemas",
-            f"insights/{schema}",
-            root / "schemas" / "insights" / schema,
-            dry_run,
-        )
+        manifest_file = brain_manifest_path(root)
+        version_data = json.dumps({"version": BRAIN_MANIFEST_VERSION}, indent=2) + "\n"
+        atomic_write_bytes(manifest_file, version_data.encode("utf-8"))
+        source_manifests_dir(root).mkdir(parents=True, exist_ok=True)
+        log.info("Wrote %s", manifest_file)
 
     # Install skill to Claude skill directory (MCP tools handle all context)
     _copy_resource(
@@ -173,12 +138,6 @@ def init_brain(
         SKILL_INSTALL_DIR / "SKILL.md",
         dry_run,
     )
-
-    if not dry_run:
-        from brain_sync.state import ensure_db
-
-        ensure_db(root)
-        log.info("SQLite state database ready at %s", root / ".sync-state.sqlite")
 
     _register_brain_root(root, model=model, dry_run=dry_run)
 

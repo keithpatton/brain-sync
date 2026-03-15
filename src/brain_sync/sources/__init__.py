@@ -31,6 +31,19 @@ def detect_source_type(url: str) -> SourceType:
     raise UnsupportedSourceError(f"Cannot determine source type for: {url}")
 
 
+def to_durable_source_type(source_type: SourceType | str) -> str:
+    value = source_type.value if isinstance(source_type, SourceType) else source_type
+    if value == SourceType.GOOGLE_DOCS.value:
+        return "google_doc"
+    return value
+
+
+def from_durable_source_type(source_type: str) -> str:
+    if source_type == "google_doc":
+        return SourceType.GOOGLE_DOCS.value
+    return source_type
+
+
 _CONFLUENCE_PAGE_ID_RE = re.compile(r"/pages/(\d+)")
 _CONFLUENCE_VIEWPAGE_RE = re.compile(r"[?&]pageId=(\d+)")
 _CONFLUENCE_FALLBACK_RE = re.compile(r"/(\d+)(?:[/?#]|$)")

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_attachments_root, area_insights_dir
+from brain_sync.sidecar import RegenMeta, write_regen_meta
 from tests.e2e.harness.cli import CliRunner
 
 pytestmark = pytest.mark.system
@@ -34,9 +37,10 @@ class TestDoctorWithIssues:
 class TestDoctorFix:
     def test_fix_exits_zero(self, cli: CliRunner, brain_root: Path) -> None:
         cli.run("init", str(brain_root))
-        # Create orphan insights dir (no summary to avoid WOULD_TRIGGER_REGEN)
-        orphan = brain_root / "insights" / "orphan_area"
+        # Create a supported drift case that doctor --fix can repair.
+        orphan = area_attachments_root(brain_root, "area") / "c999"
         orphan.mkdir(parents=True)
+        (orphan / "file.png").write_bytes(b"data")
 
         result = cli.run("doctor", "--fix", "--root", str(brain_root))
         assert result.returncode == 0, f"Doctor --fix failed: {result.stderr}"
@@ -51,22 +55,19 @@ class TestDoctorRebuildDb:
 
 
 class TestDoctorWouldTriggerRegenExitsOne:
-    def test_exits_one_on_would_trigger_regen(self, cli: CliRunner, brain_root: Path) -> None:
+    def test_exits_one_on_would_trigger_regen(self, cli: CliRunner, brain_root: Path, config_dir: Path) -> None:
         """WOULD_TRIGGER_REGEN findings cause non-zero exit."""
         cli.run("init", str(brain_root))
         # Create a knowledge dir with content but insight_state with stale hash
         (brain_root / "knowledge" / "project").mkdir(parents=True)
         (brain_root / "knowledge" / "project" / "doc.md").write_text("# Content")
-        (brain_root / "insights" / "project").mkdir(parents=True)
-        (brain_root / "insights" / "project" / "summary.md").write_text("# Summary")
+        insights_dir = area_insights_dir(brain_root, "project")
+        insights_dir.mkdir(parents=True, exist_ok=True)
+        (insights_dir / "summary.md").write_text("# Summary")
 
-        # Insert regen_locks row + write stale sidecar with non-matching hashes
-        # (non-null structure_hash prevents backfill from overwriting content_hash)
-        import sqlite3
-
-        from brain_sync.sidecar import RegenMeta, write_regen_meta
-
-        db = brain_root / ".sync-state.sqlite"
+        # Ensure the runtime DB exists, then seed regen_locks + stale sidecar.
+        cli.run("list", "--root", str(brain_root))
+        db = config_dir / "db" / "brain-sync.sqlite"
         conn = sqlite3.connect(str(db))
         conn.execute(
             "INSERT OR REPLACE INTO regen_locks (knowledge_path, regen_status) VALUES (?, ?)",
@@ -77,8 +78,7 @@ class TestDoctorWouldTriggerRegenExitsOne:
 
         # Write stale sidecar (the authority for hashes in v21)
         write_regen_meta(
-            brain_root / "insights" / "project",
-            RegenMeta(content_hash="stale_hash_that_wont_match", structure_hash="stale_struct_hash"),
+            insights_dir, RegenMeta(content_hash="stale_hash_that_wont_match", structure_hash="stale_struct_hash")
         )
 
         result = cli.run("doctor", "--root", str(brain_root))

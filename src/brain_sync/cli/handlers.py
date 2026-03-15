@@ -34,7 +34,7 @@ def handle_init(args) -> None:
     log.info("%sBrain initialised successfully", prefix)
     log.info("  knowledge/       - Add your content here")
     log.info("  knowledge/_core/ - Always-loaded reference material")
-    log.info("  insights/        - Auto-generated summaries and journal")
+    log.info("  knowledge/**/.brain-sync/insights/ - Auto-generated summaries")
 
     from brain_sync.commands.init import SKILL_INSTALL_DIR
 

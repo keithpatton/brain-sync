@@ -7,15 +7,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import yaml
 
 from brain_sync.converter import format_comments
 from brain_sync.fileops import content_hash, rediscover_local_path, write_if_changed
 from brain_sync.fs_utils import normalize_path
+from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
     detect_source_type,
     extract_id,
+    to_durable_source_type,
 )
 from brain_sync.sources.base import UpdateCheckResult, UpdateStatus
 from brain_sync.sources.registry import get_adapter
@@ -24,7 +27,6 @@ from brain_sync.state import SourceState
 log = logging.getLogger(__name__)
 
 # Managed-file identity header lines (embedded in synced markdown files).
-# The source line is the primary identity binding used by reconciliation.
 MANAGED_HEADER_SOURCE = "<!-- brain-sync-source: {} -->"
 MANAGED_HEADER_WARNING = "<!-- brain-sync-managed: local edits may be overwritten -->"
 
@@ -33,13 +35,55 @@ _MANAGED_HEADER_RE = re.compile(r"^<!-- brain-sync-(source|managed): .* -->\n", 
 
 # Regex to extract canonical_id from the identity header (tier-2 resolution).
 _EXTRACT_SOURCE_RE = re.compile(r"^<!-- brain-sync-source: (.+) -->\r?$", re.MULTILINE)
+_FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
+_MANAGED_FRONTMATTER_KEYS = (
+    "brain_sync_source",
+    "brain_sync_canonical_id",
+    "brain_sync_source_url",
+)
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, object], str]:
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    raw = match.group(1)
+    try:
+        data = yaml.safe_load(raw) or {}
+    except yaml.YAMLError:
+        return {}, text
+    if not isinstance(data, dict):
+        return {}, text
+    return dict(data), text[match.end() :]
+
+
+def _render_frontmatter(data: dict[str, object], body: str) -> str:
+    if not data:
+        return body.lstrip("\n")
+    rendered = yaml.safe_dump(data, sort_keys=False, allow_unicode=False).strip()
+    body = body.lstrip("\n")
+    if body:
+        return f"---\n{rendered}\n---\n\n{body}"
+    return f"---\n{rendered}\n---\n"
+
+
+def _canonical_source_type_for_frontmatter(source_type: str | None, canonical_id_str: str) -> str:
+    if source_type:
+        return to_durable_source_type(source_type)
+    if canonical_id_str.startswith("gdoc:"):
+        return "google_doc"
+    return canonical_id_str.split(":", 1)[0]
 
 
 def extract_source_id(path: Path) -> str | None:
     """Extract canonical_id from a file's embedded identity header (tier-2 resolution)."""
     try:
         with open(path, "rb") as f:
-            head = f.read(512).decode("utf-8", errors="replace")
+            head = f.read(4096).decode("utf-8", errors="replace")
+        frontmatter, _ = _split_frontmatter(head)
+        frontmatter_cid = frontmatter.get("brain_sync_canonical_id")
+        if isinstance(frontmatter_cid, str):
+            return frontmatter_cid
         m = _EXTRACT_SOURCE_RE.search(head)
         return m.group(1) if m else None
     except OSError:
@@ -47,18 +91,30 @@ def extract_source_id(path: Path) -> str | None:
 
 
 def strip_managed_header(text: str) -> str:
-    """Remove managed-file header lines from markdown text."""
+    """Remove managed identity from YAML frontmatter and legacy HTML comments."""
+    frontmatter, body = _split_frontmatter(text)
+    if frontmatter:
+        for key in _MANAGED_FRONTMATTER_KEYS:
+            frontmatter.pop(key, None)
+        text = _render_frontmatter(frontmatter, body)
     return _MANAGED_HEADER_RE.sub("", text).lstrip("\n")
 
 
-def prepend_managed_header(canonical_id_str: str, markdown: str) -> str:
-    """Prepend the managed-file identity header to markdown content.
-
-    Idempotent — strips any existing header before prepending.
-    """
-    body = strip_managed_header(markdown)
-    header = MANAGED_HEADER_SOURCE.format(canonical_id_str) + "\n" + MANAGED_HEADER_WARNING + "\n\n"
-    return header + body
+def prepend_managed_header(
+    canonical_id_str: str,
+    markdown: str,
+    *,
+    source_type: str | None = None,
+    source_url: str | None = None,
+) -> str:
+    """Write spec-aligned managed identity frontmatter, preserving user keys."""
+    frontmatter, body = _split_frontmatter(markdown)
+    body = _MANAGED_HEADER_RE.sub("", body).lstrip("\n")
+    frontmatter["brain_sync_source"] = _canonical_source_type_for_frontmatter(source_type, canonical_id_str)
+    frontmatter["brain_sync_canonical_id"] = canonical_id_str
+    if source_url is not None:
+        frontmatter["brain_sync_source_url"] = source_url
+    return _render_frontmatter(frontmatter, body)
 
 
 @dataclass
@@ -116,10 +172,10 @@ async def process_source(
     target = target_dir / filename
 
     # Skip if unchanged
-    attachments_dir = target_dir / "_attachments"
+    attachments_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME
     context_missing = _has_context_flags(source_state) and not attachments_dir.exists()
     if root is not None:
-        existing_file = rediscover_local_path(root, source_state.canonical_id)
+        existing_file = rediscover_local_path(root / "knowledge", source_state.canonical_id)
     else:
         existing_file = target if target.exists() else None
     if check:
@@ -232,7 +288,12 @@ async def process_source(
     body_hash = content_hash(markdown.encode("utf-8"))
 
     # Prepend managed-file identity header
-    markdown = prepend_managed_header(source_state.canonical_id, markdown)
+    markdown = prepend_managed_header(
+        source_state.canonical_id,
+        markdown,
+        source_type=source_state.source_type,
+        source_url=source_state.source_url,
+    )
 
     # Write + state update
     changed = write_if_changed(target, markdown)

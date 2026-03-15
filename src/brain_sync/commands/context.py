@@ -6,6 +6,7 @@ from pathlib import Path
 
 import brain_sync.config as _config
 from brain_sync.config import load_config
+from brain_sync.layout import brain_manifest_path, knowledge_root
 
 # Re-export for backwards compatibility during migration
 __all__ = ["BrainNotFoundError", "InvalidBrainRootError", "resolve_root", "validate_brain_root"]
@@ -24,12 +25,12 @@ def validate_brain_root(root: Path) -> None:
 
     Raises InvalidBrainRootError if the structural invariant is violated.
     """
-    if not (root / "knowledge").is_dir():
+    if not knowledge_root(root).is_dir() or not brain_manifest_path(root).is_file():
         raise InvalidBrainRootError(
             f"Brain root '{root}' is invalid.\n"
             f"Expected structure:\n"
+            f"  {root}/.brain-sync/brain.json\n"
             f"  {root}/knowledge/\n"
-            f"  {root}/insights/\n"
             f"The configured root appears to point to the wrong directory."
         )
 

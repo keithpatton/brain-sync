@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_insights_dir
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
 from brain_sync.state import load_insight_state
@@ -70,15 +71,12 @@ class TestReconcileState:
         assert r.action == "skipped_no_content"
 
     async def test_missing_folder_cleaned_up(self, brain: Path):
-        """If knowledge dir doesn't exist, stale insights are cleaned up."""
-        # Create insight state without knowledge dir
-        idir = brain / "insights" / "gone"
-        idir.mkdir(parents=True)
-        (idir / "summary.md").write_text("stale summary", encoding="utf-8")
+        """If knowledge dir doesn't exist, stale co-located state is cleaned up."""
+        save_dir = area_insights_dir(brain, "gone")
 
         backend = FakeBackend(mode="stable")
         config = RegenConfig(model="fake-model", effort="low", timeout=30)
 
         r = await regen_single_folder(brain, "gone", config=config, backend=backend)
         assert r.action == "cleaned_up"
-        assert not idir.exists()
+        assert not save_dir.exists()

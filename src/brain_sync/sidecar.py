@@ -13,11 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.fileops import atomic_write_bytes
+from brain_sync.layout import INSIGHT_STATE_FILENAME, INSIGHT_STATE_VERSION, area_insight_state_path
 
 log = logging.getLogger(__name__)
 
-SIDECAR_FILENAME = ".regen-meta.json"
-SIDECAR_VERSION = 1
+SIDECAR_FILENAME = INSIGHT_STATE_FILENAME
+SIDECAR_VERSION = INSIGHT_STATE_VERSION
 
 
 class UnsupportedSidecarVersion(Exception):
@@ -82,15 +83,16 @@ def read_regen_meta(insights_dir: Path) -> RegenMeta | None:
 
 
 def read_all_regen_meta(insights_root: Path) -> dict[str, RegenMeta]:
-    """Walk insights/ and return {knowledge_path: RegenMeta} for all sidecars."""
+    """Walk knowledge/ and return {knowledge_path: RegenMeta} for all insight-state files."""
     result: dict[str, RegenMeta] = {}
     if not insights_root.is_dir():
         return result
     for sidecar_path in insights_root.rglob(SIDECAR_FILENAME):
-        rel = sidecar_path.parent.relative_to(insights_root)
-        knowledge_path = str(rel).replace("\\", "/")
-        if knowledge_path == ".":
-            knowledge_path = ""
+        parts = sidecar_path.relative_to(insights_root).parts
+        if len(parts) < 3 or parts[-3:] != (".brain-sync", "insights", SIDECAR_FILENAME):
+            continue
+        area_parts = parts[:-3]
+        knowledge_path = "/".join(area_parts)
         try:
             meta = read_regen_meta(sidecar_path.parent)
             if meta is not None:
@@ -109,6 +111,5 @@ def delete_regen_meta(insights_dir: Path) -> None:
 
 
 def load_regen_hashes(root: Path, knowledge_path: str) -> RegenMeta | None:
-    """Read regen hashes from sidecar (sole authority in v21+)."""
-    insights_dir = root / "insights" / knowledge_path if knowledge_path else root / "insights"
-    return read_regen_meta(insights_dir)
+    """Read regen hashes from the co-located insight-state file."""
+    return read_regen_meta(area_insight_state_path(root, knowledge_path).parent)

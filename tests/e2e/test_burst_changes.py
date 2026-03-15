@@ -6,7 +6,11 @@ import time
 
 import pytest
 
-from tests.e2e.harness.assertions import assert_no_duplicate_insights, assert_no_orphan_insights
+from tests.e2e.harness.assertions import (
+    assert_no_duplicate_insights,
+    assert_no_orphan_insights,
+    assert_summary_exists,
+)
 from tests.e2e.harness.brain import BrainFixture
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess
@@ -54,7 +58,7 @@ class TestDaemonRestart:
         (kdir / "doc.md").write_text("# Doc\n\nRestart content.", encoding="utf-8")
         result = cli.run("regen", "--root", str(brain.root), "restart")
         assert result.returncode == 0
-        assert (brain.insights / "restart" / "summary.md").exists()
+        assert_summary_exists(brain.root, "restart")
 
         # Start daemon
         daemon.start()
@@ -68,7 +72,7 @@ class TestDaemonRestart:
         daemon.wait_for_ready(timeout=15)
 
         # State should be intact
-        assert (brain.insights / "restart" / "summary.md").exists()
+        assert_summary_exists(brain.root, "restart")
 
         daemon.shutdown()
 

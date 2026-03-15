@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.layout import area_summary_path
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_path, regen_single_folder
 from brain_sync.state import load_insight_state
@@ -17,7 +18,7 @@ class TestRegenWithFakeBackend:
     """Full regen pipeline with fake backend, real FS + SQLite."""
 
     async def test_creates_summary(self, brain: Path):
-        """Regen with fake backend creates summary.md in insights."""
+        """Regen with fake backend creates the co-located summary."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "overview.md").write_text("# Overview\n\nProject overview.", encoding="utf-8")
@@ -33,7 +34,7 @@ class TestRegenWithFakeBackend:
         )
 
         assert result.action == "regenerated"
-        summary = brain / "insights" / "project" / "summary.md"
+        summary = area_summary_path(brain, "project")
         assert summary.exists()
         content = summary.read_text(encoding="utf-8")
         assert "[fake-" in content  # deterministic fingerprint
@@ -76,8 +77,8 @@ class TestRegenWithFakeBackend:
 
         # Should have regenerated leaf + parent + root
         assert count >= 2
-        assert (brain / "insights" / "eng" / "backend" / "summary.md").exists()
-        assert (brain / "insights" / "eng" / "summary.md").exists()
+        assert area_summary_path(brain, "eng/backend").exists()
+        assert area_summary_path(brain, "eng").exists()
 
     async def test_insight_state_persisted(self, brain: Path):
         """Regen should persist InsightState to SQLite."""

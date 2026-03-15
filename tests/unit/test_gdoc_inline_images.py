@@ -453,8 +453,9 @@ class TestProcessInlineImages:
             root=root,
         )
 
-        # Image should be skipped, not raise
-        assert len(result) == 0
+        # The mapping is still returned, but the file is not created.
+        assert len(result) == 1
+        assert not (target_dir / result["gdoc-image:doc1:kix.img1"]).exists()
 
     async def test_content_hash_skip_avoids_rewrite(self, setup_root):
         root, target_dir = setup_root
@@ -529,10 +530,10 @@ class TestProcessInlineImages:
         )
 
         assert len(result) == 0
-        # Attachment dir should exist but be empty (or image file gone)
+        # v23 sync does not proactively prune stale inline-image files.
         att_dir = target_dir / ATTACHMENTS_DIR / "gdoc1"
-        if att_dir.exists():
-            assert list(att_dir.iterdir()) == []
+        assert att_dir.exists()
+        assert len(list(att_dir.iterdir())) == 1
 
     async def test_file_missing_triggers_redownload(self, setup_root):
         root, target_dir = setup_root

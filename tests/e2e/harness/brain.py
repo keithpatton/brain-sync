@@ -7,6 +7,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.commands.init import init_brain
+from brain_sync.layout import INSIGHT_STATE_FILENAME, area_insights_dir
+
+
+@dataclass(frozen=True)
+class ManagedInsightsAccessor:
+    """Path-like accessor for co-located managed insights."""
+
+    root: Path
+    knowledge_path: str = ""
+
+    def _resolved_dir(self) -> Path:
+        return area_insights_dir(self.root, self.knowledge_path)
+
+    def __truediv__(self, key: str) -> Path | ManagedInsightsAccessor:
+        if key in {"summary.md", INSIGHT_STATE_FILENAME, "journal"}:
+            return self._resolved_dir() / key
+        next_path = f"{self.knowledge_path}/{key}" if self.knowledge_path else key
+        return ManagedInsightsAccessor(self.root, next_path)
+
+    def __getattr__(self, name: str):
+        return getattr(self._resolved_dir(), name)
+
+    def __fspath__(self) -> str:
+        return str(self._resolved_dir())
+
+    def __str__(self) -> str:
+        return str(self._resolved_dir())
 
 
 @dataclass
@@ -17,15 +44,20 @@ class BrainFixture:
 
     @property
     def db_path(self) -> Path:
-        return self.root / ".sync-state.sqlite"
+        from brain_sync import config as runtime_config
+
+        return runtime_config.RUNTIME_DB_FILE
 
     @property
     def knowledge(self) -> Path:
         return self.root / "knowledge"
 
     @property
-    def insights(self) -> Path:
-        return self.root / "insights"
+    def insights(self) -> ManagedInsightsAccessor:
+        return ManagedInsightsAccessor(self.root)
+
+    def insights_dir(self, knowledge_path: str = "") -> Path:
+        return area_insights_dir(self.root, knowledge_path)
 
 
 def create_brain(tmp_path: Path) -> BrainFixture:
@@ -65,13 +97,11 @@ def seed_knowledge_tree(root: Path, structure: dict) -> None:
 
 def seed_sources(root: Path, sources: list[dict]) -> None:
     """Register sources via manifests + sync_cache rows."""
-    import sqlite3
-
-    from brain_sync.manifest import MANIFEST_VERSION, SourceManifest, ensure_manifest_dir, write_source_manifest
+    from brain_sync.manifest import SOURCE_MANIFEST_VERSION, SourceManifest, ensure_manifest_dir, write_source_manifest
+    from brain_sync.state import _connect
 
     ensure_manifest_dir(root)
-    db = root / ".sync-state.sqlite"
-    conn = sqlite3.connect(str(db))
+    conn = _connect(root)
     for src in sources:
         cid = src["canonical_id"]
         url = src.get("source_url", "https://acme.atlassian.net/wiki/spaces/ENG/pages/123")
@@ -80,12 +110,11 @@ def seed_sources(root: Path, sources: list[dict]) -> None:
         write_source_manifest(
             root,
             SourceManifest(
-                manifest_version=MANIFEST_VERSION,
+                version=SOURCE_MANIFEST_VERSION,
                 canonical_id=cid,
                 source_url=url,
                 source_type=stype,
                 materialized_path="",
-                fetch_children=False,
                 sync_attachments=False,
                 target_path=tp,
             ),
