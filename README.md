@@ -198,6 +198,43 @@ conversation.
 
 3. Restart Claude Desktop
 
+### Backing Up Your Brain
+
+Initialize a private Git repository at the brain root and push it to a private
+remote. Commit the portable brain state:
+
+- `knowledge/`
+- `.brain-sync/`
+
+Do not commit machine-local runtime state from `~/.brain-sync/`. That directory
+contains disposable caches, local credentials, daemon state, and the runtime DB.
+
+Using a private Git repo matters for two reasons:
+
+- it gives you normal backups, history, branching, and multi-machine sync for
+  the portable brain itself
+- it keeps your checked-out files consistent across Windows, macOS, and Linux,
+  which helps avoid newline-only checkout differences being mistaken for content
+  changes during reconcile and regen
+
+For a brain repository, prefer byte-stable checkout rules over OS-native line
+ending translation. Add a `.gitattributes` file at the brain root like this:
+
+```gitattributes
+* -text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.sqlite binary
+```
+
+`* -text` tells Git not to rewrite line endings on checkout. That keeps the
+working tree bytes stable across supported platforms, which is especially
+important because brain-sync hashes the files it sees on disk when deciding
+whether a knowledge area changed.
+
 ### Example Requests
 
 - "Add this Confluence page to initiatives/platform and sync attachments"

@@ -417,12 +417,15 @@ def _compute_content_hash(
     for content in sorted(child_summaries.values()):
         h.update(content.encode("utf-8"))
     if has_direct_files:
-        file_hashes: list[tuple[str, Path]] = []
+        file_hashes: list[tuple[str, bytes]] = []
         for p in knowledge_dir.iterdir():
             if _is_readable_file(p):
-                file_hashes.append((hashlib.sha256(p.read_bytes()).hexdigest(), p))
-        for _, p in sorted(file_hashes):
-            h.update(p.read_bytes())
+                content = p.read_bytes()
+                if p.suffix.lower() in TEXT_EXTENSIONS:
+                    content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                file_hashes.append((hashlib.sha256(content).hexdigest(), content))
+        for _, content in sorted(file_hashes):
+            h.update(content)
     return h.hexdigest()
 
 

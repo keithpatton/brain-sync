@@ -121,6 +121,24 @@ class TestComputeContentHash:
         h2 = _compute_content_hash({}, folder, True)
         assert h1 != h2
 
+    def test_text_line_endings_do_not_change_hash(self, tmp_path):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        (folder / "a.md").write_bytes(b"hello\r\nworld\r\n")
+        h1 = _compute_content_hash({}, folder, True)
+        (folder / "a.md").write_bytes(b"hello\nworld\n")
+        h2 = _compute_content_hash({}, folder, True)
+        assert h1 == h2
+
+    def test_binary_line_endings_still_affect_hash(self, tmp_path):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        (folder / "diagram.png").write_bytes(b"\x89PNG\r\nchunk")
+        h1 = _compute_content_hash({}, folder, True)
+        (folder / "diagram.png").write_bytes(b"\x89PNG\nchunk")
+        h2 = _compute_content_hash({}, folder, True)
+        assert h1 != h2
+
     def test_ignores_non_readable_extensions(self, tmp_path):
         """Files with extensions not in READABLE_EXTENSIONS are ignored."""
         folder = tmp_path / "docs"
