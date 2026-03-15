@@ -103,7 +103,7 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
 
     if result.orphans_cleaned or result.content_changed or result.enqueued_paths:
         log.info(
-            "Tree reconcile: %d orphans cleaned, %d content changed, %d enqueued",
+            "Tree reconcile: %d orphans cleaned, %d knowledge areas changed, %d knowledge areas enqueued",
             len(result.orphans_cleaned),
             len(result.content_changed),
             len(result.enqueued_paths),

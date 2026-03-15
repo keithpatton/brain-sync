@@ -9,7 +9,7 @@ import pytest
 
 from brain_sync.pipeline import process_source
 from brain_sync.sources import canonical_filename, detect_source_type, extract_id
-from brain_sync.sources.base import SourceFetchResult, UpdateCheckResult, UpdateStatus
+from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.state import SourceState
 
 pytestmark = pytest.mark.unit
@@ -152,6 +152,65 @@ class TestSkipGuardWithoutRoot:
         assert changed is False
         assert children == []
         adapter.fetch.assert_not_called()
+
+
+class TestGoogleAttachmentHandling:
+    async def test_google_docs_does_not_use_confluence_attachment_flow(self, tmp_path: Path) -> None:
+        root = tmp_path / "brain"
+        (root / "knowledge" / "area").mkdir(parents=True)
+
+        source_state = SourceState(
+            canonical_id=_CANONICAL_ID,
+            source_url=_GDOC_URL,
+            source_type="googledocs",
+            target_path="area",
+            sync_attachments=True,
+        )
+        adapter = MagicMock()
+        adapter.capabilities.supports_version_check = True
+        adapter.capabilities.supports_children = False
+        adapter.capabilities.supports_attachments = True
+        adapter.capabilities.supports_comments = False
+        adapter.auth_provider.load_auth.return_value = MagicMock()
+        adapter.check_for_update = AsyncMock(
+            return_value=UpdateCheckResult(
+                status=UpdateStatus.CHANGED,
+                fingerprint="rev-43",
+                title=_TITLE,
+                adapter_state={"revisionId": "rev-43"},
+            )
+        )
+        adapter.fetch = AsyncMock(
+            return_value=SourceFetchResult(
+                body_markdown="# My Doc\n\nContent.",
+                title=_TITLE,
+                metadata_fingerprint="rev-43",
+                comments=[],
+                inline_images=[
+                    DiscoveredImage(
+                        canonical_id="gdoc-image:abc123:kix.obj1",
+                        download_url="https://example.com/image.png",
+                        title="image.png",
+                        mime_type="image/png",
+                    )
+                ],
+                download_headers={"Authorization": "Bearer token"},
+                attachment_parent_id="gdoc:abc123",
+            )
+        )
+
+        with (
+            patch("brain_sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.attachments.process_attachments", new_callable=AsyncMock) as mock_attachments,
+            patch("brain_sync.attachments.process_inline_images", new_callable=AsyncMock) as mock_inline,
+        ):
+            mock_inline.return_value = {}
+            changed, children = await process_source(source_state, AsyncMock(), root=root)
+
+        assert changed is True
+        assert children == []
+        mock_inline.assert_awaited_once()
+        mock_attachments.assert_not_called()
 
     async def test_skip_when_root_none_and_file_absent(
         self,

@@ -233,8 +233,19 @@ async def process_source(
             log.warning("Child discovery failed for %s: %s", source_state.source_url, e)
 
     # Attachment sync (capability-gated)
+    #
+    # Google Docs uses inline image discovery in fetch(); it does not support
+    # the Confluence-style attachment listing flow in attachments.process_attachments().
+    # Restrict that branch to Confluence sources so a Google auth object is never
+    # passed into the Confluence attachment client.
     att_title_to_path: dict[str, str] = {}
-    if caps.supports_attachments and source_state.sync_attachments and root is not None and not result.inline_images:
+    if (
+        source_type.value == "confluence"
+        and caps.supports_attachments
+        and source_state.sync_attachments
+        and root is not None
+        and not result.inline_images
+    ):
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
             from brain_sync.attachments import process_attachments
