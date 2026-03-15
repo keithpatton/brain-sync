@@ -31,6 +31,21 @@ class TreeReconcileResult:
     enqueued_paths: list[str] = field(default_factory=list)
 
 
+def _deepest_untracked_paths(paths: set[str]) -> list[str]:
+    """Return only deepest untracked content paths, sorted deepest-first.
+
+    Startup reconcile should seed regen from the deepest newly contentful areas.
+    The normal walk-up behavior then rebuilds parents from the actual level of
+    change rather than starting too high in the tree.
+    """
+    deepest: list[str] = []
+    for path in sorted(paths, key=lambda p: (-p.count("/"), p)):
+        if any(existing == path or existing.startswith(path + "/") for existing in deepest):
+            continue
+        deepest.append(path)
+    return deepest
+
+
 def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     """Reconcile knowledge/ folder tree against regen_locks DB + sidecars.
 
@@ -83,15 +98,8 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
 
     # Part C: Scoped enqueue for untracked folders
     untracked_paths = fs_paths - db_paths
-    for path in untracked_paths:
-        # Rule 1: co-located insights dir exists -> evidence of prior regen
-        if area_insights_dir(root, path).is_dir():
-            result.enqueued_paths.append(path)
-            continue
-
-        # Rule 2: orphans were cleaned → brain state disrupted by offline mutations
-        if orphan_db_paths:
-            result.enqueued_paths.append(path)
+    for path in _deepest_untracked_paths(untracked_paths):
+        result.enqueued_paths.append(path)
 
     if result.orphans_cleaned or result.content_changed or result.enqueued_paths:
         log.info(

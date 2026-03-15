@@ -83,8 +83,8 @@ class TestOrphanStateCleanup:
         assert "area-b" in result.enqueued_paths
 
 
-class TestUntrackedFolderEvidence:
-    def test_untracked_folder_without_managed_evidence_is_not_enqueued(self, brain: Path) -> None:
+class TestUntrackedFolderEnqueue:
+    def test_untracked_folder_without_managed_evidence_is_enqueued(self, brain: Path) -> None:
         _write_knowledge_file(brain, "tracked/doc.md")
         _write_knowledge_file(brain, "untracked/doc.md")
         from brain_sync.regen import classify_folder_change
@@ -102,7 +102,7 @@ class TestUntrackedFolderEvidence:
 
         result = reconcile_knowledge_tree(brain)
 
-        assert "untracked" not in result.enqueued_paths
+        assert result.enqueued_paths == ["untracked"]
 
     def test_untracked_folder_with_colocated_summary_is_enqueued(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area-b/doc.md")
@@ -111,6 +111,29 @@ class TestUntrackedFolderEvidence:
         result = reconcile_knowledge_tree(brain)
 
         assert "area-b" in result.enqueued_paths
+
+    def test_nested_untracked_folders_enqueue_only_deepest_paths(self, brain: Path) -> None:
+        _write_knowledge_file(brain, "_core/me/profile.md")
+        _write_knowledge_file(brain, "_core/organisation/org-chart.md")
+        from brain_sync.regen import classify_folder_change
+
+        _write_knowledge_file(brain, "_core/taxonomy.md")
+        _, content_hash, structure_hash = classify_folder_change(brain, "_core")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="_core",
+                content_hash=content_hash,
+                structure_hash=structure_hash,
+                regen_status="idle",
+            ),
+        )
+
+        result = reconcile_knowledge_tree(brain)
+
+        assert "_core/me" in result.enqueued_paths
+        assert "_core/organisation" in result.enqueued_paths
+        assert "_core" not in result.enqueued_paths
 
 
 class TestHashDriftDetection:
