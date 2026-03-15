@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,11 @@ def test_supported_compatibility_row_constants() -> None:
     assert APP_VERSION == "0.5.0"
     assert BRAIN_FORMAT_VERSION == "1.0"
     assert RUNTIME_DB_SCHEMA_VERSION == 23
+
+
+def test_pyproject_version_matches_app_version() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["version"] == APP_VERSION
 
 
 def test_fresh_init_matches_brain_format_v1(tmp_path: Path) -> None:
