@@ -13,13 +13,10 @@ from brain_sync.fileops import canonical_prefix, rediscover_local_path
 from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.manifest import (
-    MANIFEST_DIR,
     MANIFEST_VERSION,
     SourceManifest,
-    SyncHint,
     clear_manifest_missing,
     delete_source_manifest,
-    ensure_manifest_dir,
     mark_manifest_missing,
     read_all_source_manifests,
     read_source_manifest,
@@ -161,7 +158,7 @@ def add_source(
     write_source_manifest(
         root,
         SourceManifest(
-            manifest_version=MANIFEST_VERSION,
+            version=MANIFEST_VERSION,
             canonical_id=cid,
             source_url=url,
             source_type=stype.value,
@@ -470,72 +467,6 @@ class ReconcileResult:
     deleted: list[str] = field(default_factory=list)
     reappeared: list[str] = field(default_factory=list)
     orphan_rows_pruned: int = 0
-
-
-def _bootstrap_manifests_from_db(root: Path, state: SyncState) -> int:
-    """One-time migration: export existing DB sources to manifests.
-
-    Used only by v20→v21 migration in _migrate(). Do not add new callers.
-
-    Only runs when .brain-sync/sources/ is empty but DB has sources.
-    Uses the provided ``state`` directly — callers (including ``_migrate()``)
-    must pre-populate it from whatever connection they already hold.
-    Returns the number of manifests written.
-    """
-    manifest_dir = root / MANIFEST_DIR
-    if not manifest_dir.is_dir():
-        ensure_manifest_dir(root)
-
-    existing = read_all_source_manifests(root)
-    if existing:
-        return 0  # manifests already exist — not a migration scenario
-
-    if not state.sources:
-        return 0
-
-    count = 0
-    for cid, ss in state.sources.items():
-        # v21+: sync_cache has no intent fields — skip rows without source_url
-        if not ss.source_url:
-            continue
-        # Discover the actual file path for materialized_path
-        knowledge_root = root / "knowledge"
-        materialized = ""
-        if ss.target_path:
-            target_dir = knowledge_root / ss.target_path
-            if target_dir.is_dir():
-                prefix = canonical_prefix(cid)
-                for p in target_dir.iterdir():
-                    if p.is_file() and p.name.startswith(prefix):
-                        materialized = normalize_path(p.relative_to(knowledge_root))
-                        break
-
-        hint = None
-        if ss.content_hash:
-            hint = SyncHint(
-                content_hash=ss.content_hash,
-                last_synced_utc=ss.last_checked_utc,
-            )
-
-        write_source_manifest(
-            root,
-            SourceManifest(
-                manifest_version=MANIFEST_VERSION,
-                canonical_id=cid,
-                source_url=ss.source_url,
-                source_type=ss.source_type,
-                materialized_path=materialized,
-                fetch_children=ss.fetch_children,
-                sync_attachments=ss.sync_attachments,
-                target_path=ss.target_path,
-                child_path=ss.child_path,
-                sync_hint=hint,
-            ),
-        )
-        count += 1
-
-    log.info("Bootstrap migration: exported %d DB sources to manifests", count)
-    return count
 
 
 def _find_file_by_identity_header(knowledge_root: Path, canonical_id_str: str) -> Path | None:

@@ -70,7 +70,7 @@ class TestMirrorFolderMove:
             write_source_manifest(
                 brain,
                 SourceManifest(
-                    manifest_version=MANIFEST_VERSION,
+                    version=MANIFEST_VERSION,
                     canonical_id=cid,
                     source_url=url,
                     source_type="confluence",

@@ -90,7 +90,7 @@ def write_if_changed(target: Path, markdown: str) -> bool:
 # Everything else (journal entries, future artifact types) is preserved automatically.
 REGENERABLE_FILES = frozenset({SUMMARY_FILENAME, INSIGHT_STATE_FILENAME})
 
-# Subdirectories within insights/ that contain non-regenerable artifacts.
+# Subdirectories within .brain-sync/insights/ that contain non-regenerable artifacts.
 # These are NOT mirrors of knowledge/ folders and must be excluded from
 # orphan detection. Currently only journal/; future types added here.
 INSIGHT_ARTIFACT_DIRS = frozenset({"journal"})

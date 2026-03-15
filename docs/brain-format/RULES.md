@@ -108,7 +108,7 @@ top-level entries:
 │       ├── c987654.json
 │       └── g1zo3...U.json
 └── knowledge/                     # the durable brain
-    ├── _core/                     # optional global context
+    ├── _core/                     # optional core knowledge
     │   ├── mission.md
     │   └── .brain-sync/
     ├── teams/
@@ -201,12 +201,14 @@ See [GLOSSARY.md — Regeneration](GLOSSARY.md#regeneration).
 
 ### Core Knowledge
 
-`knowledge/_core/` is optional global context created by
-`brain-sync init`. It is always loaded during regeneration and other
-explicit context-assembly flows. Deterministic query/search does not
-implicitly inject raw `_core` files; there `_core` behaves like any
-other area through its generated meaning and indexed artifacts. If
-deleted, brain-sync continues by assuming no global context. See
+`knowledge/_core/` is optional raw core knowledge created by
+`brain-sync init`. During regeneration, raw `_core` files are loaded
+only when brain-sync is regenerating `_core` itself. Other areas receive
+global context via `_core`'s generated summary when it exists.
+Deterministic query/search does not implicitly inject raw `_core` files;
+there `_core` behaves like any other area through its generated meaning
+and indexed artifacts. If deleted, brain-sync continues by assuming no
+global context. See
 [GLOSSARY.md — Core Knowledge](GLOSSARY.md#core-knowledge).
 
 ---
@@ -494,8 +496,9 @@ When regenerating an area, the prompt includes:
 
 1. **Instructions** — regen directives and templates bundled with the
    brain-sync package.
-2. **Global context** — [core knowledge](GLOSSARY.md#core-knowledge)
-   files from `knowledge/_core/`.
+2. **Global context** — `_core`'s generated summary for non-`_core`
+   areas, or raw [core knowledge](GLOSSARY.md#core-knowledge) files from
+   `knowledge/_core/` when regenerating `_core` itself.
 3. **Area files** — readable files in the area (for leaf areas).
 4. **Child summaries** — summaries from child areas (for parent areas).
 5. **Existing summary** — current summary for stability comparison.

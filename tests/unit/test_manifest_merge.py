@@ -47,7 +47,7 @@ def _write_manifest(root: Path, cid: str, url: str, **kwargs) -> None:
     write_source_manifest(
         root,
         SourceManifest(
-            manifest_version=MANIFEST_VERSION,
+            version=MANIFEST_VERSION,
             canonical_id=cid,
             source_url=url,
             source_type="confluence",

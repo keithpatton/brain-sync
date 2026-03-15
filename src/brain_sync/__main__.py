@@ -129,7 +129,7 @@ async def run(root: Path) -> None:
         async with httpx.AsyncClient() as http_client:
             try:
                 while True:
-                    # 1a. Handle folder moves (mirror to insights/)
+                    # 1a. Handle folder moves (co-located managed state moves with the folder)
                     for move in watcher.drain_moves():
                         mirror_folder_move(root, move)
 

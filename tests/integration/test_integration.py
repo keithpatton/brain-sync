@@ -219,7 +219,7 @@ class TestStatePersistenceRoundTrip:
         write_source_manifest(
             root,
             SourceManifest(
-                manifest_version=MANIFEST_VERSION,
+                version=MANIFEST_VERSION,
                 canonical_id=key,
                 source_url=FAKE_URL,
                 source_type="confluence",

@@ -38,7 +38,7 @@ def brain(tmp_path: Path) -> Path:
 
 def _make_manifest(cid: str, url: str, tp: str = "") -> SourceManifest:
     return SourceManifest(
-        manifest_version=MANIFEST_VERSION,
+        version=MANIFEST_VERSION,
         canonical_id=cid,
         source_url=url,
         source_type="confluence",

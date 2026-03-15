@@ -1,9 +1,9 @@
 """Startup knowledge-tree reconciliation.
 
-Compares the knowledge/ folder tree against the regen_locks DB table and
-sidecars to detect offline structural changes (folder rename/delete/move,
-file add/delete).  Cleans stale DB rows and orphan insight directories,
-and identifies paths needing regen.
+Compares the knowledge/ folder tree against the regen_locks table and
+co-located sidecars to detect offline structural changes (folder
+rename/delete/move, file add/delete). Cleans stale DB rows and orphan
+managed insight directories, and identifies paths needing regen.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     # Part C: Scoped enqueue for untracked folders
     untracked_paths = fs_paths - db_paths
     for path in untracked_paths:
-        # Rule 1: insights/ dir exists → evidence of prior regen (moved folder)
+        # Rule 1: co-located insights dir exists -> evidence of prior regen
         if area_insights_dir(root, path).is_dir():
             result.enqueued_paths.append(path)
             continue

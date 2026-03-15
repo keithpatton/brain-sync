@@ -17,45 +17,8 @@ from brain_sync.layout import RUNTIME_DB_SCHEMA_VERSION, area_insights_dir, know
 
 log = logging.getLogger(__name__)
 
-STATE_FILENAME = ".sync-state.sqlite"
 SCHEMA_VERSION = RUNTIME_DB_SCHEMA_VERSION
 _ALLOWED_RUNTIME_TABLES = frozenset({"meta", "sync_cache", "regen_locks", "token_events"})
-
-_SCHEMA_V1 = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sources (
-    source_key TEXT PRIMARY KEY,
-    manifest_path TEXT NOT NULL,
-    source_url TEXT NOT NULL,
-    target_file TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    last_checked_utc TEXT,
-    last_changed_utc TEXT,
-    current_interval_secs INTEGER NOT NULL DEFAULT 3600,
-    content_hash TEXT,
-    metadata_fingerprint TEXT
-);
-"""
-
-# --- DDL used by v4->v5 migration only ---
-
-_INSIGHT_STATE_DDL = """
-CREATE TABLE IF NOT EXISTS insight_state (
-    knowledge_path TEXT PRIMARY KEY,
-    content_hash TEXT,
-    summary_hash TEXT,
-    structure_hash TEXT,
-    regen_started_utc TEXT,
-    last_regen_utc TEXT,
-    regen_status TEXT NOT NULL DEFAULT 'idle',
-    owner_id TEXT,
-    error_reason TEXT
-);
-"""
 
 _TOKEN_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS token_events (
@@ -140,61 +103,14 @@ CREATE TABLE IF NOT EXISTS regen_locks (
 );
 """
 
-## source_bindings removed in v5 — each source has one target_path in sources table
-
-# --- DDL used only during migrations from older schemas ---
-
-_SCHEMA_V2_ADDITIONS = """
-CREATE TABLE IF NOT EXISTS documents (
-    canonical_id TEXT PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    url TEXT NOT NULL,
-    title TEXT,
-    last_checked_utc TEXT,
-    last_changed_utc TEXT,
-    content_hash TEXT,
-    metadata_fingerprint TEXT,
-    mime_type TEXT
-);
-
-CREATE TABLE IF NOT EXISTS relationships (
-    parent_canonical_id TEXT NOT NULL,
-    canonical_id TEXT NOT NULL,
-    relationship_type TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    first_seen_utc TEXT,
-    last_seen_utc TEXT,
-    PRIMARY KEY (parent_canonical_id, canonical_id)
-);
-"""
-
-_MIGRATION_V3_SOURCES = """
-CREATE TABLE IF NOT EXISTS sources_v3 (
-    canonical_id TEXT PRIMARY KEY,
-    source_url TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    last_checked_utc TEXT,
-    last_changed_utc TEXT,
-    current_interval_secs INTEGER NOT NULL DEFAULT 1800,
-    content_hash TEXT,
-    metadata_fingerprint TEXT,
-    next_check_utc TEXT,
-    interval_seconds INTEGER
-);
-"""
-
-_MIGRATION_V3_BINDINGS = """
-CREATE TABLE IF NOT EXISTS source_bindings (
-    canonical_id TEXT NOT NULL,
-    manifest_path TEXT NOT NULL,
-    target_file TEXT NOT NULL,
-    include_links INTEGER NOT NULL DEFAULT 0,
-    include_children INTEGER NOT NULL DEFAULT 0,
-    include_attachments INTEGER NOT NULL DEFAULT 0,
-    link_depth INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (canonical_id, manifest_path)
-);
-"""
+# Legacy migration placeholders. The runtime DB is rebuildable in v23, so
+# historical schema upgrades are intentionally unsupported. The old migration
+# function is retained only as a guard rail with an explicit failure mode.
+_INSIGHT_STATE_DDL = ""
+_DAEMON_STATUS_DDL = ""
+_SCHEMA_V2_ADDITIONS = ""
+_MIGRATION_V3_SOURCES = ""
+_MIGRATION_V3_BINDINGS = ""
 
 
 class _PathNormalized:
@@ -239,19 +155,6 @@ class SyncState:
 
 
 @dataclass
-class DocumentState:
-    canonical_id: str
-    source_type: str
-    url: str
-    title: str | None = None
-    last_checked_utc: str | None = None
-    last_changed_utc: str | None = None
-    content_hash: str | None = None
-    metadata_fingerprint: str | None = None
-    mime_type: str | None = None
-
-
-@dataclass
 class InsightState(_PathNormalized):
     _PATH_FIELDS: ClassVar[set[str]] = {"knowledge_path"}
 
@@ -277,16 +180,6 @@ class RegenLock(_PathNormalized):
     regen_started_utc: str | None = None
     owner_id: str | None = None
     error_reason: str | None = None
-
-
-@dataclass
-class Relationship:
-    parent_canonical_id: str
-    canonical_id: str
-    relationship_type: str
-    source_type: str
-    first_seen_utc: str | None = None
-    last_seen_utc: str | None = None
 
 
 def _db_path(root: Path) -> Path:
@@ -331,7 +224,11 @@ def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
 
 
 def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = None) -> None:
-    """Run migrations from from_version to SCHEMA_VERSION."""
+    """Legacy migration path retained only to fail closed."""
+    raise RuntimeError(
+        "Legacy runtime DB migrations are unsupported in Brain Format 1.0; delete the runtime DB and let it rebuild."
+    )
+
     if from_version < 2:
         conn.executescript(_SCHEMA_V2_ADDITIONS)
         # Add new columns to sources table (v1 -> v2)
@@ -1200,161 +1097,6 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
             log.info("Pruned DB row for removed source: %s", key)
         if stale:
             conn.commit()
-    finally:
-        conn.close()
-
-
-# --- Document & Relationship operations ---
-
-
-def save_document(root: Path, doc: DocumentState) -> None:
-    """UPSERT a document record."""
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "INSERT INTO documents "
-            "(canonical_id, source_type, url, title, last_checked_utc, "
-            "last_changed_utc, content_hash, metadata_fingerprint, mime_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(canonical_id) DO UPDATE SET "
-            "source_type=excluded.source_type, url=excluded.url, title=excluded.title, "
-            "last_checked_utc=excluded.last_checked_utc, "
-            "last_changed_utc=excluded.last_changed_utc, "
-            "content_hash=excluded.content_hash, "
-            "metadata_fingerprint=excluded.metadata_fingerprint, "
-            "mime_type=excluded.mime_type",
-            (
-                doc.canonical_id,
-                doc.source_type,
-                doc.url,
-                doc.title,
-                doc.last_checked_utc,
-                doc.last_changed_utc,
-                doc.content_hash,
-                doc.metadata_fingerprint,
-                doc.mime_type,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def load_document(root: Path, canonical_id: str) -> DocumentState | None:
-    conn = _connect(root)
-    try:
-        row = conn.execute(
-            "SELECT canonical_id, source_type, url, title, last_checked_utc, "
-            "last_changed_utc, content_hash, metadata_fingerprint, mime_type "
-            "FROM documents WHERE canonical_id = ?",
-            (canonical_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return DocumentState(
-            canonical_id=row[0],
-            source_type=row[1],
-            url=row[2],
-            title=row[3],
-            last_checked_utc=row[4],
-            last_changed_utc=row[5],
-            content_hash=row[6],
-            metadata_fingerprint=row[7],
-            mime_type=row[8],
-        )
-    finally:
-        conn.close()
-
-
-def save_relationship(root: Path, rel: Relationship) -> None:
-    """UPSERT a relationship record."""
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "INSERT INTO relationships "
-            "(parent_canonical_id, canonical_id, relationship_type, "
-            "source_type, first_seen_utc, last_seen_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(parent_canonical_id, canonical_id) DO UPDATE SET "
-            "relationship_type=excluded.relationship_type, "
-            "source_type=excluded.source_type, "
-            "last_seen_utc=excluded.last_seen_utc",
-            (
-                rel.parent_canonical_id,
-                rel.canonical_id,
-                rel.relationship_type,
-                rel.source_type,
-                rel.first_seen_utc,
-                rel.last_seen_utc,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def load_relationships_for_primary(root: Path, parent_canonical_id: str) -> list[Relationship]:
-    conn = _connect(root)
-    try:
-        rows = conn.execute(
-            "SELECT parent_canonical_id, canonical_id, relationship_type, "
-            "source_type, first_seen_utc, last_seen_utc "
-            "FROM relationships WHERE parent_canonical_id = ?",
-            (parent_canonical_id,),
-        ).fetchall()
-        return [
-            Relationship(
-                parent_canonical_id=r[0],
-                canonical_id=r[1],
-                relationship_type=r[2],
-                source_type=r[3],
-                first_seen_utc=r[4],
-                last_seen_utc=r[5],
-            )
-            for r in rows
-        ]
-    finally:
-        conn.close()
-
-
-def remove_relationship(root: Path, parent_canonical_id: str, canonical_id: str) -> None:
-    conn = _connect(root)
-    try:
-        conn.execute(
-            "DELETE FROM relationships WHERE parent_canonical_id = ? AND canonical_id = ?",
-            (parent_canonical_id, canonical_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def count_relationships_for_doc(root: Path, canonical_id: str) -> int:
-    """Count how many relationships reference a document (across all parents)."""
-    conn = _connect(root)
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM relationships WHERE canonical_id = ?",
-            (canonical_id,),
-        ).fetchone()
-        return row[0] if row else 0
-    finally:
-        conn.close()
-
-
-def remove_document_if_orphaned(root: Path, canonical_id: str) -> bool:
-    """Remove a document only if no relationships reference it. Returns True if removed.
-
-    With FK CASCADE on relationships.canonical_id, deleting a document also
-    removes any relationships that reference it as the child side.
-    """
-    if count_relationships_for_doc(root, canonical_id) > 0:
-        return False
-    conn = _connect(root)
-    try:
-        conn.execute("DELETE FROM documents WHERE canonical_id = ?", (canonical_id,))
-        conn.commit()
-        return True
     finally:
         conn.close()
 

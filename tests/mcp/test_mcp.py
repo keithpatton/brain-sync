@@ -615,10 +615,10 @@ class TestBrainSyncQuery:
         assert result["status"] == "ok"
         assert "global_context" in result
         gc = result["global_context"]
-        assert "about-me.md" in gc["knowledge_core"]
-        assert "summary.md" in gc["insights_core"]
-        # Journal should be excluded from insights_core
-        assert not any("journal" in k for k in gc["insights_core"])
+        assert gc["path"] == "knowledge/_core/.brain-sync/insights/summary.md"
+        assert gc["present"] is True
+        assert "Core Summary" in gc["content"]
+        assert "I am a test user." not in gc["content"]
 
     def test_query_no_match(self, brain_root):
         from brain_sync.mcp import brain_sync_query
@@ -694,9 +694,10 @@ class TestBrainSyncGetContext:
 
         assert result["status"] == "ok"
         gc = result["global_context"]
-        assert "about-me.md" in gc["knowledge_core"]
-        assert gc["knowledge_core"]["about-me.md"] == "I am a test user."
-        assert "summary.md" in gc["insights_core"]
+        assert gc["path"] == "knowledge/_core/.brain-sync/insights/summary.md"
+        assert gc["present"] is True
+        assert "Core Summary" in gc["content"]
+        assert "I am a test user." not in gc["content"]
         assert result["total_areas"] > 0
 
     def test_get_context_missing_core(self, tmp_path):
@@ -710,8 +711,9 @@ class TestBrainSyncGetContext:
         result = brain_sync_get_context(ctx)
 
         assert result["status"] == "ok"
-        assert result["global_context"]["knowledge_core"] == {}
-        assert result["global_context"]["insights_core"] == {}
+        assert result["global_context"]["path"] == "knowledge/_core/.brain-sync/insights/summary.md"
+        assert result["global_context"]["content"] == ""
+        assert result["global_context"]["present"] is False
         assert result["total_areas"] == 0
 
 

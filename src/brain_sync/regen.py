@@ -542,6 +542,7 @@ def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
 class _GlobalContextCache:
     """Cached global context for prompt assembly."""
 
+    mode: Literal["core_raw", "core_summary"]
     content_hash: str
     compiled_text: str
 
@@ -570,23 +571,58 @@ def _hash_directory(directory: Path) -> str:
     return h.hexdigest()
 
 
-def _collect_global_context(root: Path, current_path: str) -> str:
-    """Collect and inline global context from knowledge/_core and its managed insights.
+def _iter_core_raw_context_files(core_dir: Path):
+    """Yield raw _core files eligible for inclusion in _core regen context."""
+    if not core_dir.is_dir():
+        return
+    for p in sorted(core_dir.rglob("*")):
+        if (
+            p.is_file()
+            and p.suffix.lower() in TEXT_EXTENSIONS
+            and not p.name.startswith(("_", "."))
+            and MANAGED_DIRNAME not in p.parts
+        ):
+            yield p
 
-    Uses a module-level cache keyed by content hash. Rebuilt only when files change.
+
+def _hash_core_raw_context(core_dir: Path) -> str:
+    """Hash the raw _core files used when regenerating _core itself."""
+    h = hashlib.sha256()
+    for p in _iter_core_raw_context_files(core_dir):
+        rel = p.relative_to(core_dir)
+        h.update(str(rel).encode("utf-8"))
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def _hash_core_summary_context(summary_path: Path) -> str:
+    """Hash the single _core summary file used for non-_core regen."""
+    h = hashlib.sha256()
+    if summary_path.is_file():
+        h.update(b"summary.md")
+        h.update(summary_path.read_bytes())
+    return h.hexdigest()
+
+
+def _collect_global_context(root: Path, current_path: str) -> str:
+    """Collect and inline global context from _core meaning.
+
+    When regenerating `_core`, inline raw files from `knowledge/_core/`.
+    For every other area, inline only `_core`'s generated meaning from its
+    co-located `summary.md`, if present.
     """
     global _global_context_cache
 
     core_dir = root / "knowledge" / "_core"
-    insights_core_dir = area_insights_dir(root, "_core")
+    core_summary_path = area_summary_path(root, "_core")
+    mode: Literal["core_raw", "core_summary"] = "core_raw" if current_path == "_core" else "core_summary"
+    content_hash = (
+        _hash_core_raw_context(core_dir) if mode == "core_raw" else _hash_core_summary_context(core_summary_path)
+    )
 
     # Fast path: if cache exists, validate via content hash before rebuilding
     with _context_cache_lock:
-        if _global_context_cache is not None:
-            combined = hashlib.sha256()
-            combined.update(_hash_directory(core_dir).encode())
-            combined.update(_hash_directory(insights_core_dir).encode())
-            content_hash = combined.hexdigest()
+        if _global_context_cache is not None and _global_context_cache.mode == mode:
             if _global_context_cache.content_hash == content_hash:
                 log.debug("Global context cache hit")
                 return _global_context_cache.compiled_text
@@ -594,61 +630,36 @@ def _collect_global_context(root: Path, current_path: str) -> str:
     log.debug("Global context cache miss, rebuilding")
     sections: list[str] = []
 
-    # 1. knowledge/_core
-    if core_dir.is_dir():
+    if mode == "core_raw" and core_dir.is_dir():
         parts: list[str] = []
         count = 0
-        for p in sorted(core_dir.rglob("*")):
-            if (
-                p.is_file()
-                and p.suffix.lower() in TEXT_EXTENSIONS
-                and not p.name.startswith(("_", "."))
-                and MANAGED_DIRNAME not in p.parts
-            ):
-                try:
-                    content = p.read_text(encoding="utf-8")
-                    rel = p.relative_to(core_dir)
-                    parts.append(f"### {rel}\n```\n{content}\n```")
-                    count += 1
-                except (OSError, UnicodeDecodeError) as exc:
-                    log.debug("Skipping unreadable file %s: %s", p, exc)
+        for p in _iter_core_raw_context_files(core_dir):
+            try:
+                content = p.read_text(encoding="utf-8")
+                rel = p.relative_to(core_dir)
+                parts.append(f"### {rel}\n```\n{content}\n```")
+                count += 1
+            except (OSError, UnicodeDecodeError) as exc:
+                log.debug("Skipping unreadable file %s: %s", p, exc)
         if parts:
             sections.append("## Global Context: knowledge/_core\n" + "\n\n".join(parts))
-            log.debug("Global context: %d files from knowledge/_core", count)
+            log.debug("Global context: %d raw files from knowledge/_core for _core regen", count)
 
-    # 2. knowledge/_core/.brain-sync/insights (excluding journal/)
-    if insights_core_dir.is_dir():
-        parts = []
-        count = 0
-        for p in sorted(insights_core_dir.rglob("*")):
-            if p.is_file() and p.suffix.lower() in TEXT_EXTENSIONS and not p.name.startswith(("_", ".")):
-                # Skip journal entries
-                try:
-                    rel = p.relative_to(insights_core_dir)
-                    if str(rel).startswith("journal"):
-                        continue
-                    # Skip self-reference when regenerating _core
-                    if current_path == "_core" and rel.name == "summary.md" and len(rel.parts) == 1:
-                        continue
-                    content = p.read_text(encoding="utf-8")
-                    parts.append(f"### {rel}\n```\n{content}\n```")
-                    count += 1
-                except (OSError, UnicodeDecodeError) as exc:
-                    log.debug("Skipping unreadable file %s: %s", p, exc)
-        if parts:
-            sections.append("## Global Context: knowledge/_core/.brain-sync/insights\n" + "\n\n".join(parts))
-            log.debug("Global context: %d files from knowledge/_core/.brain-sync/insights", count)
+    if mode == "core_summary" and core_summary_path.is_file():
+        try:
+            content = core_summary_path.read_text(encoding="utf-8")
+            sections.append(
+                "## Global Context: knowledge/_core/.brain-sync/insights/summary.md\n"
+                f"### summary.md\n```\n{content}\n```"
+            )
+            log.debug("Global context: loaded _core summary for non-_core regen")
+        except (OSError, UnicodeDecodeError) as exc:
+            log.debug("Skipping unreadable _core summary %s: %s", core_summary_path, exc)
 
     compiled = "\n\n".join(sections)
 
-    # Compute hash for the freshly-built content to store in cache
-    combined = hashlib.sha256()
-    combined.update(_hash_directory(core_dir).encode())
-    combined.update(_hash_directory(insights_core_dir).encode())
-    content_hash = combined.hexdigest()
-
     with _context_cache_lock:
-        _global_context_cache = _GlobalContextCache(content_hash=content_hash, compiled_text=compiled)
+        _global_context_cache = _GlobalContextCache(mode=mode, content_hash=content_hash, compiled_text=compiled)
 
     total_chars = len(compiled)
     log.debug("Global context compiled: %d chars (~%d tokens est.)", total_chars, total_chars // 3)
@@ -981,7 +992,7 @@ def _build_prompt(
 
     Sections are assembled in a fixed deterministic order — never reorder:
     1. Instructions (INSIGHT_INSTRUCTIONS)
-    2. Global context (knowledge/_core → schemas → insights/_core)
+    2. Global context (_core raw files for _core regen; otherwise _core summary only)
     3. Node content (knowledge files for leaf, child summaries for parent)
     4. Existing summary
     5. Output path(s)

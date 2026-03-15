@@ -37,7 +37,6 @@ from brain_sync.commands import (
     update_source,
 )
 from brain_sync.commands.placement import suggest_placement
-from brain_sync.fileops import TEXT_EXTENSIONS
 from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
 from brain_sync.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
 from brain_sync.regen import RegenFailed, regen_all, regen_path
@@ -101,36 +100,26 @@ def _read_file_safe(path: Path, max_chars: int | None = None) -> str:
         return ""
 
 
-def _collect_global_context_structured(root: Path) -> dict[str, dict[str, str]]:
-    """Load global context as structured dict for MCP responses.
+def _collect_global_context_structured(root: Path) -> dict[str, str | bool]:
+    """Load global context for MCP responses.
 
-    Returns {"knowledge_core": {...}, "insights_core": {...}}.
+    Global context is `_core`'s distilled meaning: its managed summary when
+    present. Raw `knowledge/_core/` files remain available through
+    ``brain_sync_open_file()`` but are not returned here.
     """
-    result: dict[str, dict[str, str]] = {
-        "knowledge_core": {},
-        "insights_core": {},
+    summary_path = area_summary_path(root, "_core")
+    rel_path = "knowledge/_core/.brain-sync/insights/summary.md"
+    if summary_path.is_file():
+        return {
+            "path": rel_path,
+            "content": _read_file_safe(summary_path, MAX_GLOBAL_CONTEXT_FILE_CHARS),
+            "present": True,
+        }
+    return {
+        "path": rel_path,
+        "content": "",
+        "present": False,
     }
-
-    # 1. knowledge/_core
-    core_dir = root / "knowledge" / "_core"
-    if core_dir.is_dir():
-        for p in sorted(core_dir.rglob("*")):
-            if p.is_file() and p.suffix.lower() in TEXT_EXTENSIONS and not p.name.startswith(("_", ".")):
-                rel = normalize_path(p.relative_to(core_dir))
-                result["knowledge_core"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
-
-    # 2. knowledge/_core/.brain-sync/insights (excluding journal/)
-    insights_core = area_insights_dir(root, "_core")
-    if insights_core.is_dir():
-        for p in sorted(insights_core.rglob("*")):
-            if p.is_file() and p.suffix.lower() in {".md", ".txt"} and not p.name.startswith("."):
-                rel_parts = p.relative_to(insights_core).parts
-                if "journal" in rel_parts:
-                    continue
-                rel = normalize_path(p.relative_to(insights_core))
-                result["insights_core"][rel] = _read_file_safe(p, MAX_GLOBAL_CONTEXT_FILE_CHARS)
-
-    return result
 
 
 def _collect_areas(root: Path) -> list[dict]:
@@ -593,8 +582,9 @@ def brain_sync_suggest_placement(
     name="brain_sync_query",
     description=(
         "Primary brain entrypoint. Search for areas matching a query. "
-        "Set include_global=True to also load core context (knowledge/_core, "
-        "knowledge/_core/.brain-sync/insights). Use brain_sync_open_area to drill into a match."
+        "Set include_global=True to also load global context from "
+        "knowledge/_core/.brain-sync/insights/summary.md. "
+        "Use brain_sync_open_area to drill into a match."
     ),
 )
 def brain_sync_query(
@@ -637,10 +627,10 @@ def brain_sync_query(
 @server.tool(
     name="brain_sync_get_context",
     description=(
-        "Load global brain context: knowledge/_core, schemas, insights/_core. "
-        "Use when you need broad brain orientation. For area-specific queries, "
-        "Managed insight summaries are read from knowledge/**/.brain-sync/insights/. "
-        "use brain_sync_query instead."
+        "Load global brain context from knowledge/_core/.brain-sync/insights/summary.md. "
+        "Use when you need broad brain orientation. Raw knowledge/_core files remain available "
+        "through brain_sync_open_file(path='knowledge/_core/...') when needed. "
+        "For area-specific queries, use brain_sync_query instead."
     ),
 )
 def brain_sync_get_context(ctx: Context) -> dict:

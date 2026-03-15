@@ -1335,16 +1335,20 @@ class TestRegenConfigDefaults:
 
 
 class TestGlobalContext:
-    def test_collects_core_knowledge(self, brain):
-        """Global context inlines knowledge/_core files."""
+    def test_non_core_uses_core_summary_only(self, brain):
+        """Non-_core regen sees only distilled _core meaning."""
         core = brain / "knowledge" / "_core"
         core.mkdir(parents=True)
         (core / "about.md").write_text("# About Me\nI am a test.", encoding="utf-8")
+        icore = managed_insights(brain, "_core")
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Core Summary\nShared orientation.", encoding="utf-8")
 
         invalidate_global_context_cache()
         ctx = _collect_global_context(brain, "some/path")
-        assert "knowledge/_core" in ctx
-        assert "About Me" in ctx
+        assert "knowledge/_core/.brain-sync/insights/summary.md" in ctx
+        assert "Core Summary" in ctx
+        assert "About Me" not in ctx
 
     def test_ignores_legacy_schemas(self, brain):
         """Legacy top-level schemas files are ignored by v23 global context."""
@@ -1357,39 +1361,60 @@ class TestGlobalContext:
         assert "schemas" not in ctx
         assert "Summary Schema" not in ctx
 
-    def test_collects_insights_core(self, brain):
-        """Global context inlines co-located _core insights files."""
-        icore = managed_insights(brain, "_core")
-        icore.mkdir(parents=True)
-        (icore / "summary.md").write_text("# Core Summary", encoding="utf-8")
+    def test_non_core_does_not_fallback_to_raw_core(self, brain):
+        """Non-_core regen gets no global context when _core summary is missing."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        (core / "about.md").write_text("# About Me\nI am a test.", encoding="utf-8")
 
         invalidate_global_context_cache()
         ctx = _collect_global_context(brain, "some/path")
-        assert "knowledge/_core/.brain-sync/insights" in ctx
-        assert "Core Summary" in ctx
+        assert ctx == ""
+
+    def test_core_regen_uses_raw_core_only(self, brain):
+        """_core regen inlines raw _core files and excludes managed insight files."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        (core / "about.md").write_text("# About Me\nI am a test.", encoding="utf-8")
+        icore = managed_insights(brain, "_core")
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Core Summary", encoding="utf-8")
+        (icore / "glossary.md").write_text("# Glossary", encoding="utf-8")
+
+        invalidate_global_context_cache()
+        ctx = _collect_global_context(brain, "_core")
+        assert "knowledge/_core" in ctx
+        assert "About Me" in ctx
+        assert "Core Summary" not in ctx
+        assert "Glossary" not in ctx
 
     def test_excludes_journal(self, brain):
-        """Global context excludes co-located _core journal entries."""
+        """Non-_core global context excludes co-located _core journal entries."""
         icore = managed_insights(brain, "_core")
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Core Summary", encoding="utf-8")
         journal = icore / "journal" / "2026-03"
         journal.mkdir(parents=True)
         (journal / "2026-03-08.md").write_text("# Journal entry", encoding="utf-8")
 
         invalidate_global_context_cache()
         ctx = _collect_global_context(brain, "some/path")
+        assert "Core Summary" in ctx
         assert "Journal entry" not in ctx
 
-    def test_skips_self_for_core_regen(self, brain):
-        """When regenerating _core, its own co-located summary is excluded."""
+    def test_core_regen_does_not_inline_managed_summary(self, brain):
+        """When regenerating _core, managed _core summaries are excluded."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        (core / "about.md").write_text("# About Me", encoding="utf-8")
         icore = managed_insights(brain, "_core")
         icore.mkdir(parents=True)
         (icore / "summary.md").write_text("# Self Reference", encoding="utf-8")
-        (icore / "glossary.md").write_text("# Glossary", encoding="utf-8")
 
         invalidate_global_context_cache()
         ctx = _collect_global_context(brain, "_core")
         assert "Self Reference" not in ctx
-        assert "Glossary" in ctx
+        assert "About Me" in ctx
 
     def test_handles_missing_dirs(self, brain):
         """Returns empty string when no global context dirs exist."""
@@ -1483,6 +1508,9 @@ class TestPromptVersionAndContent:
         core = brain / "knowledge" / "_core"
         core.mkdir(parents=True)
         (core / "about.md").write_text("# Identity Info", encoding="utf-8")
+        icore = managed_insights(brain, "_core")
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Core Summary\nShared meaning.", encoding="utf-8")
 
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
@@ -1492,8 +1520,9 @@ class TestPromptVersionAndContent:
 
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain)
-        assert "Identity Info" in result.text
+        assert "Core Summary" in result.text
         assert "Global Context" in result.text
+        assert "Identity Info" not in result.text
 
     def test_no_glob_or_read_instructions(self, brain):
         """Prompt explicitly tells agent not to use Read or Glob."""

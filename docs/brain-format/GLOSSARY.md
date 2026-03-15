@@ -28,9 +28,9 @@ A brain is created by `brain-sync init` which registers the
 [brain root](#brain-root) and creates the initial directory structure.
 
 By default a freshly initialised brain will be empty save for a
-[`_core`](#core-knowledge) folder which allows the user to provide initial
-knowledge that will always be used when regenerating generated meaning from
-the user's knowledge, and can be loaded explicitly by context-oriented tools.
+`[_core](#core-knowledge)` folder which allows the user to provide initial
+knowledge that can be distilled into [global context](#global-context) for
+regeneration and can be loaded explicitly by context-oriented tools.
 
 ---
 
@@ -72,7 +72,7 @@ variable) that holds all per-machine application state.
 It contains:
 
 - `config.json` — brain root registration, source authentication
-  credentials, feature flags
+credentials, feature flags
 - `db/brain-sync.sqlite` — the [brain-sync database](#brain-sync-database)
 - `logs/` — rotating log files
 - `daemon.json` — daemon PID and status
@@ -103,12 +103,14 @@ The database is **not** inside the brain root. It is
 
 v23 target tables:
 
-| Table | Purpose |
-|---|---|
-| `meta` | Schema version for migration |
-| `sync_cache` | Machine-local polling schedule state |
-| `regen_locks` | Cross-process regen coordination |
+
+| Table          | Purpose                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------- |
+| `meta`         | Schema version for migration                                                                            |
+| `sync_cache`   | Machine-local polling schedule state                                                                    |
+| `regen_locks`  | Cross-process regen coordination                                                                        |
 | `token_events` | Append-only LLM cost telemetry persisted for local observability; not part of core brain-state recovery |
+
 
 > **v21 current**: The database has 7 tables including `documents`,
 > `relationships`, and `daemon_status` which v23 removes. The DB lives
@@ -127,7 +129,7 @@ This includes:
 
 - root `.brain-sync/` — source [manifests](#manifest), `brain.json`
 - per-area `knowledge/**/.brain-sync/` — insights, [journals](#journal),
-  [attachments](#attachment), [insight state](#insight-state)
+[attachments](#attachment), [insight state](#insight-state)
 
 Managed files are part of the durable [brain state](#brain-state) and
 are portable across machines. Users should not edit them directly —
@@ -152,12 +154,14 @@ attachments, and inline images.
 
 Format: `<type>:<provider_id>`
 
-| Type | Canonical ID | Filename prefix |
-|---|---|---|
-| Confluence page | `confluence:987654` | `c987654-` |
-| Google Doc | `gdoc:1zo3CY...` | `g1zo3CY...-` |
-| Confluence attachment | `confluence-attachment:4736286723` | `a4736286723-` |
-| Google Doc inline image | `gdoc-image:1zo3CY:objectId` | `gi1zo3CY-objectId-` |
+
+| Type                    | Canonical ID                       | Filename prefix      |
+| ----------------------- | ---------------------------------- | -------------------- |
+| Confluence page         | `confluence:987654`                | `c987654-`           |
+| Google Doc              | `gdoc:1zo3CY...`                   | `g1zo3CY...-`        |
+| Confluence attachment   | `confluence-attachment:4736286723` | `a4736286723-`       |
+| Google Doc inline image | `gdoc-image:1zo3CY:objectId`       | `gi1zo3CY-objectId-` |
+
 
 The canonical ID appears in:
 
@@ -165,8 +169,8 @@ The canonical ID appears in:
 - synced source [frontmatter](#frontmatter) (`brain_sync_canonical_id` field)
 - filename prefixes (discovery and repair hint, not authoritative)
 - attachment directory names (the `source_dir_id`, the deterministic
-  filesystem-safe derivative used for manifest filenames and per-source
-  attachment directories, e.g. `c987654`)
+filesystem-safe derivative used for manifest filenames and per-source
+attachment directories, e.g. `c987654`)
 
 v23 standardises the canonical ID as the single identity primitive across
 all source types and contexts. The filename prefix is always derived
@@ -182,12 +186,12 @@ deterministically from the canonical ID.
 Two hashes are computed for each area:
 
 - **content hash** — SHA-256 of the area's readable files and child area
-  summaries. A changed content hash means the semantic input has changed
-  and regeneration is needed.
+summaries. A changed content hash means the semantic input has changed
+and regeneration is needed.
 - **structure hash** — SHA-256 of the area's child directory names only.
-  A changed structure hash with an unchanged content hash indicates a
-  structural move (e.g. folder rename) that does not require a full
-  regeneration.
+A changed structure hash with an unchanged content hash indicates a
+structural move (e.g. folder rename) that does not require a full
+regeneration.
 
 These hashes are stored in the [insight state](#insight-state) manifest
 and compared on each regen cycle to classify changes as: no change,
@@ -197,13 +201,19 @@ rename-only, or content change.
 
 ## Core Knowledge
 
-**Core knowledge** (`knowledge/_core/`) is optional global context that is
-always loaded during regeneration and other explicit context-assembly flows.
+**Core knowledge** is the raw foundational material stored in
+`knowledge/_core/`.
 
 It is the place for foundational information that applies across the entire
 brain — mission, organisational structure, key people, conventions. Core
 knowledge is created by `brain-sync init` and treated as a
 [knowledge area](#knowledge-area) (it gets its own insights and journal).
+
+Core knowledge is the canonical source for `_core`'s
+[generated meaning](#generated-meaning). During regeneration, raw `_core`
+files are inlined only when brain-sync is regenerating `_core` itself.
+For every other area, brain-sync uses [global context](#global-context)
+derived from `_core` instead of injecting raw `_core` files.
 
 Deterministic query/search does not implicitly inject raw `_core` files.
 Instead, `_core` participates there like any other area through its generated
@@ -228,7 +238,7 @@ The daemon loop:
 2. Polls registered [synced sources](#synced-source) on adaptive schedules
 3. Receives filesystem change events from the [watcher](#watcher)
 4. Queues and processes [regeneration](#regeneration) with debounce,
-   cooldown, and rate limiting
+  cooldown, and rate limiting
 
 The daemon is optional — all operations can also be triggered manually via
 CLI commands or MCP tools.
@@ -295,17 +305,43 @@ built from [user knowledge](#user-knowledge).
 Generated meaning currently includes:
 
 - **insights** — regenerable semantic summaries (`summary.md`) that
-  represent the current understanding of a [knowledge area](#knowledge-area)
+represent the current understanding of a [knowledge area](#knowledge-area)
 - **[journal](#journal) entries** — append-only temporal records of
-  decisions, milestones, and status changes
+decisions, milestones, and status changes
 
 Generated meaning will extend to additional [template](#template) types in
 the future (e.g. status reports, decision logs, theme analyses).
 
 All generated meaning lives under
-[`.brain-sync/`](#brain-sync-managed-files) within a knowledge area.
+`[.brain-sync/](#brain-sync-managed-files)` within a knowledge area.
 Insights live under `.brain-sync/insights/`, journals under
 `.brain-sync/journal/`.
+
+---
+
+## Global Context
+
+**Global context** is the cross-cutting context assembled from `_core` for
+use by regeneration and explicit context-loading tools.
+
+For non-`_core` regeneration, global context is `_core`'s distilled meaning:
+`knowledge/_core/.brain-sync/insights/summary.md` when that file exists.
+
+When regenerating `_core` itself, brain-sync does not inject that summary
+back into the prompt. Instead it inlines raw files from
+`knowledge/_core/` so `_core` can be regenerated from its canonical source
+material.
+
+This distinction keeps prompt shape and token use more deterministic:
+
+- **[core knowledge](#core-knowledge)** is the raw source
+- **[global context](#global-context)** is the prompt-ready context assembled
+  from `_core`
+- **[generated meaning](#generated-meaning)** is the distilled output brain-sync
+  writes and maintains
+
+If `_core` has no managed summary yet, non-`_core` regeneration proceeds
+without global context.
 
 ---
 
@@ -367,9 +403,9 @@ it.
 It holds:
 
 - [user knowledge](#user-knowledge) — user-authored notes,
-  [synced source](#synced-source) documents, and [attachments](#attachment)
+[synced source](#synced-source) documents, and [attachments](#attachment)
 - [brain-sync managed files](#brain-sync-managed-files) — the per-area
-  `.brain-sync/` directories
+`.brain-sync/` directories
 
 The knowledge tree is the durable core of the [brain](#brain).
 
@@ -387,7 +423,7 @@ Examples:
 
 - `.brain-sync/sources/c987654.json` (synced source manifest)
 - `knowledge/teams/platform/.brain-sync/insights/insight-state.json`
-  ([insight state](#insight-state) manifest)
+([insight state](#insight-state) manifest)
 
 See also: [frontmatter](#frontmatter) (the other way a schema can be
 instantiated, embedded inside a markdown document).
@@ -406,7 +442,7 @@ During materialization, brain-sync:
 2. Converts it to markdown
 3. Embeds [frontmatter](#frontmatter) identity at the top of the file
 4. Writes the file to the path specified by `materialized_path` in the
-   source [manifest](#manifest)
+  source [manifest](#manifest)
 
 The resulting file is called a **materialized document**. Its
 `materialized_path` (relative to `knowledge/`) is recorded in the source
@@ -445,13 +481,13 @@ Reconciliation is what makes the "filesystem is authoritative" principle
 work in practice. When the [daemon](#daemon) starts, it:
 
 1. Walks all source [manifests](#manifest) and uses **three-tier file
-   resolution** to locate each source's file:
-   - tier 1: `materialized_path` (direct path check)
-   - tier 2: [frontmatter](#frontmatter) identity scan
-   - tier 3: [canonical ID](#canonical-id) prefix glob
+  resolution** to locate each source's file:
+  - tier 1: `materialized_path` (direct path check)
+  - tier 2: [frontmatter](#frontmatter) identity scan
+  - tier 3: [canonical ID](#canonical-id) prefix glob
 2. Updates manifests to reflect any detected moves
 3. Applies a **two-stage missing protocol**: a source marked `missing` on
-   the first reconcile pass is deleted only if still missing on the next
+  the first reconcile pass is deleted only if still missing on the next
    pass (grace period for temporary filesystem states)
 4. Prunes orphan database rows that no longer correspond to disk state
 
@@ -530,7 +566,7 @@ Each synced source has:
 
 - a [manifest](#manifest) at `.brain-sync/sources/<id>.json`
 - a materialized markdown file in `knowledge/` with
-  [frontmatter](#frontmatter) identity
+[frontmatter](#frontmatter) identity
 - optionally, [attachments](#attachment) under the area's `.brain-sync/`
 
 ---
@@ -566,7 +602,7 @@ During a sync cycle, brain-sync:
 3. [Materializes](#materialization) changed content to the local file
 4. Updates the source [manifest's](#manifest) `sync_hint`
 5. Queues affected [knowledge areas](#knowledge-area) for
-   [regeneration](#regeneration)
+  [regeneration](#regeneration)
 
 Sync runs on adaptive schedules — sources that change frequently are
 checked more often; stable sources back off to longer intervals (up to
@@ -663,5 +699,5 @@ insight — an instance like
 - **[schemas](#schema)** define document structure
 - **[manifests](#manifest)** are standalone JSON files instantiating schemas
 - **[frontmatter](#frontmatter)** is schema-defined YAML embedded in
-  markdown
+markdown
 - **[templates](#template)** define generated content layouts
