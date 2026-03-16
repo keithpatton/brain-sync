@@ -45,7 +45,8 @@ class DaemonProcess:
         """Start the daemon subprocess."""
         self._launch_time = datetime.now(UTC).isoformat()
         cmd = [sys.executable, "-m", "brain_sync", "run", "--root", str(self.brain_root)]
-        # CREATE_NEW_PROCESS_GROUP needed on Windows for CTRL_C_EVENT
+        # CREATE_NEW_PROCESS_GROUP lets us send a targeted console control
+        # event on Windows without taking down the pytest worker process.
         kwargs: dict = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -93,7 +94,9 @@ class DaemonProcess:
         # Platform-appropriate signal
         try:
             if sys.platform == "win32":
-                self._proc.send_signal(signal.CTRL_C_EVENT)
+                # CTRL_BREAK_EVENT targets the child process group more
+                # reliably than CTRL_C_EVENT under xdist/CI consoles.
+                self._proc.send_signal(signal.CTRL_BREAK_EVENT)
             else:
                 self._proc.send_signal(signal.SIGINT)
         except OSError:
