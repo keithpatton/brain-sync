@@ -23,6 +23,14 @@ pytestmark = pytest.mark.unit
 
 
 class TestCircuitBreaker:
+    @staticmethod
+    def _wait_until_trial_allowed(cb: CircuitBreaker, timeout: float = 0.5) -> None:
+        deadline = time.monotonic() + timeout
+        while cb.is_open():
+            if time.monotonic() >= deadline:
+                pytest.fail("Circuit breaker did not transition to half-open before timeout")
+            time.sleep(0.01)
+
     def test_starts_closed(self):
         cb = CircuitBreaker()
         assert not cb.is_open()
@@ -51,16 +59,14 @@ class TestCircuitBreaker:
         cb = CircuitBreaker(failure_threshold=1, cooldown_secs=0.05)
         cb.record_failure()
         assert cb.is_open()
-        time.sleep(0.06)
         # After cooldown, transitions to half-open (allows trial)
-        assert not cb.is_open()
+        self._wait_until_trial_allowed(cb)
 
     def test_half_open_success_closes(self):
         cb = CircuitBreaker(failure_threshold=1, cooldown_secs=0.05)
         cb.record_failure()  # Opens
         assert cb.is_open()
-        time.sleep(0.06)
-        assert not cb.is_open()  # Transitions to half-open
+        self._wait_until_trial_allowed(cb)  # Transitions to half-open
         cb.record_success()  # Trial succeeds → closed
         assert not cb.is_open()
         # Should be fully closed, need full threshold to reopen
@@ -70,9 +76,14 @@ class TestCircuitBreaker:
     def test_half_open_failure_reopens(self):
         cb = CircuitBreaker(failure_threshold=1, cooldown_secs=0.05)
         cb.record_failure()  # Opens
-        time.sleep(0.06)
-        cb.is_open()  # Transitions to half-open
+        self._wait_until_trial_allowed(cb)  # Transitions to half-open
         cb.record_failure()  # Half-open trial fails → reopen
+        assert cb.is_open()
+
+    def test_half_open_allows_only_one_trial_call(self):
+        cb = CircuitBreaker(failure_threshold=1, cooldown_secs=0.05)
+        cb.record_failure()
+        self._wait_until_trial_allowed(cb)
         assert cb.is_open()
 
     def test_reset(self):

@@ -58,6 +58,9 @@ class CircuitBreaker:
         self._half_open_trial = False
 
     def is_open(self) -> bool:
+        if self._half_open_trial:
+            return True
+
         if self._opened_at is None:
             return False
 
