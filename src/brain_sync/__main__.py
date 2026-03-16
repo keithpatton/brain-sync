@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -15,7 +14,7 @@ from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
 from brain_sync.regen import classify_folder_change
 from brain_sync.regen_queue import RegenQueue
-from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval
+from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
 from brain_sync.state import (
     SyncState,
     load_insight_state,
@@ -245,7 +244,7 @@ async def run(root: Path) -> None:
 
                         scheduler.reschedule(key, interval)
                         ss.interval_seconds = interval
-                        ss.next_check_utc = datetime.now(UTC).isoformat()
+                        ss.next_check_utc = compute_next_check_utc(interval)
                         try:
                             save_sync_progress(root, state)
                         except Exception:

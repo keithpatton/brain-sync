@@ -4,7 +4,7 @@ import heapq
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 BASE_INTERVAL = 1800  # 30 minutes
 MAX_ERROR_BACKOFF = 86400  # 24 hours
@@ -32,6 +32,12 @@ def compute_interval(last_changed_utc: str | None) -> int:
             return interval
 
     return BASE_INTERVAL
+
+
+def compute_next_check_utc(interval_secs: int, *, now: datetime | None = None) -> str:
+    """Return the next due timestamp persisted for restart-safe scheduling."""
+    current = now or datetime.now(UTC)
+    return (current + timedelta(seconds=interval_secs)).isoformat()
 
 
 def _jittered(interval_secs: int) -> float:

@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from brain_sync.scheduler import BASE_INTERVAL, Scheduler, _jittered, compute_interval
+from brain_sync.scheduler import BASE_INTERVAL, Scheduler, _jittered, compute_interval, compute_next_check_utc
 
 pytestmark = pytest.mark.unit
 
@@ -30,6 +30,12 @@ class TestComputeInterval:
     def test_unchanged_91_days(self):
         ts = (datetime.now(UTC) - timedelta(days=91)).isoformat()
         assert compute_interval(ts) == 24 * 3600  # 24 hours
+
+
+class TestComputeNextCheckUtc:
+    def test_uses_interval_offset_from_now(self):
+        now = datetime(2026, 3, 17, 12, 0, 0, tzinfo=UTC)
+        assert compute_next_check_utc(1800, now=now) == "2026-03-17T12:30:00+00:00"
 
 
 class TestScheduler:
