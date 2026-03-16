@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -60,6 +61,29 @@ class TestWriteReadRoundTrip:
         assert loaded is not None
         assert loaded.content_hash == "abc123"
         assert loaded.summary_hash is None
+
+    def test_identical_write_is_noop(self, insights_dir: Path) -> None:
+        meta = RegenMeta(
+            content_hash="abc123",
+            summary_hash="def456",
+            structure_hash="ghi789",
+            last_regen_utc="2026-03-14T10:00:00+00:00",
+        )
+
+        assert write_regen_meta(insights_dir, meta) is True
+        target = insights_dir / SIDECAR_FILENAME
+        before_bytes = target.read_bytes()
+        before_mtime = target.stat().st_mtime_ns
+
+        with patch(
+            "brain_sync.sidecar.write_bytes_if_changed",
+            wraps=write_regen_meta.__globals__["write_bytes_if_changed"],
+        ) as wrapped:
+            assert write_regen_meta(insights_dir, meta) is False
+            wrapped.assert_called_once()
+
+        assert target.read_bytes() == before_bytes
+        assert target.stat().st_mtime_ns == before_mtime
 
 
 class TestReadMalformed:

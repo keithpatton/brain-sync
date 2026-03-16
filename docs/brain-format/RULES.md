@@ -63,10 +63,17 @@ Deleting runtime artifacts must never destroy durable knowledge.
 Brain state consists of:
 
 - the [knowledge tree](GLOSSARY.md#knowledge-tree)
-- [brain-sync managed files](GLOSSARY.md#brain-sync-managed-files)
+- [brain managed files](GLOSSARY.md#brain-managed-files) inside the
+  [brain root](GLOSSARY.md#brain-root)
 
-Brain state is portable and must be fully reconstructable on another
-machine.
+Brain state is the durable state of the entire
+[brain root](GLOSSARY.md#brain-root), not only the `knowledge/` subtree.
+It is portable and must be fully reconstructable on another machine.
+
+Portable managed files must only be rewritten when their durable serialized
+content actually changes. Runtime-only coordination changes must remain in
+[runtime state](GLOSSARY.md#runtime-state) and must not churn unchanged
+portable files inside the brain root.
 
 ### Runtime State
 
@@ -75,7 +82,7 @@ of the brain contract.
 
 Examples:
 
-- the [brain-sync user directory](GLOSSARY.md#brain-sync-user-directory)
+- the [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory)
   (database, configuration, logs, daemon status)
 
 Deleting runtime state must not damage brain state.
@@ -84,7 +91,7 @@ Deleting runtime state must not damage brain state.
 
 The folder name `.brain-sync` is reserved at every level of the brain.
 
-Brain-sync managed files may exist in:
+Brain managed files may exist in:
 
 - `.brain-sync/` (root)
 - `knowledge/**/.brain-sync/`
@@ -128,7 +135,7 @@ Root `.brain-sync/` is the global managed namespace. It contains:
 
 It does not contain durable user knowledge or runtime state. The
 [brain-sync database](GLOSSARY.md#brain-sync-database) lives in the
-[brain-sync user directory](GLOSSARY.md#brain-sync-user-directory), not
+[brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory), not
 here. This means the entire brain root is portable and committable to
 git with no `.gitignore` exceptions needed.
 
@@ -147,8 +154,15 @@ If `knowledge/` does not exist, `brain-sync init` creates it.
 ## Knowledge Areas
 
 A [knowledge area](GLOSSARY.md#knowledge-area) is any directory under
-`knowledge/` that contains readable files or has child areas with
-content.
+`knowledge/` that participates in regeneration.
+
+A directory is a knowledge area if it:
+
+- contains readable files, or
+- has descendant [knowledge areas](GLOSSARY.md#knowledge-area)
+
+This means the regen topology follows the semantic area tree, not the raw
+filesystem tree.
 
 Areas are the unit of [generated meaning](GLOSSARY.md#generated-meaning).
 Each area may have a managed subtree:
@@ -170,20 +184,22 @@ knowledge/<area>/.brain-sync/
 regeneration and reconciliation like any other area, except it is the
 top of the wave topology and has no parent to propagate to.
 
+Directories under `knowledge/` that contain neither readable files nor
+descendant knowledge areas are not knowledge areas. They may exist in the
+filesystem for structural organisation, but they are not part of the semantic
+regen tree.
+
 ### Area Lifecycle
 
 An area comes into existence when a directory under `knowledge/` first
-contains readable content. It gets a `.brain-sync/` subtree when
+either contains readable content or has descendant knowledge areas. It gets a
+`.brain-sync/` subtree when
 brain-sync first generates meaning for it.
 
-An area ceases to exist when its directory is deleted or emptied of all
-readable content. When this happens, the system cleans up the area's
-managed state (insights and insight state) but preserves
+An area ceases to exist when its directory is deleted or when it contains
+neither readable content nor descendant knowledge areas. When this happens,
+the system cleans up the area's managed state (insights and insight state) but preserves
 [journals](GLOSSARY.md#journal) which are durable.
-
-Intermediate namespace directories (e.g. `knowledge/teams/`) are
-**not** areas unless they contain readable files of their own. They exist
-only to organise child areas.
 
 ### Regen Propagation
 
@@ -628,7 +644,7 @@ frontmatter in the same file.
 ### Database Schema
 
 Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
-[brain-sync user directory](GLOSSARY.md#brain-sync-user-directory),
+[brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory),
 **not** inside the brain root)
 
 The runtime database contains 4 tables:
@@ -654,7 +670,7 @@ Earlier runtime-only tables are intentionally absent:
   eliminating the need for cross-source reference counting. Deleting a
   source's attachments is a simple `rmtree`.
 - `daemon_status` — tracked daemon PID and health. This now lives in
-  the [brain-sync user directory](GLOSSARY.md#brain-sync-user-directory)
+  the [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory)
   (`~/.brain-sync/daemon.json`) since it is per-machine process state,
   not brain state.
 
@@ -705,7 +721,7 @@ The system must remain usable if runtime artifacts are lost.
 The durable backup unit is the brain root.
 
 Because [runtime state](GLOSSARY.md#runtime-state) lives entirely in
-the [brain-sync user directory](GLOSSARY.md#brain-sync-user-directory)
+the [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory)
 (outside the brain root), no `.gitignore` is needed. The entire brain
 root — including all `.brain-sync/` directories — is portable and
 committable.

@@ -16,7 +16,6 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC
 from pathlib import Path
 
 from brain_sync.regen import (
@@ -26,7 +25,7 @@ from brain_sync.regen import (
     regen_path,
     regen_single_folder,
 )
-from brain_sync.state import InsightState, acquire_regen_ownership, load_insight_state, save_insight_state
+from brain_sync.state import RegenLock, acquire_regen_ownership, load_insight_state, save_regen_lock
 
 log = logging.getLogger(__name__)
 
@@ -219,17 +218,12 @@ class RegenQueue:
                 error,
             )
             try:
-                from datetime import datetime
-
                 cur_istate = load_insight_state(self.root, knowledge_path)
-                save_insight_state(
+                save_regen_lock(
                     self.root,
-                    InsightState(
+                    RegenLock(
                         knowledge_path=knowledge_path,
-                        content_hash=cur_istate.content_hash if cur_istate else None,
-                        summary_hash=cur_istate.summary_hash if cur_istate else None,
                         regen_started_utc=cur_istate.regen_started_utc if cur_istate else None,
-                        last_regen_utc=datetime.now(UTC).isoformat(),
                         regen_status="failed",
                         error_reason=f"Retries exhausted ({MAX_RETRIES}): {error}",
                         owner_id=self.owner_id,

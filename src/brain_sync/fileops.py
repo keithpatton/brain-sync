@@ -140,17 +140,16 @@ def atomic_write_bytes(target: Path, data: bytes) -> None:
         raise
 
 
-def write_if_changed(target: Path, markdown: str) -> bool:
-    encoded = markdown.encode("utf-8")
-    new_hash = content_hash(encoded)
-
-    if path_exists(target):
-        old_hash = content_hash(read_bytes(target))
-        if old_hash == new_hash:
-            return False
-
-    atomic_write_bytes(target, encoded)
+def write_bytes_if_changed(target: Path, data: bytes) -> bool:
+    """Atomically write bytes only when the durable content changes."""
+    if path_exists(target) and read_bytes(target) == data:
+        return False
+    atomic_write_bytes(target, data)
     return True
+
+
+def write_if_changed(target: Path, markdown: str) -> bool:
+    return write_bytes_if_changed(target, markdown.encode("utf-8"))
 
 
 # Only these files are regenerable and safe to delete during cleanup.

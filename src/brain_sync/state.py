@@ -1155,30 +1155,35 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     )
 
 
-def save_insight_state(root: Path, istate: InsightState) -> None:
-    """Save insight state: hashes to sidecar, lifecycle to regen_locks."""
+def save_portable_insight_state(root: Path, istate: InsightState) -> bool:
+    """Persist durable insight-state fields without touching runtime lifecycle."""
     from brain_sync.sidecar import RegenMeta, write_regen_meta
 
     kp = normalize_path(istate.knowledge_path)
-    error_reason = _clamp_error_reason(istate.error_reason)
+    if istate.content_hash is None:
+        return False
 
-    # Write hashes to sidecar
     insights_dir = area_insights_dir(root, kp)
-    if istate.content_hash is not None:
-        try:
-            write_regen_meta(
-                insights_dir,
-                RegenMeta(
-                    content_hash=istate.content_hash,
-                    summary_hash=istate.summary_hash,
-                    structure_hash=istate.structure_hash,
-                    last_regen_utc=istate.last_regen_utc,
-                ),
-            )
-        except Exception:
-            log.warning("Failed to write sidecar for %s", kp, exc_info=True)
+    try:
+        return write_regen_meta(
+            insights_dir,
+            RegenMeta(
+                content_hash=istate.content_hash,
+                summary_hash=istate.summary_hash,
+                structure_hash=istate.structure_hash,
+                last_regen_utc=istate.last_regen_utc,
+            ),
+        )
+    except Exception:
+        log.warning("Failed to write sidecar for %s", kp, exc_info=True)
+        return False
 
-    # Write lifecycle to regen_locks
+
+def save_regen_lock(root: Path, lock: RegenLock) -> None:
+    """Persist runtime lifecycle fields to regen_locks only."""
+    kp = normalize_path(lock.knowledge_path)
+    error_reason = _clamp_error_reason(lock.error_reason)
+
     conn = _connect(root)
     try:
         conn.execute(
@@ -1193,15 +1198,30 @@ def save_insight_state(root: Path, istate: InsightState) -> None:
             "error_reason=excluded.error_reason",
             (
                 kp,
-                istate.regen_status,
-                istate.regen_started_utc,
-                istate.owner_id,
+                lock.regen_status,
+                lock.regen_started_utc,
+                lock.owner_id,
                 error_reason,
             ),
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def save_insight_state(root: Path, istate: InsightState) -> None:
+    """Save insight state: hashes to sidecar, lifecycle to regen_locks."""
+    save_portable_insight_state(root, istate)
+    save_regen_lock(
+        root,
+        RegenLock(
+            knowledge_path=istate.knowledge_path,
+            regen_status=istate.regen_status,
+            regen_started_utc=istate.regen_started_utc,
+            owner_id=istate.owner_id,
+            error_reason=istate.error_reason,
+        ),
+    )
 
 
 def load_all_insight_states(root: Path) -> list[InsightState]:

@@ -31,7 +31,7 @@ It governs:
 - manifest shapes
 - frontmatter identity rules
 - managed namespace semantics
-- what counts as portable brain state
+- what counts as brain state
 
 For the first supportable release:
 

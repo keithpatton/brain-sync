@@ -44,6 +44,7 @@ from brain_sync.pipeline import extract_source_id, prepend_managed_header
 from brain_sync.sidecar import read_all_regen_meta, read_regen_meta
 from brain_sync.state import (
     InsightState,
+    RegenLock,
     SyncState,
     _connect,
     _load_db_sync_progress,
@@ -54,6 +55,7 @@ from brain_sync.state import (
     load_all_insight_states,
     load_insight_state,
     save_insight_state,
+    save_regen_lock,
     save_state,
 )
 
@@ -637,15 +639,13 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
     ensure_db(root)
 
     for state in exported_states:
-        restored = InsightState(
-            knowledge_path=state.knowledge_path,
-            content_hash=state.content_hash,
-            summary_hash=state.summary_hash,
-            structure_hash=state.structure_hash,
-            last_regen_utc=state.last_regen_utc,
-            regen_status="idle",
+        save_regen_lock(
+            root,
+            RegenLock(
+                knowledge_path=state.knowledge_path,
+                regen_status="idle",
+            ),
         )
-        save_insight_state(root, restored)
 
     manifests = read_all_source_manifests(root)
     state = SyncState()

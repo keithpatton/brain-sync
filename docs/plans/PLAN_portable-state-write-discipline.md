@@ -20,12 +20,12 @@ Establish and enforce a repository-wide invariant:
 In practical terms, the implementation must ensure that:
 
 - machine-local runtime repair operations do not rewrite portable state when
-  the portable bytes are unchanged
+the portable bytes are unchanged
 - lifecycle-only updates do not create git-visible changes in the brain root
 - no-op or runtime-only operations do not create "ghost" portable diffs that
-  can later propagate across machines
+can later propagate across machines
 - portable sidecars, manifests, and similar durable artifacts remain stable
-  across no-op operations
+across no-op operations
 
 This matters not only for cleanliness of the working tree, but for correctness:
 ghost portable changes can create confusion, mislead operators, trigger
@@ -56,7 +56,7 @@ portable-vs-runtime persistence and write behavior:
 The architecture and spec already define a durable/runtime split:
 
 - portable insight hashes live in
-  `knowledge/**/.brain-sync/insights/insight-state.json`
+`knowledge/**/.brain-sync/insights/insight-state.json`
 - runtime regen lifecycle lives in `regen_locks`
 - runtime DB state is rebuildable and machine-local
 
@@ -64,14 +64,14 @@ The current implementation violates the spirit of that separation in an
 important way:
 
 - `save_insight_state()` writes portable sidecar hashes and runtime lifecycle in
-  one operation
+one operation
 - some callers use that function for lifecycle transitions such as
-  `running`, `failed`, or `idle`
+`running`, `failed`, or `idle`
 - `doctor --rebuild-db` loops through exported insight states and calls
-  `save_insight_state()` for every state, even when sidecar content is already
-  identical
+`save_insight_state()` for every state, even when sidecar content is already
+identical
 - several regen paths call `save_insight_state()` and then separately call
-  `write_regen_meta()` again in the same flow
+`write_regen_meta()` again in the same flow
 
 That means portable state can be rewritten:
 
@@ -83,26 +83,26 @@ That means portable state can be rewritten:
 Observed effect:
 
 - a runtime repair command can leave the brain repo showing modified portable
-  sidecar files
+sidecar files
 - those diffs can then be mistaken for meaningful portable changes and can be
-  pulled onto other machines
+pulled onto other machines
 
 ## Confirmed Diagnosis
 
 The confirmed diagnosis to preserve during implementation review is:
 
 1. Portable insight hash state and runtime regen lifecycle are currently
-   persisted through a shared `save_insight_state()` path.
+  persisted through a shared `save_insight_state()` path.
 2. `save_insight_state()` writes the sidecar whenever `content_hash` is
-   present, regardless of whether the portable sidecar bytes would actually
+  present, regardless of whether the portable sidecar bytes would actually
    change.
 3. `doctor --rebuild-db` currently rewrites portable sidecars as part of a
-   runtime DB rebuild even when the sidecar content is unchanged.
+  runtime DB rebuild even when the sidecar content is unchanged.
 4. normal regen has a safe unchanged fast-path, but several non-no-op regen
-   flows still write the sidecar redundantly through both `save_insight_state()`
+  flows still write the sidecar redundantly through both `save_insight_state()`
    and direct `write_regen_meta()` calls.
 5. the current behavior can produce git-visible portable changes that do not
-   reflect any meaningful durable state transition.
+  reflect any meaningful durable state transition.
 
 ## Scope
 
@@ -110,16 +110,16 @@ In scope for the implementation stage:
 
 - defining an explicit no-op write invariant for portable state
 - separating runtime lifecycle persistence from portable hash persistence where
-  needed
+needed
 - making portable sidecar writes content-sensitive and no-op when serialized
-  bytes are unchanged
+bytes are unchanged
 - ensuring `doctor --rebuild-db` rebuilds runtime state without rewriting
-  unchanged portable sidecars
+unchanged portable sidecars
 - auditing regen flows for duplicate or unnecessary sidecar writes
 - adding regression tests that prove no-op and runtime-only operations leave
-  portable files untouched
+portable files untouched
 - documenting the invariant in the appropriate authoritative docs if review
-  concludes it should be explicit
+concludes it should be explicit
 
 ## Non-goals
 
@@ -172,7 +172,7 @@ whether by:
 
 - teaching `write_regen_meta()` to skip identical bytes
 - or introducing a shared "write bytes if changed" helper and routing sidecar
-  writes through it
+writes through it
 
 This rule should apply even when the call site is otherwise valid.
 
@@ -219,7 +219,7 @@ This must cover at least:
 Outcome:
 
 - a concrete call-site inventory that shows which paths are supposed to mutate
-  portable state and which are runtime-only
+portable state and which are runtime-only
 
 ### Workstream 2: API boundary redesign
 
@@ -229,7 +229,7 @@ Likely directions:
 
 - split lifecycle-only DB persistence from portable sidecar persistence
 - or preserve one façade but route it through narrower internal helpers with
-  explicit portable/runtime semantics
+explicit portable/runtime semantics
 
 The chosen design must make it hard for a runtime-only operation to rewrite a
 portable sidecar accidentally.
@@ -242,14 +242,14 @@ Candidate implementation directions:
 
 - add a bytes-oriented no-op write helper in `fileops.py`
 - update `write_regen_meta()` to compare existing serialized bytes before
-  writing
+writing
 - ensure the behavior remains correct on Windows long paths as well as normal
-  paths
+paths
 
 Outcome:
 
 - portable sidecars are stable under no-op writes even if a caller reaches the
-  write path
+write path
 
 ### Workstream 4: Rebuild-db write discipline
 
@@ -259,7 +259,7 @@ sidecars and manifests without rewriting unchanged portable sidecars.
 Outcome:
 
 - a runtime DB rebuild leaves the portable working tree clean when no portable
-  correction is needed
+correction is needed
 
 ### Workstream 5: Regen flow cleanup
 
@@ -276,7 +276,7 @@ This must cover:
 Outcome:
 
 - each logical regen outcome performs only the portable writes that outcome
-  actually requires
+actually requires
 
 ### Workstream 6: Tests
 
@@ -287,11 +287,11 @@ Candidate coverage:
 - unit: sidecar write helper does not rewrite unchanged bytes
 - unit or integration: lifecycle-only state persistence does not touch sidecar
 - integration: `doctor --rebuild-db` preserves sidecar content and leaves
-  unchanged portable files untouched
+unchanged portable files untouched
 - integration: regen unchanged path leaves sidecar untouched
 - integration: real portable changes still update sidecar as expected
 - integration: flows that previously double-wrote now perform a single durable
-  write
+write
 
 Tests should prefer observable outcomes such as:
 
@@ -304,31 +304,31 @@ All test data must use placeholder values only.
 ## Proposed Implementation Strategy
 
 1. Inventory all current call sites that write portable sidecars and classify
-   whether each write is conceptually portable, runtime-only, or duplicate.
+  whether each write is conceptually portable, runtime-only, or duplicate.
 2. Introduce a content-sensitive sidecar write path that can no-op safely when
-   bytes are unchanged.
+  bytes are unchanged.
 3. Separate runtime lifecycle persistence from portable hash persistence at the
-   API level or through narrower internal helpers.
+  API level or through narrower internal helpers.
 4. Update `doctor --rebuild-db` to reseed runtime state without rewriting
-   unchanged sidecars.
+  unchanged sidecars.
 5. Remove or collapse duplicate sidecar writes in regen flows.
 6. Add regression tests around rebuild-db, runtime-only transitions, and
-   no-op sidecar writes.
+  no-op sidecar writes.
 7. If review agrees the invariant is long-lived, update the appropriate docs to
-   state it explicitly.
+  state it explicitly.
 
 ## Verification
 
 The implementation is complete only when all of the following hold:
 
 1. `doctor --rebuild-db` resolves runtime drift without producing portable
-   sidecar rewrites when the existing sidecar bytes are already correct.
+  sidecar rewrites when the existing sidecar bytes are already correct.
 2. Runtime-only lifecycle transitions do not rewrite portable sidecars.
 3. A no-op sidecar persistence call leaves the file bytes unchanged and does
-   not create a ghost durable diff.
+  not create a ghost durable diff.
 4. Real portable hash changes still persist correctly.
 5. Regen paths that previously double-wrote no longer perform redundant
-   portable writes.
+  portable writes.
 6. Existing behavior that depends on sidecar authority remains intact.
 7. Windows-safe path handling remains correct for any new no-op write helper.
 8. Tests cover both no-op and true-change cases.
@@ -338,24 +338,24 @@ The implementation is complete only when all of the following hold:
 Reviewers should pay particular attention to:
 
 - whether the proposed API split is clear enough to prevent future coupling
-  regressions
+regressions
 - whether content-sensitive writes preserve atomicity and crash safety
 - whether mtime-based tests are robust enough or should be backed by direct
-  byte/hash assertions
+byte/hash assertions
 - whether any failure path still rewrites portable state unnecessarily
 - whether the plan should codify this invariant in `docs/brain-format/RULES.md`
-  or keep it as architecture/implementation guidance
+or keep it as architecture/implementation guidance
 
 ## Open Questions
 
 These should be resolved during review before implementation begins:
 
 1. Should the fix primarily be an API separation change, a content-sensitive
-   sidecar write change, or both? My expectation is both.
+  sidecar write change, or both? My expectation is both.
 2. Should the invariant be documented in the Brain Format rules, or only in
-   architecture documentation?
+  architecture documentation?
 3. Is there any legitimate runtime-only scenario where rewriting an unchanged
-   portable sidecar is still desirable? The current expectation is no.
+  portable sidecar is still desirable? The current expectation is no.
 
 ## Expected Documentation Impact
 
@@ -366,4 +366,5 @@ updates may be appropriate in:
 
 - `docs/architecture/ARCHITECTURE.md` for state authority behavior
 - possibly `docs/brain-format/RULES.md` if the invariant should become a
-  normative portable-brain guarantee
+normative portable-brain guarantee
+

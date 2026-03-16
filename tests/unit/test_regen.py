@@ -2524,6 +2524,40 @@ class TestRegenSingleFolder:
             with pytest.raises(RegenFailed):
                 asyncio.run(regen_single_folder(brain, "project"))
 
+    def test_failure_preserves_portable_insight_state_bytes(self, brain):
+        """Running/failed lifecycle updates do not rewrite portable insight-state."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="old-hash",
+                summary_hash="old-summary-hash",
+                structure_hash="old-structure-hash",
+                last_regen_utc="2026-03-10T00:00:00Z",
+                regen_status="idle",
+            ),
+        )
+        sidecar_path = managed_insights(brain, "project") / "insight-state.json"
+        before_bytes = sidecar_path.read_bytes()
+
+        async def fail_invoke(prompt: str, cwd: Path, **kwargs):
+            return ClaudeResult(success=False, output="")
+
+        with patch("brain_sync.regen.invoke_claude", side_effect=fail_invoke):
+            with pytest.raises(RegenFailed):
+                asyncio.run(regen_single_folder(brain, "project"))
+
+        loaded = load_insight_state(brain, "project")
+
+        assert loaded is not None
+        assert loaded.regen_status == "failed"
+        assert loaded.last_regen_utc == "2026-03-10T00:00:00Z"
+        assert sidecar_path.read_bytes() == before_bytes
+
 
 class TestRegenAllWave:
     """Tests for wave-based regen_all() behavior."""

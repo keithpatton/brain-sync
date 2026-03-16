@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from brain_sync.fileops import atomic_write_bytes, path_exists, path_is_dir, read_bytes, rglob_paths
+from brain_sync.fileops import path_exists, path_is_dir, read_bytes, rglob_paths, write_bytes_if_changed
 from brain_sync.layout import INSIGHT_STATE_FILENAME, INSIGHT_STATE_VERSION, area_insight_state_path
 
 log = logging.getLogger(__name__)
@@ -41,8 +41,8 @@ class RegenMeta:
     last_regen_utc: str | None = None
 
 
-def write_regen_meta(insights_dir: Path, meta: RegenMeta) -> None:
-    """Atomically write a .regen-meta.json sidecar to an insights folder."""
+def write_regen_meta(insights_dir: Path, meta: RegenMeta) -> bool:
+    """Atomically write insight-state only when the durable bytes changed."""
     d: dict[str, object] = {"version": meta.version}
     if meta.content_hash is not None:
         d["content_hash"] = meta.content_hash
@@ -53,8 +53,12 @@ def write_regen_meta(insights_dir: Path, meta: RegenMeta) -> None:
     if meta.last_regen_utc is not None:
         d["last_regen_utc"] = meta.last_regen_utc
     data = (json.dumps(d, indent=2, sort_keys=False) + "\n").encode("utf-8")
-    atomic_write_bytes(insights_dir / SIDECAR_FILENAME, data)
-    log.debug("Wrote sidecar %s", insights_dir / SIDECAR_FILENAME)
+    changed = write_bytes_if_changed(insights_dir / SIDECAR_FILENAME, data)
+    if changed:
+        log.debug("Wrote sidecar %s", insights_dir / SIDECAR_FILENAME)
+    else:
+        log.debug("Skipped unchanged sidecar %s", insights_dir / SIDECAR_FILENAME)
+    return changed
 
 
 def read_regen_meta(insights_dir: Path) -> RegenMeta | None:

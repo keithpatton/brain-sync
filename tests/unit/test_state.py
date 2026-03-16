@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +11,7 @@ from brain_sync.layout import RUNTIME_DB_SCHEMA_VERSION
 from brain_sync.manifest import SourceManifest, write_source_manifest
 from brain_sync.state import (
     InsightState,
+    RegenLock,
     SourceState,
     SyncState,
     load_all_insight_states,
@@ -17,6 +19,7 @@ from brain_sync.state import (
     load_state,
     read_daemon_status,
     save_insight_state,
+    save_regen_lock,
     save_state,
     write_daemon_status,
 )
@@ -121,3 +124,42 @@ class TestInsightStatePaths:
         assert loaded.content_hash == "root-content"
         assert any(state.knowledge_path == "" for state in all_states)
         assert (tmp_path / "knowledge" / ".brain-sync" / "insights" / "insight-state.json").is_file()
+
+    def test_save_regen_lock_does_not_touch_portable_insight_state(self, tmp_path: Path) -> None:
+        (tmp_path / "knowledge" / "area").mkdir(parents=True)
+
+        save_insight_state(
+            tmp_path,
+            InsightState(
+                knowledge_path="area",
+                content_hash="content-hash",
+                summary_hash="summary-hash",
+                structure_hash="structure-hash",
+                last_regen_utc="2026-03-17T00:00:00Z",
+            ),
+        )
+        sidecar_path = tmp_path / "knowledge" / "area" / ".brain-sync" / "insights" / "insight-state.json"
+        before_bytes = sidecar_path.read_bytes()
+
+        with patch(
+            "brain_sync.sidecar.write_regen_meta",
+            side_effect=AssertionError("portable state should not be rewritten"),
+        ):
+            save_regen_lock(
+                tmp_path,
+                RegenLock(
+                    knowledge_path="area",
+                    regen_status="running",
+                    regen_started_utc="2026-03-17T01:00:00Z",
+                    owner_id="owner-1",
+                ),
+            )
+
+        loaded = load_insight_state(tmp_path, "area")
+
+        assert loaded is not None
+        assert loaded.content_hash == "content-hash"
+        assert loaded.last_regen_utc == "2026-03-17T00:00:00Z"
+        assert loaded.regen_status == "running"
+        assert loaded.owner_id == "owner-1"
+        assert sidecar_path.read_bytes() == before_bytes

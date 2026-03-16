@@ -47,13 +47,15 @@ from brain_sync.fs_utils import (
 from brain_sync.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
-from brain_sync.sidecar import RegenMeta, delete_regen_meta, load_regen_hashes, write_regen_meta
+from brain_sync.sidecar import delete_regen_meta, load_regen_hashes
 from brain_sync.state import (
     InsightState,
+    RegenLock,
     delete_insight_state,
     load_all_insight_states,
     load_insight_state,
     save_insight_state,
+    save_regen_lock,
 )
 from brain_sync.token_tracking import OP_REGEN
 
@@ -1360,18 +1362,6 @@ async def regen_single_folder(
                 error_reason=istate.error_reason if istate else None,
             ),
         )
-        try:
-            write_regen_meta(
-                insights_dir,
-                RegenMeta(
-                    content_hash=new_content_hash,
-                    summary_hash=meta.summary_hash,
-                    structure_hash=new_structure_hash,
-                    last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
-                ),
-            )
-        except Exception:
-            log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
         return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
 
     if event.change_type == "none":
@@ -1403,18 +1393,6 @@ async def regen_single_folder(
                 owner_id=istate.owner_id if istate else None,
             ),
         )
-        try:
-            write_regen_meta(
-                insights_dir,
-                RegenMeta(
-                    content_hash=meta.content_hash if meta else new_content_hash,
-                    summary_hash=meta.summary_hash if meta else None,
-                    structure_hash=new_structure_hash,
-                    last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
-                ),
-            )
-        except Exception:
-            log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
         return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
 
     log.debug(
@@ -1448,15 +1426,11 @@ async def regen_single_folder(
 
     # Mark as running — keep old hash so crashes/failures don't block retries
     started = datetime.now(UTC).isoformat()
-    save_insight_state(
+    save_regen_lock(
         root,
-        InsightState(
+        RegenLock(
             knowledge_path=current_path,
-            content_hash=meta.content_hash if meta else None,
-            summary_hash=meta.summary_hash if meta else None,
-            structure_hash=meta.structure_hash if meta else None,
             regen_started_utc=started,
-            last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
             regen_status="running",
             owner_id=owner_id,
         ),
@@ -1568,17 +1542,12 @@ async def regen_single_folder(
             )
     except Exception as e:
         log.error("Regen failed for %s: %s", current_path or "(root)", e, exc_info=True)
-        now = datetime.now(UTC).isoformat()
         try:
-            save_insight_state(
+            save_regen_lock(
                 root,
-                InsightState(
+                RegenLock(
                     knowledge_path=current_path,
-                    content_hash=meta.content_hash if meta else None,
-                    summary_hash=meta.summary_hash if meta else None,
-                    structure_hash=meta.structure_hash if meta else None,
                     regen_started_utc=started,
-                    last_regen_utc=now,
                     regen_status="failed",
                     owner_id=owner_id,
                     error_reason=str(e),
@@ -1603,15 +1572,11 @@ async def regen_single_folder(
         )
         err_msg = "Claude returned empty or suspiciously small output"
         try:
-            save_insight_state(
+            save_regen_lock(
                 root,
-                InsightState(
+                RegenLock(
                     knowledge_path=current_path,
-                    content_hash=meta.content_hash if meta else None,
-                    summary_hash=meta.summary_hash if meta else None,
-                    structure_hash=meta.structure_hash if meta else None,
                     regen_started_utc=started,
-                    last_regen_utc=now,
                     regen_status="failed",
                     owner_id=owner_id,
                     error_reason=err_msg,
@@ -1643,18 +1608,6 @@ async def regen_single_folder(
                 owner_id=None,
             ),
         )
-        try:
-            write_regen_meta(
-                insights_dir,
-                RegenMeta(
-                    content_hash=new_content_hash,
-                    summary_hash=summary_hash,
-                    structure_hash=new_structure_hash,
-                    last_regen_utc=now,
-                ),
-            )
-        except Exception:
-            log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
         # Journal is independent of summary similarity — temporal events matter
         if journal_text:
             _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
@@ -1678,18 +1631,6 @@ async def regen_single_folder(
             owner_id=None,
         ),
     )
-    try:
-        write_regen_meta(
-            insights_dir,
-            RegenMeta(
-                content_hash=new_content_hash,
-                summary_hash=summary_hash,
-                structure_hash=new_structure_hash,
-                last_regen_utc=now,
-            ),
-        )
-    except Exception:
-        log.warning("Failed to write sidecar for %s", current_path, exc_info=True)
     log.info(
         "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
         regen_id,

@@ -11,14 +11,14 @@ An **attachment** is a binary file associated with a [synced source](#synced-sou
 and managed by brain-sync.
 
 Attachments are stored under the [knowledge area's](#knowledge-area)
-[managed files](#brain-sync-managed-files) at
+[managed files](#brain-managed-files) at
 `.brain-sync/attachments/<source_dir_id>/`.
 
 Example: `knowledge/teams/platform/.brain-sync/attachments/c987654/a4736286723-architecture-diagram.png`
 
 ## Brain
 
-A **brain** is the persistent filesystem-backed unit managed by brain-sync.
+A **brain** is the portable filesystem knowledge base used by brain-sync.
 
 A brain is created by `brain-sync init` which registers the
 [brain root](#brain-root) and creates the initial directory structure.
@@ -36,13 +36,13 @@ The **brain root** is the top-level directory of a [brain](#brain). It can
 be named anything (e.g. `acme-brain/`, `my-brain/`).
 
 The brain root is registered during `brain-sync init` in
-[brain-sync user directory](#brain-sync-user-directory). This registration
+[brain-sync runtime directory](#brain-sync-runtime-directory). This registration
 can be changed.
 
 The brain root contains exactly two top-level entries:
 
 - `knowledge/` — the [knowledge tree](#knowledge-tree)
-- `.brain-sync/` — the root [managed files](#brain-sync-managed-files)
+- `.brain-sync/` — the root [managed files](#brain-managed-files)
 
 ---
 
@@ -52,18 +52,32 @@ The brain root contains exactly two top-level entries:
 disk — the set of files that should be backed up and are portable across
 machines.
 
-It consists of [user knowledge](#user-knowledge) and
-[brain-sync managed files](#brain-sync-managed-files).
+Brain state is the persistent state of the [brain root](#brain-root), not just
+the [knowledge tree](#knowledge-tree).
+
+It consists of:
+
+- [user knowledge](#user-knowledge)
+- [brain managed files](#brain-managed-files) inside the
+  [brain root](#brain-root)
 
 It excludes [runtime state](#runtime-state).
 
+A brain-state entry changes only when its durable on-disk identity or
+bytes change. Rewriting an unchanged managed file does not create a new class
+of brain state.
+
 ---
 
-## Brain-Sync User Directory
+## Brain-Sync Runtime Directory
 
-The **brain-sync user directory** is the machine-local directory at
+The **brain-sync runtime directory** is the machine-local directory at
 `~/.brain-sync/` (overridable via `BRAIN_SYNC_CONFIG_DIR` environment
 variable) that holds all per-machine application state.
+
+Earlier docs may refer to this as the **brain-sync user directory**. The
+preferred term is **brain-sync runtime directory** because this directory holds
+runtime state, not brain state.
 
 It contains:
 
@@ -74,7 +88,7 @@ credentials, feature flags
 - `daemon.json` — daemon PID and status
 
 This directory is **not** inside the brain root. Nothing in it is part
-of the portable [brain state](#brain-state). Everything in it is
+of [brain state](#brain-state). Everything in it is
 [runtime state](#runtime-state) — rebuildable or recreatable without
 loss of [user knowledge](#user-knowledge) or
 [generated meaning](#generated-meaning).
@@ -86,7 +100,7 @@ runtime coordination and caching. It is not authoritative — the brain
 can be fully reconstructed if it is deleted.
 
 Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
-[brain-sync user directory](#brain-sync-user-directory))
+[brain-sync runtime directory](#brain-sync-runtime-directory))
 
 The database is **not** inside the brain root. It is
 [runtime state](#runtime-state).
@@ -101,10 +115,15 @@ Current tables:
 | `regen_locks`  | Cross-process regen coordination                                                                        |
 | `token_events` | Append-only LLM cost telemetry persisted for local observability; not part of core brain-state recovery |
 
-## Brain-Sync Managed Files
 
-**Brain-sync managed files** are files inside `.brain-sync/` folders
+## Brain Managed Files
+
+**Brain managed files** are files inside `.brain-sync/` folders
 within the [brain root](#brain-root).
+
+Earlier docs may refer to these as **brain-sync managed files**. The preferred
+term is **brain managed files** because the key boundary is that these files
+are managed within the Brain and are part of brain state.
 
 This includes:
 
@@ -121,9 +140,11 @@ The `.brain-sync` directory name is reserved at every level of the
 [knowledge tree](#knowledge-tree).
 
 Note: brain-sync also manages files in the
-[brain-sync user directory](#brain-sync-user-directory)
+[brain-sync runtime directory](#brain-sync-runtime-directory)
 (`~/.brain-sync/`), but those are [runtime state](#runtime-state), not
-brain state.
+brain state. In this glossary, **brain managed files** means the
+managed files inside the [brain root](#brain-root), not runtime-managed files
+under `~/.brain-sync/`.
 
 ---
 
@@ -295,7 +316,7 @@ Generated meaning will extend to additional [template](#template) types in
 the future (e.g. status reports, decision logs, theme analyses).
 
 All generated meaning lives under
-`[.brain-sync/](#brain-sync-managed-files)` within a knowledge area.
+`[.brain-sync/](#brain-managed-files)` within a knowledge area.
 Insights live under `.brain-sync/insights/`, journals under
 `.brain-sync/journal/`.
 
@@ -354,13 +375,17 @@ automated cleanup operations.
 
 ## Knowledge Area
 
-A **knowledge area** is analogous to a folder on the filesystem — it is a
-directory under `knowledge/` that contains readable content or has child
-areas with content.
+A **knowledge area** is a directory under `knowledge/` that participates in
+[regeneration](#regeneration).
+
+A directory is a knowledge area if it:
+
+- contains [readable files](#readable-file), or
+- has descendant [knowledge areas](#knowledge-area)
 
 Areas are the unit of [generated meaning](#generated-meaning). Each area
 can have its own insights, journal entries, and
-[brain-sync managed files](#brain-sync-managed-files) under `.brain-sync/`.
+[brain managed files](#brain-managed-files) under `.brain-sync/`.
 
 Examples:
 
@@ -372,8 +397,24 @@ The root area participates in regeneration and reconciliation as the top
 of the area topology. It is valid even when it derives meaning only from
 child area summaries.
 
-Non-example: `knowledge/teams/` when it contains no files of its own —
-this is a namespace directory, not an area.
+Example:
+
+```text
+knowledge/
+  teams/
+    platform/
+      architecture.md
+```
+
+Derived knowledge areas:
+
+- `knowledge/`
+- `knowledge/teams/`
+- `knowledge/teams/platform/`
+
+A directory under `knowledge/` that contains neither readable files nor
+descendant knowledge areas is not a knowledge area and does not participate in
+regeneration.
 
 ---
 
@@ -386,7 +427,7 @@ It holds:
 
 - [user knowledge](#user-knowledge) — user-authored notes,
 [synced source](#synced-source) documents, and [attachments](#attachment)
-- [brain-sync managed files](#brain-sync-managed-files) — the per-area
+- [brain managed files](#brain-managed-files) — the per-area
 `.brain-sync/` directories
 
 The knowledge tree is the durable core of the [brain](#brain).
@@ -503,7 +544,7 @@ across discovery, hashing, regeneration, and reconciliation.
 running but is **not** part of the portable [brain state](#brain-state).
 
 All runtime state lives in the
-[brain-sync user directory](#brain-sync-user-directory)
+[brain-sync runtime directory](#brain-sync-runtime-directory)
 (`~/.brain-sync/`):
 
 - `config.json` — brain root registration and credentials
@@ -639,7 +680,7 @@ to batch rapid changes before triggering regeneration.
 
 When a knowledge folder is moved, the watcher updates source
 [manifests](#manifest) and database state to maintain consistency.
-Because [managed files](#brain-sync-managed-files) are co-located under
+Because [managed files](#brain-managed-files) are co-located under
 each area's `.brain-sync/`, they move automatically with the folder.
 
 ---

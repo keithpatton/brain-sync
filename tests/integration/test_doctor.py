@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -143,6 +144,25 @@ class TestDoctorRebuildDb:
         assert project_state.summary_hash == "def456"
         assert project_state.structure_hash == "ghi789"
         assert project_state.last_regen_utc == "2026-03-10T00:00:00"
+
+    def test_rebuild_does_not_rewrite_unchanged_portable_insight_state(self, brain: Path) -> None:
+        (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="abc123",
+                summary_hash="def456",
+                structure_hash="ghi789",
+                last_regen_utc="2026-03-10T00:00:00",
+            ),
+        )
+
+        with patch(
+            "brain_sync.sidecar.write_regen_meta",
+            side_effect=AssertionError("rebuild-db should not rewrite portable insight-state"),
+        ):
+            rebuild_db(brain)
 
 
 class TestDoctorRebuildDbLifecycleReset:

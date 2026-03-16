@@ -167,8 +167,14 @@ The system uses a tiered authority model:
 | Token telemetry | `token_events` | No | Loss accepted |
 | Runtime DB schema marker | `meta` | No | Yes |
 
-Portable state lives in the brain root. Runtime state lives under the user
-config directory and may be deleted without invalidating the brain.
+Portable state lives in the brain root. Runtime state lives in the
+brain-sync runtime directory under the user config location and may be deleted
+without invalidating the brain.
+
+The durable/runtime split is also a write-discipline rule: runtime lifecycle
+updates in `regen_locks` must not rewrite unchanged portable
+`insight-state.json` files. Portable insight-state is rewritten only when its
+durable manifest fields actually change.
 
 ### Managed-File Identity
 

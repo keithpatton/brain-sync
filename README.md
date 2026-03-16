@@ -181,7 +181,7 @@ conversation.
 ### Backing Up Your Brain
 
 Initialize a private Git repository at the brain root and push it to a private
-remote. Commit the portable brain state:
+remote. Commit the brain:
 
 - `knowledge/`
 - `.brain-sync/`
@@ -192,7 +192,7 @@ contains disposable caches, local credentials, daemon state, and the runtime DB.
 Using a private Git repo matters for two reasons:
 
 - it gives you normal backups, history, branching, and multi-machine sync for
-  the portable brain itself
+  the brain itself
 - it keeps your checked-out files consistent across Windows, macOS, and Linux,
   which helps avoid newline-only checkout differences being mistaken for content
   changes during reconcile and regen
