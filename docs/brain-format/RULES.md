@@ -349,6 +349,20 @@ renames the file to remove the canonical prefix. This is the one
 scenario where reconciliation cannot recover the association. Doctor
 reports this as DRIFT.
 
+### Identity Uniqueness
+
+At most one materialized markdown file may carry a given
+`brain_sync_canonical_id` within the `knowledge/` tree.
+
+If multiple files carry the same canonical identity, the brain is in
+DRIFT / invalid state. Repair must collapse those duplicates back to a
+single surviving materialized file and update source tracking to point
+to that file.
+
+Filename prefixes remain derived hints, not independent identities. A
+title change may change the filename slug, but it must not produce a
+second file with the same canonical identity.
+
 ---
 
 ## Materialization Rules
