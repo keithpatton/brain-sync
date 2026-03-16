@@ -1,4 +1,4 @@
-"""Unit tests for pipeline.py skip-guard logic."""
+"""Unit tests for pipeline.py skip-guard logic and filename healing."""
 
 from __future__ import annotations
 
@@ -230,3 +230,66 @@ class TestGoogleAttachmentHandling:
         assert changed is False
         assert children == []
         adapter.fetch.assert_not_called()
+
+
+class TestFilenameHealing:
+    async def test_title_rename_rewrites_single_managed_file(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "brain"
+        area = root / "knowledge" / "area"
+        area.mkdir(parents=True)
+        (root / ".brain-sync" / "sources").mkdir(parents=True)
+
+        source_state = SourceState(
+            canonical_id="confluence:12345",
+            source_url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Test",
+            source_type="confluence",
+            target_path="area",
+            metadata_fingerprint="rev-1",
+        )
+
+        old_path = area / "c12345-old-title.md"
+        old_path.write_text(
+            "---\n"
+            "brain_sync_source: confluence\n"
+            "brain_sync_canonical_id: confluence:12345\n"
+            "brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Test\n"
+            "---\n\n"
+            "# Old Title\n\n"
+            "Body.\n",
+            encoding="utf-8",
+        )
+
+        adapter = MagicMock()
+        adapter.capabilities.supports_version_check = True
+        adapter.capabilities.supports_children = False
+        adapter.capabilities.supports_attachments = False
+        adapter.capabilities.supports_comments = False
+        adapter.auth_provider.load_auth.return_value = MagicMock()
+        adapter.check_for_update = AsyncMock(
+            return_value=UpdateCheckResult(
+                status=UpdateStatus.CHANGED,
+                fingerprint="rev-2",
+                title="New Title",
+                adapter_state={"revisionId": "rev-2"},
+            )
+        )
+        adapter.fetch = AsyncMock(
+            return_value=SourceFetchResult(
+                body_markdown="# New Title\n\nBody.",
+                title="New Title",
+                metadata_fingerprint="rev-2",
+                comments=[],
+            )
+        )
+
+        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+            changed, children = await process_source(source_state, AsyncMock(), root=root)
+
+        assert changed is True
+        assert children == []
+
+        files = sorted(area.glob("c12345-*.md"))
+        assert [path.name for path in files] == ["c12345-new-title.md"]

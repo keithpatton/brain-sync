@@ -90,6 +90,17 @@ def extract_source_id(path: Path) -> str | None:
         return None
 
 
+def _find_identity_matches_in_dir(target_dir: Path, canonical_id_str: str) -> list[Path]:
+    """Return managed markdown files in a directory that claim the same canonical id."""
+    if not target_dir.is_dir():
+        return []
+    matches: list[Path] = []
+    for path in sorted(target_dir.glob("*.md")):
+        if path.is_file() and extract_source_id(path) == canonical_id_str:
+            matches.append(path)
+    return matches
+
+
 def strip_managed_header(text: str) -> str:
     """Remove managed identity from YAML frontmatter and legacy HTML comments."""
     frontmatter, body = _split_frontmatter(text)
@@ -308,6 +319,28 @@ async def process_source(
 
     # Write + state update
     changed = write_if_changed(target, markdown)
+
+    # Heal duplicate managed files after title-driven filename changes.
+    # There should only ever be one markdown file per canonical source id
+    # within a knowledge area.
+    if root is not None:
+        identity_matches = _find_identity_matches_in_dir(target_dir, source_state.canonical_id)
+        stale_matches = [path for path in identity_matches if path != target]
+        for stale_path in stale_matches:
+            try:
+                stale_path.unlink()
+                log.warning(
+                    "Removed duplicate managed file for %s: %s",
+                    source_state.canonical_id,
+                    stale_path.name,
+                )
+            except OSError:
+                log.warning(
+                    "Failed to remove duplicate managed file for %s: %s",
+                    source_state.canonical_id,
+                    stale_path,
+                    exc_info=True,
+                )
 
     source_state.last_checked_utc = now
     source_state.content_hash = body_hash
