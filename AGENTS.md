@@ -5,22 +5,25 @@ working in this repository.
 
 ## Documentation Governance
 
-brain-sync uses four documentation layers with a strict authority order:
-
-`docs/brain-format/` > `docs/architecture/` > `AGENTS.md` > `README.md`
-
-Use the most specific document that answers the question.
+brain-sync uses subject-based documentation authority. Use the most specific
+document for the subject you are changing.
 
 | Document | Purpose | Must contain | Must not contain |
 |---|---|---|---|
-| `docs/brain-format/` | Portable contract and specification | Filesystem rules, schemas, versioning, compatibility | Tutorials, coding workflow, architectural rationale |
+| `docs/brain/` | Portable brain reference | Portable schemas, generated artifact templates, brain version scope | Runtime-only details, tutorials, architectural rationale |
+| `docs/runtime/` | Runtime reference | Runtime schemas, DB/config/daemon shapes | Portable brain contract, tutorials, architectural rationale |
+| `docs/{RULES,VERSIONING,COMPATIBILITY,GLOSSARY}.md` | Shared cross-cutting reference | Shared ontology, state rules, version/support relations | Tutorials, coding workflow, deep architecture rationale |
 | `docs/architecture/` | System explanation | Design, module responsibilities, state models, rationale, technical debt | Normative on-disk schema definitions, user how-tos |
 | `AGENTS.md` | Repository working rules | Coding standards, testing guidance, git hygiene, privacy rules | Deep architecture explanation, format spec detail, user tutorials |
 | `README.md` | User guide | Install, configure, operate, update | Contributor-only rules, deep internals, schema detail |
 
 Update triggers:
 
-- Update `docs/brain-format/` when the portable brain contract changes.
+- Update `docs/brain/` when the portable brain contract changes.
+- Update `docs/runtime/` when machine-local runtime schema or runtime artifact
+  shape changes.
+- Update root `docs/*.md` shared references when cross-cutting ontology,
+  rules, versioning, or compatibility policy changes.
 - Update `docs/architecture/` when responsibilities, dependencies, or system
   design change.
 - Update `AGENTS.md` when long-lived repository workflow rules change.
@@ -41,12 +44,27 @@ Follow [`docs/plans/README.md`](docs/plans/README.md) for the approval gate,
 artifact naming, and the rule that implementation must not skip the approval
 artifact unless the user explicitly asks to bypass the planning trail.
 
-## Brain Format Contract
+## Documentation Entry Points
 
-For format questions, the highest authority is the Brain Format spec index:
-[`docs/brain-format/README.md`](docs/brain-format/README.md).
+If you need portable brain structure, start with
+[`docs/brain/README.md`](docs/brain/README.md).
 
-Before making format-affecting changes:
+If you need runtime DB/config/daemon details, start with
+[`docs/runtime/README.md`](docs/runtime/README.md).
+
+If you need shared ontology, state rules, versioning, or compatibility, go to:
+
+- [`docs/GLOSSARY.md`](docs/GLOSSARY.md)
+- [`docs/RULES.md`](docs/RULES.md)
+- [`docs/VERSIONING.md`](docs/VERSIONING.md)
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)
+
+If you need design rationale or module responsibilities, go to
+[`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
+
+## Brain Contract
+
+Before making portable brain changes:
 
 1. Check the spec docs first.
 2. If code and spec disagree, treat the spec as authoritative unless the task

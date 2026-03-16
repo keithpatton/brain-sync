@@ -14,7 +14,17 @@ from brain_sync.confluence_rest import (
     fetch_attachments,
     fetch_child_pages,
 )
-from brain_sync.fileops import EXCLUDED_DIRS, atomic_write_bytes, canonical_prefix, content_hash
+from brain_sync.fileops import (
+    EXCLUDED_DIRS,
+    atomic_write_bytes,
+    canonical_prefix,
+    content_hash,
+    iterdir_paths,
+    path_exists,
+    path_is_dir,
+    path_is_file,
+    read_bytes,
+)
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.sources import slugify
 from brain_sync.sources.base import DiscoveredImage
@@ -68,7 +78,7 @@ def remove_synced_file(path: Path, safe_root: Path) -> bool:
     resolved = path.resolve()
     if not resolved.is_relative_to(safe_root.resolve()):
         raise SafetyError(f"Refusing to delete {path}: outside safe root {safe_root}")
-    if resolved.exists():
+    if path_exists(resolved):
         resolved.unlink()
         return True
     return False
@@ -141,12 +151,12 @@ def migrate_legacy_context(
     migrated = 0
 
     legacy_root = target_dir / LEGACY_CONTEXT_DIR
-    if legacy_root.is_dir():
+    if path_is_dir(legacy_root):
         legacy_att_dir = legacy_root / "attachments"
-        if legacy_att_dir.is_dir():
+        if path_is_dir(legacy_att_dir):
             new_dir = ensure_attachment_dir(target_dir, source_dir_id)
-            for f in list(legacy_att_dir.iterdir()):
-                if not f.is_file():
+            for f in iterdir_paths(legacy_att_dir):
+                if not path_is_file(f):
                     continue
                 shutil.move(str(f), str(new_dir / f.name))
                 migrated += 1
@@ -154,10 +164,10 @@ def migrate_legacy_context(
 
     bare_id = primary_canonical_id.split(":", 1)[1]
     legacy_attachment_dir = target_dir / "_attachments" / bare_id
-    if legacy_attachment_dir.is_dir():
+    if path_is_dir(legacy_attachment_dir):
         new_dir = ensure_attachment_dir(target_dir, source_dir_id)
-        for f in list(legacy_attachment_dir.iterdir()):
-            if not f.is_file():
+        for f in iterdir_paths(legacy_attachment_dir):
+            if not path_is_file(f):
                 continue
             shutil.move(str(f), str(new_dir / f.name))
             migrated += 1
@@ -183,7 +193,7 @@ async def _sync_binary_file(
         data = response.content
 
     target = target_dir / local_path
-    if target.exists() and content_hash(target.read_bytes()) == content_hash(data):
+    if path_exists(target) and content_hash(read_bytes(target)) == content_hash(data):
         return False
     atomic_write_bytes(target, data)
     return True

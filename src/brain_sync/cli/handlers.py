@@ -10,6 +10,7 @@ from pathlib import Path
 
 from brain_sync.commands.context import BrainNotFoundError
 from brain_sync.commands.placement import PlacementSelection
+from brain_sync.fileops import path_exists, path_is_dir, path_is_file
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def handle_run(args) -> None:
             log.error("Cannot resolve brain root: %s", e)
             sys.exit(1)
 
-    if not root.is_dir():
+    if not path_is_dir(root):
         log.error("--root '%s' is not a directory", root)
         sys.exit(1)
 
@@ -166,14 +167,14 @@ def _interactive_placement(
 
 def _resolve_collision(dest: Path, max_suffix: int = 10) -> Path | None:
     """If dest exists, try numeric suffixes (-2, -3, ...). Returns None if all taken."""
-    if not dest.exists():
+    if not path_exists(dest):
         return dest
     stem = dest.stem
     suffix = dest.suffix
     parent = dest.parent
     for i in range(2, max_suffix + 1):
         candidate = parent / f"{stem}-{i}{suffix}"
-        if not candidate.exists():
+        if not path_exists(candidate):
             return candidate
     return None
 
@@ -331,11 +332,11 @@ def handle_remove_file(args) -> None:
         log.error("Path must be within knowledge/: %s", args.file)
         sys.exit(1)
 
-    if not target.exists():
+    if not path_exists(target):
         log.error("File not found: knowledge/%s", args.file)
         sys.exit(1)
 
-    if not target.is_file():
+    if not path_is_file(target):
         log.error("Not a file: knowledge/%s", args.file)
         sys.exit(1)
 
@@ -553,7 +554,7 @@ def handle_regen(args) -> None:
 
     if knowledge_path:
         knowledge_dir = root / "knowledge" / knowledge_path
-        if not knowledge_dir.is_dir():
+        if not path_is_dir(knowledge_dir):
             log.error("Knowledge path '%s' does not exist", knowledge_path)
             sys.exit(1)
 

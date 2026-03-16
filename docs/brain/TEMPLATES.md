@@ -1,15 +1,17 @@
-# Brain Format v1 — Templates
+# Brain Templates
 
-This document describes brain-sync templates — the definitions that shape
-[generated meaning](GLOSSARY.md#generated-meaning).
+This document defines the generated artifact templates whose instances live in
+the portable brain and shape
+[generated meaning](../GLOSSARY.md#generated-meaning).
 
 Templates define the layout of generated content. Each concrete file
 written by brain-sync from a template is an instance of that template.
-See [GLOSSARY.md](GLOSSARY.md) for precise definitions of these terms.
+See [../GLOSSARY.md](../GLOSSARY.md) for precise definitions of these terms.
 
-Templates are **internal to the brain-sync package** — they are bundled
-in source code and loaded at runtime. They are not deployed to the brain
-root. This document describes their structure and content for reference.
+This document is normative for the brain-resident artifacts that result from
+regeneration. The packaged prompt and template source files used to produce
+those artifacts are implementation details described by code, not by this
+reference.
 
 ---
 

@@ -1,4 +1,4 @@
-# Brain Format v1 — Compatibility
+# Compatibility
 
 This document defines the supported compatibility baseline for the first
 supportable brain-sync release and the testing expectations that follow

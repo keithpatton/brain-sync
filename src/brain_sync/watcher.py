@@ -15,7 +15,7 @@ from watchdog.events import (
 )
 from watchdog.observers import Observer
 
-from brain_sync.fileops import EXCLUDED_DIRS
+from brain_sync.fileops import EXCLUDED_DIRS, path_exists
 from brain_sync.fs_utils import normalize_path
 
 log = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ class KnowledgeWatcher:
         self._pending: dict[Path, float] = {}
 
     def start(self) -> None:
-        if not self.knowledge_root.exists():
+        if not path_exists(self.knowledge_root):
             log.warning("knowledge/ directory does not exist at %s, watcher inactive", self.knowledge_root)
             return
         handler = KnowledgeEventHandler(self.event_queue, self.move_queue, self.knowledge_root)

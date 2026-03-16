@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from brain_sync.fileops import iterdir_paths, path_is_dir, path_is_file, read_text, rglob_paths
 from brain_sync.fs_utils import get_child_dirs, is_content_dir
 from brain_sync.layout import MANAGED_DIRNAME, SUMMARY_FILENAME, area_summary_path
 
@@ -34,7 +35,7 @@ MAX_SEARCH_RESULTS = 10
 def _read_file_safe(path: Path, max_chars: int | None = None) -> str:
     """Read a text file safely with utf-8, ignoring decode errors."""
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        text = read_text(path, encoding="utf-8", errors="ignore")
         if max_chars is not None and len(text) > max_chars:
             return text[:max_chars]
         return text
@@ -75,14 +76,14 @@ class AreaIndex:
         index = cls()
         knowledge_root = root / "knowledge"
 
-        if not knowledge_root.is_dir():
+        if not path_is_dir(knowledge_root):
             return index
 
         max_mtime = 0.0
 
         def _walk(directory: Path, prefix: str) -> None:
             nonlocal max_mtime
-            for child in sorted(directory.iterdir()):
+            for child in iterdir_paths(directory):
                 if not is_content_dir(child):
                     continue
                 if child.name == "_core":
@@ -98,7 +99,7 @@ class AreaIndex:
 
                 # Summary from knowledge/<area>/.brain-sync/insights/summary.md
                 summary_path = area_summary_path(root, child_rel)
-                if summary_path.is_file():
+                if path_is_file(summary_path):
                     entry.has_summary = True
                     try:
                         mtime = summary_path.stat().st_mtime
@@ -132,11 +133,11 @@ class AreaIndex:
     def is_stale(self, root: Path) -> bool:
         """Check if the index needs rebuilding by scanning managed summary mtimes."""
         knowledge_root = root / "knowledge"
-        if not knowledge_root.is_dir():
+        if not path_is_dir(knowledge_root):
             return bool(self.entries)
         max_mtime = 0.0
-        for p in knowledge_root.rglob(SUMMARY_FILENAME):
-            if p.is_file() and MANAGED_DIRNAME in p.parts:
+        for p in rglob_paths(knowledge_root, SUMMARY_FILENAME):
+            if path_is_file(p) and MANAGED_DIRNAME in p.parts:
                 try:
                     mtime = p.stat().st_mtime
                     if mtime > max_mtime:

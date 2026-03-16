@@ -11,7 +11,8 @@ It gives you:
 - co-located summaries, journals, and attachments under `.brain-sync/`
 - an MCP server for chat-based access and management
 
-For the normative on-disk contract, see `docs/brain-format/`.
+For the normative on-disk contract, see `docs/brain/` and the shared
+reference docs under `docs/`.
 
 ## Getting Started
 
@@ -134,9 +135,9 @@ Runtime state is intentionally outside the brain root:
 ### In Practice
 
 Not sure how to structure your brain? See the
-[Brain Tree Structure Guide](./BRAIN_TREE_STRUCTURE_GUIDE.md) for a shareable,
-generic example of top-level buckets, folder sizing, and practical placement
-rules.
+[Knowledge Tree Structure Guide](./docs/user/BRAIN_TREE_STRUCTURE_GUIDE.md) for
+a shareable, generic example of top-level buckets, knowledge-area sizing, and
+practical placement rules.
 
 ### Ownership Rules
 

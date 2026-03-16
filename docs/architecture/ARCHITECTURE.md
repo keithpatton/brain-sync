@@ -4,7 +4,8 @@ This document explains the current brain-sync system architecture.
 
 Use it for design intent, module responsibilities, state models, rationale,
 and technical debt. For the normative portable contract, see
-`docs/brain-format/`. Dependency direction rules are defined in `AGENTS.md`.
+`docs/brain/` and the shared reference docs under `docs/`. Dependency
+direction rules are defined in `AGENTS.md`.
 
 ---
 

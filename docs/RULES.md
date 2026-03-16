@@ -1,8 +1,9 @@
-# Brain Format v1 — Rules
+# Rules
 
 This document defines the system invariants and behavioural guarantees
-for brain-sync. These rules describe the contract that must always hold
-for a valid [brain](GLOSSARY.md#brain).
+for brain-sync. These rules describe the cross-cutting ontology and
+state-mutation rules that must always hold for a valid
+[brain](GLOSSARY.md#brain) and its associated [runtime state](GLOSSARY.md#runtime-state).
 
 Implementations may change internally, but these rules define the
 external behaviour of the system.

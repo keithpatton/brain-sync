@@ -1,10 +1,10 @@
-# Brain Format v1 — Schemas
+# Brain Schemas
 
-This document describes the schema-defined filesystem documents used by
+This document describes the schema-defined portable brain documents used by
 brain-sync. Each schema may be instantiated as a
-[manifest](GLOSSARY.md#manifest) (standalone JSON file) or as
-[frontmatter](GLOSSARY.md#frontmatter) (YAML embedded in a markdown
-document). See [GLOSSARY.md](GLOSSARY.md) for all term definitions.
+[manifest](../GLOSSARY.md#manifest) (standalone JSON file) or as
+[frontmatter](../GLOSSARY.md#frontmatter) (YAML embedded in a markdown
+document). See [../GLOSSARY.md](../GLOSSARY.md) for all term definitions.
 
 ---
 

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from brain_sync.manifest import SourceManifest
 
 from brain_sync.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
+from brain_sync.fileops import glob_paths, path_is_dir, path_is_file, read_text
 from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import RUNTIME_DB_SCHEMA_VERSION, area_insights_dir, knowledge_root
 
@@ -713,7 +714,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
             sidecar_count = 0
             for kp, ch, sh, sth, lru in insight_rows:
                 insights_dir = root / "insights" / kp if kp else root / "insights"
-                if not insights_dir.is_dir():
+                if not path_is_dir(insights_dir):
                     continue
                 existing = read_regen_meta(insights_dir)
                 db_meta = RegenMeta(
@@ -737,7 +738,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         # Step 2: Ensure manifests exist (guard for pre-Phase-2 brains).
         if root is not None:
             manifest_dir = root / Path(".brain-sync") / "sources"
-            if not manifest_dir.is_dir() or not any(manifest_dir.glob("*.json")):
+            if not path_is_dir(manifest_dir) or not glob_paths(manifest_dir, "*.json"):
                 try:
                     from brain_sync.commands.sources import _bootstrap_manifests_from_db
 
@@ -901,13 +902,13 @@ def _seed_from_hint(root: Path, m: SourceManifest, target_path: str) -> SourceSt
     # Try to seed from sync_hint to avoid thundering-herd re-fetch
     if m.sync_hint and m.sync_hint.content_hash and m.materialized_path:
         local_file = root / "knowledge" / m.materialized_path
-        if local_file.is_file():
+        if path_is_file(local_file):
             # Inline imports to avoid circular deps
             from brain_sync.fileops import content_hash as compute_hash
             from brain_sync.pipeline import strip_managed_header
 
             try:
-                raw = local_file.read_text(encoding="utf-8")
+                raw = read_text(local_file, encoding="utf-8")
                 body = strip_managed_header(raw)
                 local_hash = compute_hash(body.encode("utf-8"))
                 if local_hash == m.sync_hint.content_hash:

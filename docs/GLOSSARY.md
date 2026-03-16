@@ -1,7 +1,7 @@
-# Brain Format v1 — Glossary
+# Glossary
 
 This glossary defines the canonical terms used when describing the
-brain-sync Brain Format 1.0 filesystem contract. Terms are alphabetised.
+brain-sync brain, runtime, and compatibility model. Terms are alphabetised.
 
 ---
 
@@ -357,7 +357,7 @@ summary hashes, and timestamps to determine when regeneration is needed.
 
 Path: `knowledge/<area>/.brain-sync/insights/insight-state.json`
 
-See [SCHEMAS.md](SCHEMAS.md) for field definitions.
+See [brain/SCHEMAS.md](brain/SCHEMAS.md) for field definitions.
 
 ---
 
@@ -567,14 +567,15 @@ Schemas define fields, required structure, and interpretation rules.
 A schema is instantiated as either a [manifest](#manifest) (standalone JSON)
 or as [frontmatter](#frontmatter) (YAML embedded in markdown).
 
-Schemas defined in Brain Format 1.0:
+Brain schemas:
 
 - synced source schema → synced source manifest
 - brain schema → brain manifest
 - insight state schema → [insight state](#insight-state) manifest
 - synced source frontmatter schema → synced source frontmatter
 
-See [SCHEMAS.md](SCHEMAS.md) for full definitions.
+See [brain/SCHEMAS.md](brain/SCHEMAS.md) for full definitions and
+[runtime/SCHEMAS.md](runtime/SCHEMAS.md) for machine-local runtime schemas.
 
 ---
 
@@ -641,12 +642,12 @@ A **template** defines the layout of generated content — a form of
 Templates describe the shape of [generated meaning](#generated-meaning)
 rather than state fields.
 
-Templates defined in Brain Format 1.0:
+Brain templates:
 
 - summary — area summary (`summary.md`)
 - journal — daily temporal record
 
-See [TEMPLATES.md](TEMPLATES.md) for full definitions.
+See [brain/TEMPLATES.md](brain/TEMPLATES.md) for full definitions.
 
 ---
 

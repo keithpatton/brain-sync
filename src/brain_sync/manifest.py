@@ -11,7 +11,7 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from brain_sync.fileops import atomic_write_bytes, canonical_prefix
+from brain_sync.fileops import atomic_write_bytes, canonical_prefix, iterdir_paths, path_exists, path_is_dir, read_bytes
 from brain_sync.layout import BRAIN_MANIFEST_FILENAME, SOURCE_MANIFEST_VERSION, source_manifests_dir
 from brain_sync.sources import from_durable_source_type, to_durable_source_type
 
@@ -164,7 +164,7 @@ def write_source_manifest(root: Path, manifest: SourceManifest) -> None:
 def delete_source_manifest(root: Path, canonical_id: str) -> None:
     """Delete a source manifest from disk."""
     target = _manifest_path(root, canonical_id)
-    if target.exists():
+    if path_exists(target):
         target.unlink()
         log.debug("Deleted manifest %s", target)
 
@@ -172,10 +172,10 @@ def delete_source_manifest(root: Path, canonical_id: str) -> None:
 def read_source_manifest(root: Path, canonical_id: str) -> SourceManifest | None:
     """Read a single source manifest. Returns None if not found."""
     target = _manifest_path(root, canonical_id)
-    if not target.exists():
+    if not path_exists(target):
         return None
     try:
-        return _deserialize_manifest(target.read_bytes(), source_path=str(target))
+        return _deserialize_manifest(read_bytes(target), source_path=str(target))
     except UnsupportedManifestVersion:
         raise
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
@@ -186,14 +186,14 @@ def read_source_manifest(root: Path, canonical_id: str) -> SourceManifest | None
 def read_all_source_manifests(root: Path) -> dict[str, SourceManifest]:
     """Read all source manifests. Returns {canonical_id: manifest}."""
     manifest_dir = source_manifests_dir(root)
-    if not manifest_dir.is_dir():
+    if not path_is_dir(manifest_dir):
         return {}
     result: dict[str, SourceManifest] = {}
-    for path in manifest_dir.iterdir():
+    for path in iterdir_paths(manifest_dir):
         if path.suffix != ".json":
             continue
         try:
-            manifest = _deserialize_manifest(path.read_bytes(), source_path=str(path))
+            manifest = _deserialize_manifest(read_bytes(path), source_path=str(path))
             result[manifest.canonical_id] = manifest
         except UnsupportedManifestVersion:
             raise

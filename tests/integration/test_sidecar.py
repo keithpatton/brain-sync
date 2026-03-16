@@ -124,11 +124,8 @@ class TestSidecarAfterRegen:
         backend = FakeBackend(mode="stable")
         config = _config()
 
-        # Patch write_regen_meta everywhere — both regen.py and state.py call it
-        with (
-            patch("brain_sync.regen.write_regen_meta", side_effect=OSError("disk full")),
-            patch("brain_sync.sidecar.atomic_write_bytes", side_effect=OSError("disk full")),
-        ):
+        # Patch the durable sidecar write path directly.
+        with patch("brain_sync.sidecar.write_regen_meta", side_effect=OSError("disk full")):
             result = await regen_single_folder(brain, "project", config=config, backend=backend)
 
         assert result.action == "regenerated"

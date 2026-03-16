@@ -10,7 +10,7 @@ from importlib import resources
 from pathlib import Path
 
 from brain_sync.config import CONFIG_FILE, load_config, save_config
-from brain_sync.fileops import atomic_write_bytes
+from brain_sync.fileops import atomic_write_bytes, path_exists
 from brain_sync.layout import BRAIN_MANIFEST_VERSION, brain_manifest_path, source_manifests_dir
 
 log = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def _copy_resource(
 
 def _ensure_dir(path: Path, dry_run: bool = False) -> bool:
     """Create directory if it doesn't exist. Returns True if created."""
-    if path.exists():
+    if path_exists(path):
         return False
     if dry_run:
         log.info("[dry-run] Would create %s", path)
@@ -102,13 +102,13 @@ def init_brain(
     """Initialise a brain at the given root directory."""
     root = root.resolve()
 
-    if root.name == "knowledge" and (root.parent / ".brain-sync" / "brain.json").exists():
+    if root.name == "knowledge" and path_exists(root.parent / ".brain-sync" / "brain.json"):
         raise ValueError(
             f"Path appears to be the '{root.name}/' folder inside an existing brain at {root.parent}. "
             f"Use the parent directory instead: brain-sync init {root.parent}"
         )
 
-    was_existing = root.exists()
+    was_existing = path_exists(root)
 
     if not was_existing:
         _ensure_dir(root, dry_run)

@@ -1,4 +1,4 @@
-# Brain Format v1 — Versioning
+# Versioning
 
 This document defines the version model for brain-sync going forward.
 It separates three different kinds of version so compatibility and tests
@@ -23,7 +23,8 @@ These versions must not be conflated.
 ## Brain Format Version
 
 The **Brain Format version** is the version of the portable on-disk
-brain structure defined by the `docs/brain-format/` spec set.
+brain structure defined by [`docs/brain/`](brain/README.md) together with the
+shared contract docs in this directory.
 
 It governs:
 

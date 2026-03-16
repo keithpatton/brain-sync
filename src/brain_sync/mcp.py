@@ -37,6 +37,7 @@ from brain_sync.commands import (
     update_source,
 )
 from brain_sync.commands.placement import suggest_placement
+from brain_sync.fileops import iterdir_paths, path_exists, path_is_dir, path_is_file, read_text
 from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
 from brain_sync.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
 from brain_sync.regen import RegenFailed, regen_all, regen_path
@@ -91,7 +92,7 @@ def _safe_resolve(root: Path, rel_path: str) -> Path | None:
 def _read_file_safe(path: Path, max_chars: int | None = None) -> str:
     """Read a text file safely with utf-8, ignoring decode errors."""
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        text = read_text(path, encoding="utf-8", errors="ignore")
         if max_chars is not None:
             return _truncate(text, max_chars)
         return text
@@ -109,7 +110,7 @@ def _collect_global_context_structured(root: Path) -> dict[str, str | bool]:
     """
     summary_path = area_summary_path(root, "_core")
     rel_path = "knowledge/_core/.brain-sync/insights/summary.md"
-    if summary_path.is_file():
+    if path_is_file(summary_path):
         return {
             "path": rel_path,
             "content": _read_file_safe(summary_path, MAX_GLOBAL_CONTEXT_FILE_CHARS),
@@ -126,17 +127,17 @@ def _collect_areas(root: Path) -> list[dict]:
     """Collect all insight areas with summary existence status."""
     areas: list[dict] = []
     knowledge_root = root / "knowledge"
-    if not knowledge_root.is_dir():
+    if not path_is_dir(knowledge_root):
         return areas
 
     def _walk(directory: Path, prefix: str) -> None:
-        for child in sorted(directory.iterdir()):
+        for child in iterdir_paths(directory):
             if not is_content_dir(child):
                 continue
             if child.name == "_core":
                 continue
             child_rel = prefix + "/" + child.name if prefix else child.name
-            has_summary = area_summary_path(root, child_rel).is_file()
+            has_summary = path_is_file(area_summary_path(root, child_rel))
             areas.append({"path": child_rel, "has_summary": has_summary})
             _walk(child, child_rel)
 
@@ -299,13 +300,13 @@ def brain_sync_add_file(
     # Resolve destination with collision handling
     dest_dir = rt.root / "knowledge" / target_path
     dest = dest_dir / file_path.name
-    if dest.exists():
+    if path_exists(dest):
         stem = dest.stem
         suffix = dest.suffix
         resolved = None
         for i in range(2, 11):
             candidate = dest_dir / f"{stem}-{i}{suffix}"
-            if not candidate.exists():
+            if not path_exists(candidate):
                 resolved = candidate
                 break
         if resolved is None:
@@ -349,10 +350,10 @@ def brain_sync_remove_file(ctx: Context, path: str) -> dict:
     except ValueError:
         return {"status": "error", "error": "invalid_path", "message": "Path must be within knowledge/"}
 
-    if not target.exists():
+    if not path_exists(target):
         return {"status": "error", "error": "file_not_found", "path": path}
 
-    if not target.is_file():
+    if not path_is_file(target):
         return {"status": "error", "error": "not_a_file", "path": path}
 
     target.unlink()
@@ -668,7 +669,7 @@ def brain_sync_open_area(
     """Load full insight context for a brain area."""
     rt = _runtime(ctx)
     insights_dir = area_insights_dir(rt.root, path)
-    if insights_dir is None or not insights_dir.is_dir():
+    if insights_dir is None or not path_is_dir(insights_dir):
         return {"status": "error", "error": "not_found", "path": path}
 
     knowledge_dir = _safe_resolve(rt.root, "knowledge/" + path)
@@ -676,8 +677,8 @@ def brain_sync_open_area(
 
     # Read insight files (excluding journal/)
     insights: dict[str, str] = {}
-    for p in sorted(insights_dir.iterdir()):
-        if not p.is_file() or p.suffix.lower() not in {".md", ".txt"}:
+    for p in iterdir_paths(insights_dir):
+        if not path_is_file(p) or p.suffix.lower() not in {".md", ".txt"}:
             continue
         if p.name.startswith("."):
             continue
@@ -694,14 +695,14 @@ def brain_sync_open_area(
         payload_size += len(content)
 
     # Children listing (always)
-    child_dirs = get_child_dirs(knowledge_dir) if knowledge_dir is not None and knowledge_dir.is_dir() else []
+    child_dirs = get_child_dirs(knowledge_dir) if knowledge_dir is not None and path_is_dir(knowledge_dir) else []
     children: list[dict] = []
     for d in sorted(child_dirs, key=lambda d: d.name):
         child_path = f"{path}/{d.name}" if path else d.name
         children.append(
             {
                 "name": d.name,
-                "has_summary": area_summary_path(rt.root, child_path).is_file(),
+                "has_summary": path_is_file(area_summary_path(rt.root, child_path)),
             }
         )
     total_children = len(children)
@@ -716,15 +717,15 @@ def brain_sync_open_area(
                 break
             child_path = f"{path}/{d.name}" if path else d.name
             summary_path = area_summary_path(rt.root, child_path)
-            if summary_path.is_file():
+            if path_is_file(summary_path):
                 content = _read_file_safe(summary_path, MAX_CHILD_SUMMARY_CHARS)
                 child_summaries[d.name] = content
                 payload_size += len(content)
 
     # Knowledge file listing (optional)
     knowledge_files: list[str] = []
-    if include_knowledge_list and knowledge_dir is not None and knowledge_dir.is_dir():
-        for p in sorted(knowledge_dir.iterdir()):
+    if include_knowledge_list and knowledge_dir is not None and path_is_dir(knowledge_dir):
+        for p in iterdir_paths(knowledge_dir):
             if is_readable_file(p):
                 knowledge_files.append(p.name)
 
@@ -797,7 +798,7 @@ def brain_sync_open_file(
     if resolved is None:
         return {"status": "error", "error": "not_found", "path": path}
 
-    if not resolved.is_file():
+    if not path_is_file(resolved):
         return {"status": "error", "error": "not_found", "path": path}
 
     ext = resolved.suffix.lower()
@@ -810,7 +811,7 @@ def brain_sync_open_file(
     # Read full file — seek() on text-mode files uses opaque positions
     # (not character offsets), so we must read-then-slice for correctness.
     # Knowledge files are at most ~500 KB; this is fine.
-    text = resolved.read_text(encoding="utf-8", errors="replace")
+    text = read_text(resolved, encoding="utf-8", errors="replace")
 
     if offset >= len(text):
         return {
