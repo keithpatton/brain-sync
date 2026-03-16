@@ -26,7 +26,18 @@ from typing import Literal
 from uuid import uuid4
 
 from brain_sync.config import CONFIG_FILE
-from brain_sync.fileops import TEXT_EXTENSIONS, atomic_write_bytes, clean_insights_tree
+from brain_sync.fileops import (
+    TEXT_EXTENSIONS,
+    atomic_write_bytes,
+    clean_insights_tree,
+    iterdir_paths,
+    path_exists,
+    path_is_dir,
+    path_is_file,
+    read_bytes,
+    read_text,
+    rglob_paths,
+)
 from brain_sync.fs_utils import (
     find_all_content_paths,
     get_child_dirs,
@@ -284,9 +295,9 @@ def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, d
 
     timestamped = f"## {now.strftime('%H:%M')}\n\n{journal_text}"
 
-    if journal_path.exists():
-        with open(journal_path, "a", encoding="utf-8") as f:
-            f.write("\n\n" + timestamped)
+    if path_exists(journal_path):
+        existing = read_text(journal_path, encoding="utf-8")
+        atomic_write_bytes(journal_path, (existing + "\n\n" + timestamped).encode("utf-8"))
     else:
         atomic_write_bytes(journal_path, timestamped.encode("utf-8"))
 
@@ -418,9 +429,9 @@ def _compute_content_hash(
         h.update(content.encode("utf-8"))
     if has_direct_files:
         file_hashes: list[tuple[str, bytes]] = []
-        for p in knowledge_dir.iterdir():
+        for p in iterdir_paths(knowledge_dir):
             if _is_readable_file(p):
-                content = p.read_bytes()
+                content = read_bytes(p)
                 if p.suffix.lower() in TEXT_EXTENSIONS:
                     content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                 file_hashes.append((hashlib.sha256(content).hexdigest(), content))
@@ -444,7 +455,7 @@ def _compute_structure_hash(
         h.update(child.name.encode("utf-8"))
     if has_direct_files:
         for p in sorted(
-            (p for p in knowledge_dir.iterdir() if _is_readable_file(p)),
+            (p for p in iterdir_paths(knowledge_dir) if _is_readable_file(p)),
             key=lambda p: p.name,
         ):
             h.update(b"file:")
@@ -565,22 +576,22 @@ def invalidate_global_context_cache() -> None:
 def _hash_directory(directory: Path) -> str:
     """Compute a hash over all readable files in a directory tree."""
     h = hashlib.sha256()
-    if not directory.is_dir():
+    if not path_is_dir(directory):
         return h.hexdigest()
-    for p in sorted(directory.rglob("*")):
-        if p.is_file() and not p.name.startswith("."):
+    for p in rglob_paths(directory, "*"):
+        if path_is_file(p) and not p.name.startswith("."):
             h.update(str(p.relative_to(directory)).encode("utf-8"))
-            h.update(p.read_bytes())
+            h.update(read_bytes(p))
     return h.hexdigest()
 
 
 def _iter_core_raw_context_files(core_dir: Path):
     """Yield raw _core files eligible for inclusion in _core regen context."""
-    if not core_dir.is_dir():
+    if not path_is_dir(core_dir):
         return
-    for p in sorted(core_dir.rglob("*")):
+    for p in rglob_paths(core_dir, "*"):
         if (
-            p.is_file()
+            path_is_file(p)
             and p.suffix.lower() in TEXT_EXTENSIONS
             and not p.name.startswith(("_", "."))
             and MANAGED_DIRNAME not in p.parts
@@ -594,16 +605,16 @@ def _hash_core_raw_context(core_dir: Path) -> str:
     for p in _iter_core_raw_context_files(core_dir):
         rel = p.relative_to(core_dir)
         h.update(str(rel).encode("utf-8"))
-        h.update(p.read_bytes())
+        h.update(read_bytes(p))
     return h.hexdigest()
 
 
 def _hash_core_summary_context(summary_path: Path) -> str:
     """Hash the single _core summary file used for non-_core regen."""
     h = hashlib.sha256()
-    if summary_path.is_file():
+    if path_is_file(summary_path):
         h.update(b"summary.md")
-        h.update(summary_path.read_bytes())
+        h.update(read_bytes(summary_path))
     return h.hexdigest()
 
 
@@ -633,12 +644,12 @@ def _collect_global_context(root: Path, current_path: str) -> str:
     log.debug("Global context cache miss, rebuilding")
     sections: list[str] = []
 
-    if mode == "core_raw" and core_dir.is_dir():
+    if mode == "core_raw" and path_is_dir(core_dir):
         parts: list[str] = []
         count = 0
         for p in _iter_core_raw_context_files(core_dir):
             try:
-                content = p.read_text(encoding="utf-8")
+                content = read_text(p, encoding="utf-8")
                 rel = p.relative_to(core_dir)
                 parts.append(f"### {rel}\n```\n{content}\n```")
                 count += 1
@@ -648,9 +659,9 @@ def _collect_global_context(root: Path, current_path: str) -> str:
             sections.append("## Global Context: knowledge/_core\n" + "\n\n".join(parts))
             log.debug("Global context: %d raw files from knowledge/_core for _core regen", count)
 
-    if mode == "core_summary" and core_summary_path.is_file():
+    if mode == "core_summary" and path_is_file(core_summary_path):
         try:
-            content = core_summary_path.read_text(encoding="utf-8")
+            content = read_text(core_summary_path, encoding="utf-8")
             sections.append(
                 "## Global Context: knowledge/_core/.brain-sync/insights/summary.md\n"
                 f"### summary.md\n```\n{content}\n```"
@@ -957,8 +968,8 @@ def _build_prompt_from_chunks(
     # Existing summary
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
-    if summary_path.exists():
-        existing_summary = summary_path.read_text(encoding="utf-8")
+    if path_exists(summary_path):
+        existing_summary = read_text(summary_path, encoding="utf-8")
 
     display_path = knowledge_path or "(root)"
 
@@ -1014,12 +1025,12 @@ def _build_prompt(
     # 3a. Read and preprocess all files into _FileEntry list
     entries: list[_FileEntry] = []
     binary_names: list[str] = []
-    files = sorted(p for p in knowledge_dir.iterdir() if _is_readable_file(p))
+    files = [p for p in iterdir_paths(knowledge_dir) if _is_readable_file(p)]
     if files:
         for f in files:
             if f.suffix.lower() in TEXT_EXTENSIONS:
                 try:
-                    content = f.read_text(encoding="utf-8")
+                    content = read_text(f, encoding="utf-8")
                     content = _preprocess_content(content, f.name)
                     entries.append(_FileEntry(name=f.name, content=content, size=len(content)))
                 except (OSError, UnicodeDecodeError):
@@ -1051,8 +1062,8 @@ def _build_prompt(
     # 4. Existing summary
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
-    if summary_path.exists():
-        existing_summary = summary_path.read_text(encoding="utf-8")
+    if path_exists(summary_path):
+        existing_summary = read_text(summary_path, encoding="utf-8")
 
     display_path = knowledge_path or "(root)"
 
@@ -1146,8 +1157,8 @@ def _collect_child_summaries(
     for child in child_dirs:
         child_rel = current_path + "/" + child.name if current_path else child.name
         child_summary_path = area_summary_path(root, child_rel)
-        if child_summary_path.exists():
-            child_summaries[child.name] = child_summary_path.read_text(encoding="utf-8")
+        if path_exists(child_summary_path):
+            child_summaries[child.name] = read_text(child_summary_path, encoding="utf-8")
     return child_summaries
 
 
@@ -1164,13 +1175,13 @@ def classify_folder_change(
     Used by the watcher and regen_path to decide whether to trigger regen.
     """
     knowledge_dir = root / "knowledge" / knowledge_path if knowledge_path else root / "knowledge"
-    if not knowledge_dir.is_dir():
+    if not path_is_dir(knowledge_dir):
         return ChangeEvent(change_type="content", structural=False), "", ""
 
     meta = load_regen_hashes(root, knowledge_path)
 
     child_dirs = _get_child_dirs(knowledge_dir)
-    has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
+    has_direct_files = any(_is_readable_file(p) for p in iterdir_paths(knowledge_dir))
     if not child_dirs and not has_direct_files:
         return ChangeEvent(change_type="content", structural=False), "", ""
 
@@ -1184,7 +1195,7 @@ def classify_folder_change(
     # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
     if meta.structure_hash is None:
         insights_dir = area_insights_dir(root, knowledge_path)
-        if (insights_dir / "summary.md").exists():
+        if path_exists(insights_dir / "summary.md"):
             log.info("Backfilling structure_hash for %s (post-v18 migration)", knowledge_path or "(root)")
             # Load full DB state for lifecycle fields, update hashes
             istate = load_insight_state(root, knowledge_path)
@@ -1277,13 +1288,13 @@ async def regen_single_folder(
     insights_dir = area_insights_dir(root, current_path)
 
     # Guard: if knowledge dir doesn't exist, clean up stale insights
-    if not knowledge_dir.is_dir():
+    if not path_is_dir(knowledge_dir):
         log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
         try:
             delete_regen_meta(insights_dir)
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
-        if insights_dir.is_dir():
+        if path_is_dir(insights_dir):
             clean_insights_tree(insights_dir)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
         delete_insight_state(root, current_path)
@@ -1291,7 +1302,7 @@ async def regen_single_folder(
 
     # Collect inputs
     child_dirs = _get_child_dirs(knowledge_dir)
-    has_direct_files = any(_is_readable_file(p) for p in knowledge_dir.iterdir())
+    has_direct_files = any(_is_readable_file(p) for p in iterdir_paths(knowledge_dir))
 
     # Cleanup: no readable files and no child dirs
     if not has_direct_files and not child_dirs:
@@ -1300,7 +1311,7 @@ async def regen_single_folder(
             delete_regen_meta(insights_dir)
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
-        if insights_dir.is_dir():
+        if path_is_dir(insights_dir):
             clean_insights_tree(insights_dir)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
         delete_insight_state(root, current_path)
@@ -1329,7 +1340,7 @@ async def regen_single_folder(
     )
 
     # Post-v18 migration backfill: recompute both hashes with current algorithm and set structure_hash
-    if meta and meta.structure_hash is None and (insights_dir / "summary.md").exists():
+    if meta and meta.structure_hash is None and path_exists(insights_dir / "summary.md"):
         log.info(
             "[%s] Backfilling structure_hash for %s (post-v18 migration)",
             regen_id,
@@ -1430,8 +1441,8 @@ async def regen_single_folder(
     # Read old summary for similarity check
     summary_path = insights_dir / "summary.md"
     old_summary = ""
-    if summary_path.exists():
-        old_summary = summary_path.read_text(encoding="utf-8")
+    if path_exists(summary_path):
+        old_summary = read_text(summary_path, encoding="utf-8")
 
     insights_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1508,7 +1519,7 @@ async def regen_single_folder(
             # Collect binary_names from the original _build_prompt pass
             binary_names = [
                 f.name
-                for f in sorted(knowledge_dir.iterdir())
+                for f in iterdir_paths(knowledge_dir)
                 if _is_readable_file(f) and f.suffix.lower() not in TEXT_EXTENSIONS
             ]
             # Rebuild prompt with chunk summaries replacing raw content
@@ -1888,7 +1899,7 @@ async def regen_all(
     for istate in all_states:
         kp = istate.knowledge_path
         knowledge_dir = root / "knowledge" / kp if kp else root / "knowledge"
-        if not knowledge_dir.is_dir() and kp not in content_path_set:
+        if not path_is_dir(knowledge_dir) and kp not in content_path_set:
             delete_insight_state(root, kp)
             orphaned += 1
             log.info("Cleaned up orphaned insight state: %s", kp)

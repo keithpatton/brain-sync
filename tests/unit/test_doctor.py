@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -26,12 +28,22 @@ from brain_sync.commands.doctor import (
     check_version_json,
     doctor,
 )
+from brain_sync.fileops import atomic_write_bytes
 from brain_sync.manifest import MANIFEST_VERSION, SourceManifest
 from brain_sync.pipeline import prepend_managed_header
 from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
 from brain_sync.state import InsightState, SourceState, SyncState, _connect, save_insight_state, save_state
 
 pytestmark = pytest.mark.unit
+
+
+def _long_relative_path(root: Path, filename: str, *, min_length: int = 280) -> Path:
+    parts: list[str] = []
+    index = 0
+    while len(str(root / Path(*parts) / filename)) <= min_length:
+        parts.append(f"segment-{index:02d}-with-extra-length-for-windows")
+        index += 1
+    return Path(*parts) / filename
 
 
 @pytest.fixture
@@ -45,16 +57,18 @@ def brain(tmp_path: Path) -> Path:
     return root
 
 
-def _make_manifest(cid: str, **kwargs: object) -> SourceManifest:
+def _make_manifest(cid: str, **kwargs: Any) -> SourceManifest:
     return SourceManifest(
         version=MANIFEST_VERSION,
         canonical_id=cid,
-        source_url=kwargs.get("source_url", f"https://acme.atlassian.net/wiki/spaces/ENG/pages/{cid.split(':')[1]}"),
-        source_type=kwargs.get("source_type", "confluence"),
-        materialized_path=kwargs.get("materialized_path", ""),
-        sync_attachments=kwargs.get("sync_attachments", False),
-        target_path=kwargs.get("target_path", ""),
-        status=kwargs.get("status", "active"),
+        source_url=cast(
+            str, kwargs.get("source_url", f"https://acme.atlassian.net/wiki/spaces/ENG/pages/{cid.split(':')[1]}")
+        ),
+        source_type=cast(str, kwargs.get("source_type", "confluence")),
+        materialized_path=cast(str, kwargs.get("materialized_path", "")),
+        sync_attachments=cast(bool, kwargs.get("sync_attachments", False)),
+        target_path=cast(str, kwargs.get("target_path", "")),
+        status=cast(str, kwargs.get("status", "active")),
     )
 
 
@@ -133,6 +147,20 @@ class TestManifestChecks:
             {"confluence:123": _make_manifest("confluence:123", materialized_path="area\\c123-doc.md")},
         )
         assert findings[0].severity == Severity.DRIFT
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_manifest_file_match_accepts_existing_overlong_path(self, brain: Path) -> None:
+        rel = _long_relative_path(brain / "knowledge", "c123-doc.md")
+        atomic_write_bytes(brain / "knowledge" / rel, b"# Doc\n")
+
+        findings = check_manifest_file_match(
+            brain,
+            {"confluence:123": _make_manifest("confluence:123", materialized_path=str(rel).replace("\\", "/"))},
+            brain / "knowledge",
+            {},
+        )
+
+        assert findings[0].severity == Severity.OK
 
 
 class TestManagedLayoutChecks:

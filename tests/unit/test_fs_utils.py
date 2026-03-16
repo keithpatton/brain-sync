@@ -1,9 +1,11 @@
 """Tests for brain_sync.fs_utils."""
 
+import sys
 from pathlib import Path
 
 import pytest
 
+from brain_sync.fileops import atomic_write_bytes
 from brain_sync.fs_utils import (
     find_all_content_paths,
     get_child_dirs,
@@ -13,6 +15,15 @@ from brain_sync.fs_utils import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _long_relative_path(root: Path, filename: str, *, min_length: int = 280) -> Path:
+    parts: list[str] = []
+    index = 0
+    while len(str(root / Path(*parts) / filename)) <= min_length:
+        parts.append(f"segment-{index:02d}-with-extra-length-for-windows")
+        index += 1
+    return Path(*parts) / filename
 
 
 class TestNormalizePath:
@@ -154,3 +165,13 @@ class TestFindAllContentPaths:
 
     def test_nonexistent_root_returns_empty(self, tmp_path):
         assert find_all_content_paths(tmp_path / "nope") == []
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_detects_content_under_overlong_path(self, tmp_path):
+        root = tmp_path / "knowledge"
+        rel = _long_relative_path(root, "doc.md")
+        atomic_write_bytes(root / rel, b"hello")
+
+        result = find_all_content_paths(root)
+
+        assert normalize_path(rel.parent) in result

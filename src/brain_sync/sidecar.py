@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from brain_sync.fileops import atomic_write_bytes
+from brain_sync.fileops import atomic_write_bytes, path_exists, path_is_dir, read_bytes, rglob_paths
 from brain_sync.layout import INSIGHT_STATE_FILENAME, INSIGHT_STATE_VERSION, area_insight_state_path
 
 log = logging.getLogger(__name__)
@@ -60,10 +60,10 @@ def write_regen_meta(insights_dir: Path, meta: RegenMeta) -> None:
 def read_regen_meta(insights_dir: Path) -> RegenMeta | None:
     """Read a .regen-meta.json sidecar. Returns None if missing or malformed."""
     target = insights_dir / SIDECAR_FILENAME
-    if not target.exists():
+    if not path_exists(target):
         return None
     try:
-        d = json.loads(target.read_bytes())
+        d = json.loads(read_bytes(target))
     except (json.JSONDecodeError, OSError) as e:
         log.warning("Failed to read sidecar %s: %s", target, e)
         return None
@@ -85,9 +85,9 @@ def read_regen_meta(insights_dir: Path) -> RegenMeta | None:
 def read_all_regen_meta(insights_root: Path) -> dict[str, RegenMeta]:
     """Walk knowledge/ and return {knowledge_path: RegenMeta} for all insight-state files."""
     result: dict[str, RegenMeta] = {}
-    if not insights_root.is_dir():
+    if not path_is_dir(insights_root):
         return result
-    for sidecar_path in insights_root.rglob(SIDECAR_FILENAME):
+    for sidecar_path in rglob_paths(insights_root, SIDECAR_FILENAME):
         parts = sidecar_path.relative_to(insights_root).parts
         if len(parts) < 3 or parts[-3:] != (".brain-sync", "insights", SIDECAR_FILENAME):
             continue
@@ -105,7 +105,7 @@ def read_all_regen_meta(insights_root: Path) -> dict[str, RegenMeta]:
 def delete_regen_meta(insights_dir: Path) -> None:
     """Delete a .regen-meta.json sidecar. No-op if missing."""
     target = insights_dir / SIDECAR_FILENAME
-    if target.exists():
+    if path_exists(target):
         target.unlink()
         log.debug("Deleted sidecar %s", target)
 

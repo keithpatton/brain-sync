@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain_sync.fileops import atomic_write_bytes
 from brain_sync.fs_utils import find_all_content_paths as _find_all_content_paths
+from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import area_insights_dir, area_summary_path, brain_manifest_path
 from brain_sync.regen import (
     CHUNK_TARGET_CHARS,
@@ -53,6 +56,15 @@ from brain_sync.state import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _long_relative_path(root: Path, filename: str, *, min_length: int = 280) -> Path:
+    parts: list[str] = []
+    index = 0
+    while len(str(root / Path(*parts) / filename)) <= min_length:
+        parts.append(f"segment-{index:02d}-with-extra-length-for-windows")
+        index += 1
+    return Path(*parts) / filename
 
 
 @pytest.fixture(autouse=True)
@@ -307,6 +319,25 @@ class TestClassifyFolderChange:
         event, _, _ = classify_folder_change(brain, "area")
         assert event.change_type == "content"
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_none_when_overlong_path_hash_matches(self, brain):
+        rel = _long_relative_path(brain / "knowledge", "doc.md")
+        kdir = (brain / "knowledge" / rel).parent
+        atomic_write_bytes(kdir / "doc.md", b"hello")
+
+        child_dirs = _get_child_dirs(kdir)
+        knowledge_path = normalize_path(kdir.relative_to(brain / "knowledge"))
+        child_summaries = _collect_child_summaries(brain, knowledge_path, child_dirs)
+        content_hash = _compute_content_hash(child_summaries, kdir, True)
+        structure_hash = _compute_structure_hash(child_dirs, kdir, True)
+        save_insight_state(
+            brain,
+            InsightState(knowledge_path=knowledge_path, content_hash=content_hash, structure_hash=structure_hash),
+        )
+
+        event, _, _ = classify_folder_change(brain, knowledge_path)
+        assert event.change_type == "none"
+
     def test_rename_when_file_renamed(self, brain):
         """Returns 'rename' when a file is renamed but content is unchanged."""
         kdir = brain / "knowledge" / "area"
@@ -448,6 +479,7 @@ class TestInsightStateDB:
         save_insight_state(brain, istate)
 
         loaded = load_insight_state(brain, "test")
+        assert loaded is not None
         assert loaded.content_hash == "v2"
         assert loaded.regen_status == "running"
 
@@ -455,7 +487,8 @@ class TestInsightStateDB:
 class TestRegenPath:
     """Tests for the regen_path loop with mocked Claude CLI."""
 
-    def _mock_claude_return_summary(self, content: str = "# Test Summary\n\nGenerated insight summary content."):
+    @staticmethod
+    def _mock_claude_return_summary(content: str = "# Test Summary\n\nGenerated insight summary content."):
         """Create a mock invoke_claude that returns summary text."""
 
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
@@ -1123,7 +1156,6 @@ class TestStructuralHash:
         with patch(
             "brain_sync.regen.invoke_claude",
             side_effect=TestRegenPath._mock_claude_return_summary(
-                None,
                 "# Parent V1\n\nParent summary content.",
             ),
         ):
@@ -1141,7 +1173,6 @@ class TestStructuralHash:
         with patch(
             "brain_sync.regen.invoke_claude",
             side_effect=TestRegenPath._mock_claude_return_summary(
-                None,
                 "# Parent V2\n\nParent summary with both children included.",
             ),
         ) as mock:

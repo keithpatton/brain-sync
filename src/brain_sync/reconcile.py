@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.fileops import clean_insights_tree
+from brain_sync.fileops import clean_insights_tree, path_is_dir
 from brain_sync.fs_utils import find_all_content_paths
 from brain_sync.layout import area_insights_dir
 from brain_sync.regen import classify_folder_change
@@ -57,7 +57,7 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     result = TreeReconcileResult()
     knowledge_root = root / "knowledge"
 
-    if not knowledge_root.is_dir():
+    if not path_is_dir(knowledge_root):
         return result
 
     # Part A: Clean orphan state
@@ -69,7 +69,7 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     for orphan in orphan_db_paths:
         delete_insight_state(root, orphan)
         orphan_insights = area_insights_dir(root, orphan)
-        if orphan_insights.is_dir():
+        if path_is_dir(orphan_insights):
             fully_removed = clean_insights_tree(orphan_insights)
             if not fully_removed:
                 log.info("Preserved non-regenerable artifacts in knowledge/%s/.brain-sync/insights", orphan)

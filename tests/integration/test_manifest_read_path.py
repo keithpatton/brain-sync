@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from brain_sync.commands.sources import (
     list_sources,
     reconcile_sources,
 )
+from brain_sync.fileops import atomic_write_bytes
+from brain_sync.fs_utils import normalize_path
 from brain_sync.manifest import (
     SyncHint,
     mark_manifest_missing,
@@ -32,6 +35,15 @@ CONFLUENCE_URL = "https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Tes
 CONFLUENCE_CID = "confluence:12345"
 CONFLUENCE_URL_2 = "https://example.atlassian.net/wiki/spaces/TEAM/pages/67890/Other"
 CONFLUENCE_CID_2 = "confluence:67890"
+
+
+def _long_relative_path(root: Path, filename: str, *, min_length: int = 280) -> Path:
+    parts: list[str] = []
+    index = 0
+    while len(str(root / Path(*parts) / filename)) <= min_length:
+        parts.append(f"segment-{index:02d}-with-extra-length-for-windows")
+        index += 1
+    return Path(*parts) / filename
 
 
 @pytest.fixture
@@ -227,6 +239,26 @@ class TestReconcileManifestReadPath:
         assert result.unchanged == 1
         assert result.not_found == []
         assert result.marked_missing == []
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_materialized_overlong_path_is_not_marked_missing(self, brain: Path):
+        rel = _long_relative_path(brain / "knowledge", "c12345-test-page.md")
+        target_path = normalize_path(rel.parent)
+        add_source(root=brain, url=CONFLUENCE_URL, target_path=target_path)
+
+        content = prepend_managed_header(CONFLUENCE_CID, "content")
+        atomic_write_bytes(brain / "knowledge" / rel, content.encode("utf-8"))
+
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.materialized_path = normalize_path(rel)
+        write_source_manifest(brain, manifest)
+
+        result = reconcile_sources(root=brain)
+
+        assert result.marked_missing == []
+        assert result.not_found == []
+        assert result.unchanged == 1
 
     def test_orphan_db_rows_pruned(self, brain: Path):
         """DB rows with no corresponding manifest are pruned during reconcile."""

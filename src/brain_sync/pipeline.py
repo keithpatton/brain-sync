@@ -10,7 +10,15 @@ import httpx
 import yaml
 
 from brain_sync.converter import format_comments
-from brain_sync.fileops import content_hash, rediscover_local_path, write_if_changed
+from brain_sync.fileops import (
+    content_hash,
+    glob_paths,
+    path_exists,
+    path_is_dir,
+    read_bytes,
+    rediscover_local_path,
+    write_if_changed,
+)
 from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.sources import (
@@ -78,8 +86,7 @@ def _canonical_source_type_for_frontmatter(source_type: str | None, canonical_id
 def extract_source_id(path: Path) -> str | None:
     """Extract canonical_id from a file's embedded identity header (tier-2 resolution)."""
     try:
-        with open(path, "rb") as f:
-            head = f.read(4096).decode("utf-8", errors="replace")
+        head = read_bytes(path)[:4096].decode("utf-8", errors="replace")
         frontmatter, _ = _split_frontmatter(head)
         frontmatter_cid = frontmatter.get("brain_sync_canonical_id")
         if isinstance(frontmatter_cid, str):
@@ -92,11 +99,11 @@ def extract_source_id(path: Path) -> str | None:
 
 def _find_identity_matches_in_dir(target_dir: Path, canonical_id_str: str) -> list[Path]:
     """Return managed markdown files in a directory that claim the same canonical id."""
-    if not target_dir.is_dir():
+    if not path_is_dir(target_dir):
         return []
     matches: list[Path] = []
-    for path in sorted(target_dir.glob("*.md")):
-        if path.is_file() and extract_source_id(path) == canonical_id_str:
+    for path in glob_paths(target_dir, "*.md"):
+        if extract_source_id(path) == canonical_id_str:
             matches.append(path)
     return matches
 
@@ -184,11 +191,11 @@ async def process_source(
 
     # Skip if unchanged
     attachments_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME
-    context_missing = _has_context_flags(source_state) and not attachments_dir.exists()
+    context_missing = _has_context_flags(source_state) and not path_exists(attachments_dir)
     if root is not None:
         existing_file = rediscover_local_path(root / "knowledge", source_state.canonical_id)
     else:
-        existing_file = target if target.exists() else None
+        existing_file = target if path_exists(target) else None
     if check:
         log.debug(
             "Version check for %s: status=%s, fingerprint=%s, stored=%s, target=%s, found=%s",

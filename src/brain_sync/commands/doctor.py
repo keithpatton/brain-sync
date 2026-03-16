@@ -10,7 +10,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from brain_sync.commands.context import InvalidBrainRootError, _require_root
-from brain_sync.fileops import atomic_write_bytes, canonical_prefix, rediscover_local_path
+from brain_sync.fileops import (
+    atomic_write_bytes,
+    canonical_prefix,
+    iterdir_paths,
+    path_exists,
+    path_is_dir,
+    path_is_file,
+    read_bytes,
+    read_text,
+    rediscover_local_path,
+    rglob_paths,
+)
 from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import (
     ATTACHMENTS_DIRNAME,
@@ -100,11 +111,9 @@ class DoctorResult:
 def _build_identity_index(knowledge_root_path: Path) -> dict[str, Path]:
     """Single-pass scan of all .md files, returning {canonical_id: relative_path}."""
     index: dict[str, Path] = {}
-    if not knowledge_root_path.is_dir():
+    if not path_is_dir(knowledge_root_path):
         return index
-    for path in knowledge_root_path.rglob("*.md"):
-        if not path.is_file():
-            continue
+    for path in rglob_paths(knowledge_root_path, "*.md"):
         cid = extract_source_id(path)
         if cid:
             index[cid] = path.relative_to(knowledge_root_path)
@@ -113,7 +122,7 @@ def _build_identity_index(knowledge_root_path: Path) -> dict[str, Path]:
 
 def _iter_summary_paths(root: Path) -> list[tuple[str, Path]]:
     result: list[tuple[str, Path]] = []
-    for summary_path in knowledge_root(root).rglob(SUMMARY_FILENAME):
+    for summary_path in rglob_paths(knowledge_root(root), SUMMARY_FILENAME):
         if summary_path.parts[-3:] != (MANAGED_DIRNAME, "insights", SUMMARY_FILENAME):
             continue
         area_dir = summary_path.parents[2]
@@ -121,7 +130,7 @@ def _iter_summary_paths(root: Path) -> list[tuple[str, Path]]:
         knowledge_path = "" if str(rel) == "." else normalize_path(rel)
         result.append((knowledge_path, summary_path))
     root_summary = area_summary_path(root, "")
-    if root_summary.is_file():
+    if path_is_file(root_summary):
         entry = ("", root_summary)
         if entry not in result:
             result.append(entry)
@@ -137,7 +146,7 @@ def _legacy_layout_findings(root: Path) -> list[Finding]:
         (root / ".brain-sync" / "version.json", "Unsupported legacy .brain-sync/version.json"),
     ]
     for path, message in legacy_paths:
-        if path.exists():
+        if path_exists(path):
             findings.append(Finding(check="unsupported_legacy_layout", severity=Severity.CORRUPTION, message=message))
     return findings
 
@@ -146,7 +155,7 @@ def _resolve_doctor_root(root: Path | None) -> Path:
     if root is None:
         return _require_root(None)
     resolved = root.resolve()
-    if not knowledge_root(resolved).is_dir():
+    if not path_is_dir(knowledge_root(resolved)):
         raise InvalidBrainRootError(
             f"Brain root '{resolved}' is invalid.\n"
             f"Expected structure:\n"
@@ -159,10 +168,10 @@ def _resolve_doctor_root(root: Path | None) -> Path:
 def check_version_json(root: Path) -> list[Finding]:
     """Verify .brain-sync/brain.json exists and matches the supported version."""
     manifest_path = brain_manifest_path(root)
-    if not manifest_path.exists():
+    if not path_exists(manifest_path):
         return [Finding(check="brain_manifest", severity=Severity.CORRUPTION, message="Missing .brain-sync/brain.json")]
     try:
-        data = json.loads(manifest_path.read_bytes())
+        data = json.loads(read_bytes(manifest_path))
     except (json.JSONDecodeError, OSError) as exc:
         return [Finding(check="brain_manifest", severity=Severity.CORRUPTION, message=f"Invalid brain.json: {exc}")]
     if data != {"version": BRAIN_MANIFEST_VERSION}:
@@ -198,7 +207,7 @@ def check_manifest_file_match(
             continue
 
         expected = knowledge_root_path / manifest.materialized_path
-        if expected.is_file():
+        if path_is_file(expected):
             findings.append(
                 Finding(
                     check="manifest_file_match",
@@ -247,9 +256,9 @@ def check_identity_headers(
         if manifest.status != "active" or not manifest.materialized_path:
             continue
         file_path = knowledge_root_path / manifest.materialized_path
-        if not file_path.is_file() and cid in identity_index:
+        if not path_is_file(file_path) and cid in identity_index:
             file_path = knowledge_root_path / identity_index[cid]
-        if not file_path.is_file():
+        if not path_is_file(file_path):
             continue
 
         found_cid = extract_source_id(file_path)
@@ -283,11 +292,11 @@ def check_orphan_attachments(
 ) -> list[Finding]:
     findings: list[Finding] = []
     expected_prefixes = {canonical_prefix(manifest.canonical_id).rstrip("-") for manifest in manifests.values()}
-    for attachments_dir in knowledge_root_path.rglob(ATTACHMENTS_DIRNAME):
-        if attachments_dir.parent.name != MANAGED_DIRNAME or not attachments_dir.is_dir():
+    for attachments_dir in rglob_paths(knowledge_root_path, ATTACHMENTS_DIRNAME):
+        if attachments_dir.parent.name != MANAGED_DIRNAME or not path_is_dir(attachments_dir):
             continue
-        for child in attachments_dir.iterdir():
-            if not child.is_dir() or child.name in expected_prefixes:
+        for child in iterdir_paths(attachments_dir):
+            if not path_is_dir(child) or child.name in expected_prefixes:
                 continue
             findings.append(
                 Finding(
@@ -357,7 +366,7 @@ def check_path_normalization(root: Path, manifests: dict[str, SourceManifest]) -
 def check_orphan_insights(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     legacy_root = root / "insights"
-    if legacy_root.exists():
+    if path_exists(legacy_root):
         findings.append(
             Finding(
                 check="unsupported_legacy_layout",
@@ -372,7 +381,7 @@ def check_orphan_insight_state_rows(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for state in load_all_insight_states(root):
         area_path = knowledge_root(root) / state.knowledge_path if state.knowledge_path else knowledge_root(root)
-        if not area_path.is_dir():
+        if not path_is_dir(area_path):
             findings.append(
                 Finding(
                     check="orphan_insight_state_rows",
@@ -404,7 +413,7 @@ def check_stale_summaries(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for knowledge_path, summary_path in _iter_summary_paths(root):
         area_dir = summary_path.parents[2]
-        if not area_dir.is_dir():
+        if not path_is_dir(area_dir):
             findings.append(
                 Finding(
                     check="stale_summaries",
@@ -422,7 +431,7 @@ def check_regen_change_detection(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for state in load_all_insight_states(root):
         area_path = knowledge_root(root) / state.knowledge_path if state.knowledge_path else knowledge_root(root)
-        if not area_path.is_dir():
+        if not path_is_dir(area_path):
             continue
         change, _, _ = classify_folder_change(root, state.knowledge_path)
         if change.change_type == "none":
@@ -464,10 +473,10 @@ def check_missing_sidecars(root: Path) -> list[Finding]:
         if meta is not None:
             continue
         sidecar_path = summary_path.parent / "insight-state.json"
-        severity = Severity.CORRUPTION if sidecar_path.exists() else Severity.WOULD_TRIGGER_REGEN
+        severity = Severity.CORRUPTION if path_exists(sidecar_path) else Severity.WOULD_TRIGGER_REGEN
         message = (
             f"Malformed insight-state for '{knowledge_path}'"
-            if sidecar_path.exists()
+            if path_exists(sidecar_path)
             else f"Missing insight-state for '{knowledge_path}'"
         )
         findings.append(
@@ -564,10 +573,10 @@ def _apply_fixes(
                 if manifest is None:
                     continue
                 file_path = knowledge_root_path / manifest.materialized_path if manifest.materialized_path else None
-                if file_path is not None and not file_path.is_file() and finding.canonical_id in identity_index:
+                if file_path is not None and not path_is_file(file_path) and finding.canonical_id in identity_index:
                     file_path = knowledge_root_path / identity_index[finding.canonical_id]
-                if file_path is not None and file_path.is_file():
-                    content = file_path.read_text(encoding="utf-8")
+                if file_path is not None and path_is_file(file_path):
+                    content = read_text(file_path, encoding="utf-8")
                     content = prepend_managed_header(
                         finding.canonical_id,
                         content,
@@ -579,7 +588,7 @@ def _apply_fixes(
 
             elif finding.check == "orphan_attachments" and finding.knowledge_path:
                 orphan_dir = knowledge_root_path / finding.knowledge_path
-                if orphan_dir.is_dir():
+                if path_is_dir(orphan_dir):
                     shutil.rmtree(orphan_dir)
                     finding.fix_applied = True
 
@@ -622,7 +631,7 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
     db = _db_path(root)
     for suffix in ("", "-wal", "-shm"):
         candidate = db.parent / f"{db.name}{suffix}"
-        if candidate.exists():
+        if path_exists(candidate):
             candidate.unlink()
 
     ensure_db(root)
@@ -692,7 +701,7 @@ def adopt_baseline(root: Path | None = None) -> DoctorResult:
 
     for knowledge_path, summary_path in _iter_summary_paths(root):
         area_path = summary_path.parents[2]
-        if not area_path.is_dir():
+        if not path_is_dir(area_path):
             findings.append(
                 Finding(
                     check="adopt_baseline",
@@ -716,11 +725,11 @@ def adopt_baseline(root: Path | None = None) -> DoctorResult:
             continue
 
         child_dirs = get_child_dirs(area_path)
-        has_direct_files = any(is_readable_file(path) for path in area_path.iterdir())
+        has_direct_files = any(is_readable_file(path) for path in iterdir_paths(area_path))
         child_summaries = collect_child_summaries(root, knowledge_path, child_dirs)
         content_hash = compute_content_hash(child_summaries, area_path, has_direct_files)
         structure_hash = compute_structure_hash(child_dirs, area_path, has_direct_files)
-        summary_hash = hashlib.sha256(summary_path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+        summary_hash = hashlib.sha256(read_text(summary_path, encoding="utf-8").encode("utf-8")).hexdigest()
 
         save_insight_state(
             root,

@@ -9,7 +9,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from brain_sync.commands.context import _require_root
-from brain_sync.fileops import canonical_prefix, rediscover_local_path
+from brain_sync.fileops import (
+    canonical_prefix,
+    iterdir_paths,
+    path_exists,
+    path_is_dir,
+    path_is_file,
+    rediscover_local_path,
+    rglob_paths,
+    win_long_path,
+)
 from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.manifest import (
@@ -239,32 +248,32 @@ def remove_source(
     files_deleted = False
     if delete_files:
         target_dir = root / "knowledge" / target_path
-        if target_dir.exists():
+        if path_exists(target_dir):
             # Delete main document file(s) matching the canonical prefix
             prefix = canonical_prefix(cid)
-            for f in target_dir.iterdir():
-                if f.is_file() and f.name.startswith(prefix):
+            for f in iterdir_paths(target_dir):
+                if path_is_file(f) and f.name.startswith(prefix):
                     f.unlink()
                     files_deleted = True
 
             # Clean up .brain-sync/attachments/{source_dir_id}/ for this source
             source_dir_id = canonical_prefix(cid).rstrip("-")
             att_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
-            if att_dir.is_dir():
-                shutil.rmtree(att_dir)
+            if path_is_dir(att_dir):
+                shutil.rmtree(str(win_long_path(att_dir)))
                 files_deleted = True
             # Legacy _sync-context cleanup
             legacy_ctx = target_dir / "_sync-context"
-            if legacy_ctx.is_dir():
-                shutil.rmtree(legacy_ctx)
+            if path_is_dir(legacy_ctx):
+                shutil.rmtree(str(win_long_path(legacy_ctx)))
                 files_deleted = True
 
             # Clean up empty directories bottom-up (but only remove target_dir
             # and its subdirs if they're now empty — never delete other content)
-            for dirpath in sorted(target_dir.rglob("*"), reverse=True):
-                if dirpath.is_dir() and not any(dirpath.iterdir()):
+            for dirpath in sorted(rglob_paths(target_dir, "*"), reverse=True):
+                if path_is_dir(dirpath) and not iterdir_paths(dirpath):
                     dirpath.rmdir()
-            if target_dir.exists() and not any(target_dir.iterdir()):
+            if path_exists(target_dir) and not iterdir_paths(target_dir):
                 target_dir.rmdir()
 
     state.sources.pop(cid, None)
@@ -339,9 +348,9 @@ def move_source(
     files_moved = False
     old_dir = root / "knowledge" / old_path
     new_dir = root / "knowledge" / to_path
-    if old_dir.exists() and old_dir != new_dir:
+    if path_exists(old_dir) and old_dir != new_dir:
         new_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_dir), str(new_dir))
+        shutil.move(str(win_long_path(old_dir)), str(win_long_path(new_dir)))
         files_moved = True
 
     # Move .brain-sync/attachments/{source_dir_id}/ if it exists (already moved with parent dir above,
@@ -350,9 +359,9 @@ def move_source(
         source_dir_id = canonical_prefix(cid).rstrip("-")
         old_att = old_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
         new_att = new_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
-        if old_att.is_dir() and not new_att.exists():
+        if path_is_dir(old_att) and not path_exists(new_att):
             new_att.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(old_att), str(new_att))
+            shutil.move(str(win_long_path(old_att)), str(win_long_path(new_att)))
 
     # Phase 1: update manifest materialized_path and target_path
     knowledge_root = root / "knowledge"
@@ -473,13 +482,12 @@ def _find_file_by_identity_header(knowledge_root: Path, canonical_id_str: str) -
     """Tier-2: scan .md files across all of knowledge/ for matching identity header."""
     from brain_sync.pipeline import extract_source_id
 
-    if not knowledge_root.is_dir():
+    if not path_is_dir(knowledge_root):
         return None
-    for p in knowledge_root.rglob("*.md"):
-        if p.is_file():
-            found_cid = extract_source_id(p)
-            if found_cid == canonical_id_str:
-                return p
+    for p in rglob_paths(knowledge_root, "*.md"):
+        found_cid = extract_source_id(p)
+        if found_cid == canonical_id_str:
+            return p
     return None
 
 
@@ -515,7 +523,7 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
         if m.materialized_path:
             # Tier 1: direct file check at materialized_path
             direct = knowledge_root / m.materialized_path
-            if direct.is_file():
+            if path_is_file(direct):
                 found = direct
 
             # Tier 2: identity header scan across all of knowledge/
@@ -576,7 +584,7 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     # Orphan DB row pruning: delete DB rows with no corresponding manifest
     manifest_dir = root / ".brain-sync" / "sources"
     orphan_count = 0
-    if manifest_dir.is_dir():
+    if path_is_dir(manifest_dir):
         from brain_sync.state import _load_db_sync_progress
 
         db_sources = _load_db_sync_progress(root)
@@ -630,7 +638,7 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
         legacy_dir = target_dir / LEGACY_CONTEXT_DIR
         bare_id = cid.split(":", 1)[1]
         bare_att_dir = target_dir / "_attachments" / bare_id
-        needs_migration = legacy_dir.is_dir() or (bare_att_dir.is_dir() and bare_id != source_dir_id)
+        needs_migration = path_is_dir(legacy_dir) or (path_is_dir(bare_att_dir) and bare_id != source_dir_id)
         if not needs_migration:
             continue
 
@@ -643,10 +651,10 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
 
     # Clean up any remaining _sync-context/ dirs under knowledge/
     dirs_cleaned = 0
-    if knowledge_root.is_dir():
-        for legacy in list(knowledge_root.rglob(LEGACY_CONTEXT_DIR)):
-            if legacy.is_dir():
-                shutil.rmtree(legacy)
+    if path_is_dir(knowledge_root):
+        for legacy in rglob_paths(knowledge_root, LEGACY_CONTEXT_DIR):
+            if path_is_dir(legacy):
+                shutil.rmtree(str(win_long_path(legacy)))
                 dirs_cleaned += 1
                 log.info("Removed stale %s: %s", LEGACY_CONTEXT_DIR, legacy)
 

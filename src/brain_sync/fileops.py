@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 import sys
@@ -33,6 +34,73 @@ def win_long_path(p: Path) -> Path:
         if not s.startswith("\\\\?\\"):
             return Path("\\\\?\\" + s)
     return p
+
+
+def _normalise_display_path(p: Path | str) -> Path:
+    """Convert an internal extended-length path back to its normal form."""
+    s = str(p)
+    if s.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + s[8:])
+    if s.startswith("\\\\?\\"):
+        return Path(s[4:])
+    return Path(s)
+
+
+def _safe_path_str(p: Path | str) -> str:
+    return str(win_long_path(_normalise_display_path(p)))
+
+
+def _path_sort_key(path: Path) -> tuple[str, ...]:
+    return tuple(part.casefold() for part in _normalise_display_path(path).parts)
+
+
+def path_exists(path: Path) -> bool:
+    return os.path.exists(_safe_path_str(path))
+
+
+def path_is_file(path: Path) -> bool:
+    return os.path.isfile(_safe_path_str(path))
+
+
+def path_is_dir(path: Path) -> bool:
+    return os.path.isdir(_safe_path_str(path))
+
+
+def read_bytes(path: Path) -> bytes:
+    with open(_safe_path_str(path), "rb") as f:
+        return f.read()
+
+
+def read_text(path: Path, *, encoding: str = "utf-8", errors: str | None = None) -> str:
+    with open(_safe_path_str(path), encoding=encoding, errors=errors) as f:
+        return f.read()
+
+
+def iterdir_paths(directory: Path) -> list[Path]:
+    if not path_is_dir(directory):
+        return []
+    with os.scandir(_safe_path_str(directory)) as entries:
+        children = [directory / entry.name for entry in entries]
+    return sorted(children, key=_path_sort_key)
+
+
+def glob_paths(directory: Path, pattern: str) -> list[Path]:
+    return [path for path in iterdir_paths(directory) if fnmatch.fnmatch(path.name, pattern)]
+
+
+def rglob_paths(directory: Path, pattern: str) -> list[Path]:
+    if not path_is_dir(directory):
+        return []
+    matches: list[Path] = []
+    stack = [directory]
+    while stack:
+        current = stack.pop()
+        for child in iterdir_paths(current):
+            if path_is_dir(child):
+                stack.append(child)
+            if fnmatch.fnmatch(child.name, pattern):
+                matches.append(child)
+    return sorted(matches, key=_path_sort_key)
 
 
 def content_hash(data: bytes) -> str:
@@ -76,9 +144,8 @@ def write_if_changed(target: Path, markdown: str) -> bool:
     encoded = markdown.encode("utf-8")
     new_hash = content_hash(encoded)
 
-    safe_target = win_long_path(target)
-    if safe_target.exists():
-        old_hash = content_hash(safe_target.read_bytes())
+    if path_exists(target):
+        old_hash = content_hash(read_bytes(target))
         if old_hash == new_hash:
             return False
 
@@ -107,22 +174,22 @@ def clean_insights_tree(insights_dir: Path) -> bool:
 
     Returns True if the root directory was fully removed.
     """
-    if not insights_dir.is_dir():
+    if not path_is_dir(insights_dir):
         return False
 
     # Bottom-up walk: recurse into ALL child directories
-    for child in sorted(insights_dir.iterdir()):
-        if child.is_dir():
+    for child in iterdir_paths(insights_dir):
+        if path_is_dir(child):
             clean_insights_tree(child)
 
     # Remove only regenerable files at this level
     for name in REGENERABLE_FILES:
         target = insights_dir / name
-        if target.is_file():
+        if path_is_file(target):
             target.unlink()
 
     # Remove this directory only if completely empty
-    if not any(insights_dir.iterdir()):
+    if not iterdir_paths(insights_dir):
         insights_dir.rmdir()
         return True
     return False
@@ -157,13 +224,13 @@ def rediscover_local_path(root: Path, canonical_id: str) -> Path | None:
     """
     prefix = canonical_prefix(canonical_id)
     resolved_root = root.resolve()
-    for path in resolved_root.rglob(f"{prefix}*"):
-        if path.is_file() and not _in_excluded_dir(path.relative_to(resolved_root)):
+    for path in rglob_paths(resolved_root, f"{prefix}*"):
+        if path_is_file(path) and not _in_excluded_dir(path.relative_to(resolved_root)):
             return path
     # Also try without trailing content (e.g. "c123456.md" for titleless docs)
     bare_prefix = prefix.rstrip("-")
     if bare_prefix != prefix:
-        for path in resolved_root.rglob(f"{bare_prefix}.*"):
-            if path.is_file() and not _in_excluded_dir(path.relative_to(resolved_root)):
+        for path in rglob_paths(resolved_root, f"{bare_prefix}.*"):
+            if path_is_file(path) and not _in_excluded_dir(path.relative_to(resolved_root)):
                 return path
     return None

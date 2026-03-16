@@ -168,6 +168,39 @@ Disk before DB on all state mutations.
 authority writes. See `docs/architecture/ARCHITECTURE.md` for the fuller
 state authority model.
 
+## Filesystem Access Rule
+
+brain-sync must treat filesystem access under the brain root as a
+correctness-critical portability boundary, especially on Windows where normal
+`pathlib` calls can fail for overlong paths.
+
+For knowledge-tree, manifest-targeted, and managed `.brain-sync/` filesystem
+access, do not introduce new uses of:
+
+- `Path.exists()`
+- `Path.is_file()`
+- `Path.is_dir()`
+- `Path.iterdir()`
+- `Path.glob()`
+- `Path.rglob()`
+- plain `open()` reads
+
+Use the shared helpers in `src/brain_sync/fileops.py` instead, such as:
+
+- `path_exists()`
+- `path_is_file()`
+- `path_is_dir()`
+- `iterdir_paths()`
+- `glob_paths()`
+- `rglob_paths()`
+- `read_bytes()`
+- `read_text()`
+
+This is a repository-specific engineering standard, not a style preference.
+Using raw path operations in these code paths can cause false `NEEDS FETCH`,
+false `NEEDS REGEN`, reconcile drift, and machine-specific bugs when the same
+portable brain is used on Windows machines with longer checkout paths.
+
 ## Module Dependency Rule
 
 Core and library modules must not import from CLI, command wiring, or

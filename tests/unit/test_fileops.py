@@ -16,6 +16,15 @@ from brain_sync.layout import INSIGHT_STATE_FILENAME
 pytestmark = pytest.mark.unit
 
 
+def _long_relative_path(root: Path, filename: str, *, min_length: int = 280) -> Path:
+    parts: list[str] = []
+    index = 0
+    while len(str(root / Path(*parts) / filename)) <= min_length:
+        parts.append(f"segment-{index:02d}-with-extra-length-for-windows")
+        index += 1
+    return Path(*parts) / filename
+
+
 class TestContentHash:
     def test_deterministic(self):
         data = b"hello world"
@@ -101,6 +110,15 @@ class TestRediscoverLocalPath:
         d.mkdir()
         result = rediscover_local_path(tmp_path, "confluence:100")
         assert result is None
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_finds_overlong_confluence_path(self, tmp_path):
+        rel = _long_relative_path(tmp_path, "c123456-my-page.md")
+        atomic_write_bytes(tmp_path / rel, b"content")
+
+        result = rediscover_local_path(tmp_path, "confluence:123456")
+
+        assert result == tmp_path / rel
 
 
 class TestWinLongPath:
