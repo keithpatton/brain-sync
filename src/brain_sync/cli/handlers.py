@@ -67,6 +67,8 @@ def handle_run(args) -> None:
             task.cancel()
 
     signal.signal(signal.SIGINT, _shutdown)
+    if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _shutdown)
     if sys.platform != "win32":
         signal.signal(signal.SIGTERM, _shutdown)
 
