@@ -8,19 +8,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.commands.context import _require_root
 from brain_sync.fileops import (
     canonical_prefix,
-    iterdir_paths,
     path_exists,
     path_is_dir,
-    path_is_file,
-    rediscover_local_path,
     rglob_paths,
     win_long_path,
 )
 from brain_sync.fs_utils import normalize_path
-from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
@@ -29,7 +26,6 @@ from brain_sync.manifest import (
     mark_manifest_missing,
     read_all_source_manifests,
     read_source_manifest,
-    update_manifest_materialized_path,
     write_source_manifest,
 )
 from brain_sync.sources import canonical_id, detect_source_type
@@ -240,6 +236,7 @@ def remove_source(
         SourceNotFoundError: If the source is not found.
     """
     root = _require_root(root)
+    repository = BrainRepository(root)
     state = load_state(root)
 
     cid, source_url, target_path = _resolve_source_or_manifest(state, root, source)
@@ -247,34 +244,7 @@ def remove_source(
     # --- Scoped file deletion (only files owned by this source) ---
     files_deleted = False
     if delete_files:
-        target_dir = root / "knowledge" / target_path
-        if path_exists(target_dir):
-            # Delete main document file(s) matching the canonical prefix
-            prefix = canonical_prefix(cid)
-            for f in iterdir_paths(target_dir):
-                if path_is_file(f) and f.name.startswith(prefix):
-                    f.unlink()
-                    files_deleted = True
-
-            # Clean up .brain-sync/attachments/{source_dir_id}/ for this source
-            source_dir_id = canonical_prefix(cid).rstrip("-")
-            att_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
-            if path_is_dir(att_dir):
-                shutil.rmtree(str(win_long_path(att_dir)))
-                files_deleted = True
-            # Legacy _sync-context cleanup
-            legacy_ctx = target_dir / "_sync-context"
-            if path_is_dir(legacy_ctx):
-                shutil.rmtree(str(win_long_path(legacy_ctx)))
-                files_deleted = True
-
-            # Clean up empty directories bottom-up (but only remove target_dir
-            # and its subdirs if they're now empty — never delete other content)
-            for dirpath in sorted(rglob_paths(target_dir, "*"), reverse=True):
-                if path_is_dir(dirpath) and not iterdir_paths(dirpath):
-                    dirpath.rmdir()
-            if path_exists(target_dir) and not iterdir_paths(target_dir):
-                target_dir.rmdir()
+        files_deleted = repository.remove_source_owned_files(target_path, cid)
 
     state.sources.pop(cid, None)
     save_sync_progress(root, state)
@@ -334,6 +304,7 @@ def move_source(
         SourceNotFoundError: If the source is not found.
     """
     root = _require_root(root)
+    repository = BrainRepository(root)
     state = load_state(root)
 
     cid, _url, old_path = _resolve_source_or_manifest(state, root, source)
@@ -353,27 +324,26 @@ def move_source(
         shutil.move(str(win_long_path(old_dir)), str(win_long_path(new_dir)))
         files_moved = True
 
-    # Move .brain-sync/attachments/{source_dir_id}/ if it exists (already moved with parent dir above,
-    # but handle case where old_dir == new_dir or partial moves)
+    # Move .brain-sync/attachments/{source_dir_id}/ if it exists (already moved
+    # with parent dir above, but handle case where old_dir == new_dir or
+    # partial moves)
     if not files_moved:
-        source_dir_id = canonical_prefix(cid).rstrip("-")
-        old_att = old_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
-        new_att = new_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
+        old_att = repository.source_attachment_dir(old_dir, cid)
+        new_att = repository.source_attachment_dir(new_dir, cid)
         if path_is_dir(old_att) and not path_exists(new_att):
             new_att.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(win_long_path(old_att)), str(win_long_path(new_att)))
 
     # Phase 1: update manifest materialized_path and target_path
-    knowledge_root = root / "knowledge"
-    found = rediscover_local_path(knowledge_root, cid)
     manifest = read_source_manifest(root, cid)
     if manifest is not None:
-        manifest.target_path = to_path
+        found = repository.resolve_source_file(manifest).path
         if found is not None:
-            manifest.materialized_path = normalize_path(found.relative_to(knowledge_root))
+            repository.sync_manifest_to_found_path(cid, found)
         else:
+            manifest.target_path = to_path
             manifest.materialized_path = ""
-        write_source_manifest(root, manifest)
+            write_source_manifest(root, manifest)
 
     return MoveResult(
         canonical_id=cid,
@@ -514,28 +484,15 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
 
     # Read ALL manifests (including missing-status) for reconciliation
     all_manifests = read_all_source_manifests(root)
+    repository = BrainRepository(root)
     utc_now = datetime.now(UTC).isoformat()
 
     for cid, m in all_manifests.items():
-        # Three-tier file resolution
-        found: Path | None = None
-
-        if m.materialized_path:
-            # Tier 1: direct file check at materialized_path
-            direct = knowledge_root / m.materialized_path
-            if path_is_file(direct):
-                found = direct
-
-            # Tier 2: identity header scan across all of knowledge/
-            if found is None:
-                found = _find_file_by_identity_header(knowledge_root, cid)
-
-        # Tier 3: prefix glob (searches all of knowledge/) — also used for unmaterialized sources
-        if found is None:
-            found = rediscover_local_path(knowledge_root, cid)
+        resolution = repository.resolve_source_file(m)
+        found = resolution.path
 
         # Unmaterialized active source with no file found → nothing to reconcile
-        if m.status == "active" and not m.materialized_path and found is None:
+        if resolution.resolution == "unmaterialized":
             unchanged_count += 1
             continue
 
@@ -543,8 +500,7 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
             if found is not None:
                 # Reappearing: file found again during grace period
                 clear_manifest_missing(root, cid)
-                materialized = normalize_path(found.relative_to(knowledge_root))
-                update_manifest_materialized_path(root, cid, materialized)
+                repository.sync_manifest_to_found_path(cid, found)
                 reappeared.append(cid)
             else:
                 # Second-stage: still missing → delete manifest + DB row
@@ -556,19 +512,12 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
         # Active manifest with materialized_path
         if found is not None:
             # Update materialized_path if file moved
-            materialized = normalize_path(found.relative_to(knowledge_root))
             new_target = normalize_path(found.parent.relative_to(knowledge_root))
             old_target = m.target_path or (
                 normalize_path(Path(m.materialized_path).parent) if m.materialized_path else ""
             )
 
-            if materialized != m.materialized_path:
-                update_manifest_materialized_path(root, cid, materialized)
-                # Update target_path in manifest
-                manifest_obj = read_source_manifest(root, cid)
-                if manifest_obj is not None:
-                    manifest_obj.target_path = new_target
-                    write_source_manifest(root, manifest_obj)
+            repository.sync_manifest_to_found_path(cid, found)
 
             if new_target != old_target:
                 update_source_target_path(root, cid, new_target)

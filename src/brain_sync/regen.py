@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.config import CONFIG_FILE
 from brain_sync.fileops import (
     TEXT_EXTENSIONS,
     atomic_write_bytes,
-    clean_insights_tree,
     iterdir_paths,
     path_exists,
     path_is_dir,
@@ -43,6 +43,7 @@ from brain_sync.fs_utils import (
     get_child_dirs,
     is_content_dir,
     is_readable_file,
+    normalize_path,
 )
 from brain_sync.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
@@ -290,19 +291,17 @@ def _parse_structured_output(raw: str, write_journal: bool) -> tuple[str, str | 
 
 def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, display_path: str) -> None:
     """Append a timestamped journal entry to the daily journal file."""
-    now = datetime.now()  # local time for timestamps
-    journal_dir = insights_dir / "journal" / now.strftime("%Y-%m")
-    journal_dir.mkdir(parents=True, exist_ok=True)
-    journal_path = journal_dir / f"{now.strftime('%Y-%m-%d')}.md"
-
-    timestamped = f"## {now.strftime('%H:%M')}\n\n{journal_text}"
-
-    if path_exists(journal_path):
-        existing = read_text(journal_path, encoding="utf-8")
-        atomic_write_bytes(journal_path, (existing + "\n\n" + timestamped).encode("utf-8"))
-    else:
-        atomic_write_bytes(journal_path, timestamped.encode("utf-8"))
-
+    managed_dir = insights_dir.parent
+    area_dir = managed_dir.parent
+    knowledge_root = (
+        area_dir
+        if area_dir.name == "knowledge"
+        else next(parent for parent in area_dir.parents if parent.name == "knowledge")
+    )
+    root = knowledge_root.parent
+    rel = area_dir.relative_to(knowledge_root)
+    knowledge_path = "" if str(rel) == "." else normalize_path(rel)
+    journal_path = BrainRepository(root).append_journal_entry(knowledge_path, journal_text)
     log.info("[%s] Wrote journal entry for %s at %s", regen_id, display_path, journal_path)
 
 
@@ -1292,12 +1291,13 @@ async def regen_single_folder(
     # Guard: if knowledge dir doesn't exist, clean up stale insights
     if not path_is_dir(knowledge_dir):
         log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
+        repository = BrainRepository(root)
         try:
             delete_regen_meta(insights_dir)
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if path_is_dir(insights_dir):
-            clean_insights_tree(insights_dir)
+            repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
         delete_insight_state(root, current_path)
         return SingleFolderResult(action="cleaned_up", knowledge_path=current_path)
@@ -1309,12 +1309,13 @@ async def regen_single_folder(
     # Cleanup: no readable files and no child dirs
     if not has_direct_files and not child_dirs:
         log.debug("[%s] No readable files or child dirs in %s, cleaning up", regen_id, current_path or "(root)")
+        repository = BrainRepository(root)
         try:
             delete_regen_meta(insights_dir)
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if path_is_dir(insights_dir):
-            clean_insights_tree(insights_dir)
+            repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
         delete_insight_state(root, current_path)
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)

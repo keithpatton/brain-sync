@@ -22,6 +22,7 @@ All source lives under `src/brain_sync/`.
 | REST clients | `confluence_rest` | Confluence REST API wrapper used by adapters and attachment flows |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration and queueing |
+| Brain repository | `brain_repository` | Portable brain-state authority for managed filesystem semantics |
 | State | `state`, `token_tracking` | Runtime DB access, daemon status, and telemetry |
 | Layout helpers | `layout` | Centralized path and version helpers for Brain Format `1.0` |
 | Manifests | `manifest` | Source manifest read/write under `.brain-sync/sources/` |
@@ -40,14 +41,15 @@ the user-level config directory, config file, runtime DB path, and daemon
 status path.
 
 **Core modules** implement sync, reconciliation, and regeneration. The sync
-pipeline fetches and materializes source content into `knowledge/`. Regen
-produces derived summaries, journals, and per-area insight state from the
-knowledge tree.
+pipeline fetches and materializes source content into `knowledge/`. `brain_repository`
+owns the portable-brain mutation and resolution rules used by sync, reconcile,
+doctor, and regen-adjacent cleanup. Regen produces derived summaries,
+journals, and per-area insight state from the knowledge tree.
 
 **Interfaces** expose the system to users and tools. The CLI commands operate
 on the same core modules as the MCP tools. The watcher provides online change
-detection; reconciliation provides the equivalent correction path for offline
-changes.
+detection as an edge observer with direct filesystem contact; reconciliation
+provides the equivalent correction path for offline changes.
 
 **Entry points** wire everything together. `__main__.py` runs the daemon loop;
 `mcp.py` exposes repository-safe tool access over stdio.
@@ -83,12 +85,15 @@ maintains a separate top-level insight mirror.
 
 | Layer | Owner | Responsibility |
 |---|---|---|
-| `knowledge/` plus source manifests plus `sync_cache` | sync / reconcile / watcher | Source-of-truth document locations and durable registration intent |
+| `knowledge/` plus source manifests plus `sync_cache` | `brain_repository` used by sync / reconcile / doctor, with watcher as edge observer | Source-of-truth document locations and durable registration intent |
 | `knowledge/**/.brain-sync/insights` plus journals plus per-area attachments plus `regen_locks` | regen | Derived meaning and regen coordination |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
 The filesystem remains authoritative. Runtime state is disposable and must be
 rebuildable from manifests and per-area insight state.
+
+`state.py` is part of the runtime plane only. Despite the broad name, it is
+not the owner of portable brain semantics or durable brain mutations.
 
 ### Attachment Storage
 
@@ -123,6 +128,15 @@ what sources exist; runtime tables only cache progress and coordination.
 **Co-located managed state**: area summaries, insight state, journals, and
 attachments live with the area they describe. That removes the old mirror-tree
 coupling.
+
+**Repository mutation contract**: `brain_repository.py` is the defensive
+boundary for portable brain mutation. Discovery and idempotent cleanup methods
+may return soft outcomes such as `None`, empty collections, or `False` when
+absence is expected. Strict mutation methods must validate their own inputs
+with repository/fileops rules and raise on invariant breaches rather than
+assuming callers prevalidated correctly. Outer command/daemon boundaries should
+catch, log, and surface those failures without making caller-side prechecks the
+source of truth.
 
 ### LLM Backend Abstraction
 
@@ -197,6 +211,9 @@ Reconciliation uses a three-tier resolution chain:
 
 Readers may still tolerate legacy HTML comment markers as a fallback, but new
 writes use YAML frontmatter only.
+
+Those resolution rules are centralized in `brain_repository.py` so doctor,
+reconcile, and command flows do not drift into separate portable-brain logic.
 
 ### Source Manifests
 

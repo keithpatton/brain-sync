@@ -244,6 +244,22 @@ class TestDoctorFixes:
         assert result.findings[0].check == "unsupported_legacy_layout"
         assert result.findings[0].fix_applied is False
 
+    def test_fix_logs_repository_exception_without_crashing(self, brain: Path) -> None:
+        _write_knowledge_file(brain, "area/c123-doc.md")
+        manifests = {"confluence:123": _make_manifest("confluence:123", materialized_path="area/c123-doc.md")}
+        from brain_sync.manifest import write_source_manifest
+
+        write_source_manifest(brain, manifests["confluence:123"])
+
+        with patch(
+            "brain_sync.commands.doctor.BrainRepository.rewrite_managed_identity",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = doctor(brain, fix=True)
+
+        finding = next(f for f in result.findings if f.check == "identity_headers")
+        assert finding.fix_applied is False
+
 
 class TestAdoptBaseline:
     def test_adopts_project_summary(self, brain: Path) -> None:

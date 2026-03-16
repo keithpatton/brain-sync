@@ -192,6 +192,24 @@ class TestMoveAndRemove:
         assert read_source_manifest(brain, CONFLUENCE_CID) is None
         assert not target_dir.exists()
 
+    def test_remove_source_preserves_unowned_files_in_target_area(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
+        target_dir = brain / "knowledge" / "project"
+        (target_dir / "c12345-doc.md").write_text("content", encoding="utf-8")
+        (target_dir / "notes.md").write_text("keep me", encoding="utf-8")
+        att_dir = target_dir / ".brain-sync" / "attachments" / "c12345"
+        att_dir.mkdir(parents=True)
+        (att_dir / "a789.png").write_bytes(b"png")
+
+        result = remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
+
+        assert isinstance(result, RemoveResult)
+        assert result.files_deleted is True
+        assert read_source_manifest(brain, CONFLUENCE_CID) is None
+        assert (target_dir / "notes.md").read_text(encoding="utf-8") == "keep me"
+        assert not (target_dir / "c12345-doc.md").exists()
+        assert not att_dir.exists()
+
     def test_remove_missing_source_raises(self, brain: Path) -> None:
         with pytest.raises(SourceNotFoundError):
             remove_source(root=brain, source=CONFLUENCE_CID)

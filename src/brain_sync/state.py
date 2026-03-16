@@ -1,3 +1,10 @@
+"""Runtime-plane state owner.
+
+This module manages machine-local runtime state such as the SQLite DB,
+regen lifecycle rows, and daemon status. It does not define authority for the
+portable brain plane under the brain root.
+"""
+
 from __future__ import annotations
 
 import json

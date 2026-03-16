@@ -5,26 +5,23 @@ from __future__ import annotations
 import enum
 import json
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.commands.context import InvalidBrainRootError, _require_root
 from brain_sync.fileops import (
     atomic_write_bytes,
-    canonical_prefix,
     iterdir_paths,
     path_exists,
     path_is_dir,
     path_is_file,
     read_bytes,
     read_text,
-    rediscover_local_path,
     rglob_paths,
 )
 from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import (
-    ATTACHMENTS_DIRNAME,
     BRAIN_MANIFEST_VERSION,
     MANAGED_DIRNAME,
     SUMMARY_FILENAME,
@@ -37,10 +34,9 @@ from brain_sync.manifest import (
     delete_source_manifest,
     read_all_source_manifests,
     read_source_manifest,
-    update_manifest_materialized_path,
     write_source_manifest,
 )
-from brain_sync.pipeline import extract_source_id, prepend_managed_header
+from brain_sync.pipeline import extract_source_id
 from brain_sync.sidecar import read_all_regen_meta, read_regen_meta
 from brain_sync.state import (
     InsightState,
@@ -193,11 +189,14 @@ def check_manifest_file_match(
     knowledge_root_path: Path,
     identity_index: dict[str, Path],
 ) -> list[Finding]:
+    repository = BrainRepository(root)
     findings: list[Finding] = []
     for cid, manifest in manifests.items():
         if manifest.status != "active":
             continue
-        if not manifest.materialized_path:
+        resolution = repository.resolve_source_file(manifest, identity_index=identity_index)
+        found = resolution.path
+        if resolution.resolution == "unmaterialized":
             findings.append(
                 Finding(
                     check="manifest_file_match",
@@ -208,8 +207,7 @@ def check_manifest_file_match(
             )
             continue
 
-        expected = knowledge_root_path / manifest.materialized_path
-        if path_is_file(expected):
+        if resolution.resolution == "direct":
             findings.append(
                 Finding(
                     check="manifest_file_match",
@@ -220,17 +218,15 @@ def check_manifest_file_match(
             )
             continue
 
-        found = identity_index.get(cid)
-        if found is None:
-            rediscovered = rediscover_local_path(knowledge_root_path, cid)
-            if rediscovered is not None:
-                found = Path(rediscovered)
         if found is not None:
             findings.append(
                 Finding(
                     check="manifest_file_match",
                     severity=Severity.DRIFT,
-                    message=f"File moved: expected '{manifest.materialized_path}', found '{normalize_path(found)}'",
+                    message=(
+                        f"File moved: expected '{manifest.materialized_path}', "
+                        f"found '{normalize_path(found.relative_to(knowledge_root_path))}'"
+                    ),
                     canonical_id=cid,
                 )
             )
@@ -253,14 +249,13 @@ def check_identity_headers(
     knowledge_root_path: Path,
     identity_index: dict[str, Path],
 ) -> list[Finding]:
+    repository = BrainRepository(root)
     findings: list[Finding] = []
     for cid, manifest in manifests.items():
         if manifest.status != "active" or not manifest.materialized_path:
             continue
-        file_path = knowledge_root_path / manifest.materialized_path
-        if not path_is_file(file_path) and cid in identity_index:
-            file_path = knowledge_root_path / identity_index[cid]
-        if not path_is_file(file_path):
+        file_path = repository.resolve_source_file(manifest, identity_index=identity_index).path
+        if file_path is None or not path_is_file(file_path):
             continue
 
         found_cid = extract_source_id(file_path)
@@ -292,22 +287,17 @@ def check_identity_headers(
 def check_orphan_attachments(
     root: Path, manifests: dict[str, SourceManifest], knowledge_root_path: Path
 ) -> list[Finding]:
+    repository = BrainRepository(root)
     findings: list[Finding] = []
-    expected_prefixes = {canonical_prefix(manifest.canonical_id).rstrip("-") for manifest in manifests.values()}
-    for attachments_dir in rglob_paths(knowledge_root_path, ATTACHMENTS_DIRNAME):
-        if attachments_dir.parent.name != MANAGED_DIRNAME or not path_is_dir(attachments_dir):
-            continue
-        for child in iterdir_paths(attachments_dir):
-            if not path_is_dir(child) or child.name in expected_prefixes:
-                continue
-            findings.append(
-                Finding(
-                    check="orphan_attachments",
-                    severity=Severity.DRIFT,
-                    message=f"Orphan attachment dir: {normalize_path(child.relative_to(knowledge_root_path))}",
-                    knowledge_path=normalize_path(child.relative_to(knowledge_root_path)),
-                )
+    for orphan in repository.iter_orphan_attachment_dirs(manifests):
+        findings.append(
+            Finding(
+                check="orphan_attachments",
+                severity=Severity.DRIFT,
+                message=f"Orphan attachment dir: {normalize_path(orphan.relative_to(knowledge_root_path))}",
+                knowledge_path=normalize_path(orphan.relative_to(knowledge_root_path)),
             )
+        )
     return findings
 
 
@@ -547,6 +537,7 @@ def _apply_fixes(
     knowledge_root_path: Path,
     identity_index: dict[str, Path],
 ) -> None:
+    repository = BrainRepository(root)
     for finding in findings:
         if finding.severity not in {Severity.DRIFT, Severity.CORRUPTION}:
             continue
@@ -561,37 +552,31 @@ def _apply_fixes(
                 finding.fix_applied = True
 
             elif finding.check == "manifest_file_match" and finding.canonical_id:
-                new_path = identity_index.get(finding.canonical_id)
-                if new_path is None:
-                    rediscovered = rediscover_local_path(knowledge_root_path, finding.canonical_id)
-                    if rediscovered is not None:
-                        new_path = Path(rediscovered)
-                if new_path is not None:
-                    update_manifest_materialized_path(root, finding.canonical_id, normalize_path(new_path))
+                manifest = manifests.get(finding.canonical_id)
+                if manifest is None:
+                    continue
+                resolved = repository.resolve_source_file(manifest, identity_index=identity_index)
+                if resolved.path is not None:
+                    repository.sync_manifest_to_found_path(finding.canonical_id, resolved.path)
                     finding.fix_applied = True
 
             elif finding.check == "identity_headers" and finding.canonical_id:
                 manifest = manifests.get(finding.canonical_id)
                 if manifest is None:
                     continue
-                file_path = knowledge_root_path / manifest.materialized_path if manifest.materialized_path else None
-                if file_path is not None and not path_is_file(file_path) and finding.canonical_id in identity_index:
-                    file_path = knowledge_root_path / identity_index[finding.canonical_id]
-                if file_path is not None and path_is_file(file_path):
-                    content = read_text(file_path, encoding="utf-8")
-                    content = prepend_managed_header(
-                        finding.canonical_id,
-                        content,
+                file_path = repository.resolve_source_file(manifest, identity_index=identity_index).path
+                if file_path is not None:
+                    repository.rewrite_managed_identity(
+                        file_path,
+                        canonical_id=finding.canonical_id,
                         source_type=manifest.source_type,
                         source_url=manifest.source_url,
                     )
-                    file_path.write_text(content, encoding="utf-8")
                     finding.fix_applied = True
 
             elif finding.check == "orphan_attachments" and finding.knowledge_path:
                 orphan_dir = knowledge_root_path / finding.knowledge_path
-                if path_is_dir(orphan_dir):
-                    shutil.rmtree(orphan_dir)
+                if repository.remove_attachment_dir(orphan_dir):
                     finding.fix_applied = True
 
             elif finding.check == "db_source_consistency" and finding.canonical_id:

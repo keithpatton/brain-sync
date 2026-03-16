@@ -8,6 +8,15 @@ from pathlib import Path
 
 import httpx
 
+from brain_sync.brain_repository import (
+    attachment_local_path_for_source_dir as repository_attachment_local_path,
+)
+from brain_sync.brain_repository import (
+    ensure_attachment_dir_for_source_dir as repository_ensure_attachment_dir,
+)
+from brain_sync.brain_repository import (
+    source_dir_id as repository_source_dir_id,
+)
 from brain_sync.confluence_rest import (
     ConfluenceAuth,
     download_attachment,
@@ -17,7 +26,6 @@ from brain_sync.confluence_rest import (
 from brain_sync.fileops import (
     EXCLUDED_DIRS,
     atomic_write_bytes,
-    canonical_prefix,
     content_hash,
     iterdir_paths,
     path_exists,
@@ -26,7 +34,6 @@ from brain_sync.fileops import (
     read_bytes,
 )
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
-from brain_sync.sources import slugify
 from brain_sync.sources.base import DiscoveredImage
 
 log = logging.getLogger(__name__)
@@ -36,7 +43,7 @@ assert MANAGED_DIRNAME in EXCLUDED_DIRS, f"{MANAGED_DIRNAME!r} missing from EXCL
 
 
 def _source_dir_id(canonical_id: str) -> str:
-    return canonical_prefix(canonical_id).rstrip("-")
+    return repository_source_dir_id(canonical_id)
 
 
 class RelType(StrEnum):
@@ -58,20 +65,14 @@ class DiscoveredDoc:
 
 
 def attachment_local_path(source_dir_id: str, att_id: str, title: str | None) -> str:
-    if title:
-        clean = title.split("?")[0]
-        stem = Path(clean).stem
-        ext = Path(clean).suffix
-        filename = f"a{att_id}-{slugify(stem)}{ext}"
-    else:
-        filename = f"a{att_id}"
-    return f"{ATTACHMENTS_DIR}/{source_dir_id}/{filename}"
+    return repository_attachment_local_path(source_dir_id, att_id, title).replace(
+        f"{MANAGED_DIRNAME}/{ATTACHMENTS_DIRNAME}",
+        ATTACHMENTS_DIR,
+    )
 
 
 def ensure_attachment_dir(target_dir: Path, source_dir_id: str) -> Path:
-    att_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir_id
-    att_dir.mkdir(parents=True, exist_ok=True)
-    return att_dir
+    return repository_ensure_attachment_dir(target_dir, source_dir_id)
 
 
 def remove_synced_file(path: Path, safe_root: Path) -> bool:

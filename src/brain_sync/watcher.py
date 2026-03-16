@@ -15,6 +15,7 @@ from watchdog.events import (
 )
 from watchdog.observers import Observer
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.fileops import EXCLUDED_DIRS, path_exists
 from brain_sync.fs_utils import normalize_path
 
@@ -109,6 +110,7 @@ class KnowledgeEventHandler(FileSystemEventHandler):
 def mirror_folder_move(root: Path, move: FolderMove) -> None:
     """Update runtime and manifest paths after a knowledge/ folder rename."""
     knowledge_root = root / "knowledge"
+    repository = BrainRepository(root)
 
     try:
         src_rel = move.src.relative_to(knowledge_root)
@@ -146,22 +148,9 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
     except Exception as e:
         log.warning("Failed to update source target_paths after move: %s", e)
 
-    # Update manifests: materialized_path and target_path
+    # Update manifests: portable source intent/reality move with the folder.
     try:
-        from brain_sync.manifest import read_all_source_manifests, write_source_manifest
-
-        all_manifests = read_all_source_manifests(root)
-        for m in all_manifests.values():
-            old_mp = m.materialized_path
-            old_tp = m.target_path
-            # Only update materialized_path for materialized sources
-            if old_mp and (old_mp.startswith(src_rel_str + "/") or old_mp == src_rel_str):
-                m.materialized_path = dest_rel_str + old_mp[len(src_rel_str) :]
-            # Always update target_path if it matches
-            if old_tp == src_rel_str or old_tp.startswith(src_rel_str + "/"):
-                m.target_path = dest_rel_str + old_tp[len(src_rel_str) :]
-            if m.materialized_path != old_mp or m.target_path != old_tp:
-                write_source_manifest(root, m)
+        repository.apply_folder_move_to_manifests(src_rel_str, dest_rel_str)
     except Exception as e:
         log.warning("Failed to update manifests after move: %s", e)
 

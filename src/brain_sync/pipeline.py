@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import yaml
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.converter import format_comments
 from brain_sync.fileops import (
     content_hash,
@@ -19,7 +20,6 @@ from brain_sync.fileops import (
     rediscover_local_path,
     write_if_changed,
 )
-from brain_sync.fs_utils import normalize_path
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.sources import (
     canonical_filename,
@@ -364,11 +364,16 @@ async def process_source(
     # Phase 1: update manifest sync_hint and materialized_path after successful sync
     if root is not None:
         try:
-            from brain_sync.manifest import update_manifest_materialized_path, update_manifest_sync_hint
+            from brain_sync.manifest import read_source_manifest, write_source_manifest
 
-            materialized = normalize_path(target.relative_to(root / "knowledge"))
-            update_manifest_materialized_path(root, source_state.canonical_id, materialized)
-            update_manifest_sync_hint(root, source_state.canonical_id, body_hash, now)
+            repository = BrainRepository(root)
+            repository.record_materialized_file(source_state.canonical_id, target)
+            manifest = read_source_manifest(root, source_state.canonical_id)
+            if manifest is not None:
+                from brain_sync.manifest import SyncHint
+
+                manifest.sync_hint = SyncHint(content_hash=body_hash, last_synced_utc=now)
+                write_source_manifest(root, manifest)
         except Exception:
             log.debug("Manifest update skipped (manifest may not exist yet)", exc_info=True)
 
