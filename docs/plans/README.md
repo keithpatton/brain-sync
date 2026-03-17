@@ -324,11 +324,23 @@ When present, they should be treated as supplementary input to the planning arti
 
 ## Implementation Notes
 
-Any agent involved in the execution of a plan may add material implementation
-notes such as approved variations or clarifications in date/time-descending
-fashion so there is a visible trail. Record these in the relevant plan notes
-file when one exists. Commit messages and PRs should also be used where
-necessary to record the same.
+Any agent involved in the execution of an approved plan may add material
+implementation notes in the relevant notes file when one exists.
+
+Implementation notes are for execution-relevant context that may not be obvious
+from the commit history alone, such as:
+
+- approved variations from the plan
+- implementation clarifications
+- bounded deferments
+- non-obvious tradeoffs or constraints the next agent must preserve
+
+Implementation notes are not a duplicate changelog. Do not use them for:
+
+- routine summaries of code changes already clear from commits
+- validation logs already captured elsewhere
+- file-by-file implementation inventories
+- status narration with no lasting execution relevance
 
 Implementation notes file:
 
@@ -340,7 +352,8 @@ Implementation notes should:
 
 - use one notes file per approved plan version
 - append new notes at the top so the newest entry is seen first
-- record only material execution-relevant decisions, clarifications, or approved variations
+- be written in date/time-descending order
+- record only material execution-relevant decisions, clarifications, approved variations, or bounded deferments
 
 Example:
 
