@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import area_insights_dir, area_summary_path
+from brain_sync.brain.layout import area_insights_dir, area_summary_path
+from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
-from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
-from brain_sync.state import load_insight_state
+from brain_sync.runtime.repository import load_insight_state
 
 pytestmark = pytest.mark.integration
 
@@ -125,14 +125,14 @@ class TestSidecarAfterRegen:
         config = _config()
 
         # Patch the durable sidecar write path directly.
-        with patch("brain_sync.sidecar.write_regen_meta", side_effect=OSError("disk full")):
+        with patch("brain_sync.brain.sidecar.write_regen_meta", side_effect=OSError("disk full")):
             result = await regen_single_folder(brain, "project", config=config, backend=backend)
 
         assert result.action == "regenerated"
         # Summary should still exist despite sidecar failure
         assert area_summary_path(brain, "project").exists()
         # regen_locks should still be updated (lifecycle persists even when sidecar fails)
-        from brain_sync.state import _connect
+        from brain_sync.runtime.repository import _connect
 
         conn = _connect(brain)
         try:

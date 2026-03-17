@@ -63,7 +63,7 @@ class TestCheckForUpdate:
 
     @pytest.fixture
     def source_state(self):
-        from brain_sync.state import SourceState
+        from brain_sync.runtime.repository import SourceState
 
         return SourceState(
             canonical_id="gdoc:abc123",
@@ -155,7 +155,7 @@ class TestFetch:
 
     @pytest.fixture
     def source_state(self):
-        from brain_sync.state import SourceState
+        from brain_sync.runtime.repository import SourceState
 
         return SourceState(
             canonical_id="gdoc:abc123",
@@ -1019,7 +1019,7 @@ class TestRunOAuthFlow:
 
 class TestConfigureGoogle:
     def test_runs_oauth_when_not_authenticated(self, monkeypatch):
-        from brain_sync.commands.config import configure_google
+        from brain_sync.application.config import configure_google
 
         monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
         monkeypatch.setattr(
@@ -1034,7 +1034,7 @@ class TestConfigureGoogle:
         mock_flow.assert_called_once()
 
     def test_skips_oauth_when_already_authenticated(self, monkeypatch):
-        from brain_sync.commands.config import configure_google
+        from brain_sync.application.config import configure_google
 
         token_data = {"token": "tok", "refresh_token": "ref", "client_id": "cid", "client_secret": "csec"}
         monkeypatch.setattr(
@@ -1053,7 +1053,7 @@ class TestConfigureGoogle:
         mock_flow.assert_not_called()
 
     def test_reauth_forces_oauth_even_when_authenticated(self, monkeypatch):
-        from brain_sync.commands.config import configure_google
+        from brain_sync.application.config import configure_google
 
         token_data = {"token": "tok", "refresh_token": "ref", "client_id": "cid", "client_secret": "csec"}
         monkeypatch.setattr(

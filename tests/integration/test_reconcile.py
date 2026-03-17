@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.reconcile import reconcile_knowledge_tree
 from brain_sync.regen import RegenConfig, regen_single_folder
+from brain_sync.sync.reconcile import reconcile_knowledge_tree
 
 pytestmark = pytest.mark.integration
 

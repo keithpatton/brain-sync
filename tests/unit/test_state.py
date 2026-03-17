@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-import brain_sync.state as state_module
-from brain_sync.layout import RUNTIME_DB_SCHEMA_VERSION
-from brain_sync.manifest import SourceManifest, write_source_manifest
-from brain_sync.state import (
+import brain_sync.runtime.repository as state_module
+from brain_sync.brain.manifest import SourceManifest, write_source_manifest
+from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
+from brain_sync.runtime.repository import (
     InsightState,
     RegenLock,
     SourceState,
@@ -142,7 +142,7 @@ class TestInsightStatePaths:
         before_bytes = sidecar_path.read_bytes()
 
         with patch(
-            "brain_sync.sidecar.write_regen_meta",
+            "brain_sync.brain.sidecar.write_regen_meta",
             side_effect=AssertionError("portable state should not be rewritten"),
         ):
             save_regen_lock(

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import area_summary_path
-from brain_sync.manifest import read_source_manifest
+from brain_sync.brain.layout import area_summary_path
+from brain_sync.brain.manifest import read_source_manifest
 from tests.e2e.harness.cli import CliRunner
 
 pytestmark = pytest.mark.system

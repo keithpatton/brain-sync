@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-import brain_sync.state as state_module
-from brain_sync.state import _connect
-from brain_sync.token_tracking import (
+import brain_sync.runtime.repository as state_module
+from brain_sync.runtime.repository import _connect
+from brain_sync.runtime.token_tracking import (
     OP_CLASSIFY,
     OP_QUERY,
     OP_REGEN,

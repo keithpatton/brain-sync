@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from brain_sync.commands.doctor import (
+from brain_sync.application.doctor import (
     Severity,
     _build_identity_index,
     adopt_baseline,
@@ -28,11 +28,11 @@ from brain_sync.commands.doctor import (
     check_version_json,
     doctor,
 )
-from brain_sync.fileops import atomic_write_bytes
-from brain_sync.manifest import MANIFEST_VERSION, SourceManifest
-from brain_sync.pipeline import prepend_managed_header
-from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
-from brain_sync.state import InsightState, SourceState, SyncState, _connect, save_insight_state, save_state
+from brain_sync.brain.fileops import atomic_write_bytes
+from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest
+from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
+from brain_sync.runtime.repository import InsightState, SourceState, SyncState, _connect, save_insight_state, save_state
+from brain_sync.sync.pipeline import prepend_managed_header
 
 pytestmark = pytest.mark.unit
 
@@ -247,12 +247,12 @@ class TestDoctorFixes:
     def test_fix_logs_repository_exception_without_crashing(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area/c123-doc.md")
         manifests = {"confluence:123": _make_manifest("confluence:123", materialized_path="area/c123-doc.md")}
-        from brain_sync.manifest import write_source_manifest
+        from brain_sync.brain.manifest import write_source_manifest
 
         write_source_manifest(brain, manifests["confluence:123"])
 
         with patch(
-            "brain_sync.commands.doctor.BrainRepository.rewrite_managed_identity",
+            "brain_sync.application.doctor.BrainRepository.rewrite_managed_identity",
             side_effect=RuntimeError("boom"),
         ):
             result = doctor(brain, fix=True)

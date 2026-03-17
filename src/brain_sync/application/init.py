@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass, field
 from importlib import resources
@@ -15,7 +16,15 @@ from brain_sync.runtime.config import CONFIG_FILE, load_config, save_config
 
 log = logging.getLogger(__name__)
 
-SKILL_INSTALL_DIR = Path.home() / ".claude" / "skills" / "brain-sync"
+SKILL_INSTALL_DIR_ENV = "BRAIN_SYNC_SKILL_INSTALL_DIR"
+
+
+def skill_install_dir() -> Path:
+    """Return the install directory for the packaged MCP skill."""
+    override = os.environ.get(SKILL_INSTALL_DIR_ENV)
+    if override:
+        return Path(override)
+    return Path.home() / ".claude" / "skills" / "brain-sync"
 
 
 def _resource_path(package: str, name: str) -> Path:
@@ -135,7 +144,7 @@ def init_brain(
     _copy_resource(
         "brain_sync.interfaces.mcp.resources.brain_sync",
         "SKILL.md",
-        SKILL_INSTALL_DIR / "SKILL.md",
+        skill_install_dir() / "SKILL.md",
         dry_run,
     )
 
@@ -150,14 +159,15 @@ def update_skill() -> list[Path]:
     Returns list of updated file paths.
     """
     updated: list[Path] = []
+    skill_dir = skill_install_dir()
     _copy_resource(
         "brain_sync.interfaces.mcp.resources.brain_sync",
         "SKILL.md",
-        SKILL_INSTALL_DIR / "SKILL.md",
+        skill_dir / "SKILL.md",
     )
-    updated.append(SKILL_INSTALL_DIR / "SKILL.md")
+    updated.append(skill_dir / "SKILL.md")
     # Clean up legacy CORE_INSTRUCTIONS.md if present
-    legacy = SKILL_INSTALL_DIR / "CORE_INSTRUCTIONS.md"
+    legacy = skill_dir / "CORE_INSTRUCTIONS.md"
     if legacy.exists():
         legacy.unlink()
         log.info("Removed legacy %s", legacy)

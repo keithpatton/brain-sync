@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.sidecar import RegenMeta, write_regen_meta
-from brain_sync.watcher import KnowledgeWatcher
+from brain_sync.brain.sidecar import RegenMeta, write_regen_meta
+from brain_sync.sync.watcher import KnowledgeWatcher
 
 pytestmark = pytest.mark.integration
 

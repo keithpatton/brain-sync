@@ -340,7 +340,7 @@ class TestAppendCommentsToMarkdown:
 
 class TestKnowledgeExtensions:
     def test_includes_text_formats(self):
-        from brain_sync.fileops import TEXT_EXTENSIONS
+        from brain_sync.brain.fileops import TEXT_EXTENSIONS
 
         assert ".md" in TEXT_EXTENSIONS
         assert ".txt" in TEXT_EXTENSIONS
@@ -348,14 +348,14 @@ class TestKnowledgeExtensions:
         assert ".json" in TEXT_EXTENSIONS
 
     def test_includes_image_formats(self):
-        from brain_sync.fileops import IMAGE_EXTENSIONS
+        from brain_sync.brain.fileops import IMAGE_EXTENSIONS
 
         assert ".png" in IMAGE_EXTENSIONS
         assert ".jpg" in IMAGE_EXTENSIONS
         assert ".jpeg" in IMAGE_EXTENSIONS
 
     def test_excludes_binary_formats(self):
-        from brain_sync.fileops import KNOWLEDGE_EXTENSIONS
+        from brain_sync.brain.fileops import KNOWLEDGE_EXTENSIONS
 
         assert ".pdf" not in KNOWLEDGE_EXTENSIONS
         assert ".docx" not in KNOWLEDGE_EXTENSIONS
@@ -363,6 +363,6 @@ class TestKnowledgeExtensions:
         assert ".exe" not in KNOWLEDGE_EXTENSIONS
 
     def test_union(self):
-        from brain_sync.fileops import IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
+        from brain_sync.brain.fileops import IMAGE_EXTENSIONS, KNOWLEDGE_EXTENSIONS, TEXT_EXTENSIONS
 
         assert KNOWLEDGE_EXTENSIONS == TEXT_EXTENSIONS | IMAGE_EXTENSIONS

@@ -1,4 +1,4 @@
-"""Tests for brain_sync.config — canonical config load/save."""
+"""Tests for brain_sync.runtime.config — canonical config load/save."""
 
 from __future__ import annotations
 
@@ -7,33 +7,33 @@ import threading
 
 import pytest
 
-from brain_sync.config import load_config, save_config
+from brain_sync.runtime.config import load_config, save_config
 
 pytestmark = pytest.mark.unit
 
 
 class TestLoadConfig:
     def test_returns_empty_dict_when_file_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", tmp_path / "nope.json")
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", tmp_path / "nope.json")
         assert load_config() == {}
 
     def test_returns_empty_dict_on_invalid_json(self, tmp_path, monkeypatch):
         bad = tmp_path / "config.json"
         bad.write_text("not json!", encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", bad)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", bad)
         assert load_config() == {}
 
     def test_loads_valid_config(self, tmp_path, monkeypatch):
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"brains": ["/tmp/brain"]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", cfg_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
         result = load_config()
         assert result == {"brains": ["/tmp/brain"]}
 
     def test_returns_empty_dict_on_empty_file(self, tmp_path, monkeypatch):
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text("", encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", cfg_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
         assert load_config() == {}
 
 
@@ -41,8 +41,8 @@ class TestSaveConfig:
     def test_creates_dir_and_file(self, tmp_path, monkeypatch):
         cfg_dir = tmp_path / "new_dir"
         cfg_file = cfg_dir / "config.json"
-        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", cfg_dir)
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", cfg_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", cfg_dir)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
 
         save_config({"key": "value"})
 
@@ -54,8 +54,8 @@ class TestSaveConfig:
         cfg_dir = tmp_path
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"old": True}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", cfg_dir)
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", cfg_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", cfg_dir)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
 
         save_config({"new": True})
 
@@ -68,8 +68,8 @@ class TestRoundTrip:
     def test_save_then_load(self, tmp_path, monkeypatch):
         cfg_dir = tmp_path
         cfg_file = tmp_path / "config.json"
-        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", cfg_dir)
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", cfg_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", cfg_dir)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
 
         original = {"brains": ["/a", "/b"], "log_level": "DEBUG"}
         save_config(original)
@@ -81,8 +81,8 @@ class TestThreadSafety:
     def test_concurrent_save_load(self, tmp_path, monkeypatch):
         cfg_dir = tmp_path
         cfg_file = tmp_path / "config.json"
-        monkeypatch.setattr("brain_sync.config.CONFIG_DIR", cfg_dir)
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", cfg_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", cfg_dir)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
 
         save_config({"initial": True})
         errors: list[Exception] = []

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.fileops import (
+from brain_sync.brain.fileops import (
     atomic_write_bytes,
     clean_insights_tree,
     content_hash,
@@ -11,7 +11,7 @@ from brain_sync.fileops import (
     win_long_path,
     write_if_changed,
 )
-from brain_sync.layout import INSIGHT_STATE_FILENAME
+from brain_sync.brain.layout import INSIGHT_STATE_FILENAME
 
 pytestmark = pytest.mark.unit
 

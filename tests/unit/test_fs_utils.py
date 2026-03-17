@@ -1,12 +1,12 @@
-"""Tests for brain_sync.fs_utils."""
+"""Tests for brain_sync.brain.tree."""
 
 import sys
 from pathlib import Path
 
 import pytest
 
-from brain_sync.fileops import atomic_write_bytes
-from brain_sync.fs_utils import (
+from brain_sync.brain.fileops import atomic_write_bytes
+from brain_sync.brain.tree import (
     find_all_content_paths,
     get_child_dirs,
     is_content_dir,

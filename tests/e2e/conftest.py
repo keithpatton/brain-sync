@@ -38,13 +38,13 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     daemon_status_file = d / "daemon.json"
     config_file = d / "config.json"
     monkeypatch.setenv("BRAIN_SYNC_CONFIG_DIR", str(d))
-    monkeypatch.setattr("brain_sync.config.CONFIG_DIR", d)
-    monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
-    monkeypatch.setattr("brain_sync.config.RUNTIME_DB_FILE", runtime_db_file)
-    monkeypatch.setattr("brain_sync.config.DAEMON_STATUS_FILE", daemon_status_file)
-    monkeypatch.setattr("brain_sync.state.RUNTIME_DB_FILE", runtime_db_file)
-    monkeypatch.setattr("brain_sync.state.DAEMON_STATUS_FILE", daemon_status_file)
-    monkeypatch.setattr("brain_sync.token_tracking.RUNTIME_DB_FILE", runtime_db_file)
+    monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", d)
+    monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
+    monkeypatch.setattr("brain_sync.runtime.config.RUNTIME_DB_FILE", runtime_db_file)
+    monkeypatch.setattr("brain_sync.runtime.config.DAEMON_STATUS_FILE", daemon_status_file)
+    monkeypatch.setattr("brain_sync.runtime.repository.RUNTIME_DB_FILE", runtime_db_file)
+    monkeypatch.setattr("brain_sync.runtime.repository.DAEMON_STATUS_FILE", daemon_status_file)
+    monkeypatch.setattr("brain_sync.runtime.token_tracking.RUNTIME_DB_FILE", runtime_db_file)
     return d
 
 

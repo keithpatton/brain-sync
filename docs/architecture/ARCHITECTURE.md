@@ -19,25 +19,29 @@ All source lives under `src/brain_sync/`.
 
 | Group | Modules | Purpose |
 |---|---|---|
-| Entry points | `__main__`, `mcp` | CLI/bootstrap entrypoint and legacy MCP shim |
-| Application / interfaces | `application/`, `interfaces/`, legacy `cli/`, `mcp.py`, and `commands/` shims | Interface-neutral operations plus CLI and MCP transport adapters |
-| Portable brain plane | `brain/`, legacy root shims such as `brain_repository`, `manifest`, `sidecar`, `fileops`, `fs_utils`, `layout` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
-| Runtime plane | `runtime/`, legacy root shims such as `state`, `config`, `token_tracking`, `layout` | Machine-local config, DB, daemon status, and telemetry |
-| Sync subsystem | `sync/`, legacy root shims such as `pipeline`, `reconcile`, `watcher`, `scheduler` | Daemon loop, polling, filesystem watching, and source materialization |
-| Query subsystem | `query/`, legacy root shims such as `area_index` and `application/placement` | Read-model indexing and placement/search helpers over portable brain structure |
+| Entry points | `__main__`, `interfaces/mcp/server.py` | CLI/bootstrap entrypoint and MCP server entrypoint |
+| Application / interfaces | `application/`, `interfaces/` | Interface-neutral operations plus CLI and MCP transport adapters |
+| Portable brain plane | `brain/` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
+| Runtime plane | `runtime/` | Machine-local config, DB, daemon status, and telemetry |
+| Sync subsystem | `sync/` | Daemon loop, polling, filesystem watching, and source materialization |
+| Query subsystem | `query/` | Read-model indexing and placement/search helpers over portable brain structure |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/`, `sources/conversion`, `sources/docx` | Per-source fetch logic, provider REST/auth flows, and source-format normalization |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
-| Regen subsystem | `regen/`, legacy root shims such as `regen_lifecycle`, `regen_queue` | Regeneration engine, lifecycle, queueing, and packaged prompt resources |
-| Attachments | `sync/attachments`, `sources/confluence/attachments`, legacy `attachments` shim | Sync-owned attachment materialization plus provider-specific attachment discovery |
-| Utilities | `util/`, legacy `logging_config` and `retry` shims | Shared helpers with no domain coupling |
+| Regen subsystem | `regen/` | Regeneration engine, lifecycle, queueing, and packaged prompt resources |
+| Attachments | `sync/attachments`, `sources/confluence/attachments` | Sync-owned attachment materialization plus provider-specific attachment discovery |
+| Utilities | `util/` | Shared helpers with no domain coupling |
+
+The root package is intentionally thin: `__init__.py`, `__main__.py`, and the
+canonical subsystem packages above. Transitional root-module shims used during
+the ontology migration have been removed, so canonical package paths are the
+only supported import surface.
 
 ---
 
 ## 2. Canonical Subsystem Boundaries
 
-Canonical ownership lives in the package homes below. Root modules and legacy
-packages exist only as compatibility shims and are not the conceptual owners
-for new work.
+Canonical ownership lives in the package homes below. These packages are the
+conceptual owners for new work and the supported Python import homes.
 
 | Package | Owns | Does not own |
 |---|---|---|
@@ -70,7 +74,6 @@ classify code when new feature work or refactoring crosses subsystem lines.
 
 **Runtime helpers** are split between `runtime/config.py`, which owns config
 file access, and `runtime/paths.py`, which owns machine-local runtime paths.
-Legacy root `config.py` and `layout.py` remain compatibility shims only.
 
 **Core modules** implement sync, reconciliation, and regeneration. `sync/`
 owns the daemon loop, polling scheduler, watcher, reconcile path, and source
@@ -81,8 +84,7 @@ the packaged prompt/template resources used to rebuild derived meaning.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
 interface-neutral operations consumed by the CLI and MCP layers. `interfaces/`
-owns the CLI parser/handlers and the MCP transport surface. The legacy
-`commands/`, `cli/`, and `mcp.py` paths remain as compatibility shims. The
+owns the CLI parser/handlers and the MCP transport surface. The
 watcher provides online change detection as an edge observer with direct
 filesystem contact; reconciliation provides the equivalent correction path for
 offline changes. Interface-owned packaged resources such as the installed
@@ -95,8 +97,7 @@ classification helpers.
 
 **Entry points** wire everything together. `__main__.py` is now the CLI and
 bootstrap surface while `sync/daemon.py` owns the long-running daemon loop.
-`interfaces/mcp/server.py` exposes repository-safe tool access over stdio, with
-`mcp.py` retained as a compatibility shim.
+`interfaces/mcp/server.py` exposes repository-safe tool access over stdio.
 
 ### Package Identity Docstrings
 
@@ -150,9 +151,6 @@ maintains a separate top-level insight mirror.
 The filesystem remains authoritative. Runtime state is disposable and must be
 rebuildable from manifests and per-area insight state.
 
-The legacy root `state.py` shim points at `runtime/repository.py`. The runtime
-plane is not the owner of portable brain semantics or durable brain mutations.
-
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are
 implementation detail, not the approved semantic entry points for normal
@@ -204,9 +202,7 @@ source of truth.
 **Two persistence planes**: normal runtime code should treat
 `brain/repository.py` as the portable-brain write boundary and
 `runtime/repository.py` as the runtime-state write boundary. Bootstrap,
-migration, and test/SUT code are the only expected exceptions. Legacy root
-shims such as `brain_repository.py` and `state.py` do not change that
-ownership model.
+migration, and test/SUT code are the only expected exceptions.
 
 ### LLM Backend Abstraction
 
@@ -239,9 +235,7 @@ Provider-owned helpers now live with their provider or source-format package:
 Confluence REST and attachment discovery live under `sources/confluence/`,
 while generic markdown/docx conversion lives under `sources/conversion.py` and
 `sources/docx.py`. Source-agnostic attachment materialization helpers live
-under `sync/attachments.py`, with the root `attachments.py`,
-`confluence_rest.py`, `converter.py`, and `docx_converter.py` paths retained
-only as compatibility shims.
+under `sync/attachments.py`.
 
 ---
 

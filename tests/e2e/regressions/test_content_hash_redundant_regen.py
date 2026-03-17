@@ -21,7 +21,7 @@ class TestContentHashNoRedundantRegen:
 
     async def test_no_redundant_regen(self, tmp_path: Path):
         """After initial regen, unchanged content hash should skip."""
-        from brain_sync.commands.init import init_brain
+        from brain_sync.application.init import init_brain
 
         root = tmp_path / "brain"
         root.mkdir()

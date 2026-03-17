@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from brain_sync.scheduler import BASE_INTERVAL, Scheduler, _jittered, compute_interval, compute_next_check_utc
+from brain_sync.sync.scheduler import BASE_INTERVAL, Scheduler, _jittered, compute_interval, compute_next_check_utc
 
 pytestmark = pytest.mark.unit
 

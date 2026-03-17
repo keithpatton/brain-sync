@@ -19,8 +19,12 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from brain_sync.pipeline import process_source
-from brain_sync.scheduler import compute_interval
+from brain_sync.runtime.repository import (
+    SourceState,
+    SyncState,
+    load_state,
+    save_state,
+)
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.sources.base import (
     Comment,
@@ -30,12 +34,8 @@ from brain_sync.sources.base import (
     UpdateStatus,
 )
 from brain_sync.sources.conversion import html_to_markdown
-from brain_sync.state import (
-    SourceState,
-    SyncState,
-    load_state,
-    save_state,
-)
+from brain_sync.sync.pipeline import process_source
+from brain_sync.sync.scheduler import compute_interval
 
 pytestmark = pytest.mark.integration
 
@@ -100,7 +100,7 @@ class TestFullSyncFlow:
 
     def _run_with_mocks(self, source_state, root, html, version=1, comments=None):
         adapter = _mock_adapter(html, version=version, comments=comments)
-        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             changed, _children = asyncio.run(process_source(source_state, httpx.AsyncClient(), root))
             return changed
 
@@ -206,7 +206,12 @@ class TestStatePersistenceRoundTrip:
     """Test that state survives save/load cycle after a full pipeline run."""
 
     def test_state_survives_restart(self, tmp_path):
-        from brain_sync.manifest import MANIFEST_VERSION, SourceManifest, ensure_manifest_dir, write_source_manifest
+        from brain_sync.brain.manifest import (
+            MANIFEST_VERSION,
+            SourceManifest,
+            ensure_manifest_dir,
+            write_source_manifest,
+        )
 
         root = tmp_path / "root"
         root.mkdir()
@@ -239,7 +244,7 @@ class TestStatePersistenceRoundTrip:
         )
 
         adapter = _mock_adapter(FAKE_HTML_V1)
-        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             asyncio.run(process_source(state.sources[key], httpx.AsyncClient(), root))
 
         # Save state

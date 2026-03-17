@@ -6,8 +6,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from brain_sync.commands.init import init_brain
-from brain_sync.layout import INSIGHT_STATE_FILENAME, area_insights_dir
+from brain_sync.application.init import init_brain
+from brain_sync.brain.layout import INSIGHT_STATE_FILENAME, area_insights_dir
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class BrainFixture:
 
     @property
     def db_path(self) -> Path:
-        from brain_sync import config as runtime_config
+        from brain_sync.runtime import config as runtime_config
 
         return runtime_config.RUNTIME_DB_FILE
 
@@ -97,8 +97,13 @@ def seed_knowledge_tree(root: Path, structure: dict) -> None:
 
 def seed_sources(root: Path, sources: list[dict]) -> None:
     """Register sources via manifests + sync_cache rows."""
-    from brain_sync.manifest import SOURCE_MANIFEST_VERSION, SourceManifest, ensure_manifest_dir, write_source_manifest
-    from brain_sync.state import _connect
+    from brain_sync.brain.manifest import (
+        SOURCE_MANIFEST_VERSION,
+        SourceManifest,
+        ensure_manifest_dir,
+        write_source_manifest,
+    )
+    from brain_sync.runtime.repository import _connect
 
     ensure_manifest_dir(root)
     conn = _connect(root)

@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from brain_sync.pipeline import process_source
+from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import canonical_filename, detect_source_type, extract_id
 from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
-from brain_sync.state import SourceState
+from brain_sync.sync.pipeline import process_source
 
 pytestmark = pytest.mark.unit
 
@@ -72,8 +72,8 @@ class TestSkipGuardWithRoot:
         adapter = _make_adapter(unchanged_check)
 
         with (
-            patch("brain_sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.pipeline.rediscover_local_path", return_value=discovered),
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=discovered),
         ):
             changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
@@ -92,8 +92,8 @@ class TestSkipGuardWithRoot:
         adapter = _make_adapter(unchanged_check, fetch_result)
 
         with (
-            patch("brain_sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.pipeline.rediscover_local_path", return_value=None),
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=None),
         ):
             changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
@@ -118,8 +118,8 @@ class TestSkipGuardWithRoot:
         adapter = _make_adapter(changed_check, fetch_result)
 
         with (
-            patch("brain_sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.pipeline.rediscover_local_path", return_value=discovered),
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=discovered),
         ):
             changed, _children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
@@ -146,7 +146,7 @@ class TestSkipGuardWithoutRoot:
         (tmp_path / fname).write_text("# My Doc\n")
         adapter = _make_adapter(unchanged_check)
 
-        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             changed, children = await process_source(source_state, AsyncMock(), root=None)
 
         assert changed is False
@@ -200,7 +200,7 @@ class TestGoogleAttachmentHandling:
         )
 
         with (
-            patch("brain_sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
             patch(
                 "brain_sync.sources.confluence.attachments.process_attachments",
                 new_callable=AsyncMock,
@@ -227,7 +227,7 @@ class TestGoogleAttachmentHandling:
         monkeypatch.chdir(tmp_path)
         adapter = _make_adapter(unchanged_check, fetch_result)
 
-        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             changed, children = await process_source(source_state, AsyncMock(), root=None)
 
         assert changed is False
@@ -288,7 +288,7 @@ class TestFilenameHealing:
             )
         )
 
-        with patch("brain_sync.pipeline.get_adapter", return_value=adapter):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             changed, children = await process_source(source_state, AsyncMock(), root=root)
 
         assert changed is True

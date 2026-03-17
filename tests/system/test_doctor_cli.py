@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import area_attachments_root, area_insights_dir
-from brain_sync.sidecar import RegenMeta, write_regen_meta
+from brain_sync.brain.layout import area_attachments_root, area_insights_dir
+from brain_sync.brain.sidecar import RegenMeta, write_regen_meta
 from tests.e2e.harness.cli import CliRunner
 
 pytestmark = pytest.mark.system
@@ -20,6 +20,20 @@ class TestDoctorCleanBrain:
         result = cli.run("doctor", "--root", str(brain_root))
         assert result.returncode == 0, f"Doctor failed: {result.stderr}"
         assert "healthy" in result.stderr.lower()
+
+    def test_uses_current_working_directory_when_it_is_a_brain_root(self, cli: CliRunner, brain_root: Path) -> None:
+        cli.run("init", str(brain_root))
+        result = cli.run("doctor", cwd=brain_root)
+        assert result.returncode == 0, f"Doctor failed: {result.stderr}"
+        assert "healthy" in result.stderr.lower()
+
+
+class TestDoctorRootResolution:
+    def test_reports_actionable_hint_when_no_root_can_be_resolved(self, cli: CliRunner, tmp_path: Path) -> None:
+        result = cli.run("doctor", cwd=tmp_path)
+        assert result.returncode == 1
+        assert "use --root <brain>" in result.stderr.lower()
+        assert "brain-sync init <path>" in result.stderr.lower()
 
 
 class TestDoctorWithIssues:

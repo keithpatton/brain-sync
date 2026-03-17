@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.reconcile import reconcile_knowledge_tree
-from brain_sync.state import InsightState, _connect, load_insight_state, save_insight_state
+from brain_sync.runtime.repository import InsightState, _connect, load_insight_state, save_insight_state
+from brain_sync.sync.reconcile import reconcile_knowledge_tree
 
 pytestmark = pytest.mark.unit
 

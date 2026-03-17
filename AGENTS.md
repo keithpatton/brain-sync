@@ -180,7 +180,7 @@ may also use a single subsystem marker to aid filtering. Cross-cutting tests
 do not need subsystem markers.
 
 Compatibility tests should remain clearly separated from seam-owned tests.
-When a test intentionally validates a legacy shim or public compatibility path,
+When a test intentionally validates public compatibility behavior,
 prefer placing or keeping it under `tests/compat/` or another clearly named
 compatibility-focused location rather than mixing that concern into subsystem
 coverage by default.
@@ -201,6 +201,11 @@ If a future test must run serially, mark it explicitly and document why.
 
 Each test should use isolated filesystem state via `tmp_path`. Do not depend
 on shared state between tests.
+
+Tests must not read from or write to the real `~/.brain-sync/` directory, the
+real user home directory, or a real brain checkout. In-process tests should
+rely on the shared test harness isolation; subprocess harnesses must set
+isolated `BRAIN_SYNC_CONFIG_DIR` and home-directory environment variables.
 
 ### Failure Classification
 
@@ -287,9 +292,10 @@ In general, lower-level domain packages must not import upward into
 `application`, `interfaces`, or entrypoint code. If shared behavior is needed,
 move it to the owning lower-level package or to a truly neutral helper.
 
-Legacy root modules and `commands/` may remain only as compatibility shims once
-their package homes exist. New logic must live under the owning package, not
-under a shim path.
+Canonical package paths are the supported in-repo import surface. Do not
+reintroduce root-module or legacy package aliases without an explicit
+compatibility decision documented in `docs/COMPATIBILITY.md` and explained in
+`docs/architecture/ARCHITECTURE.md`.
 
 Architecture boundary tests should enforce these seams where practical. Do not
 weaken an existing boundary test to accommodate a new import without updating

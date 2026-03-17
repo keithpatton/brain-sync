@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import area_summary_path
+from brain_sync.brain.layout import area_summary_path
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, regen_single_folder
 from tests.e2e.harness.assertions import assert_no_duplicate_insights, assert_no_orphan_insights
@@ -24,7 +24,7 @@ class TestFolderMoveNoDuplicateInsights:
 
     async def test_no_orphan_after_move_and_regen(self, tmp_path: Path):
         """After move + regen, no orphan insight dirs should remain."""
-        from brain_sync.commands.init import init_brain
+        from brain_sync.application.init import init_brain
 
         root = tmp_path / "brain"
         root.mkdir()

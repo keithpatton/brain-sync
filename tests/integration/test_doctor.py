@@ -8,26 +8,26 @@ from unittest.mock import patch
 
 import pytest
 
-from brain_sync.commands.doctor import (
+from brain_sync.application.doctor import (
     Severity,
     deregister_missing,
     doctor,
     rebuild_db,
 )
-from brain_sync.commands.sources import add_source
-from brain_sync.layout import area_attachments_root, area_insights_dir, area_summary_path
-from brain_sync.manifest import (
+from brain_sync.application.sources import add_source
+from brain_sync.brain.layout import area_attachments_root, area_insights_dir, area_summary_path
+from brain_sync.brain.manifest import (
     read_all_source_manifests,
     write_source_manifest,
 )
-from brain_sync.pipeline import prepend_managed_header
-from brain_sync.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
-from brain_sync.state import (
+from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
+from brain_sync.runtime.repository import (
     InsightState,
     _connect,
     load_all_insight_states,
     save_insight_state,
 )
+from brain_sync.sync.pipeline import prepend_managed_header
 
 pytestmark = pytest.mark.integration
 
@@ -60,7 +60,7 @@ def _add_synced_source(root: Path, cid: str = "confluence:12345", target: str = 
     content = prepend_managed_header(cid, "# Test Page\nContent here.")
     _write_knowledge(root, f"{target}/c12345-test-page.md", content)
     # Update materialized_path in manifest
-    from brain_sync.manifest import update_manifest_materialized_path
+    from brain_sync.brain.manifest import update_manifest_materialized_path
 
     update_manifest_materialized_path(root, cid, f"{target}/c12345-test-page.md")
 
@@ -159,7 +159,7 @@ class TestDoctorRebuildDb:
         )
 
         with patch(
-            "brain_sync.sidecar.write_regen_meta",
+            "brain_sync.brain.sidecar.write_regen_meta",
             side_effect=AssertionError("rebuild-db should not rewrite portable insight-state"),
         ):
             rebuild_db(brain)
@@ -515,7 +515,7 @@ class TestAdoptBaseline:
 
     def test_tree_with_children(self, brain: Path) -> None:
         """Multi-level tree: parent content_hash incorporates child summaries."""
-        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.application.doctor import adopt_baseline
 
         # Create a tree: project/sub-a, project/sub-b
         for sub in ("sub-a", "sub-b"):
@@ -544,7 +544,7 @@ class TestAdoptBaseline:
 
     def test_then_doctor_healthy(self, brain: Path) -> None:
         """After adopt-baseline, doctor() reports no WOULD_TRIGGER_REGEN for adopted paths."""
-        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.application.doctor import adopt_baseline
 
         (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)
         _write_knowledge(brain, "project/doc.md", "# Doc\nContent.")
@@ -560,7 +560,7 @@ class TestAdoptBaseline:
 
     def test_then_classify_no_change(self, brain: Path) -> None:
         """Critical correctness proof: after adopt-baseline, classify_folder_change returns 'none'."""
-        from brain_sync.commands.doctor import adopt_baseline
+        from brain_sync.application.doctor import adopt_baseline
         from brain_sync.regen import classify_folder_change
 
         (brain / "knowledge" / "project").mkdir(parents=True, exist_ok=True)

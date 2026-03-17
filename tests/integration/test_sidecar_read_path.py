@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import area_insights_dir
-from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen import RegenConfig, classify_folder_change, regen_single_folder
-from brain_sync.sidecar import (
+from brain_sync.brain.layout import area_insights_dir
+from brain_sync.brain.sidecar import (
     RegenMeta,
     read_regen_meta,
     write_regen_meta,
 )
-from brain_sync.state import InsightState, save_insight_state
+from brain_sync.llm.fake import FakeBackend
+from brain_sync.regen import RegenConfig, classify_folder_change, regen_single_folder
+from brain_sync.runtime.repository import InsightState, save_insight_state
 
 pytestmark = pytest.mark.integration
 
@@ -104,7 +104,7 @@ class TestRegenSkipsUnchangedFromSidecar:
         assert result1.action == "regenerated"
 
         # Delete regen_locks row only (keep sidecar) via raw SQL
-        from brain_sync.state import _connect
+        from brain_sync.runtime.repository import _connect
 
         conn = _connect(brain)
         try:
@@ -131,7 +131,7 @@ class TestRegenSkipsUnchangedFromSidecar:
         assert sidecar_before is not None
 
         # Nuke entire DB
-        from brain_sync import config as runtime_config
+        from brain_sync.runtime import config as runtime_config
 
         db_path = runtime_config.RUNTIME_DB_FILE
         if db_path.exists():
@@ -178,7 +178,7 @@ class TestDoctorWithStaleSidecar:
 
     async def test_doctor_detects_stale_sidecar_as_content_change(self, brain: Path) -> None:
         """Stale sidecar causes doctor to report would-trigger-regen."""
-        from brain_sync.commands.doctor import doctor as run_doctor
+        from brain_sync.application.doctor import doctor as run_doctor
 
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)

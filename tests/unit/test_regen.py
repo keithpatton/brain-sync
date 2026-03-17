@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from brain_sync.fileops import atomic_write_bytes
-from brain_sync.fs_utils import find_all_content_paths as _find_all_content_paths
-from brain_sync.fs_utils import normalize_path
-from brain_sync.layout import area_insights_dir, area_summary_path, brain_manifest_path
+from brain_sync.brain.fileops import atomic_write_bytes
+from brain_sync.brain.layout import area_insights_dir, area_summary_path, brain_manifest_path
+from brain_sync.brain.tree import find_all_content_paths as _find_all_content_paths
+from brain_sync.brain.tree import normalize_path
 from brain_sync.regen import (
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
@@ -46,7 +46,7 @@ from brain_sync.regen import (
     regen_single_folder,
     text_similarity,
 )
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     InsightState,
     _connect,
     delete_insight_state,

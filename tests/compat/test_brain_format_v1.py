@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 
-import brain_sync.state as state_module
-from brain_sync.commands.doctor import Severity, doctor, rebuild_db
-from brain_sync.commands.init import init_brain
-from brain_sync.layout import APP_VERSION, BRAIN_FORMAT_VERSION, RUNTIME_DB_SCHEMA_VERSION
-from brain_sync.state import load_state
+import brain_sync.runtime.repository as state_module
+from brain_sync.application.doctor import Severity, doctor, rebuild_db
+from brain_sync.application.init import init_brain
+from brain_sync.brain.layout import APP_VERSION, BRAIN_FORMAT_VERSION
+from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
+from brain_sync.runtime.repository import load_state
 
 pytestmark = pytest.mark.unit
 

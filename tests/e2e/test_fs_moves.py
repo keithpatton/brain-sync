@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from brain_sync.layout import area_insights_dir, area_summary_path
+from brain_sync.brain.layout import area_insights_dir, area_summary_path
 from tests.e2e.harness.brain import BrainFixture
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess

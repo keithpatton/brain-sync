@@ -131,9 +131,9 @@ The canonical subsystem packages are:
 New substantive code must be added to the owning subsystem package, not to the
 root of `src/brain_sync/`.
 
-Legacy root modules and legacy packages such as `commands/`, `cli/`, and
-`mcp.py` are compatibility surfaces only. They must not become the long-term
-owners of new behavior.
+Canonical package paths are the supported Python import surface. Transitional
+root-module and legacy package aliases from the module-ontology migration are
+not part of the supported compatibility contract.
 
 ### Persistence Plane Ownership
 
@@ -182,11 +182,15 @@ brain, manifest, source, area, or runtime row is, it does not belong in
 
 ### Shim Discipline
 
-Compatibility shims may re-export canonical package surfaces, but they must
-not accumulate new domain logic.
+Compatibility shims are exceptional and temporary. None are currently part of
+the supported import surface.
 
-New in-repo code should import from the canonical package path rather than a
-shim path unless the work is specifically about compatibility behavior.
+If a future shim is introduced, it must:
+
+- have an explicit compatibility rationale
+- avoid new domain logic
+- be documented in `docs/COMPATIBILITY.md`
+- have a planned removal path
 
 ---
 

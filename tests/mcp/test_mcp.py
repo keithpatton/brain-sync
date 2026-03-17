@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from brain_sync.commands import (
+from brain_sync.application import (
     AddResult,
     MoveResult,
     ReconcileResult,
@@ -24,9 +24,9 @@ from brain_sync.commands import (
     SourceInfo,
     SourceNotFoundError,
 )
-from brain_sync.commands.init import init_brain
-from brain_sync.commands.sources import ReconcileEntry
-from brain_sync.layout import area_insights_dir
+from brain_sync.application.init import init_brain
+from brain_sync.application.sources import ReconcileEntry
+from brain_sync.brain.layout import area_insights_dir
 from brain_sync.sources import UnsupportedSourceError
 
 pytestmark = pytest.mark.mcp
@@ -192,7 +192,7 @@ class TestImportPurity:
         mod_name = "brain_sync.interfaces.mcp.server"
         saved = sys.modules.pop(mod_name, None)
         try:
-            with patch("brain_sync.commands.context.resolve_root", side_effect=RuntimeError("should not be called")):
+            with patch("brain_sync.application.roots.resolve_root", side_effect=RuntimeError("should not be called")):
                 # The module imports resolve_root from commands (re-export),
                 # but must not *call* it at import time.
                 # We patch the underlying function that resolve_root delegates to.
@@ -1241,7 +1241,7 @@ class TestSuggestPlacement:
 
 class TestFsUtils:
     def test_is_readable_file(self, tmp_path):
-        from brain_sync.fs_utils import is_readable_file
+        from brain_sync.brain.tree import is_readable_file
 
         md = tmp_path / "doc.md"
         md.write_text("hello", encoding="utf-8")
@@ -1260,7 +1260,7 @@ class TestFsUtils:
         assert is_readable_file(underscore) is False
 
     def test_is_content_dir(self, tmp_path):
-        from brain_sync.fs_utils import is_content_dir
+        from brain_sync.brain.tree import is_content_dir
 
         normal = tmp_path / "area"
         normal.mkdir()
@@ -1275,7 +1275,7 @@ class TestFsUtils:
         assert is_content_dir(sync_ctx) is False
 
     def test_get_child_dirs(self, tmp_path):
-        from brain_sync.fs_utils import get_child_dirs
+        from brain_sync.brain.tree import get_child_dirs
 
         (tmp_path / "b-area").mkdir()
         (tmp_path / "a-area").mkdir()
@@ -1293,8 +1293,8 @@ class TestBrainSyncUsage:
 
     def test_usage_returns_summary_structure(self, brain_root):
         from brain_sync.interfaces.mcp.server import brain_sync_usage
-        from brain_sync.state import _connect
-        from brain_sync.token_tracking import OP_REGEN, record_token_event
+        from brain_sync.runtime.repository import _connect
+        from brain_sync.runtime.token_tracking import OP_REGEN, record_token_event
 
         # Ensure DB exists
         _connect(brain_root).close()

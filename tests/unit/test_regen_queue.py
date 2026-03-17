@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from brain_sync.regen_queue import (
+from brain_sync.regen.queue import (
     MAX_RETRIES,
     RegenQueue,
 )
-from brain_sync.state import _connect
+from brain_sync.runtime.repository import _connect
 
 pytestmark = pytest.mark.unit
 
@@ -105,7 +105,7 @@ class TestProcessReady:
         q = RegenQueue(root=brain, debounce_secs=0.0, cooldown_secs=0.0)
         q.enqueue("project")
 
-        with patch("brain_sync.regen_queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_regen:
+        with patch("brain_sync.regen.queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_regen:
             count = asyncio.run(q.process_ready())
 
         assert count == 1
@@ -120,7 +120,7 @@ class TestProcessReady:
         q = RegenQueue(root=brain, debounce_secs=0.0, cooldown_secs=0.0)
         q.enqueue("project")
 
-        with patch("brain_sync.regen_queue.regen_path", new_callable=AsyncMock, return_value=1):
+        with patch("brain_sync.regen.queue.regen_path", new_callable=AsyncMock, return_value=1):
             asyncio.run(q.process_ready())
 
         assert "project" in q._last_regen
@@ -132,7 +132,7 @@ class TestProcessReady:
         async def fail(*args, **kwargs):
             raise RuntimeError("Claude unavailable")
 
-        with patch("brain_sync.regen_queue.regen_path", side_effect=fail):
+        with patch("brain_sync.regen.queue.regen_path", side_effect=fail):
             asyncio.run(q.process_ready())
 
         # Should be re-enqueued
@@ -147,7 +147,7 @@ class TestProcessReady:
             raise RuntimeError("Claude unavailable")
 
         # Simulate MAX_RETRIES failures through the queue
-        with patch("brain_sync.regen_queue.regen_path", side_effect=fail):
+        with patch("brain_sync.regen.queue.regen_path", side_effect=fail):
             for i in range(MAX_RETRIES + 1):
                 if i == 0:
                     q.enqueue("project")
@@ -170,7 +170,7 @@ class TestProcessReady:
         async def fail_regen(*args, **kwargs):
             raise RegenFailed("project", "Claude CLI failed")
 
-        with patch("brain_sync.regen_queue.regen_path", side_effect=fail_regen):
+        with patch("brain_sync.regen.queue.regen_path", side_effect=fail_regen):
             asyncio.run(q.process_ready())
 
         # Should be re-enqueued with retry_count=1
@@ -222,7 +222,7 @@ class TestWaveProcessing:
         q.enqueue("area/sub3")
 
         with (
-            patch("brain_sync.regen_queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
             patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke),
         ):
             asyncio.run(q.process_ready())
@@ -258,7 +258,7 @@ class TestWaveProcessing:
         q.enqueue("area/sub2")
 
         with (
-            patch("brain_sync.regen_queue.acquire_regen_ownership", side_effect=ownership_fails_for_area),
+            patch("brain_sync.regen.queue.acquire_regen_ownership", side_effect=ownership_fails_for_area),
             patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke),
         ):
             asyncio.run(q.process_ready())
@@ -274,9 +274,9 @@ class TestWaveProcessing:
         q.enqueue("project")
 
         with (
-            patch("brain_sync.regen_queue.acquire_regen_ownership", return_value=True),
-            patch("brain_sync.regen_queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_rp,
-            patch("brain_sync.regen_queue.regen_single_folder") as mock_rsf,
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_rp,
+            patch("brain_sync.regen.queue.regen_single_folder") as mock_rsf,
         ):
             total = asyncio.run(q.process_ready())
 

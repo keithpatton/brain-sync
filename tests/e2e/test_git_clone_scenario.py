@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import INSIGHT_STATE_FILENAME, area_summary_path
+from brain_sync.brain.layout import INSIGHT_STATE_FILENAME, area_summary_path
 from tests.e2e.harness.brain import BrainFixture, create_brain, seed_knowledge_tree, seed_sources
 from tests.e2e.harness.daemon import DaemonProcess
 from tests.e2e.harness.wait import wait_for_db

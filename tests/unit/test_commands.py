@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.commands import (
+from brain_sync.application import (
     AddResult,
     BrainNotFoundError,
     InvalidBrainRootError,
@@ -29,9 +29,9 @@ from brain_sync.commands import (
     update_source,
     validate_brain_root,
 )
-from brain_sync.commands.context import _require_root
-from brain_sync.manifest import read_source_manifest
-from brain_sync.state import _connect
+from brain_sync.application.roots import _require_root
+from brain_sync.brain.manifest import read_source_manifest
+from brain_sync.runtime.repository import _connect
 
 pytestmark = pytest.mark.unit
 
@@ -66,12 +66,12 @@ class TestResolveRoot:
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"brains": [str(brain_root)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
 
         assert resolve_root() == brain_root
 
     def test_raises_when_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", tmp_path / "missing" / "config.json")
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", tmp_path / "missing" / "config.json")
         with pytest.raises(BrainNotFoundError):
             resolve_root()
 
@@ -83,7 +83,7 @@ class TestResolveRoot:
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"brains": [str(tmp_path / "other")]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
 
         assert _require_root(explicit) == explicit.resolve()
 
@@ -107,7 +107,7 @@ class TestValidateBrainRoot:
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"brains": [str(brain_root / "knowledge")]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
 
         with pytest.raises(InvalidBrainRootError):
             resolve_root()
@@ -222,7 +222,7 @@ class TestReconcileAndMigrate:
         assert manifest is not None
         manifest.materialized_path = "project/c12345-doc.md"
         write_source = manifest
-        from brain_sync.manifest import write_source_manifest
+        from brain_sync.brain.manifest import write_source_manifest
 
         write_source_manifest(brain, write_source)
         old_file = brain / "knowledge" / "project" / "c12345-doc.md"
@@ -270,7 +270,7 @@ class TestInitAndSkill:
 
     def test_update_skill_copies_skill(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         skill_dir = tmp_path / "skills" / "brain-sync"
-        monkeypatch.setattr("brain_sync.commands.init.SKILL_INSTALL_DIR", skill_dir)
+        monkeypatch.setenv("BRAIN_SYNC_SKILL_INSTALL_DIR", str(skill_dir))
 
         updated = update_skill()
 
@@ -282,7 +282,7 @@ class TestConfiglessSkillSmoke:
     def test_list_sources_without_explicit_root_uses_config(self, brain: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         config_file = brain.parent / "config.json"
         config_file.write_text(json.dumps({"brains": [str(brain)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
 
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
 
@@ -294,7 +294,7 @@ class TestConfiglessSkillSmoke:
     def test_add_source_without_explicit_root_uses_config(self, brain: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         config_file = brain.parent / "config.json"
         config_file.write_text(json.dumps({"brains": [str(brain)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.config.CONFIG_FILE", config_file)
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
 
         result = add_source(url=CONFLUENCE_URL, target_path="project")
 

@@ -26,6 +26,18 @@ version `0.5.0` unless the packaging policy says otherwise.
 
 ---
 
+## Implementation Import Paths
+
+This compatibility document governs app-version, Brain Format, and runtime
+schema support. It does not preserve temporary internal Python import aliases.
+
+Canonical subsystem packages under `application/`, `interfaces/`, `brain/`,
+`runtime/`, `sync/`, `regen/`, `query/`, `sources/`, `llm/`, and `util/` are
+the supported Python import homes. Transitional root-module and legacy package
+aliases from the ontology migration are not supported compatibility surfaces.
+
+---
+
 ## Supported Operations
 
 For the supported baseline above, brain-sync must support:

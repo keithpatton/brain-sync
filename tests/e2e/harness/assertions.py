@@ -8,12 +8,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from brain_sync.fileops import INSIGHT_ARTIFACT_DIRS
-from brain_sync.layout import INSIGHT_STATE_FILENAME, area_summary_path
+from brain_sync.brain.fileops import INSIGHT_ARTIFACT_DIRS
+from brain_sync.brain.layout import INSIGHT_STATE_FILENAME, area_summary_path
 
 
 def _runtime_db_path() -> Path:
-    from brain_sync import config as runtime_config
+    from brain_sync.runtime import config as runtime_config
 
     return runtime_config.RUNTIME_DB_FILE
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     SCHEMA_VERSION,
     InsightState,
     _connect,

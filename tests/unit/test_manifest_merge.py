@@ -6,20 +6,20 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.manifest import (
+from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
     ensure_manifest_dir,
     write_source_manifest,
 )
-from brain_sync.pipeline import extract_source_id
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     SourceState,
     SyncState,
     _has_sync_progress,
     load_state,
     save_state,
 )
+from brain_sync.sync.pipeline import extract_source_id
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +36,7 @@ def brain(tmp_path: Path) -> Path:
     (root / "knowledge").mkdir()
     (root / ".brain-sync" / "sources").mkdir(parents=True)
     (root / ".brain-sync" / "brain.json").write_text('{"version": 1}\n', encoding="utf-8")
-    from brain_sync.state import _connect
+    from brain_sync.runtime.repository import _connect
 
     conn = _connect(root)
     conn.close()
@@ -278,7 +278,7 @@ class TestSaveStateProgressGuard:
         save_state(brain, state)
 
         # Verify no row exists in DB
-        from brain_sync.state import _load_db_sync_progress
+        from brain_sync.runtime.repository import _load_db_sync_progress
 
         db_sources = _load_db_sync_progress(brain)
         assert CONFLUENCE_CID not in db_sources
@@ -299,7 +299,7 @@ class TestSaveStateProgressGuard:
         )
         save_state(brain, state)
 
-        from brain_sync.state import _load_db_sync_progress
+        from brain_sync.runtime.repository import _load_db_sync_progress
 
         db_sources = _load_db_sync_progress(brain)
         assert CONFLUENCE_CID in db_sources

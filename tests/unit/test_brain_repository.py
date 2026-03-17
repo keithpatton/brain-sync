@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.brain_repository import BrainRepository, BrainRepositoryInvariantError
-from brain_sync.managed_markdown import prepend_managed_header
-from brain_sync.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
+from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
 
 pytestmark = pytest.mark.unit
 

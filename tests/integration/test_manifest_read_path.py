@@ -7,27 +7,27 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.commands.init import init_brain
-from brain_sync.commands.sources import (
+from brain_sync.application.init import init_brain
+from brain_sync.application.sources import (
     add_source,
     list_sources,
     reconcile_sources,
 )
-from brain_sync.fileops import atomic_write_bytes
-from brain_sync.fs_utils import normalize_path
-from brain_sync.manifest import (
+from brain_sync.brain.fileops import atomic_write_bytes
+from brain_sync.brain.manifest import (
     SyncHint,
     mark_manifest_missing,
     read_source_manifest,
     write_source_manifest,
 )
-from brain_sync.pipeline import prepend_managed_header
-from brain_sync.state import (
+from brain_sync.brain.tree import normalize_path
+from brain_sync.runtime.repository import (
     SourceState,
     load_state,
     save_state,
 )
-from brain_sync.watcher import FolderMove, mirror_folder_move
+from brain_sync.sync.pipeline import prepend_managed_header
+from brain_sync.sync.watcher import FolderMove, mirror_folder_move
 
 pytestmark = pytest.mark.integration
 
@@ -67,7 +67,7 @@ def _create_synced_file(brain: Path, cid: str, area: str, filename: str, body: s
 class TestSeedFromHint:
     def test_matching_file_seeds_at_normal_cadence(self, brain: Path):
         """Sync hint matches local file → seeded with content_hash and next_check_utc."""
-        from brain_sync.fileops import content_hash
+        from brain_sync.brain.fileops import content_hash
 
         body = "# Test Page\n\nContent here.\n"
         body_hash = content_hash(body.encode("utf-8"))

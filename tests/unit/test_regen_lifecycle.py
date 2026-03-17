@@ -1,4 +1,4 @@
-"""Tests for brain_sync.regen_lifecycle — session ownership and cleanup."""
+"""Tests for brain_sync.regen.lifecycle — session ownership and cleanup."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from brain_sync.regen_lifecycle import regen_session
-from brain_sync.state import InsightState, SyncState, load_insight_state, save_insight_state, save_state
+from brain_sync.regen.lifecycle import regen_session
+from brain_sync.runtime.repository import InsightState, SyncState, load_insight_state, save_insight_state, save_state
 
 pytestmark = pytest.mark.unit
 

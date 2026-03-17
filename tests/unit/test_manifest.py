@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.manifest import (
+from brain_sync.brain.manifest import (
     MANIFEST_DIR,
     MANIFEST_VERSION,
     SourceManifest,

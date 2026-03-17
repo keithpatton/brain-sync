@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.commands.init import init_brain
+from brain_sync.application.init import init_brain
 from brain_sync.llm.fake import FakeBackend
 
 

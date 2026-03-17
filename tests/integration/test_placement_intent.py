@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.commands.init import init_brain
-from brain_sync.commands.sources import add_source
-from brain_sync.manifest import (
+from brain_sync.application.init import init_brain
+from brain_sync.application.sources import add_source
+from brain_sync.brain.manifest import (
     read_source_manifest,
     write_source_manifest,
 )
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     load_state,
     save_state,
 )

@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.layout import area_insights_dir
+from brain_sync.brain.layout import area_insights_dir
 
 
 def _runtime_db_path() -> Path:
-    from brain_sync import config as runtime_config
+    from brain_sync.runtime import config as runtime_config
 
     return runtime_config.RUNTIME_DB_FILE
 

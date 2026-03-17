@@ -31,10 +31,22 @@ class DaemonProcess:
         self._proc: subprocess.Popen | None = None  # type: ignore[type-arg]
         self._launch_time: str | None = None
 
+    def _home_dir(self) -> Path:
+        return self.config_dir.parent / "home"
+
+    def _skill_dir(self) -> Path:
+        return self._home_dir() / ".claude" / "skills" / "brain-sync"
+
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
+        home_dir = self._home_dir()
         env["BRAIN_SYNC_CONFIG_DIR"] = str(self.config_dir)
+        env["BRAIN_SYNC_SKILL_INSTALL_DIR"] = str(self._skill_dir())
         env["BRAIN_SYNC_LLM_BACKEND"] = "fake"
+        env["HOME"] = str(home_dir)
+        env["USERPROFILE"] = str(home_dir)
+        env["APPDATA"] = str(home_dir / "AppData" / "Roaming")
+        env["LOCALAPPDATA"] = str(home_dir / "AppData" / "Local")
         if self.capture_dir:
             env["BRAIN_SYNC_CAPTURE_PROMPTS"] = str(self.capture_dir)
         env.pop("CLAUDECODE", None)

@@ -8,7 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
-from brain_sync.application.roots import BrainNotFoundError
+from brain_sync.application.roots import BrainNotFoundError, InvalidBrainRootError
 from brain_sync.brain.fileops import path_exists, path_is_dir, path_is_file
 from brain_sync.query.placement import PlacementSelection
 
@@ -21,6 +21,29 @@ def _get_root(args) -> Path | None:
     if root is not None:
         return root.resolve()
     return None
+
+
+def _root_resolution_hint() -> str:
+    return "Use --root <brain> or run `brain-sync init <path>` to create/register a brain."
+
+
+def _resolve_cli_root() -> Path:
+    """Resolve a brain root for CLI use.
+
+    Order:
+    1. current working directory if it is a valid brain root
+    2. configured root from runtime config
+    """
+    from brain_sync.application.roots import resolve_root, validate_brain_root
+
+    cwd = Path.cwd().resolve()
+    try:
+        validate_brain_root(cwd)
+        return cwd
+    except InvalidBrainRootError:
+        pass
+
+    return resolve_root()
 
 
 def handle_init(args) -> None:
@@ -37,20 +60,18 @@ def handle_init(args) -> None:
     log.info("  knowledge/_core/ - Always-loaded reference material")
     log.info("  knowledge/**/.brain-sync/insights/ - Auto-generated summaries")
 
-    from brain_sync.application.init import SKILL_INSTALL_DIR
+    from brain_sync.application.init import skill_install_dir
 
-    log.info("  Skill installed to %s", SKILL_INSTALL_DIR)
+    log.info("  Skill installed to %s", skill_install_dir())
 
 
 def handle_run(args) -> None:
     root = _get_root(args)
     if root is None:
         try:
-            from brain_sync.application.roots import resolve_root
-
-            root = resolve_root()
+            root = _resolve_cli_root()
         except BrainNotFoundError as e:
-            log.error("Cannot resolve brain root: %s", e)
+            log.error("Cannot resolve brain root: %s. %s", e, _root_resolution_hint())
             sys.exit(1)
 
     if not path_is_dir(root):
@@ -85,11 +106,9 @@ def _resolve_root_or_exit(args) -> Path:
     root = _get_root(args)
     if root is None:
         try:
-            from brain_sync.application.roots import resolve_root
-
-            root = resolve_root()
+            root = _resolve_cli_root()
         except BrainNotFoundError as e:
-            log.error("Cannot resolve brain root: %s", e)
+            log.error("Cannot resolve brain root: %s. %s", e, _root_resolution_hint())
             sys.exit(1)
     return root
 

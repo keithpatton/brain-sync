@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from brain_sync.commands.init import init_brain
-from brain_sync.pipeline import extract_source_id, prepend_managed_header, strip_managed_header
+from brain_sync.application.init import init_brain
+from brain_sync.runtime.repository import SourceState
 from brain_sync.sources.base import SourceFetchResult, UpdateCheckResult, UpdateStatus
-from brain_sync.state import SourceState
+from brain_sync.sync.pipeline import extract_source_id, prepend_managed_header, strip_managed_header
 
 pytestmark = pytest.mark.unit
 
@@ -142,7 +142,7 @@ def _make_adapter(check_result: UpdateCheckResult, fetch_result: SourceFetchResu
 
 class TestPipelineWritesFrontmatter:
     async def test_written_file_contains_spec_identity_frontmatter(self, tmp_path: Path) -> None:
-        from brain_sync.pipeline import process_source
+        from brain_sync.sync.pipeline import process_source
 
         root = tmp_path / "brain"
         (root / "knowledge" / "area").mkdir(parents=True)
@@ -161,7 +161,7 @@ class TestPipelineWritesFrontmatter:
             metadata_fingerprint=_FINGERPRINT,
         )
 
-        with patch("brain_sync.pipeline.get_adapter", return_value=_make_adapter(check, fetch)):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=_make_adapter(check, fetch)):
             changed, _ = await process_source(ss, AsyncMock(), root=root)
 
         assert changed is True

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from brain_sync.sidecar import (
+from brain_sync.brain.sidecar import (
     SIDECAR_FILENAME,
     SIDECAR_VERSION,
     RegenMeta,
@@ -76,7 +76,7 @@ class TestWriteReadRoundTrip:
         before_mtime = target.stat().st_mtime_ns
 
         with patch(
-            "brain_sync.sidecar.write_bytes_if_changed",
+            "brain_sync.brain.sidecar.write_bytes_if_changed",
             wraps=write_regen_meta.__globals__["write_bytes_if_changed"],
         ) as wrapped:
             assert write_regen_meta(insights_dir, meta) is False
