@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,21 +11,15 @@ from brain_sync.brain_repository import BrainRepository
 from brain_sync.commands.context import _require_root
 from brain_sync.fileops import (
     canonical_prefix,
-    path_exists,
     path_is_dir,
     rglob_paths,
-    win_long_path,
 )
 from brain_sync.fs_utils import normalize_path
 from brain_sync.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
-    clear_manifest_missing,
-    delete_source_manifest,
-    mark_manifest_missing,
     read_all_source_manifests,
     read_source_manifest,
-    write_source_manifest,
 )
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.state import (
@@ -34,8 +27,6 @@ from brain_sync.state import (
     SyncState,
     load_state,
     save_sync_progress,
-    update_source_flags,
-    update_source_target_path,
 )
 from brain_sync.state import (
     delete_source as db_delete_source,
@@ -150,6 +141,7 @@ def add_source(
         SourceAlreadyExistsError: If the source is already registered.
     """
     root = _require_root(root)
+    repository = BrainRepository(root)
 
     existing = check_source_exists(root, url)
     if existing is not None:
@@ -160,8 +152,7 @@ def add_source(
     state = load_state(root)
 
     # Phase 1: write manifest first (crash recovery favours disk truth)
-    write_source_manifest(
-        root,
+    repository.save_source_manifest(
         SourceManifest(
             version=MANIFEST_VERSION,
             canonical_id=cid,
@@ -185,9 +176,7 @@ def add_source(
         child_path=child_path,
     )
     save_sync_progress(root, state)
-
-    knowledge_dir = root / "knowledge" / target_path
-    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    repository.ensure_knowledge_dir(target_path)
 
     return AddResult(
         canonical_id=cid,
@@ -252,7 +241,7 @@ def remove_source(
     db_delete_source(root, cid)
 
     # Phase 1: delete manifest (bypasses two-stage — explicit remove is immediate)
-    delete_source_manifest(root, cid)
+    repository.delete_source_registration(cid)
 
     return RemoveResult(
         canonical_id=cid,
@@ -313,26 +302,15 @@ def move_source(
         state.sources[cid].target_path = to_path
         save_sync_progress(root, state)
 
-    # save_sync_progress UPDATE doesn't touch target_path (by design), so update directly
-    update_source_target_path(root, cid, to_path)
-
     files_moved = False
-    old_dir = root / "knowledge" / old_path
-    new_dir = root / "knowledge" / to_path
-    if path_exists(old_dir) and old_dir != new_dir:
-        new_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(win_long_path(old_dir)), str(win_long_path(new_dir)))
-        files_moved = True
+    if old_path != to_path:
+        files_moved = repository.move_knowledge_tree(old_path, to_path)
 
     # Move .brain-sync/attachments/{source_dir_id}/ if it exists (already moved
     # with parent dir above, but handle case where old_dir == new_dir or
     # partial moves)
     if not files_moved:
-        old_att = repository.source_attachment_dir(old_dir, cid)
-        new_att = repository.source_attachment_dir(new_dir, cid)
-        if path_is_dir(old_att) and not path_exists(new_att):
-            new_att.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(win_long_path(old_att)), str(win_long_path(new_att)))
+        repository.move_source_attachment_dir(old_path, to_path, cid)
 
     # Phase 1: update manifest materialized_path and target_path
     manifest = read_source_manifest(root, cid)
@@ -341,9 +319,7 @@ def move_source(
         if found is not None:
             repository.sync_manifest_to_found_path(cid, found)
         else:
-            manifest.target_path = to_path
-            manifest.materialized_path = ""
-            write_source_manifest(root, manifest)
+            repository.set_source_target_path(cid, to_path, clear_materialized_path=True)
 
     return MoveResult(
         canonical_id=cid,
@@ -401,25 +377,13 @@ def update_source(
     if child_path is not ...:
         ss.child_path = child_path  # type: ignore[assignment]
 
-    # Write directly to DB — save_sync_progress skips config fields on UPDATE
-    update_source_flags(
-        root,
+    repository = BrainRepository(root)
+    repository.update_source_flags(
         cid,
         fetch_children=fetch_children,
         sync_attachments=sync_attachments,
         child_path=child_path,
     )
-
-    # Update manifest flags
-    manifest_obj = read_source_manifest(root, cid)
-    if manifest_obj is not None:
-        if fetch_children is not None:
-            manifest_obj.fetch_children = fetch_children
-        if sync_attachments is not None:
-            manifest_obj.sync_attachments = sync_attachments
-        if child_path is not ...:
-            manifest_obj.child_path = child_path  # type: ignore[assignment]
-        write_source_manifest(root, manifest_obj)
 
     return UpdateResult(
         canonical_id=cid,
@@ -499,12 +463,12 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
         if m.status == "missing":
             if found is not None:
                 # Reappearing: file found again during grace period
-                clear_manifest_missing(root, cid)
+                repository.clear_source_missing(cid)
                 repository.sync_manifest_to_found_path(cid, found)
                 reappeared.append(cid)
             else:
                 # Second-stage: still missing → delete manifest + DB row
-                delete_source_manifest(root, cid)
+                repository.delete_source_registration(cid)
                 db_delete_source(root, cid)
                 deleted.append(cid)
             continue
@@ -520,13 +484,12 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
             repository.sync_manifest_to_found_path(cid, found)
 
             if new_target != old_target:
-                update_source_target_path(root, cid, new_target)
                 updated.append(ReconcileEntry(canonical_id=cid, old_path=old_target, new_path=new_target))
             else:
                 unchanged_count += 1
         else:
             # First-stage missing: file not found at any tier
-            mark_manifest_missing(root, cid, utc_now)
+            repository.mark_source_missing(cid, utc_now)
             marked_missing.append(cid)
             not_found.append(cid)
 
@@ -567,11 +530,10 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
     Handles both legacy _sync-context/ dirs and bare-ID _attachments/{bare_id}/ dirs.
     Also cleans up stale _sync-context/ directories under knowledge/.
     """
-    import shutil
-
     from brain_sync.attachments import LEGACY_CONTEXT_DIR, migrate_legacy_context
 
     root = _require_root(root)
+    repository = BrainRepository(root)
     state = load_state(root)
     knowledge_root = root / "knowledge"
 
@@ -602,8 +564,7 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
     dirs_cleaned = 0
     if path_is_dir(knowledge_root):
         for legacy in rglob_paths(knowledge_root, LEGACY_CONTEXT_DIR):
-            if path_is_dir(legacy):
-                shutil.rmtree(str(win_long_path(legacy)))
+            if path_is_dir(legacy) and repository.remove_legacy_context_dir(legacy):
                 dirs_cleaned += 1
                 log.info("Removed stale %s: %s", LEGACY_CONTEXT_DIR, legacy)
 

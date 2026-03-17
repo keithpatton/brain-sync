@@ -1079,13 +1079,9 @@ def clear_children_flag(root: Path, canonical_id: str) -> None:
 
     In v21+, these flags live in manifests. This updates the manifest directly.
     """
-    from brain_sync.manifest import read_source_manifest, write_source_manifest
+    from brain_sync.brain_repository import BrainRepository
 
-    m = read_source_manifest(root, canonical_id)
-    if m is not None:
-        m.fetch_children = False
-        m.child_path = None
-        write_source_manifest(root, m)
+    BrainRepository(root).clear_source_children_flag(canonical_id)
 
 
 def ensure_db(root: Path) -> None:
@@ -1165,22 +1161,19 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
 
 def save_portable_insight_state(root: Path, istate: InsightState) -> bool:
     """Persist durable insight-state fields without touching runtime lifecycle."""
-    from brain_sync.sidecar import RegenMeta, write_regen_meta
+    from brain_sync.brain_repository import BrainRepository
 
     kp = normalize_path(istate.knowledge_path)
     if istate.content_hash is None:
         return False
 
-    insights_dir = area_insights_dir(root, kp)
     try:
-        return write_regen_meta(
-            insights_dir,
-            RegenMeta(
-                content_hash=istate.content_hash,
-                summary_hash=istate.summary_hash,
-                structure_hash=istate.structure_hash,
-                last_regen_utc=istate.last_regen_utc,
-            ),
+        return BrainRepository(root).save_portable_insight_state(
+            kp,
+            content_hash=istate.content_hash,
+            summary_hash=istate.summary_hash,
+            structure_hash=istate.structure_hash,
+            last_regen_utc=istate.last_regen_utc,
         )
     except Exception:
         log.warning("Failed to write sidecar for %s", kp, exc_info=True)
@@ -1274,18 +1267,21 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
 
 def delete_insight_state(root: Path, knowledge_path: str) -> None:
     """Delete regen_locks row + sidecar for a knowledge path."""
-    from brain_sync.sidecar import delete_regen_meta
+    from brain_sync.brain_repository import BrainRepository
 
     knowledge_path = normalize_path(knowledge_path)
 
-    # Delete sidecar
-    insights_dir = area_insights_dir(root, knowledge_path)
     try:
-        delete_regen_meta(insights_dir)
+        BrainRepository(root).delete_portable_insight_state(knowledge_path)
     except Exception:
         log.warning("Failed to delete sidecar for %s", knowledge_path, exc_info=True)
 
-    # Delete regen_locks row
+    delete_regen_lock(root, knowledge_path)
+
+
+def delete_regen_lock(root: Path, knowledge_path: str) -> None:
+    """Delete only the runtime regen_locks row for a knowledge path."""
+    knowledge_path = normalize_path(knowledge_path)
     conn = _connect(root)
     try:
         conn.execute(

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 import httpx
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.brain_repository import (
     attachment_local_path_for_source_dir as repository_attachment_local_path,
 )
@@ -25,12 +25,8 @@ from brain_sync.confluence_rest import (
 )
 from brain_sync.fileops import (
     EXCLUDED_DIRS,
-    atomic_write_bytes,
     content_hash,
-    iterdir_paths,
     path_exists,
-    path_is_dir,
-    path_is_file,
     read_bytes,
 )
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
@@ -149,32 +145,12 @@ def migrate_legacy_context(
     root: Path,
 ) -> int:
     """Best-effort migration from legacy attachment locations into .brain-sync/."""
-    migrated = 0
-
-    legacy_root = target_dir / LEGACY_CONTEXT_DIR
-    if path_is_dir(legacy_root):
-        legacy_att_dir = legacy_root / "attachments"
-        if path_is_dir(legacy_att_dir):
-            new_dir = ensure_attachment_dir(target_dir, source_dir_id)
-            for f in iterdir_paths(legacy_att_dir):
-                if not path_is_file(f):
-                    continue
-                shutil.move(str(f), str(new_dir / f.name))
-                migrated += 1
-        shutil.rmtree(legacy_root)
-
-    bare_id = primary_canonical_id.split(":", 1)[1]
-    legacy_attachment_dir = target_dir / "_attachments" / bare_id
-    if path_is_dir(legacy_attachment_dir):
-        new_dir = ensure_attachment_dir(target_dir, source_dir_id)
-        for f in iterdir_paths(legacy_attachment_dir):
-            if not path_is_file(f):
-                continue
-            shutil.move(str(f), str(new_dir / f.name))
-            migrated += 1
-        legacy_attachment_dir.rmdir()
-
-    return migrated
+    repository = BrainRepository(root)
+    return repository.migrate_legacy_attachment_context(
+        target_dir,
+        source_dir=source_dir_id,
+        primary_canonical_id=primary_canonical_id,
+    )
 
 
 async def _sync_binary_file(
@@ -183,6 +159,7 @@ async def _sync_binary_file(
     local_path: str,
     target_dir: Path,
     client: httpx.AsyncClient,
+    repository: BrainRepository,
     auth: ConfluenceAuth | None = None,
     headers: dict[str, str] | None = None,
 ) -> bool:
@@ -196,8 +173,7 @@ async def _sync_binary_file(
     target = target_dir / local_path
     if path_exists(target) and content_hash(read_bytes(target)) == content_hash(data):
         return False
-    atomic_write_bytes(target, data)
-    return True
+    return repository.write_attachment_bytes(target_dir=target_dir, local_path=local_path, data=data)
 
 
 async def process_attachments(
@@ -211,6 +187,7 @@ async def process_attachments(
     page_id = primary_canonical_id.split(":", 1)[1]
     source_dir_id = _source_dir_id(primary_canonical_id)
     att_title_to_path: dict[str, str] = {}
+    repository = BrainRepository(root)
 
     migrate_legacy_context(target_dir, source_dir_id, primary_canonical_id, root)
     ensure_attachment_dir(target_dir, source_dir_id)
@@ -230,6 +207,7 @@ async def process_attachments(
                 local_path=local_path,
                 target_dir=target_dir,
                 client=client,
+                repository=repository,
                 auth=auth,
             )
             if changed:
@@ -262,6 +240,7 @@ async def process_inline_images(
     source_dir_id = _source_dir_id(primary_canonical_id)
     ensure_attachment_dir(target_dir, source_dir_id)
     result_map: dict[str, str] = {}
+    repository = BrainRepository(root)
 
     for image in images:
         local_path = _inline_image_local_path(source_dir_id, image.canonical_id, image, image.mime_type)
@@ -272,6 +251,7 @@ async def process_inline_images(
                 local_path=local_path,
                 target_dir=target_dir,
                 client=client,
+                repository=repository,
                 headers=headers,
             )
             if changed:

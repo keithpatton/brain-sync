@@ -18,7 +18,7 @@ from brain_sync.fs_utils import find_all_content_paths
 from brain_sync.layout import area_insights_dir
 from brain_sync.regen import classify_folder_change
 from brain_sync.state import (
-    delete_insight_state,
+    delete_regen_lock,
     load_all_insight_states,
 )
 
@@ -69,7 +69,8 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
 
     orphan_db_paths = db_paths - fs_paths
     for orphan in orphan_db_paths:
-        delete_insight_state(root, orphan)
+        repository.delete_portable_insight_state(orphan)
+        delete_regen_lock(root, orphan)
         orphan_insights = area_insights_dir(root, orphan)
         if path_is_dir(orphan_insights):
             fully_removed = repository.clean_regenerable_insights(orphan)

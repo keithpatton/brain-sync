@@ -85,8 +85,8 @@ maintains a separate top-level insight mirror.
 
 | Layer | Owner | Responsibility |
 |---|---|---|
-| `knowledge/` plus source manifests plus `sync_cache` | `brain_repository` used by sync / reconcile / doctor, with watcher as edge observer | Source-of-truth document locations and durable registration intent |
-| `knowledge/**/.brain-sync/insights` plus journals plus per-area attachments plus `regen_locks` | regen | Derived meaning and regen coordination |
+| `knowledge/` plus source manifests plus managed area artifacts | `brain_repository` used by sync / reconcile / doctor / regen, with watcher as edge observer | Durable portable-brain artifacts, document locations, and managed filesystem policy |
+| `regen_locks` plus `sync_cache` plus daemon/runtime files | `state` | Runtime coordination, progress cache, telemetry, and process state |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
 The filesystem remains authoritative. Runtime state is disposable and must be
@@ -94,6 +94,10 @@ rebuildable from manifests and per-area insight state.
 
 `state.py` is part of the runtime plane only. Despite the broad name, it is
 not the owner of portable brain semantics or durable brain mutations.
+
+`manifest.py`, `sidecar.py`, and `fileops.py` remain primitive storage /
+filesystem helpers beneath those seams. They are implementation detail, not
+the approved semantic entry points for normal runtime portable-state mutation.
 
 ### Attachment Storage
 
@@ -137,6 +141,11 @@ with repository/fileops rules and raise on invariant breaches rather than
 assuming callers prevalidated correctly. Outer command/daemon boundaries should
 catch, log, and surface those failures without making caller-side prechecks the
 source of truth.
+
+**Two persistence planes**: normal runtime code should treat
+`brain_repository.py` as the portable-brain write boundary and `state.py` as
+the runtime-state write boundary. Bootstrap, migration, and test/SUT code are
+the only expected exceptions.
 
 ### LLM Backend Abstraction
 

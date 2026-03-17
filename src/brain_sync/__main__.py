@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from brain_sync.brain_repository import BrainRepository
 from brain_sync.fs_utils import normalize_path
 from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
@@ -16,10 +17,11 @@ from brain_sync.regen import classify_folder_change
 from brain_sync.regen_queue import RegenQueue
 from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
 from brain_sync.state import (
+    RegenLock,
     SyncState,
     load_insight_state,
     load_state,
-    save_insight_state,
+    save_regen_lock,
     save_sync_progress,
     write_daemon_status,
 )
@@ -71,6 +73,7 @@ async def run(root: Path) -> None:
     # reconcile mutates sources.target_path in the DB and load_state() must
     # read the corrected values.
     pid = os.getpid()
+    repository = BrainRepository(root)
 
     reconcile_result = reconcile_sources(root)
     tree_result = reconcile_knowledge_tree(root)
@@ -149,8 +152,24 @@ async def run(root: Path) -> None:
                                 )
                                 istate = load_insight_state(root, rel)
                                 if istate:
-                                    istate.structure_hash = new_structure_hash
-                                    save_insight_state(root, istate)
+                                    if istate.content_hash:
+                                        repository.save_portable_insight_state(
+                                            rel,
+                                            content_hash=istate.content_hash,
+                                            summary_hash=istate.summary_hash,
+                                            structure_hash=new_structure_hash,
+                                            last_regen_utc=istate.last_regen_utc,
+                                        )
+                                    save_regen_lock(
+                                        root,
+                                        RegenLock(
+                                            knowledge_path=rel,
+                                            regen_status=istate.regen_status,
+                                            regen_started_utc=istate.regen_started_utc,
+                                            owner_id=istate.owner_id,
+                                            error_reason=istate.error_reason,
+                                        ),
+                                    )
                                 continue
                             log.info("Knowledge change detected: %s", rel or "(root)")
                             regen_queue.enqueue(rel)
@@ -189,7 +208,6 @@ async def run(root: Path) -> None:
                             if discovered_children:
                                 from brain_sync.commands.sources import SourceAlreadyExistsError, add_source
                                 from brain_sync.sources import slugify
-                                from brain_sync.state import clear_children_flag
 
                                 parent_target = ss.target_path
 
@@ -231,7 +249,7 @@ async def run(root: Path) -> None:
                                         log.warning("Failed to add child %s: %s", child.canonical_id, child_err)
 
                                 # Clear the one-shot flag AFTER all children processed
-                                clear_children_flag(root, key)
+                                repository.clear_source_children_flag(key)
                                 ss.fetch_children = False
                                 ss.child_path = None
                         except Exception as e:

@@ -11,7 +11,6 @@ from pathlib import Path
 from brain_sync.brain_repository import BrainRepository
 from brain_sync.commands.context import InvalidBrainRootError, _require_root
 from brain_sync.fileops import (
-    atomic_write_bytes,
     iterdir_paths,
     path_exists,
     path_is_dir,
@@ -29,14 +28,12 @@ from brain_sync.layout import (
     brain_manifest_path,
     knowledge_root,
 )
+from brain_sync.managed_markdown import extract_source_id
 from brain_sync.manifest import (
     SourceManifest,
-    delete_source_manifest,
     read_all_source_manifests,
     read_source_manifest,
-    write_source_manifest,
 )
-from brain_sync.pipeline import extract_source_id
 from brain_sync.sidecar import read_all_regen_meta, read_regen_meta
 from brain_sync.state import (
     InsightState,
@@ -45,12 +42,11 @@ from brain_sync.state import (
     _connect,
     _load_db_sync_progress,
     _seed_from_hint,
-    delete_insight_state,
+    delete_regen_lock,
     delete_source,
     ensure_db,
     load_all_insight_states,
     load_insight_state,
-    save_insight_state,
     save_regen_lock,
     save_state,
 )
@@ -498,6 +494,28 @@ def check_sidecar_integrity(root: Path) -> list[Finding]:
     return findings
 
 
+def _save_portable_and_runtime_insight_state(root: Path, repository: BrainRepository, state: InsightState) -> None:
+    """Persist portable hashes through the repository and lifecycle through runtime state."""
+    if state.content_hash is not None:
+        repository.save_portable_insight_state(
+            state.knowledge_path,
+            content_hash=state.content_hash,
+            summary_hash=state.summary_hash,
+            structure_hash=state.structure_hash,
+            last_regen_utc=state.last_regen_utc,
+        )
+    save_regen_lock(
+        root,
+        RegenLock(
+            knowledge_path=state.knowledge_path,
+            regen_status=state.regen_status,
+            regen_started_utc=state.regen_started_utc,
+            owner_id=state.owner_id,
+            error_reason=state.error_reason,
+        ),
+    )
+
+
 def doctor(root: Path | None = None, *, fix: bool = False) -> DoctorResult:
     root = _resolve_doctor_root(root)
     legacy_findings = _legacy_layout_findings(root)
@@ -543,12 +561,7 @@ def _apply_fixes(
             continue
         try:
             if finding.check == "brain_manifest":
-                manifest_path = brain_manifest_path(root)
-                manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_bytes(
-                    manifest_path,
-                    (json.dumps({"version": BRAIN_MANIFEST_VERSION}, indent=2) + "\n").encode("utf-8"),
-                )
+                repository.write_brain_manifest()
                 finding.fix_applied = True
 
             elif finding.check == "manifest_file_match" and finding.canonical_id:
@@ -589,11 +602,12 @@ def _apply_fixes(
                     continue
                 manifest.materialized_path = normalize_path(manifest.materialized_path)
                 manifest.target_path = normalize_path(manifest.target_path)
-                write_source_manifest(root, manifest)
+                repository.save_source_manifest(manifest)
                 finding.fix_applied = True
 
             elif finding.check == "orphan_insight_state_rows" and finding.knowledge_path is not None:
-                delete_insight_state(root, finding.knowledge_path)
+                repository.delete_portable_insight_state(finding.knowledge_path)
+                delete_regen_lock(root, finding.knowledge_path)
                 finding.fix_applied = True
 
             elif finding.check == "db_path_normalization" and finding.knowledge_path:
@@ -601,7 +615,7 @@ def _apply_fixes(
                 if state is None:
                     continue
                 state.knowledge_path = normalize_path(state.knowledge_path)
-                save_insight_state(root, state)
+                _save_portable_and_runtime_insight_state(root, repository, state)
                 finding.fix_applied = True
         except Exception:
             log.exception("Failed to fix %s for %s", finding.check, finding.canonical_id or finding.knowledge_path)
@@ -649,7 +663,7 @@ def deregister_missing(root: Path | None = None) -> DoctorResult:
     for cid, manifest in read_all_source_manifests(root).items():
         if manifest.status != "missing":
             continue
-        delete_source_manifest(root, cid)
+        BrainRepository(root).delete_source_registration(cid)
         delete_source(root, cid)
         findings.append(
             Finding(
@@ -716,8 +730,9 @@ def adopt_baseline(root: Path | None = None) -> DoctorResult:
         structure_hash = compute_structure_hash(child_dirs, area_path, has_direct_files)
         summary_hash = hashlib.sha256(read_text(summary_path, encoding="utf-8").encode("utf-8")).hexdigest()
 
-        save_insight_state(
+        _save_portable_and_runtime_insight_state(
             root,
+            BrainRepository(root),
             InsightState(
                 knowledge_path=knowledge_path,
                 content_hash=content_hash,

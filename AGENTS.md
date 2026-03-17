@@ -182,8 +182,25 @@ Prefer waiting on eventual state over fixed sleeps.
 
 Disk before DB on all state mutations.
 
-`manifest.py` and `sidecar.py` are the canonical modules for durable
-authority writes. See `docs/architecture/ARCHITECTURE.md` for the fuller
+Portable brain writes under the brain root must be mediated through
+`src/brain_sync/brain_repository.py`.
+
+Runtime-state writes under `~/.brain-sync/` must be mediated through
+`src/brain_sync/state.py`.
+
+`manifest.py`, `sidecar.py`, and `fileops.py` remain lower-level primitives
+beneath those boundaries. They may still contain write helpers, but normal
+runtime application code must not use them directly for portable-brain
+semantics.
+
+Narrow exceptions are allowed only for:
+
+- bootstrap / init code
+- one-off migration code
+- tests and SUT-style harness code
+
+Portable-brain read centralization is a future-state goal. Write mediation is
+the enforced rule now. See `docs/architecture/ARCHITECTURE.md` for the fuller
 state authority model.
 
 ## Filesystem Access Rule
@@ -213,6 +230,11 @@ Use the shared helpers in `src/brain_sync/fileops.py` instead, such as:
 - `rglob_paths()`
 - `read_bytes()`
 - `read_text()`
+
+For normal runtime code, do not stop at "use `fileops.py`." If the operation
+is a portable-brain write or write-adjacent authority decision, route it
+through `brain_repository.py` instead. For runtime DB / daemon / token state,
+route it through `state.py`.
 
 This is a repository-specific engineering standard, not a style preference.
 Using raw path operations in these code paths can cause false `NEEDS FETCH`,

@@ -29,7 +29,6 @@ from brain_sync.brain_repository import BrainRepository
 from brain_sync.config import CONFIG_FILE
 from brain_sync.fileops import (
     TEXT_EXTENSIONS,
-    atomic_write_bytes,
     iterdir_paths,
     path_exists,
     path_is_dir,
@@ -48,14 +47,12 @@ from brain_sync.fs_utils import (
 from brain_sync.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
-from brain_sync.sidecar import delete_regen_meta, load_regen_hashes
+from brain_sync.sidecar import load_regen_hashes
 from brain_sync.state import (
-    InsightState,
     RegenLock,
-    delete_insight_state,
+    delete_regen_lock,
     load_all_insight_states,
     load_insight_state,
-    save_insight_state,
     save_regen_lock,
 )
 from brain_sync.token_tracking import OP_REGEN
@@ -303,6 +300,46 @@ def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, d
     knowledge_path = "" if str(rel) == "." else normalize_path(rel)
     journal_path = BrainRepository(root).append_journal_entry(knowledge_path, journal_text)
     log.info("[%s] Wrote journal entry for %s at %s", regen_id, display_path, journal_path)
+
+
+def _save_area_state(
+    root: Path,
+    repository: BrainRepository,
+    *,
+    knowledge_path: str,
+    content_hash: str,
+    summary_hash: str | None = None,
+    structure_hash: str | None = None,
+    regen_started_utc: str | None = None,
+    last_regen_utc: str | None = None,
+    regen_status: str = "idle",
+    owner_id: str | None = None,
+    error_reason: str | None = None,
+) -> None:
+    """Persist portable insight hashes through the repository and lifecycle in runtime state."""
+    repository.save_portable_insight_state(
+        knowledge_path,
+        content_hash=content_hash,
+        summary_hash=summary_hash,
+        structure_hash=structure_hash,
+        last_regen_utc=last_regen_utc,
+    )
+    save_regen_lock(
+        root,
+        RegenLock(
+            knowledge_path=knowledge_path,
+            regen_status=regen_status,
+            regen_started_utc=regen_started_utc,
+            owner_id=owner_id,
+            error_reason=error_reason,
+        ),
+    )
+
+
+def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: str) -> None:
+    """Delete portable insight state and runtime lifecycle rows for one area."""
+    repository.delete_portable_insight_state(knowledge_path)
+    delete_regen_lock(root, knowledge_path)
 
 
 def _split_markdown_chunks(
@@ -1200,19 +1237,18 @@ def classify_folder_change(
             log.info("Backfilling structure_hash for %s (post-v18 migration)", knowledge_path or "(root)")
             # Load full DB state for lifecycle fields, update hashes
             istate = load_insight_state(root, knowledge_path)
-            save_insight_state(
+            _save_area_state(
                 root,
-                InsightState(
-                    knowledge_path=knowledge_path,
-                    content_hash=new_content_hash,
-                    summary_hash=meta.summary_hash,
-                    structure_hash=new_structure_hash,
-                    regen_started_utc=istate.regen_started_utc if istate else None,
-                    last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
-                    regen_status=istate.regen_status if istate else "idle",
-                    owner_id=istate.owner_id if istate else None,
-                    error_reason=istate.error_reason if istate else None,
-                ),
+                BrainRepository(root),
+                knowledge_path=knowledge_path,
+                content_hash=new_content_hash,
+                summary_hash=meta.summary_hash,
+                structure_hash=new_structure_hash,
+                regen_started_utc=istate.regen_started_utc if istate else None,
+                last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
+                regen_status=istate.regen_status if istate else "idle",
+                owner_id=istate.owner_id if istate else None,
+                error_reason=istate.error_reason if istate else None,
             )
             return ChangeEvent(change_type="none", structural=False), new_content_hash, new_structure_hash
 
@@ -1287,19 +1323,19 @@ async def regen_single_folder(
     current_path = knowledge_path
     knowledge_dir = root / "knowledge" / current_path if current_path else root / "knowledge"
     insights_dir = area_insights_dir(root, current_path)
+    repository = BrainRepository(root)
 
     # Guard: if knowledge dir doesn't exist, clean up stale insights
     if not path_is_dir(knowledge_dir):
         log.debug("[%s] Knowledge dir does not exist: %s", regen_id, knowledge_dir)
-        repository = BrainRepository(root)
         try:
-            delete_regen_meta(insights_dir)
+            repository.delete_portable_insight_state(current_path)
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if path_is_dir(insights_dir):
             repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
-        delete_insight_state(root, current_path)
+        delete_regen_lock(root, current_path)
         return SingleFolderResult(action="cleaned_up", knowledge_path=current_path)
 
     # Collect inputs
@@ -1309,15 +1345,14 @@ async def regen_single_folder(
     # Cleanup: no readable files and no child dirs
     if not has_direct_files and not child_dirs:
         log.debug("[%s] No readable files or child dirs in %s, cleaning up", regen_id, current_path or "(root)")
-        repository = BrainRepository(root)
         try:
-            delete_regen_meta(insights_dir)
+            repository.delete_portable_insight_state(current_path)
         except Exception:
             log.warning("Failed to delete sidecar for %s", current_path, exc_info=True)
         if path_is_dir(insights_dir):
             repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
-        delete_insight_state(root, current_path)
+        delete_regen_lock(root, current_path)
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
 
     # Load regen hashes from sidecar (authoritative), DB fallback
@@ -1349,19 +1384,18 @@ async def regen_single_folder(
             regen_id,
             current_path or "(root)",
         )
-        save_insight_state(
+        _save_area_state(
             root,
-            InsightState(
-                knowledge_path=current_path,
-                content_hash=new_content_hash,
-                summary_hash=meta.summary_hash,
-                structure_hash=new_structure_hash,
-                regen_started_utc=istate.regen_started_utc if istate else None,
-                last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
-                regen_status=istate.regen_status if istate else "idle",
-                owner_id=istate.owner_id if istate else None,
-                error_reason=istate.error_reason if istate else None,
-            ),
+            repository,
+            knowledge_path=current_path,
+            content_hash=new_content_hash,
+            summary_hash=meta.summary_hash,
+            structure_hash=new_structure_hash,
+            regen_started_utc=istate.regen_started_utc if istate else None,
+            last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
+            regen_status=istate.regen_status if istate else "idle",
+            owner_id=istate.owner_id if istate else None,
+            error_reason=istate.error_reason if istate else None,
         )
         return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
 
@@ -1381,18 +1415,17 @@ async def regen_single_folder(
             regen_id,
             current_path or "(root)",
         )
-        save_insight_state(
+        _save_area_state(
             root,
-            InsightState(
-                knowledge_path=current_path,
-                content_hash=meta.content_hash if meta else new_content_hash,
-                summary_hash=meta.summary_hash if meta else None,
-                structure_hash=new_structure_hash,
-                regen_started_utc=istate.regen_started_utc if istate else None,
-                last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
-                regen_status=istate.regen_status if istate else "idle",
-                owner_id=istate.owner_id if istate else None,
-            ),
+            repository,
+            knowledge_path=current_path,
+            content_hash=meta.content_hash or new_content_hash if meta else new_content_hash,
+            summary_hash=meta.summary_hash if meta else None,
+            structure_hash=new_structure_hash,
+            regen_started_utc=istate.regen_started_utc if istate else None,
+            last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
+            regen_status=istate.regen_status if istate else "idle",
+            owner_id=istate.owner_id if istate else None,
         )
         return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
 
@@ -1596,32 +1629,9 @@ async def regen_single_folder(
             similarity_threshold * 100,
         )
         summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
-        save_insight_state(
+        _save_area_state(
             root,
-            InsightState(
-                knowledge_path=current_path,
-                content_hash=new_content_hash,
-                summary_hash=summary_hash,
-                structure_hash=new_structure_hash,
-                regen_started_utc=started,
-                last_regen_utc=now,
-                regen_status="idle",
-                owner_id=None,
-            ),
-        )
-        # Journal is independent of summary similarity — temporal events matter
-        if journal_text:
-            _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
-        return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
-
-    # Summary changed — Python writes the file atomically
-    atomic_write_bytes(summary_path, new_summary.encode("utf-8"))
-    if journal_text:
-        _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
-    summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
-    save_insight_state(
-        root,
-        InsightState(
+            repository,
             knowledge_path=current_path,
             content_hash=new_content_hash,
             summary_hash=summary_hash,
@@ -1630,7 +1640,28 @@ async def regen_single_folder(
             last_regen_utc=now,
             regen_status="idle",
             owner_id=None,
-        ),
+        )
+        # Journal is independent of summary similarity — temporal events matter
+        if journal_text:
+            _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
+        return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
+
+    # Summary changed — repository owns durable summary persistence.
+    repository.write_summary(current_path, new_summary)
+    if journal_text:
+        _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
+    summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
+    _save_area_state(
+        root,
+        repository,
+        knowledge_path=current_path,
+        content_hash=new_content_hash,
+        summary_hash=summary_hash,
+        structure_hash=new_structure_hash,
+        regen_started_utc=started,
+        last_regen_utc=now,
+        regen_status="idle",
+        owner_id=None,
     )
     log.info(
         "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
@@ -1837,12 +1868,13 @@ async def regen_all(
     content_path_set = set(content_paths)
     content_path_set.add("")  # root is always valid
     all_states = load_all_insight_states(root)
+    repository = BrainRepository(root)
     orphaned = 0
     for istate in all_states:
         kp = istate.knowledge_path
         knowledge_dir = root / "knowledge" / kp if kp else root / "knowledge"
         if not path_is_dir(knowledge_dir) and kp not in content_path_set:
-            delete_insight_state(root, kp)
+            _delete_area_state(root, repository, kp)
             orphaned += 1
             log.info("Cleaned up orphaned insight state: %s", kp)
     if orphaned:

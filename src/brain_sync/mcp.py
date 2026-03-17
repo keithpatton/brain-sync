@@ -25,6 +25,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 
 from brain_sync.area_index import AreaIndex
+from brain_sync.brain_repository import BrainRepository, BrainRepositoryInvariantError
 from brain_sync.commands import (
     SourceAlreadyExistsError,
     SourceNotFoundError,
@@ -279,11 +280,10 @@ def brain_sync_add_file(
     copy: bool = True,
 ) -> dict:
     """Add a local file to the brain."""
-    import shutil
-
     from brain_sync.fileops import ADDFILE_EXTENSIONS
 
     rt = _runtime(ctx)
+    repository = BrainRepository(rt.root)
 
     file_path = Path(source).resolve()
     if not file_path.exists():
@@ -297,33 +297,12 @@ def brain_sync_add_file(
             "message": f"Unsupported file type: {ext}. add-file supports: {', '.join(sorted(ADDFILE_EXTENSIONS))}",
         }
 
-    # Resolve destination with collision handling
-    dest_dir = rt.root / "knowledge" / target_path
-    dest = dest_dir / file_path.name
-    if path_exists(dest):
-        stem = dest.stem
-        suffix = dest.suffix
-        resolved = None
-        for i in range(2, 11):
-            candidate = dest_dir / f"{stem}-{i}{suffix}"
-            if not path_exists(candidate):
-                resolved = candidate
-                break
-        if resolved is None:
-            return {
-                "status": "error",
-                "error": "collision",
-                "message": f"File exists and all numeric suffixes taken: {file_path.name}",
-            }
-        dest = resolved
+    try:
+        dest = repository.add_local_file(file_path, target_path, copy=copy)
+    except BrainRepositoryInvariantError as exc:
+        return {"status": "error", "error": "collision", "message": str(exc)}
 
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    if copy:
-        shutil.copy2(str(file_path), str(dest))
-        action = "copied"
-    else:
-        shutil.move(str(file_path), str(dest))
-        action = "moved"
+    action = "copied" if copy else "moved"
 
     rel = normalize_path(dest.relative_to(rt.root))
     return {"status": "ok", "action": action, "path": rel}
@@ -341,22 +320,18 @@ def brain_sync_add_file(
 def brain_sync_remove_file(ctx: Context, path: str) -> dict:
     """Remove a file from knowledge/."""
     rt = _runtime(ctx)
-    knowledge_root = rt.root / "knowledge"
-    target = knowledge_root / path
-
-    # Safety: ensure target is within knowledge/
+    repository = BrainRepository(rt.root)
+    target = rt.root / "knowledge" / path
     try:
-        target.resolve().relative_to(knowledge_root.resolve())
-    except ValueError:
-        return {"status": "error", "error": "invalid_path", "message": "Path must be within knowledge/"}
-
-    if not path_exists(target):
+        deleted = repository.delete_local_file(path)
+    except BrainRepositoryInvariantError as exc:
+        if path_exists(target) and not path_is_file(target):
+            return {"status": "error", "error": "not_a_file", "path": path}
+        return {"status": "error", "error": "invalid_path", "message": str(exc)}
+    if not deleted:
+        if path_exists(target) and not path_is_file(target):
+            return {"status": "error", "error": "not_a_file", "path": path}
         return {"status": "error", "error": "file_not_found", "path": path}
-
-    if not path_is_file(target):
-        return {"status": "error", "error": "not_a_file", "path": path}
-
-    target.unlink()
     return {"status": "ok", "path": path, "hint": "Insights will update on next regen."}
 
 

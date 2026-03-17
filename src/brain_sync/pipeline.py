@@ -1,3 +1,17 @@
+"""Source sync materialization workflow.
+
+This module orchestrates fetch-time work for one source:
+- resolve adapter and auth
+- fetch source content and related attachment/context data
+- assemble the final markdown payload
+- hand durable brain writes off to ``BrainRepository`` when running against a
+  real brain root
+
+It is intentionally a workflow layer, not a persistence boundary. Portable
+brain writes belong in ``brain_repository.py``; this module prepares content
+and delegates those writes.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -7,132 +21,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-import yaml
 
 from brain_sync.brain_repository import BrainRepository
 from brain_sync.converter import format_comments
-from brain_sync.fileops import (
-    content_hash,
-    glob_paths,
-    path_exists,
-    path_is_dir,
-    read_bytes,
-    rediscover_local_path,
-    write_if_changed,
-)
+from brain_sync.fileops import content_hash, path_exists, rediscover_local_path, write_if_changed
 from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
+from brain_sync.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
     detect_source_type,
     extract_id,
-    to_durable_source_type,
 )
 from brain_sync.sources.base import UpdateCheckResult, UpdateStatus
 from brain_sync.sources.registry import get_adapter
 from brain_sync.state import SourceState
 
+__all__ = [
+    "ChildDiscoveryResult",
+    "extract_source_id",
+    "prepend_managed_header",
+    "process_source",
+    "strip_managed_header",
+]
+
 log = logging.getLogger(__name__)
-
-# Managed-file identity header lines (embedded in synced markdown files).
-MANAGED_HEADER_SOURCE = "<!-- brain-sync-source: {} -->"
-MANAGED_HEADER_WARNING = "<!-- brain-sync-managed: local edits may be overwritten -->"
-
-# Regex to detect/strip existing managed headers (for idempotent rewrites).
-_MANAGED_HEADER_RE = re.compile(r"^<!-- brain-sync-(source|managed): .* -->\n", re.MULTILINE)
-
-# Regex to extract canonical_id from the identity header (tier-2 resolution).
-_EXTRACT_SOURCE_RE = re.compile(r"^<!-- brain-sync-source: (.+) -->\r?$", re.MULTILINE)
-_FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
-_MANAGED_FRONTMATTER_KEYS = (
-    "brain_sync_source",
-    "brain_sync_canonical_id",
-    "brain_sync_source_url",
-)
-
-
-def _split_frontmatter(text: str) -> tuple[dict[str, object], str]:
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, text
-    raw = match.group(1)
-    try:
-        data = yaml.safe_load(raw) or {}
-    except yaml.YAMLError:
-        return {}, text
-    if not isinstance(data, dict):
-        return {}, text
-    return dict(data), text[match.end() :]
-
-
-def _render_frontmatter(data: dict[str, object], body: str) -> str:
-    if not data:
-        return body.lstrip("\n")
-    rendered = yaml.safe_dump(data, sort_keys=False, allow_unicode=False).strip()
-    body = body.lstrip("\n")
-    if body:
-        return f"---\n{rendered}\n---\n\n{body}"
-    return f"---\n{rendered}\n---\n"
-
-
-def _canonical_source_type_for_frontmatter(source_type: str | None, canonical_id_str: str) -> str:
-    if source_type:
-        return to_durable_source_type(source_type)
-    if canonical_id_str.startswith("gdoc:"):
-        return "google_doc"
-    return canonical_id_str.split(":", 1)[0]
-
-
-def extract_source_id(path: Path) -> str | None:
-    """Extract canonical_id from a file's embedded identity header (tier-2 resolution)."""
-    try:
-        head = read_bytes(path)[:4096].decode("utf-8", errors="replace")
-        frontmatter, _ = _split_frontmatter(head)
-        frontmatter_cid = frontmatter.get("brain_sync_canonical_id")
-        if isinstance(frontmatter_cid, str):
-            return frontmatter_cid
-        m = _EXTRACT_SOURCE_RE.search(head)
-        return m.group(1) if m else None
-    except OSError:
-        return None
-
-
-def _find_identity_matches_in_dir(target_dir: Path, canonical_id_str: str) -> list[Path]:
-    """Return managed markdown files in a directory that claim the same canonical id."""
-    if not path_is_dir(target_dir):
-        return []
-    matches: list[Path] = []
-    for path in glob_paths(target_dir, "*.md"):
-        if extract_source_id(path) == canonical_id_str:
-            matches.append(path)
-    return matches
-
-
-def strip_managed_header(text: str) -> str:
-    """Remove managed identity from YAML frontmatter and legacy HTML comments."""
-    frontmatter, body = _split_frontmatter(text)
-    if frontmatter:
-        for key in _MANAGED_FRONTMATTER_KEYS:
-            frontmatter.pop(key, None)
-        text = _render_frontmatter(frontmatter, body)
-    return _MANAGED_HEADER_RE.sub("", text).lstrip("\n")
-
-
-def prepend_managed_header(
-    canonical_id_str: str,
-    markdown: str,
-    *,
-    source_type: str | None = None,
-    source_url: str | None = None,
-) -> str:
-    """Write spec-aligned managed identity frontmatter, preserving user keys."""
-    frontmatter, body = _split_frontmatter(markdown)
-    body = _MANAGED_HEADER_RE.sub("", body).lstrip("\n")
-    frontmatter["brain_sync_source"] = _canonical_source_type_for_frontmatter(source_type, canonical_id_str)
-    frontmatter["brain_sync_canonical_id"] = canonical_id_str
-    if source_url is not None:
-        frontmatter["brain_sync_source_url"] = source_url
-    return _render_frontmatter(frontmatter, body)
 
 
 @dataclass
@@ -161,7 +74,10 @@ async def process_source(
     http_client: httpx.AsyncClient,
     root: Path | None = None,
 ) -> tuple[bool, list[ChildDiscoveryResult]]:
-    """Process a single source. Returns (content_changed, discovered_children)."""
+    """Fetch, assemble, and materialize one source.
+
+    Returns ``(content_changed, discovered_children)``.
+    """
     source_type = detect_source_type(source_state.source_url)
     adapter = get_adapter(source_type)
     caps = adapter.capabilities
@@ -175,8 +91,12 @@ async def process_source(
         return False, []
 
     # Target directory
-    target_dir = _resolve_target_dir(root, source_state)
-    target_dir.mkdir(parents=True, exist_ok=True)
+    repository = BrainRepository(root) if root is not None else None
+    target_dir = (
+        repository.ensure_knowledge_dir(source_state.target_path)
+        if repository is not None
+        else _resolve_target_dir(root, source_state)
+    )
 
     # Version check
     check: UpdateCheckResult | None = None
@@ -316,65 +236,48 @@ async def process_source(
     # stays stable across header updates and matches sync_hint semantics.
     body_hash = content_hash(markdown.encode("utf-8"))
 
-    # Prepend managed-file identity header
-    markdown = prepend_managed_header(
-        source_state.canonical_id,
-        markdown,
-        source_type=source_state.source_type,
-        source_url=source_state.source_url,
-    )
-
-    # Write + state update
-    changed = write_if_changed(target, markdown)
-
-    # Heal duplicate managed files after title-driven filename changes.
-    # There should only ever be one markdown file per canonical source id
-    # within a knowledge area.
-    if root is not None:
-        identity_matches = _find_identity_matches_in_dir(target_dir, source_state.canonical_id)
-        stale_matches = [path for path in identity_matches if path != target]
-        for stale_path in stale_matches:
-            try:
-                stale_path.unlink()
-                log.warning(
-                    "Removed duplicate managed file for %s: %s",
-                    source_state.canonical_id,
-                    stale_path.name,
-                )
-            except OSError:
-                log.warning(
-                    "Failed to remove duplicate managed file for %s: %s",
-                    source_state.canonical_id,
-                    stale_path,
-                    exc_info=True,
-                )
-
     source_state.last_checked_utc = now
     source_state.content_hash = body_hash
     source_state.source_type = source_type.value
     if result.metadata_fingerprint:
         source_state.metadata_fingerprint = result.metadata_fingerprint
 
+    # The pipeline owns fetch/assembly. Once we have the final markdown body,
+    # normal runtime portable writes cross the repository boundary here.
+    changed = False
+    if repository is not None:
+        materialization = repository.materialize_markdown(
+            knowledge_path=source_state.target_path,
+            filename=filename,
+            canonical_id=source_state.canonical_id,
+            markdown=markdown,
+            source_type=source_state.source_type,
+            source_url=source_state.source_url,
+            content_hash=body_hash,
+            last_synced_utc=now,
+        )
+        changed = materialization.changed
+        target = repository.knowledge_root / materialization.materialized_path
+        for stale_name in materialization.duplicate_files_removed:
+            log.warning(
+                "Removed duplicate managed file for %s: %s",
+                source_state.canonical_id,
+                stale_name,
+            )
+    else:
+        # Rootless fallback is kept for narrow non-runtime/test-style usage.
+        markdown = prepend_managed_header(
+            source_state.canonical_id,
+            markdown,
+            source_type=source_state.source_type,
+            source_url=source_state.source_url,
+        )
+        changed = write_if_changed(target, markdown)
+
     if changed:
         source_state.last_changed_utc = now
         log.info("Updated %s (content changed)", filename)
     else:
         log.info("Fetched %s (no content change)", filename)
-
-    # Phase 1: update manifest sync_hint and materialized_path after successful sync
-    if root is not None:
-        try:
-            from brain_sync.manifest import read_source_manifest, write_source_manifest
-
-            repository = BrainRepository(root)
-            repository.record_materialized_file(source_state.canonical_id, target)
-            manifest = read_source_manifest(root, source_state.canonical_id)
-            if manifest is not None:
-                from brain_sync.manifest import SyncHint
-
-                manifest.sync_hint = SyncHint(content_hash=body_hash, last_synced_utc=now)
-                write_source_manifest(root, manifest)
-        except Exception:
-            log.debug("Manifest update skipped (manifest may not exist yet)", exc_info=True)
 
     return changed, discovered_children
