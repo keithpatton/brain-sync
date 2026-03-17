@@ -1,25 +1,36 @@
 # Planning Directory
 
-This folder holds engineering plans and their reviews. The naming convention is designed to make the lifecycle readable in a filesystem listing without needing to open each file.
+This folder holds engineering plans, review artifacts, approvals, and related
+notes. The naming convention is designed to make the lifecycle readable in a
+filesystem listing without needing to open each file.
 
 The planning directory is append-only. Existing artifacts are never modified or renamed as part of the normal workflow.
 
 ## Lifecycle
 
-Each plan moves through only these stages:
+Each plan starts from the canonical root plan and then branches by outcome:
 
 1. `PLAN_<id>.md` is the canonical root plan.
-2. `plan_<id>_review_<n>_<date>.md` records review feedback for that plan version.
-3. `plan_<id>_<iteration>_<date>.md` records the next revised plan iteration.
-4. `plan_<id>_<iteration>_approved_<datetime>.md` marks the approved revision.
+2. The latest plan version is evaluated by the reviewer or reviewer/approver.
+3. If changes are required, `plan_<id>[_<iteration>]_review_<n>_<date>.md`
+   records the issues to resolve.
+4. The planner answers that review with a new revision
+   `plan_<id>_<iteration>_<date>.md`.
+5. If the latest revision is acceptable, create
+   `plan_<id>_<iteration>_approved_<datetime>.md`.
 
-Reviews always attach to a specific plan version. Revisions create a new plan file rather than overwriting the previous one. Approval is represented as a final suffix on the approved plan version.
+Reviews always attach to a specific plan version. Revisions create a new plan
+file rather than overwriting the previous one. Approval is represented as a
+final suffix on the approved plan version.
 
-Review artifacts may recommend approval, but they are never approval themselves.
 A plan is approved only when the corresponding
 `plan_<id>_<iteration>_approved_<datetime>.md` artifact exists. Implementation
 begins only after that approval artifact exists, unless the user explicitly
 asks to bypass the planning trail.
+
+The important clarification is that a passing evaluation round normally ends in
+an approval artifact, not in a final positive review artifact plus a separate
+approval artifact.
 
 Supporting inputs may exist alongside the plan trail when a planner needs extra implementation context. They inform a plan, but they are not part of the plan → review → revision → approval lifecycle.
 
@@ -67,6 +78,16 @@ Reviews without an iteration number refer to the canonical root plan, which is i
 
 The planning directory supports three roles: planner, reviewer, and approver.
 
+One agent may hold both the reviewer and approver roles. In that common flow,
+the agent should review first, try to find substantive problems, and then emit
+only one artifact for that pass:
+
+- a review artifact when the plan must come back for revision
+- an approval artifact when the plan is ready to execute
+
+Do not create both artifacts for the same approval pass unless the user
+explicitly wants separate reviewer and approver records preserved.
+
 ### Planner
 
 The planner is responsible for producing plan revisions.
@@ -98,12 +119,20 @@ Reviews may contain:
 - critique
 - risks
 - suggested improvements
-- an approval recommendation
 
 The reviewer must never modify the plan file being reviewed.
 
 The reviewer must not treat a review artifact as approval or as permission to
 begin implementation.
+
+The reviewer should apply a challenge-first standard. Approval should be
+withheld when the plan still has unresolved scope ambiguity, missing acceptance
+criteria, under-specified sequencing, contradictory guidance, or risks left for
+the implementer to guess through.
+
+If the reviewer is also acting as approver and the plan is acceptable, the
+review should stop at that internal conclusion and the durable artifact for that
+pass should be the approval artifact, not an extra final review file.
 
 ### Approver
 
@@ -119,9 +148,57 @@ Only the most recent plan revision may be approved. If a review identifies issue
 
 Approval must not modify the original plan file.
 
+Approval is the authoritative handoff for implementation. If non-blocking
+implementation notes still matter after approval, put them in the approval
+attestation rather than leaving them only in a separate final review artifact.
+
 If the approver finds the plan acceptable, the next required action is to
 create the approval artifact. The approver should stop after creating that
 artifact unless separately asked to implement the plan.
+
+If the same agent is serving as reviewer and approver, do not create a
+same-pass "approval recommended" review artifact and then a second approval
+artifact. Create the approval artifact directly.
+
+## One Artifact Per Evaluation Pass
+
+For a given evaluation of the latest plan version, create exactly one durable
+decision artifact:
+
+- review artifact, if changes are still required
+- approval artifact, if the plan is acceptable
+
+This avoids two common failure modes:
+
+- the final review and the approval attestation drifting apart
+- implementation-relevant advice being left in the wrong artifact
+
+If the user explicitly wants separate reviewer and approver artifacts for the
+same passing round, that is allowed. In that case:
+
+- the review may recommend approval
+- the approval artifact remains authoritative
+- any implementation-relevant notes that still matter must be copied into the
+  approval attestation
+
+Otherwise, when a round ends in approval, do not create a review artifact for
+that same round.
+
+## Approval Threshold
+
+Approval should mean more than "good enough to start coding."
+
+Do not approve while any of the following remain materially unresolved:
+
+- scope or boundary ambiguity
+- key design decisions deferred to implementer guesswork
+- missing or weak acceptance criteria
+- contradictions with higher-authority docs or current code reality
+- sequencing gaps that could invalidate later work
+- open review findings that change the plan's requirements
+
+Non-blocking advisories may remain, but they should fit cleanly in approval
+notes without changing the approved plan's meaning.
 
 ## Approval Attestation
 
@@ -146,6 +223,15 @@ Notes:
 
 This keeps approval visible while preserving the approved plan text as a separate append-only artifact.
 
+The approval artifact is the authoritative implementation handoff. Any advisory
+notes that should survive into execution belong here.
+
+When copying the approved plan into the approval artifact, remove or rewrite
+plan-only boilerplate that would be false after approval, such as:
+
+- "this file is not approval"
+- "the next required action is to create an approval artifact"
+
 ## Implementation Gate
 
 The planning workflow has a hard boundary between review, approval, and
@@ -169,17 +255,22 @@ To keep the gate unambiguous:
 
 - do not use verdicts such as `Approved for execution`
 - do not end a review artifact by telling the next agent to implement
-- prefer explicit wording such as `Approval recommended; create plan_<id>_<iteration>_approved_<datetime>.md before implementation`
+- default review verdicts should be challenge-oriented, such as `Changes required`
+- use `Approval recommended` only when the user explicitly wants separate reviewer and approver artifacts for the same passing round
+
+In the common combined reviewer/approver flow, omit the positive review artifact
+entirely and create the approval artifact instead.
 
 Example review verdict:
 
 ```md
 ## Verdict
 
-Approval recommended.
+Changes required.
 
-Create `plan_<id>_<iteration>_approved_<datetime>.md` before implementation.
-This review artifact does not itself approve the plan.
+Create a new plan revision that resolves the findings in this review.
+This review artifact does not approve the plan and does not authorize
+implementation.
 ```
 
 Example approval artifact:
@@ -289,7 +380,8 @@ docs/plans/
 ├── plan_v23_review_1_2026-03-15.md
 ├── plan_v23_2_2026-03-15.md
 ├── plan_v23_2_review_1_2026-03-15.md
-└── plan_v23_2_approved_2026-03-15T19-32-00.md
+├── plan_v23_3_2026-03-15.md
+└── plan_v23_3_approved_2026-03-15T19-32-00.md
 ```
 
 Lifecycle example:
@@ -305,9 +397,14 @@ plan_v23_2_2026-03-15.md
    ↓
 plan_v23_2_review_1_2026-03-15.md
    ↓
-plan_v23_2_approved_2026-03-15T19-32-00.md
+plan_v23_3_2026-03-15.md
+   ↓
+plan_v23_3_approved_2026-03-15T19-32-00.md
 ```
 
 ## Current Files
 
-The v23 files in this folder have been aligned to this convention. Keep future plan artifacts on the same pattern so the revision trail stays easy to scan.
+Some older files in this folder predate these clarifications and may still show
+positive review artifacts alongside approvals, or copied plan text that was not
+normalized for the approved state. Follow the rules in this README for future
+artifacts so the trail stays consistent and easy to scan.
