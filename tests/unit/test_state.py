@@ -9,22 +9,19 @@ import pytest
 
 import brain_sync.runtime.repository as state_module
 from brain_sync.application.insights import (
+    InsightState,
     delete_insight_state,
     load_all_insight_states,
     load_insight_state,
     save_insight_state,
 )
-from brain_sync.application.source_state import load_state
+from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.brain.manifest import SourceManifest, write_source_manifest
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
 from brain_sync.runtime.repository import (
-    InsightState,
     RegenLock,
-    SourceState,
-    SyncState,
     read_daemon_status,
     save_regen_lock,
-    save_state,
     write_daemon_status,
 )
 
@@ -74,7 +71,7 @@ class TestRuntimeState:
     def test_load_missing_db_returns_current_schema_version(self, tmp_path: Path) -> None:
         loaded = load_state(tmp_path)
         assert loaded.sources == {}
-        assert loaded.version == RUNTIME_DB_SCHEMA_VERSION
+        assert not hasattr(loaded, "version")
 
     def test_daemon_status_is_json_file(self, tmp_path: Path) -> None:
         write_daemon_status(tmp_path, pid=1234, status="starting")

@@ -9,16 +9,16 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from brain_sync.application.state_models import SourceState, SyncState
 from brain_sync.brain.fileops import path_is_file, read_text
 from brain_sync.brain.managed_markdown import strip_managed_header
 from brain_sync.brain.manifest import SourceManifest, read_all_source_manifests
 from brain_sync.brain.tree import normalize_path
-from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
-from brain_sync.runtime.repository import SourceState, SyncState, load_sync_progress
+from brain_sync.runtime.repository import load_sync_progress, save_sync_progress
 
 log = logging.getLogger(__name__)
 
-__all__ = ["load_state", "seed_source_state_from_hint"]
+__all__ = ["SourceState", "SyncState", "load_state", "save_state", "seed_source_state_from_hint"]
 
 
 def seed_source_state_from_hint(root: Path, manifest: SourceManifest, target_path: str) -> SourceState:
@@ -97,4 +97,9 @@ def load_state(root: Path) -> SyncState:
             interval_seconds=progress.interval_seconds,
         )
 
-    return SyncState(version=RUNTIME_DB_SCHEMA_VERSION, sources=merged)
+    return SyncState(sources=merged)
+
+
+def save_state(root: Path, state: SyncState) -> None:
+    """Persist runtime sync progress for application-owned source views."""
+    save_sync_progress(root, state)

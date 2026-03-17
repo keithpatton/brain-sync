@@ -28,11 +28,12 @@ from brain_sync.application.doctor import (
     check_version_json,
     doctor,
 )
-from brain_sync.application.insights import save_insight_state
+from brain_sync.application.insights import InsightState, save_insight_state
+from brain_sync.application.source_state import SourceState, SyncState, save_state
 from brain_sync.brain.fileops import atomic_write_bytes
 from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest
 from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
-from brain_sync.runtime.repository import InsightState, SourceState, SyncState, _connect, save_state
+from brain_sync.runtime.repository import _connect
 from brain_sync.sync.pipeline import prepend_managed_header
 
 pytestmark = pytest.mark.unit

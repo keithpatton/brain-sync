@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
-from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
 
@@ -126,6 +126,11 @@ _MIGRATION_V3_SOURCES = ""
 _MIGRATION_V3_BINDINGS = ""
 
 
+def _normalize_runtime_path(p: str | PathLike[str]) -> str:
+    result = str(p).replace("\\", "/").rstrip("/")
+    return "" if result == "." else result
+
+
 class _PathNormalized:
     """Mixin that auto-normalizes path fields on assignment.
 
@@ -137,17 +142,13 @@ class _PathNormalized:
 
     def __setattr__(self, name: str, value: object) -> None:
         if name in self._PATH_FIELDS and isinstance(value, str | PathLike):
-            value = normalize_path(str(value))
+            value = _normalize_runtime_path(value)
         super().__setattr__(name, value)
 
 
 @dataclass
-class SourceState(_PathNormalized):
-    _PATH_FIELDS: ClassVar[set[str]] = {"target_path"}
-
+class SyncProgress:
     canonical_id: str
-    source_url: str
-    source_type: str
     last_checked_utc: str | None = None
     last_changed_utc: str | None = None
     current_interval_secs: int = 1800
@@ -155,29 +156,17 @@ class SourceState(_PathNormalized):
     metadata_fingerprint: str | None = None
     next_check_utc: str | None = None
     interval_seconds: int | None = None
-    target_path: str = ""
-    sync_attachments: bool = False
 
 
-@dataclass
-class SyncState:
-    version: int = SCHEMA_VERSION
-    sources: dict[str, SourceState] = field(default_factory=dict)
-
-
-@dataclass
-class InsightState(_PathNormalized):
-    _PATH_FIELDS: ClassVar[set[str]] = {"knowledge_path"}
-
-    knowledge_path: str
-    content_hash: str | None = None
-    summary_hash: str | None = None
-    structure_hash: str | None = None
-    regen_started_utc: str | None = None
-    last_regen_utc: str | None = None
-    regen_status: str = "idle"
-    owner_id: str | None = None
-    error_reason: str | None = None
+class _SyncProgressLike(Protocol):
+    canonical_id: str
+    last_checked_utc: str | None
+    last_changed_utc: str | None
+    current_interval_secs: int
+    content_hash: str | None
+    metadata_fingerprint: str | None
+    next_check_utc: str | None
+    interval_seconds: int | None
 
 
 @dataclass
@@ -408,7 +397,7 @@ def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
                         target_path = str(manifest_path.parent.relative_to(root))
                         from brain_sync.brain.tree import normalize_path
 
-                        target_path = normalize_path(target_path)
+                        target_path = _normalize_runtime_path(target_path)
                     else:
                         target_path = ""
                 except ValueError:
@@ -880,7 +869,7 @@ def _connect(root: Path) -> sqlite3.Connection:
         _reset_runtime_db(db)
 
 
-def load_sync_progress(root: Path) -> dict[str, SourceState]:
+def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
     """Read all sync_cache rows from the DB as runtime-only progress records."""
     try:
         conn = _connect(root)
@@ -888,7 +877,7 @@ def load_sync_progress(root: Path) -> dict[str, SourceState]:
         log.warning("Cannot open sync state DB: %s", e)
         return {}
 
-    result: dict[str, SourceState] = {}
+    result: dict[str, SyncProgress] = {}
     try:
         rows = conn.execute(
             "SELECT canonical_id, last_checked_utc, last_changed_utc, "
@@ -897,10 +886,8 @@ def load_sync_progress(root: Path) -> dict[str, SourceState]:
             "FROM sync_cache"
         ).fetchall()
         for row in rows:
-            result[row[0]] = SourceState(
+            result[row[0]] = SyncProgress(
                 canonical_id=row[0],
-                source_url="",
-                source_type="",
                 last_checked_utc=row[1],
                 last_changed_utc=row[2],
                 current_interval_secs=row[3],
@@ -917,8 +904,8 @@ def load_sync_progress(root: Path) -> dict[str, SourceState]:
     return result
 
 
-def _has_sync_progress(ss: SourceState) -> bool:
-    """Check if a SourceState has any persistable sync progress."""
+def _has_sync_progress(ss: _SyncProgressLike) -> bool:
+    """Check if a source-like object has any persistable sync progress."""
     return (
         ss.last_checked_utc is not None
         or ss.content_hash is not None
@@ -927,7 +914,14 @@ def _has_sync_progress(ss: SourceState) -> bool:
     )
 
 
-def save_sync_progress(root: Path, state: SyncState) -> None:
+def _iter_sync_progress_items(state: object) -> list[tuple[str, _SyncProgressLike]]:
+    sources = getattr(state, "sources", state)
+    if not isinstance(sources, Mapping):
+        raise TypeError("save_sync_progress() expects a mapping or an object with a .sources mapping")
+    return list(sources.items())  # type: ignore[return-value]
+
+
+def save_sync_progress(root: Path, state: object) -> None:
     """Save sync progress for all sources to sync_cache.
 
     sync_cache stores only progress fields (no intent — that's in manifests).
@@ -935,7 +929,7 @@ def save_sync_progress(root: Path, state: SyncState) -> None:
     """
     conn = _connect(root)
     try:
-        for key, ss in state.sources.items():
+        for key, ss in _iter_sync_progress_items(state):
             if not _has_sync_progress(ss):
                 continue
             conn.execute(
@@ -1020,7 +1014,7 @@ def _clamp_error_reason(reason: str | None) -> str | None:
 
 def load_regen_lock(root: Path, knowledge_path: str) -> RegenLock | None:
     """Load runtime lifecycle fields for a single knowledge path."""
-    knowledge_path = normalize_path(knowledge_path)
+    knowledge_path = _normalize_runtime_path(knowledge_path)
     conn = _connect(root)
     try:
         row = conn.execute(
@@ -1046,7 +1040,7 @@ def load_regen_lock(root: Path, knowledge_path: str) -> RegenLock | None:
 
 def save_regen_lock(root: Path, lock: RegenLock) -> None:
     """Persist runtime lifecycle fields to regen_locks only."""
-    kp = normalize_path(lock.knowledge_path)
+    kp = _normalize_runtime_path(lock.knowledge_path)
     error_reason = _clamp_error_reason(lock.error_reason)
 
     conn = _connect(root)
@@ -1100,7 +1094,7 @@ def load_all_regen_locks(root: Path) -> list[RegenLock]:
 
 def delete_regen_lock(root: Path, knowledge_path: str) -> None:
     """Delete only the runtime regen_locks row for a knowledge path."""
-    knowledge_path = normalize_path(knowledge_path)
+    knowledge_path = _normalize_runtime_path(knowledge_path)
     conn = _connect(root)
     try:
         conn.execute(
@@ -1123,7 +1117,7 @@ def acquire_regen_ownership(
     """
     from datetime import UTC, datetime, timedelta
 
-    knowledge_path = normalize_path(knowledge_path)
+    knowledge_path = _normalize_runtime_path(knowledge_path)
     now = datetime.now(UTC).isoformat()
     stale_cutoff = (datetime.now(UTC) - timedelta(seconds=stale_threshold_secs)).isoformat()
 
@@ -1262,8 +1256,8 @@ def get_regen_health(root: Path, stale_threshold_secs: float = 600.0) -> dict:
 
 def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
     """Update a knowledge_path in regen_locks (for folder renames)."""
-    old_path = normalize_path(old_path)
-    new_path = normalize_path(new_path)
+    old_path = _normalize_runtime_path(old_path)
+    new_path = _normalize_runtime_path(new_path)
     conn = _connect(root)
     try:
         conn.execute(

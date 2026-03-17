@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip("google.auth", reason="google-auth not installed (install brain-sync[google])")
 
+from brain_sync.application.source_state import SyncState, save_state
 from brain_sync.brain.fileops import canonical_prefix
-from brain_sync.runtime.repository import SyncState, save_state
 from brain_sync.sources.base import DiscoveredImage
 from brain_sync.sources.googledocs.rest import (
     InlineImageInfo,

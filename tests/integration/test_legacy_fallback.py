@@ -8,18 +8,13 @@ from pathlib import Path
 import pytest
 
 from brain_sync.application.init import init_brain
-from brain_sync.application.source_state import load_state
+from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
     delete_source_manifest,
     read_all_source_manifests,
     write_source_manifest,
-)
-from brain_sync.runtime.repository import (
-    SourceState,
-    SyncState,
-    save_state,
 )
 
 pytestmark = pytest.mark.integration

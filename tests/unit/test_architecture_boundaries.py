@@ -167,7 +167,6 @@ _RULE_EXCEPTION_IMPORTS = {
 
 # Transitional debt documented in docs/architecture/ARCHITECTURE.md.
 _TRANSITIONAL_DEBT_IMPORTS = {
-    "src/brain_sync/runtime/repository.py": frozenset({"brain_sync.brain.tree"}),
     "src/brain_sync/sync/reconcile.py": frozenset({"brain_sync.regen"}),
     "src/brain_sync/sync/watcher.py": frozenset({"brain_sync.regen"}),
 }

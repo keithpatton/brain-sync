@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from brain_sync.runtime.repository import SourceState
+from brain_sync.application.source_state import SourceState
 from brain_sync.sources import canonical_filename, detect_source_type, extract_id
 from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.sync.pipeline import process_source

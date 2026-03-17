@@ -10,16 +10,14 @@ import httpx
 
 from brain_sync.application.insights import load_insight_state
 from brain_sync.application.reconcile import reconcile_knowledge_tree
-from brain_sync.application.source_state import load_state
+from brain_sync.application.source_state import SyncState, load_state, save_state
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen.queue import RegenQueue
 from brain_sync.runtime.child_requests import clear_child_discovery_request, load_child_discovery_request
 from brain_sync.runtime.repository import (
     RegenLock,
-    SyncState,
     save_regen_lock,
-    save_sync_progress,
     write_daemon_status,
 )
 from brain_sync.sync.pipeline import process_source
@@ -97,7 +95,7 @@ async def run(root: Path) -> None:
     watcher = KnowledgeWatcher(root)
 
     _ensure_source_states(state, scheduler)
-    save_sync_progress(root, state)
+    save_state(root, state)
 
     last_rescan = time.monotonic()
 
@@ -176,7 +174,7 @@ async def run(root: Path) -> None:
                     if now - last_rescan >= RESCAN_INTERVAL:
                         state = load_state(root)
                         _ensure_source_states(state, scheduler)
-                        save_sync_progress(root, state)
+                        save_state(root, state)
                         last_rescan = now
 
                     # 3. Process due sources
@@ -265,7 +263,7 @@ async def run(root: Path) -> None:
                         ss.interval_seconds = interval
                         ss.next_check_utc = compute_next_check_utc(interval)
                         try:
-                            save_sync_progress(root, state)
+                            save_state(root, state)
                         except Exception:
                             log.warning("Failed to save state (will retry next tick)", exc_info=True)
 
@@ -315,7 +313,7 @@ async def run(root: Path) -> None:
                 except Exception:
                     log.warning("Failed to write daemon stopped status", exc_info=True)
                 try:
-                    save_sync_progress(root, state)
+                    save_state(root, state)
                 except Exception:
                     log.error("Failed to save state on shutdown", exc_info=True)
                 log.info("brain-sync stopped")

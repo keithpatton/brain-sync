@@ -159,7 +159,7 @@ class TestUpdateSourceUpdatesManifest:
 class TestReconcileBootstrapsMigration:
     def test_no_bootstrap_from_sync_cache_in_v21(self, brain: Path):
         """In v21, sync_cache has no intent — bootstrap from DB produces nothing."""
-        from brain_sync.runtime.repository import SourceState, SyncState, save_state
+        from brain_sync.application.source_state import SourceState, SyncState, save_state
 
         state = SyncState()
         state.sources[CONFLUENCE_CID] = SourceState(

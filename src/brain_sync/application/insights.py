@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from brain_sync.application.state_models import InsightState
 from brain_sync.brain.layout import area_insights_dir, knowledge_root
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.sidecar import read_all_regen_meta, read_regen_meta
 from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.repository import (
-    InsightState,
     RegenLock,
     delete_regen_lock,
     load_all_regen_locks,
@@ -18,6 +18,7 @@ from brain_sync.runtime.repository import (
 )
 
 __all__ = [
+    "InsightState",
     "delete_insight_state",
     "load_all_insight_states",
     "load_insight_state",

@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from brain_sync.application.insights import load_insight_state, save_insight_state
+from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
+from brain_sync.application.source_state import SyncState, save_state
 from brain_sync.regen.lifecycle import regen_session
-from brain_sync.runtime.repository import InsightState, SyncState, save_state
 
 pytestmark = pytest.mark.unit
 

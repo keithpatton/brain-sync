@@ -48,7 +48,7 @@ def test_runtime_db_can_be_rebuilt_without_invalidating_brain(tmp_path: Path) ->
     init_brain(root)
 
     state = load_state(root)
-    assert state.version == RUNTIME_DB_SCHEMA_VERSION
+    assert not hasattr(state, "version")
     assert state_module.RUNTIME_DB_FILE.exists()
 
     state_module.RUNTIME_DB_FILE.unlink()
@@ -116,7 +116,7 @@ def test_supported_v23_runtime_db_is_migrated_to_v24_in_place(tmp_path: Path) ->
         conn.close()
 
     migrated_state = load_state(root)
-    assert migrated_state.version == RUNTIME_DB_SCHEMA_VERSION
+    assert not hasattr(migrated_state, "version")
 
     migrated = state_module._connect(root)
     try:

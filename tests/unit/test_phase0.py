@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_sync.application.init import init_brain
-from brain_sync.runtime.repository import SourceState
+from brain_sync.application.source_state import SourceState
 from brain_sync.sources.base import SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.sync.pipeline import extract_source_id, prepend_managed_header, strip_managed_header
 

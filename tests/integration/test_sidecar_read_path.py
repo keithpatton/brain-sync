@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.application.insights import save_insight_state
+from brain_sync.application.insights import InsightState, save_insight_state
 from brain_sync.brain.layout import area_insights_dir
 from brain_sync.brain.sidecar import (
     RegenMeta,
@@ -21,7 +21,6 @@ from brain_sync.brain.sidecar import (
 )
 from brain_sync.llm.fake import FakeBackend
 from brain_sync.regen import RegenConfig, classify_folder_change, regen_single_folder
-from brain_sync.runtime.repository import InsightState
 
 pytestmark = pytest.mark.integration
 

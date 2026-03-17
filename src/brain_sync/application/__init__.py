@@ -11,6 +11,7 @@ Usage:
 from brain_sync.application.doctor import DoctorResult, Finding, Severity, deregister_missing, doctor, rebuild_db
 from brain_sync.application.init import InitResult, init_brain, update_skill
 from brain_sync.application.insights import (
+    InsightState,
     delete_insight_state,
     load_all_insight_states,
     load_insight_state,
@@ -20,7 +21,7 @@ from brain_sync.application.query_index import AreaIndex, load_area_index
 from brain_sync.application.reconcile import TreeReconcileResult, reconcile_knowledge_tree
 from brain_sync.application.regen import RegenFailed, classify_folder_change, invalidate_global_context_cache, run_regen
 from brain_sync.application.roots import BrainNotFoundError, InvalidBrainRootError, resolve_root, validate_brain_root
-from brain_sync.application.source_state import load_state
+from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.application.sources import (
     AddResult,
     InvalidChildDiscoveryRequestError,
@@ -60,6 +61,7 @@ __all__ = [
     "DoctorResult",
     "Finding",
     "InitResult",
+    "InsightState",
     "InvalidBrainRootError",
     "InvalidChildDiscoveryRequestError",
     "MigrateResult",
@@ -74,8 +76,10 @@ __all__ = [
     "SourceInfo",
     "SourceKind",
     "SourceNotFoundError",
+    "SourceState",
     "StatusSummary",
     "SuggestPlacementResult",
+    "SyncState",
     "TreeReconcileResult",
     "UpdateResult",
     "add_source",
@@ -105,6 +109,7 @@ __all__ = [
     "resolve_root",
     "run_regen",
     "save_insight_state",
+    "save_state",
     "suggest_placement",
     "update_skill",
     "update_source",

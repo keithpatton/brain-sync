@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from brain_sync.application.roots import _require_root
-from brain_sync.application.source_state import load_state
+from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.brain.fileops import (
     canonical_prefix,
     path_is_dir,
@@ -30,14 +30,9 @@ from brain_sync.runtime.child_requests import (
     save_child_discovery_request,
 )
 from brain_sync.runtime.repository import (
-    SourceState,
-    SyncState,
-    load_sync_progress,
-    save_sync_progress,
-)
-from brain_sync.runtime.repository import (
     delete_source as db_delete_source,
 )
+from brain_sync.runtime.repository import load_sync_progress
 from brain_sync.sources import canonical_id, detect_source_type
 
 log = logging.getLogger(__name__)
@@ -200,7 +195,7 @@ def add_source(
         target_path=target_path,
         sync_attachments=sync_attachments,
     )
-    save_sync_progress(root, state)
+    save_state(root, state)
     repository.ensure_knowledge_dir(target_path)
 
     return AddResult(
@@ -261,7 +256,7 @@ def remove_source(
         files_deleted = repository.remove_source_owned_files(target_path, cid)
 
     state.sources.pop(cid, None)
-    save_sync_progress(root, state)
+    save_state(root, state)
 
     db_delete_source(root, cid)
     clear_child_discovery_request(root, cid)
@@ -328,7 +323,7 @@ def move_source(
 
     if cid in state.sources:
         state.sources[cid].target_path = to_path
-        save_sync_progress(root, state)
+        save_state(root, state)
 
     files_moved = False
     if old_path != to_path:

@@ -17,6 +17,11 @@ class SourceStateLike(Protocol):
     canonical_id: str
     source_url: str
     source_type: str
+    target_path: str
+    sync_attachments: bool
+    last_checked_utc: str | None
+    last_changed_utc: str | None
+    content_hash: str | None
     metadata_fingerprint: str | None
 
 

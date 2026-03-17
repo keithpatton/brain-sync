@@ -26,14 +26,13 @@ from brain_sync.brain.fileops import content_hash, path_exists, rediscover_local
 from brain_sync.brain.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.brain.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
 from brain_sync.brain.repository import BrainRepository
-from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
     detect_source_type,
     extract_id,
 )
-from brain_sync.sources.base import UpdateCheckResult, UpdateStatus
+from brain_sync.sources.base import SourceStateLike, UpdateCheckResult, UpdateStatus
 from brain_sync.sources.conversion import format_comments
 from brain_sync.sources.registry import get_adapter
 
@@ -57,11 +56,11 @@ class ChildDiscoveryResult:
     title: str | None
 
 
-def _has_context_flags(ss: SourceState) -> bool:
+def _has_context_flags(ss: SourceStateLike) -> bool:
     return ss.sync_attachments
 
 
-def _resolve_target_dir(root: Path | None, source_state: SourceState) -> Path:
+def _resolve_target_dir(root: Path | None, source_state: SourceStateLike) -> Path:
     if root is not None and source_state.target_path:
         return root / "knowledge" / source_state.target_path
     elif root is not None:
@@ -70,7 +69,7 @@ def _resolve_target_dir(root: Path | None, source_state: SourceState) -> Path:
 
 
 async def process_source(
-    source_state: SourceState,
+    source_state: SourceStateLike,
     http_client: httpx.AsyncClient,
     root: Path | None = None,
     *,

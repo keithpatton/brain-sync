@@ -376,11 +376,6 @@ offline changes.
 Some seams are still tolerated as transitional debt rather than part of the
 normative package graph:
 
-- `runtime/repository.py` no longer owns manifest/sidecar projection, but it
-  still defines mixed-plane DTOs (`SourceState`, `SyncState`, `InsightState`)
-  that are consumed by application-owned projection modules. This is not a
-  general `runtime -> application` allowance; it is bounded transitional debt
-  until type ownership is split more truthfully in a later hardening pass.
 - `sync/reconcile.py` and `sync/watcher.py` still reach into `regen/` for
   folder classification and cache invalidation helpers. This is not a general
   `sync -> regen` allowance; it is a bounded transitional seam.
@@ -426,8 +421,11 @@ performance hint rather than a full correctness proof.
   root-level convenience locations.
 - Public state APIs replaced several direct command-layer uses of private DB helpers.
 - Cross-plane source and insight projection moved into `application/` entrypoints,
-  with DTO ownership cleanup intentionally deferred as follow-up hardening debt.
+  with application-owned state models now carrying those merged views instead of
+  `runtime/repository.py`.
 - Deterministic `FakeBackend` support reduced subprocess overhead in tests.
+- `runtime/repository.py` no longer depends on `brain.tree` for path normalization;
+  runtime-path normalization is now local to the runtime persistence layer.
 
 ---
 

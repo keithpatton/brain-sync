@@ -19,12 +19,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from brain_sync.application.source_state import load_state
-from brain_sync.runtime.repository import (
-    SourceState,
-    SyncState,
-    save_state,
-)
+from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.sources import canonical_id, detect_source_type
 from brain_sync.sources.base import (
     Comment,

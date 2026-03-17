@@ -63,7 +63,7 @@ class TestCheckForUpdate:
 
     @pytest.fixture
     def source_state(self):
-        from brain_sync.runtime.repository import SourceState
+        from brain_sync.application.source_state import SourceState
 
         return SourceState(
             canonical_id="gdoc:abc123",
@@ -155,7 +155,7 @@ class TestFetch:
 
     @pytest.fixture
     def source_state(self):
-        from brain_sync.runtime.repository import SourceState
+        from brain_sync.application.source_state import SourceState
 
         return SourceState(
             canonical_id="gdoc:abc123",
