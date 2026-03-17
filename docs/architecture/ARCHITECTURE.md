@@ -33,7 +33,40 @@ All source lives under `src/brain_sync/`.
 
 ---
 
-## 2. Module Responsibilities
+## 2. Canonical Subsystem Boundaries
+
+Canonical ownership lives in the package homes below. Root modules and legacy
+packages exist only as compatibility shims and are not the conceptual owners
+for new work.
+
+| Package | Owns | Does not own |
+|---|---|---|
+| `application/` | interface-neutral use-case orchestration such as init, config, source admin, and doctor flows | CLI/MCP transport details, durable persistence primitives, provider protocol code |
+| `interfaces/` | CLI parsing/handlers, MCP transport, interface-owned packaged resources | shareable application workflows, portable or runtime persistence logic |
+| `brain/` | portable brain repository boundary, managed layout, manifests, sidecars, filesystem/tree semantics | runtime DB/config/daemon state, provider integration, LLM calls |
+| `runtime/` | machine-local config, runtime paths, runtime repository, token telemetry | portable brain semantics or writes inside the brain root |
+| `sync/` | daemon loop, scheduler, watcher, reconciliation, source materialization, source-agnostic attachment syncing | provider auth/REST behavior, query indexing, regen prompt policy |
+| `regen/` | derived-meaning regeneration, lifecycle, queueing, prompt resources, template resources | source sync mechanics, transport adapters, portable storage primitives |
+| `query/` | read-model indexing, placement suggestions, read-only classification helpers | durable writes, daemon orchestration, provider protocol logic |
+| `sources/` | provider-specific adapters, auth, REST helpers, title resolution, source-format conversion | portable-brain ownership, runtime ownership, CLI/MCP orchestration |
+| `llm/` | backend protocol and concrete backends | regen policy, token persistence, provider/source logic |
+| `util/` | minimal neutral helpers such as logging and retry | anything that knows about brains, manifests, knowledge areas, or runtime rows |
+
+### Dependency Shape
+
+The package graph is intentionally directional:
+
+- `interfaces` adapts transport and calls `application`
+- `application` composes lower subsystems to complete user-visible work
+- `brain` and `runtime` are the two persistence planes
+- `sync`, `regen`, `query`, `sources`, and `llm` are peer subsystems beneath `application`
+- `util` stays neutral and must not grow domain ownership
+
+The exact allowed and forbidden dependency directions are normative in
+`docs/RULES.md`. This document explains why those boundaries exist and how to
+classify code when new feature work or refactoring crosses subsystem lines.
+
+## 2.1. Responsibilities And Flows
 
 **Runtime helpers** are split between `runtime/config.py`, which owns config
 file access, and `runtime/paths.py`, which owns machine-local runtime paths.
@@ -78,34 +111,6 @@ Those docstrings are intentionally local and concise. They should help readers
 and agents classify code at the package boundary without duplicating the fuller
 explanatory material in this document or the repository workflow rules in
 `AGENTS.md`.
-
-### Dependency Direction
-
-The package ontology is directional. The intended flow is:
-
-- `interfaces -> application`
-- `application -> brain / runtime / sync / regen / query / sources / llm / util`
-- `sync -> brain / runtime / sources / util`
-- `regen -> brain / runtime / llm / util`
-- `query -> brain / util`
-- `sources -> util`
-- `llm -> util`
-- `brain -> util`
-- `runtime -> util`
-
-Entry points may depend on `application`, `interfaces`, and `sync` for process
-bootstrap, but lower-level packages must not import upward into entrypoints.
-
-The inverse directions are architecturally invalid. In particular:
-
-- `brain`, `runtime`, and `util` must not import upward into application or interface layers
-- `sources` must not own portable-brain or runtime persistence semantics
-- `query` must remain read-oriented rather than orchestrating sync or regen
-- `regen` and `sync` are peer subsystems and should not collapse back into each other
-
-When code needs to be shared, move it to the owning lower-level package or to
-a truly neutral helper rather than introducing upward imports or vague
-catch-all modules.
 
 ### Startup Reconcile Lifecycle
 
@@ -187,7 +192,7 @@ what sources exist; runtime tables only cache progress and coordination.
 attachments live with the area they describe. That removes the old mirror-tree
 coupling.
 
-**Repository mutation contract**: `brain_repository.py` is the defensive
+**Repository mutation contract**: `brain/repository.py` is the defensive
 boundary for portable brain mutation. Discovery and idempotent cleanup methods
 may return soft outcomes such as `None`, empty collections, or `False` when
 absence is expected. Strict mutation methods must validate their own inputs
@@ -197,9 +202,11 @@ catch, log, and surface those failures without making caller-side prechecks the
 source of truth.
 
 **Two persistence planes**: normal runtime code should treat
-`brain_repository.py` as the portable-brain write boundary and `state.py` as
-the runtime-state write boundary. Bootstrap, migration, and test/SUT code are
-the only expected exceptions.
+`brain/repository.py` as the portable-brain write boundary and
+`runtime/repository.py` as the runtime-state write boundary. Bootstrap,
+migration, and test/SUT code are the only expected exceptions. Legacy root
+shims such as `brain_repository.py` and `state.py` do not change that
+ownership model.
 
 ### LLM Backend Abstraction
 
@@ -283,8 +290,9 @@ Reconciliation uses a three-tier resolution chain:
 Readers may still tolerate legacy HTML comment markers as a fallback, but new
 writes use YAML frontmatter only.
 
-Those resolution rules are centralized in `brain_repository.py` so doctor,
-reconcile, and command flows do not drift into separate portable-brain logic.
+Those resolution rules are centralized in `brain/repository.py` so doctor,
+reconcile, and application flows do not drift into separate portable-brain
+logic.
 
 ### Source Manifests
 
@@ -353,7 +361,7 @@ offline changes.
 **Watcher edge cases**: Windows symlink handling and rapid sequential move
 events still need hardening.
 
-**Regen complexity**: `regen.py` remains one of the largest modules and is a
+**Regen complexity**: `regen/engine.py` remains one of the largest modules and is a
 candidate for further decomposition.
 
 **AreaIndex staleness model**: `AreaIndex.is_stale()` is still a best-effort
@@ -375,7 +383,7 @@ performance hint rather than a full correctness proof.
   prompt resources moved under one subsystem package.
 - Sync runtime mechanics now live under `sync/`, with `sync/daemon.py`
   replacing `__main__.py` as the owner of the daemon loop.
-- `regen.py` no longer imports from command-layer modules.
+- regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
@@ -412,7 +420,7 @@ Telemetry is workflow-agnostic via `resource_type` and `resource_id`.
 Planned future work:
 
 1. improve `AreaIndex` staleness detection
-2. split `regen.py` into smaller focused modules
+2. split `regen/engine.py` into smaller focused modules
 3. harden watcher event handling further
 4. narrow broad exception handling where safe
 
@@ -433,7 +441,7 @@ Planned future work:
 | Symbol(s) | Consumer |
 |---|---|
 | `state._connect` | Selected unit tests |
-| selected private `regen.py` helpers | `tests/unit/test_regen.py` |
+| selected private `regen.engine` helpers | `tests/unit/test_regen.py` |
 
 Tests may validate private helpers directly. Production code should avoid
 growing new cross-module private coupling.

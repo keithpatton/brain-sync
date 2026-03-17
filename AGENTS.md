@@ -277,8 +277,11 @@ portable brain is used on Windows machines with longer checkout paths.
 
 ## Module Dependency Rule
 
-Follow the package dependency direction defined in
-`docs/architecture/ARCHITECTURE.md`.
+Follow the normative package-boundary and dependency-direction rules in
+`docs/RULES.md`.
+
+Use `docs/architecture/ARCHITECTURE.md` for explanatory rationale,
+module responsibilities, and tradeoffs behind those boundaries.
 
 In general, lower-level domain packages must not import upward into
 `application`, `interfaces`, or entrypoint code. If shared behavior is needed,

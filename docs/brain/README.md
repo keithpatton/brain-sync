@@ -30,3 +30,6 @@ Use this directory for questions about:
 Do not use this directory for runtime-only machine-local files or application
 architecture rationale. Those live in [`docs/runtime/`](../runtime/README.md)
 and [`docs/architecture/ARCHITECTURE.md`](../architecture/ARCHITECTURE.md).
+
+For normative code-boundary and state-authority rules that span both portable
+and runtime planes, see [`../RULES.md`](../RULES.md).

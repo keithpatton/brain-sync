@@ -13,6 +13,9 @@ regeneration. The packaged prompt and template source files used to produce
 those artifacts are implementation details described by code, not by this
 reference.
 
+Implementation references in this document point at canonical package owners,
+not compatibility shims.
+
 ---
 
 ## Summary
@@ -73,9 +76,9 @@ from the materialized markdown.
 ```
 
 **Current implementation**:
-[regen.py](../../src/brain_sync/regen.py),
-[INSIGHT_INSTRUCTIONS.md](../../src/brain_sync/instructions/INSIGHT_INSTRUCTIONS.md),
-[templates/insights/summary.md](../../src/brain_sync/templates/insights/summary.md)
+[regen/engine.py](../../src/brain_sync/regen/engine.py),
+[INSIGHT_INSTRUCTIONS.md](../../src/brain_sync/regen/resources/INSIGHT_INSTRUCTIONS.md),
+[templates/insights/summary.md](../../src/brain_sync/regen/resources/templates/insights/summary.md)
 
 ---
 
@@ -127,4 +130,4 @@ Completed attachment sync for Confluence page `confluence:987654`.
 ```
 
 **Current implementation**:
-[regen.py](../../src/brain_sync/regen.py)
+[regen/engine.py](../../src/brain_sync/regen/engine.py)

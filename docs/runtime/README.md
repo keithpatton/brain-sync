@@ -27,3 +27,6 @@ Use this directory for questions about:
 
 Do not use this directory for portable brain manifests or generated
 brain-resident artifacts. Those live in [`docs/brain/`](../brain/README.md).
+
+For normative code-boundary and state-authority rules that span both portable
+and runtime planes, see [`../RULES.md`](../RULES.md).

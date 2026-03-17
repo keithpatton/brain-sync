@@ -7,6 +7,9 @@ not inside the portable brain.
 
 Runtime versioning is defined in [../VERSIONING.md](../VERSIONING.md).
 
+Implementation references in this document point at canonical package owners,
+not compatibility shims.
+
 ---
 
 ## Runtime Directory
@@ -112,9 +115,9 @@ The file is currently versionless. Unknown keys are implementation-defined.
 ```
 
 **Current implementation**:
-[config.py](../../src/brain_sync/config.py),
-[commands/config.py](../../src/brain_sync/commands/config.py),
-[commands/init.py](../../src/brain_sync/commands/init.py),
+[runtime/config.py](../../src/brain_sync/runtime/config.py),
+[application/config.py](../../src/brain_sync/application/config.py),
+[application/init.py](../../src/brain_sync/application/init.py),
 [sources/googledocs/auth.py](../../src/brain_sync/sources/googledocs/auth.py)
 
 ---
@@ -150,7 +153,7 @@ The file is currently versionless.
 ```
 
 **Current implementation**:
-[state.py](../../src/brain_sync/state.py)
+[runtime/repository.py](../../src/brain_sync/runtime/repository.py)
 
 ---
 
@@ -228,5 +231,5 @@ Append-only LLM invocation telemetry.
 | `created_utc` | text | UTC timestamp of event creation |
 
 **Current implementation**:
-[state.py](../../src/brain_sync/state.py),
-[token_tracking.py](../../src/brain_sync/token_tracking.py)
+[runtime/repository.py](../../src/brain_sync/runtime/repository.py),
+[runtime/token_tracking.py](../../src/brain_sync/runtime/token_tracking.py)

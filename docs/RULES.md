@@ -107,6 +107,89 @@ Managed files may be regenerated unless explicitly defined as durable.
 
 ---
 
+## Code Boundary Rules
+
+These rules are normative for future feature work and refactoring. For
+explanatory rationale and subsystem discussion, see
+`docs/architecture/ARCHITECTURE.md`.
+
+### Canonical Package Owners
+
+The canonical subsystem packages are:
+
+- `application`
+- `interfaces`
+- `brain`
+- `runtime`
+- `sync`
+- `regen`
+- `query`
+- `sources`
+- `llm`
+- `util`
+
+New substantive code must be added to the owning subsystem package, not to the
+root of `src/brain_sync/`.
+
+Legacy root modules and legacy packages such as `commands/`, `cli/`, and
+`mcp.py` are compatibility surfaces only. They must not become the long-term
+owners of new behavior.
+
+### Persistence Plane Ownership
+
+Portable brain semantics belong to `brain/`.
+Machine-local runtime semantics belong to `runtime/`.
+
+Portable layout helpers belong to `brain.layout`.
+Machine-local runtime path helpers belong to `runtime.paths` or
+`runtime.config`.
+
+Normal runtime code must treat `brain.repository` as the portable-brain write
+boundary and `runtime.repository` as the runtime-state write boundary.
+
+### Dependency Direction
+
+The only allowed package directions are:
+
+- `interfaces -> application`
+- `application -> brain / runtime / sync / regen / query / sources / llm / util`
+- `sync -> brain / runtime / sources / util`
+- `regen -> brain / runtime / llm / util`
+- `query -> brain / util`
+- `sources -> util`
+- `llm -> util`
+- `brain -> util`
+- `runtime -> util`
+
+Entry points may depend on `application`, `interfaces`, and `sync` for process
+bootstrap. Lower-level packages must not import upward into entrypoints,
+application, or transport layers unless explicitly listed above.
+
+### Package Ownership Constraints
+
+`sources/` owns provider-specific behavior only. Shared code must not grow
+source-type conditionals when an adapter capability can express the behavior.
+
+`query/` is read-oriented and must not take ownership of durable writes or
+daemon orchestration.
+
+`sync/` and `regen/` are peer subsystems. One must not quietly absorb the
+other's ownership.
+
+`util/` must remain minimal and domain-neutral. If a helper knows what a
+brain, manifest, source, area, or runtime row is, it does not belong in
+`util/`.
+
+### Shim Discipline
+
+Compatibility shims may re-export canonical package surfaces, but they must
+not accumulate new domain logic.
+
+New in-repo code should import from the canonical package path rather than a
+shim path unless the work is specifically about compatibility behavior.
+
+---
+
 ## Top-Level Layout
 
 A valid [brain root](GLOSSARY.md#brain-root) contains exactly two

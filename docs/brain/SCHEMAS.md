@@ -6,6 +6,9 @@ brain-sync. Each schema may be instantiated as a
 [frontmatter](../GLOSSARY.md#frontmatter) (YAML embedded in a markdown
 document). See [../GLOSSARY.md](../GLOSSARY.md) for all term definitions.
 
+Implementation references in this document point at canonical package owners,
+not compatibility shims.
+
 ---
 
 ## Synced Source Schema
@@ -93,8 +96,8 @@ for a live instance. Inline:
 ```
 
 **Current implementation**:
-[manifest.py](../../src/brain_sync/manifest.py),
-[pipeline.py](../../src/brain_sync/pipeline.py)
+[brain/manifest.py](../../src/brain_sync/brain/manifest.py),
+[sync/pipeline.py](../../src/brain_sync/sync/pipeline.py)
 
 ---
 
@@ -179,8 +182,8 @@ for a live instance. Inline:
 ```
 
 **Current implementation**:
-[sidecar.py](../../src/brain_sync/sidecar.py),
-[regen.py](../../src/brain_sync/regen.py)
+[brain/sidecar.py](../../src/brain_sync/brain/sidecar.py),
+[regen/engine.py](../../src/brain_sync/regen/engine.py)
 
 ---
 
@@ -236,5 +239,5 @@ comment identity markers as a fallback. New writes use YAML
 frontmatter only.
 
 **Current implementation**:
-[pipeline.py](../../src/brain_sync/pipeline.py),
-[fileops.py](../../src/brain_sync/fileops.py)
+[sync/pipeline.py](../../src/brain_sync/sync/pipeline.py),
+[brain/fileops.py](../../src/brain_sync/brain/fileops.py)
