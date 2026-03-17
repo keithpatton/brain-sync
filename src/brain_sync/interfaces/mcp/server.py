@@ -51,9 +51,6 @@ from brain_sync.application.browse import (
     open_file,
     query_brain,
 )
-from brain_sync.application.browse import (
-    _safe_resolve as _safe_resolve,
-)
 from brain_sync.application.local_files import (
     InvalidKnowledgePathError,
     KnowledgeFileNotFoundError,
@@ -66,6 +63,7 @@ from brain_sync.application.local_files import (
 )
 from brain_sync.application.placement import DocumentTitleRequiredError, suggest_document_placement
 from brain_sync.application.query_index import AreaIndex
+from brain_sync.application.reconcile import reconcile_brain
 from brain_sync.application.regen import RegenFailed, run_regen
 from brain_sync.application.roots import resolve_root
 from brain_sync.application.sources import (
@@ -76,7 +74,6 @@ from brain_sync.application.sources import (
     add_source,
     list_sources,
     move_source,
-    reconcile_sources,
     remove_source,
     update_source,
 )
@@ -354,10 +351,10 @@ def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
 def brain_sync_reconcile(ctx: Context) -> dict:
     """Reconcile DB target paths with where files actually are on disk."""
     rt = _runtime(ctx)
-    result = reconcile_sources(root=rt.root)
+    result = reconcile_brain(rt.root)
     return {
         "status": "ok",
-        "updated": [asdict(e) for e in result.updated],
+        "updated": [asdict(entry) for entry in result.updated],
         "not_found": result.not_found,
         "unchanged": result.unchanged,
     }
@@ -654,7 +651,7 @@ def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
     rt = _runtime(ctx)
     try:
         summary = get_usage_summary(rt.root, days=days)
-        return {"status": "ok", "days": days, **summary}
+        return {"status": "ok", **asdict(summary)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

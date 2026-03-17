@@ -105,7 +105,6 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
     "src/brain_sync/interfaces/cli/handlers.py": frozenset(
         {
             "brain_sync.brain.fileops",
-            "brain_sync.brain.tree",
             "brain_sync.sources.docx",
             "brain_sync.sync.daemon",
         }

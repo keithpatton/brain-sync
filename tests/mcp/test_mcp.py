@@ -18,6 +18,7 @@ import pytest
 from brain_sync.application import (
     AddResult,
     MoveResult,
+    ReconcileReport,
     ReconcileResult,
     RemoveResult,
     SourceAlreadyExistsError,
@@ -529,7 +530,16 @@ SAMPLE_RECONCILE_RESULT = ReconcileResult(
 
 
 class TestBrainSyncReconcile:
-    @patch("brain_sync.interfaces.mcp.server.reconcile_sources", return_value=SAMPLE_RECONCILE_RESULT)
+    @patch(
+        "brain_sync.interfaces.mcp.server.reconcile_brain",
+        return_value=ReconcileReport(
+            updated=SAMPLE_RECONCILE_RESULT.updated,
+            not_found=SAMPLE_RECONCILE_RESULT.not_found,
+            unchanged=SAMPLE_RECONCILE_RESULT.unchanged,
+            has_source_changes=True,
+            has_changes=True,
+        ),
+    )
     def test_reconcile_success(self, mock_reconcile, _dummy_root):
         from brain_sync.interfaces.mcp.server import brain_sync_reconcile
 
@@ -542,10 +552,11 @@ class TestBrainSyncReconcile:
         assert result["updated"][0]["new_path"] == "new-team"
         assert result["not_found"] == ["confluence:99999"]
         assert result["unchanged"] == 3
+        assert set(result) == {"status", "updated", "not_found", "unchanged"}
 
     @patch(
-        "brain_sync.interfaces.mcp.server.reconcile_sources",
-        return_value=ReconcileResult(updated=[], not_found=[], unchanged=5),
+        "brain_sync.interfaces.mcp.server.reconcile_brain",
+        return_value=ReconcileReport(unchanged=5),
     )
     def test_reconcile_noop(self, mock_reconcile, _dummy_root):
         from brain_sync.interfaces.mcp.server import brain_sync_reconcile
@@ -556,6 +567,7 @@ class TestBrainSyncReconcile:
         assert result["updated"] == []
         assert result["not_found"] == []
         assert result["unchanged"] == 5
+        assert set(result) == {"status", "updated", "not_found", "unchanged"}
 
 
 # ---------------------------------------------------------------------------

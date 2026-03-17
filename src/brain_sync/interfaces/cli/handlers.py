@@ -180,7 +180,11 @@ def _prompt_for_placement(
 
 
 def handle_add(args) -> None:
-    from brain_sync.application.placement import DocumentTitleRequiredError, suggest_document_placement
+    from brain_sync.application.placement import (
+        DocumentTitleRequiredError,
+        detect_subtree,
+        suggest_document_placement,
+    )
     from brain_sync.application.sources import (
         InvalidChildDiscoveryRequestError,
         SourceAlreadyExistsError,
@@ -211,7 +215,9 @@ def handle_add(args) -> None:
     if args.target_path is None:
         subtree = args.subtree
         if subtree is None:
-            subtree = _detect_subtree(root)
+            subtree = detect_subtree(root, cwd=Path.cwd())
+            if subtree:
+                log.info("Auto-detected subtree: %s", subtree)
 
         try:
             placement, _ = suggest_document_placement(
@@ -282,6 +288,7 @@ def handle_add_file(args) -> None:
         add_local_file,
     )
     from brain_sync.application.placement import (
+        detect_subtree,
         extract_file_excerpt,
         suggest_document_placement,
     )
@@ -308,7 +315,9 @@ def handle_add_file(args) -> None:
         excerpt = extract_file_excerpt(file_path)
         subtree = args.subtree
         if subtree is None:
-            subtree = _detect_subtree(root)
+            subtree = detect_subtree(root, cwd=Path.cwd())
+            if subtree:
+                log.info("Auto-detected subtree: %s", subtree)
 
         placement, _ = suggest_document_placement(
             root,
@@ -367,23 +376,6 @@ def handle_remove_file(args) -> None:
         sys.exit(1)
 
     log.info("Removed knowledge/%s. %s", result.path, result.hint)
-
-
-def _detect_subtree(root: Path) -> str | None:
-    """Auto-detect subtree from current working directory."""
-    knowledge_root = root / "knowledge"
-    cwd = Path.cwd().resolve()
-    try:
-        if cwd.is_relative_to(knowledge_root):
-            from brain_sync.brain.tree import normalize_path
-
-            rel = normalize_path(cwd.relative_to(knowledge_root))
-            if rel:
-                log.info("Auto-detected subtree: %s", rel)
-                return rel
-    except (ValueError, OSError):
-        pass
-    return None
 
 
 def handle_remove(args) -> None:
@@ -495,37 +487,47 @@ def handle_update(args) -> None:
 
 
 def handle_reconcile(args) -> None:
-    from brain_sync.application.reconcile import reconcile_knowledge_tree
-    from brain_sync.application.sources import reconcile_sources
+    from brain_sync.application.reconcile import reconcile_brain
 
     root = _resolve_root_or_exit(args)
 
     try:
-        result = reconcile_sources(root=root)
-        tree_result = reconcile_knowledge_tree(root)
+        report = reconcile_brain(root, include_knowledge_tree=True)
     except BrainNotFoundError as e:
         log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
-    has_source_changes = result.updated or result.not_found
-    has_tree_changes = tree_result.orphans_cleaned or tree_result.content_changed or tree_result.enqueued_paths
-
-    if not has_source_changes and not has_tree_changes:
+    if not report.has_changes:
         log.info("All sources are at their expected paths. Nothing to reconcile.")
         return
 
-    for entry in result.updated:
+    for entry in report.updated:
         log.info("Updated %s: knowledge/%s -> knowledge/%s", entry.canonical_id, entry.old_path, entry.new_path)
 
-    if result.not_found:
-        log.warning("%d source(s) could not be found on disk:", len(result.not_found))
-        for cid in result.not_found:
+    if report.not_found:
+        log.warning("%d source(s) could not be found on disk:", len(report.not_found))
+        for cid in report.not_found:
             log.warning("  %s", cid)
 
-    if tree_result.orphans_cleaned:
-        log.info("Cleaned %d orphan insight state(s).", len(tree_result.orphans_cleaned))
+    if report.reappeared:
+        log.info("%d missing source(s) reappeared during reconcile.", len(report.reappeared))
 
-    log.info("Reconciled %d source(s). %d unchanged.", len(result.updated), result.unchanged)
+    if report.deleted:
+        log.info("%d missing source(s) were deregistered after the grace period.", len(report.deleted))
+
+    if report.orphan_rows_pruned:
+        log.info("Pruned %d orphan runtime row(s).", report.orphan_rows_pruned)
+
+    if report.orphans_cleaned:
+        log.info("Cleaned %d orphan insight state(s).", len(report.orphans_cleaned))
+
+    if report.content_changed:
+        log.info("Detected offline changes in %d tracked knowledge area(s).", len(report.content_changed))
+
+    if report.enqueued_paths:
+        log.info("Discovered %d new knowledge area(s) needing regen.", len(report.enqueued_paths))
+
+    log.info("Reconciled %d source(s). %d unchanged.", len(report.updated), report.unchanged)
 
 
 def handle_status(args) -> None:
@@ -541,10 +543,10 @@ def handle_status(args) -> None:
         usage = summary.usage
         log.info(
             "Token usage (7d): %d invocations, %d input, %d output, %d total",
-            usage["total_invocations"],
-            usage["total_input"],
-            usage["total_output"],
-            usage["total_tokens"],
+            usage.total_invocations,
+            usage.total_input,
+            usage.total_output,
+            usage.total_tokens,
         )
     except Exception:
         log.exception("Failed to load status")

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.application.query_index import AreaIndex, load_area_index
+from brain_sync.brain.tree import normalize_path
 from brain_sync.query.placement import (
     extract_file_excerpt as extract_local_file_excerpt,
 )
@@ -96,3 +97,16 @@ def suggest_document_placement(
 def extract_file_excerpt(path: Path, limit: int = 500) -> str:
     """Read a local file excerpt for application-owned placement workflows."""
     return extract_local_file_excerpt(path, limit=limit)
+
+
+def detect_subtree(root: Path, *, cwd: Path) -> str | None:
+    """Return the knowledge subtree for an explicit working directory, if any."""
+    knowledge_root = root / "knowledge"
+    working_dir = cwd.resolve()
+    try:
+        if working_dir.is_relative_to(knowledge_root):
+            rel = normalize_path(working_dir.relative_to(knowledge_root))
+            return rel or None
+    except (OSError, ValueError):
+        return None
+    return None

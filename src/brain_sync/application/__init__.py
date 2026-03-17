@@ -56,11 +56,17 @@ from brain_sync.application.placement import (
     DocumentTitleRequiredError,
     PlacementCandidateView,
     PlacementSuggestionResult,
+    detect_subtree,
     extract_file_excerpt,
     suggest_document_placement,
 )
 from brain_sync.application.query_index import AreaIndex, load_area_index
-from brain_sync.application.reconcile import TreeReconcileResult, reconcile_knowledge_tree
+from brain_sync.application.reconcile import (
+    ReconcileReport,
+    TreeReconcileResult,
+    reconcile_brain,
+    reconcile_knowledge_tree,
+)
 from brain_sync.application.regen import RegenFailed, classify_folder_change, invalidate_global_context_cache, run_regen
 from brain_sync.application.roots import BrainNotFoundError, InvalidBrainRootError, resolve_root, validate_brain_root
 from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
@@ -85,7 +91,7 @@ from brain_sync.application.sources import (
     remove_source,
     update_source,
 )
-from brain_sync.application.status import StatusSummary, build_status_summary, get_usage_summary
+from brain_sync.application.status import StatusSummary, UsageSummary, build_status_summary, get_usage_summary
 
 __all__ = [
     "ALLOWED_EXTENSIONS",
@@ -125,6 +131,7 @@ __all__ = [
     "OpenFileResult",
     "PlacementCandidateView",
     "PlacementSuggestionResult",
+    "ReconcileReport",
     "ReconcileResult",
     "RegenFailed",
     "RemoveResult",
@@ -140,6 +147,7 @@ __all__ = [
     "UnsupportedLocalFileTypeError",
     "UnsupportedSourceUrlError",
     "UpdateResult",
+    "UsageSummary",
     "add_local_file",
     "add_source",
     "build_status_summary",
@@ -147,6 +155,7 @@ __all__ = [
     "classify_folder_change",
     "delete_insight_state",
     "deregister_missing",
+    "detect_subtree",
     "doctor",
     "extract_file_excerpt",
     "get_brain_context",
@@ -164,6 +173,7 @@ __all__ = [
     "open_file",
     "query_brain",
     "rebuild_db",
+    "reconcile_brain",
     "reconcile_knowledge_tree",
     "reconcile_sources",
     "remove_local_file",
