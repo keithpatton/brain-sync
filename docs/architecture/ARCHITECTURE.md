@@ -15,19 +15,17 @@ All source lives under `src/brain_sync/`.
 
 | Group | Modules | Purpose |
 |---|---|---|
-| Entry points | `__main__`, `mcp` | Daemon loop and MCP stdio server |
+| Entry points | `__main__`, `mcp` | CLI/bootstrap entrypoint and MCP stdio server |
 | Application / CLI | `application/`, `cli/`, legacy `commands/` shims | User-facing operations and CLI wiring |
 | Portable brain plane | `brain/`, legacy root shims such as `brain_repository`, `manifest`, `sidecar`, `fileops`, `fs_utils`, `layout` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
 | Runtime plane | `runtime/`, legacy root shims such as `state`, `config`, `token_tracking`, `layout` | Machine-local config, DB, daemon status, and telemetry |
-| Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, materialize, and update source content |
+| Sync subsystem | `sync/`, legacy root shims such as `pipeline`, `reconcile`, `watcher`, `scheduler` | Daemon loop, polling, filesystem watching, and source materialization |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind the adapter protocol |
 | REST clients | `confluence_rest` | Confluence REST API wrapper used by adapters and attachment flows |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
-| Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration and queueing |
+| Regen subsystem | `regen/`, legacy root shims such as `regen_lifecycle`, `regen_queue` | Regeneration engine, lifecycle, queueing, and packaged prompt resources |
 | Attachments / indexing | `attachments`, `area_index` | Attachment storage and area search indexing |
-| Utilities | `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
-| Watcher | `watcher` | Filesystem event monitoring and path-update coordination |
-| Reconcile | `reconcile` | Startup filesystem reconciliation against manifest and regen state |
+| Utilities | `logging_config`, `retry` | Shared helpers with no domain coupling |
 
 ---
 
@@ -37,12 +35,12 @@ All source lives under `src/brain_sync/`.
 file access, and `runtime/paths.py`, which owns machine-local runtime paths.
 Legacy root `config.py` and `layout.py` remain compatibility shims only.
 
-**Core modules** implement sync, reconciliation, and regeneration. The sync
-pipeline fetches and materializes source content into `knowledge/`.
-`brain/repository.py` owns the portable-brain mutation and resolution rules
-used by sync, reconcile, doctor, and regen-adjacent cleanup. Regen produces
-derived summaries, journals, and per-area insight state from the knowledge
-tree.
+**Core modules** implement sync, reconciliation, and regeneration. `sync/`
+owns the daemon loop, polling scheduler, watcher, reconcile path, and source
+materialization workflow. `brain/repository.py` owns the portable-brain
+mutation and resolution rules used by sync, reconcile, doctor, and
+regen-adjacent cleanup. `regen/` owns regeneration, lifecycle, queueing, and
+the packaged prompt/template resources used to rebuild derived meaning.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
 interface-neutral operations consumed by the CLI and MCP layers. The legacy
@@ -50,7 +48,8 @@ interface-neutral operations consumed by the CLI and MCP layers. The legacy
 online change detection as an edge observer with direct filesystem contact;
 reconciliation provides the equivalent correction path for offline changes.
 
-**Entry points** wire everything together. `__main__.py` runs the daemon loop;
+**Entry points** wire everything together. `__main__.py` is now the CLI and
+bootstrap surface while `sync/daemon.py` owns the long-running daemon loop.
 `mcp.py` exposes repository-safe tool access over stdio.
 
 ### Startup Reconcile Lifecycle
@@ -301,7 +300,7 @@ performance hint rather than a full correctness proof.
 
 | View | Source of truth | Owner | Refresh trigger | Correctness role |
 |---|---|---|---|---|
-| Global context cache | `knowledge/_core/` | `regen.py` | invalidated on `_core` changes | Correctness-critical |
+| Global context cache | `knowledge/_core/` | `regen/engine.py` | invalidated on `_core` changes | Correctness-critical |
 | AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `BrainRuntime` | staleness check before queries | Performance-only |
 
 ### Resolved (2026-03)
@@ -309,6 +308,10 @@ performance hint rather than a full correctness proof.
 - Runtime config now lives under `runtime/config.py`, with machine-local path
   ownership split into `runtime/paths.py` and portable layout retained in
   `brain/layout.py`.
+- Regen now lives under `regen/`, with the engine, queue, lifecycle, and
+  prompt resources moved under one subsystem package.
+- Sync runtime mechanics now live under `sync/`, with `sync/daemon.py`
+  replacing `__main__.py` as the owner of the daemon loop.
 - `regen.py` no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
 - Atomic file writes use fsync-based crash-safe behavior.
@@ -354,7 +357,7 @@ Planned future work:
 
 | Symbol | Consumer | Notes |
 |---|---|---|
-| `scheduler._scheduled_keys` | `__main__.py` | Attribute access, not import |
+| `scheduler._scheduled_keys` | `sync/daemon.py` | Attribute access, not import |
 | `application.roots._require_root` | `application/sources.py` | Intra-package use |
 | `confluence_rest._request` | `sources/confluence/comments.py` | Reuses retry behavior |
 

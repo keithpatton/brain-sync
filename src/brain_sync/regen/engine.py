@@ -93,7 +93,7 @@ class RegenFailed(Exception):
 
 def _load_instruction(name: str) -> str:
     """Load an instruction file bundled with the package."""
-    ref = resources.files("brain_sync.instructions").joinpath(name)
+    ref = resources.files("brain_sync.regen.resources").joinpath(name)
     return ref.read_text(encoding="utf-8")
 
 

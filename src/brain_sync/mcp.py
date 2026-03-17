@@ -42,7 +42,7 @@ from brain_sync.brain.layout import SUMMARY_FILENAME, area_insights_dir, area_su
 from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
 from brain_sync.brain.tree import get_child_dirs, is_content_dir, is_readable_file, normalize_path
 from brain_sync.regen import RegenFailed, regen_all, regen_path
-from brain_sync.regen_lifecycle import regen_session
+from brain_sync.regen.lifecycle import regen_session
 from brain_sync.sources import UnsupportedSourceError
 
 log = logging.getLogger(__name__)

@@ -414,7 +414,7 @@ class ReconcileResult:
 
 def _find_file_by_identity_header(knowledge_root: Path, canonical_id_str: str) -> Path | None:
     """Tier-2: scan .md files across all of knowledge/ for matching identity header."""
-    from brain_sync.pipeline import extract_source_id
+    from brain_sync.sync.pipeline import extract_source_id
 
     if not path_is_dir(knowledge_root):
         return None

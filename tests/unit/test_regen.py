@@ -502,7 +502,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Project Doc\nSome content.", encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude_return_summary()):
             count = asyncio.run(regen_path(brain, "project"))
 
         assert count >= 1
@@ -538,7 +538,7 @@ class TestRegenPath:
             ),
         )
 
-        with patch("brain_sync.regen.invoke_claude") as mock_claude:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock_claude:
             count = asyncio.run(regen_path(brain, "project"))
 
         assert count == 0
@@ -558,7 +558,9 @@ class TestRegenPath:
         # Mock Claude to write an almost-identical summary
         near_identical = "# Project Summary\n\nThis is the existing summary about the project ."
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary(near_identical)):
+        with patch(
+            "brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude_return_summary(near_identical)
+        ):
             count = asyncio.run(regen_path(brain, "project"))
 
         # Summary should have been discarded (restored to old)
@@ -575,7 +577,7 @@ class TestRegenPath:
         async def fail_invoke(*args, **kwargs):
             return ClaudeResult(success=False, output="")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=fail_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=fail_invoke):
             with pytest.raises(RegenFailed):
                 asyncio.run(regen_path(brain, "project"))
 
@@ -604,7 +606,7 @@ class TestRegenPath:
             prompt_captured.append(prompt)
             return ClaudeResult(success=True, output="# Parent Summary\nOverview.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             count = asyncio.run(regen_path(brain, "parent"))
 
         assert count >= 1
@@ -630,7 +632,7 @@ class TestRegenPath:
             ),
         )
 
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock:
             count = asyncio.run(regen_path(brain, "deleted"))
         assert count == 0
         mock.assert_not_called()
@@ -655,7 +657,7 @@ class TestRegenPath:
             ),
         )
 
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock:
             count = asyncio.run(regen_path(brain, "empty"))
         assert count == 0
         mock.assert_not_called()
@@ -684,7 +686,7 @@ class TestRegenPath:
             prompt_captured.append(prompt)
             return ClaudeResult(success=True, output="# Initiative Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             asyncio.run(regen_path(brain, "initiative"))
 
         assert len(prompt_captured) >= 1
@@ -710,7 +712,7 @@ class TestRegenPath:
 
         # First regen
         with patch(
-            "brain_sync.regen.invoke_claude",
+            "brain_sync.regen.engine.invoke_claude",
             side_effect=self._mock_claude_return_summary("# Summary V1\n\nInitiative overview content."),
         ):
             asyncio.run(regen_path(brain, "initiative"))
@@ -720,7 +722,7 @@ class TestRegenPath:
 
         # Second regen should trigger (hash changed)
         with patch(
-            "brain_sync.regen.invoke_claude",
+            "brain_sync.regen.engine.invoke_claude",
             side_effect=self._mock_claude_return_summary(
                 "# Summary V2\n\nCompletely different initiative overview.",
             ),
@@ -752,7 +754,7 @@ class TestRegenPath:
         # Delete all files from the leaf
         (kdir / "doc.md").unlink()
 
-        with patch("brain_sync.regen.invoke_claude"):
+        with patch("brain_sync.regen.engine.invoke_claude"):
             asyncio.run(regen_path(brain, "parent/child"))
 
         # Child insights should be cleaned up
@@ -787,7 +789,7 @@ class TestRegenPath:
         shutil.rmtree(child_kdir)
 
         # Regen for the deleted child should clean up
-        with patch("brain_sync.regen.invoke_claude"):
+        with patch("brain_sync.regen.engine.invoke_claude"):
             asyncio.run(regen_path(brain, "area/sub"))
 
         assert not child_idir.exists()
@@ -799,7 +801,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "report.pdf").write_bytes(b"%PDF-1.4 fake pdf content")
 
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock:
             count = asyncio.run(regen_path(brain, "docs"))
 
         # PDF is not a knowledge extension, so folder is treated as empty
@@ -812,7 +814,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "metrics.csv").write_text("a,b\n1,2", encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
             asyncio.run(regen_path(brain, "data"))
 
         mock.assert_called()
@@ -823,7 +825,7 @@ class TestRegenPath:
         kdir.mkdir(parents=True)
         (kdir / "spec.json").write_text('{"key": "value"}', encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude_return_summary()) as mock:
             asyncio.run(regen_path(brain, "config"))
 
         mock.assert_called()
@@ -842,7 +844,7 @@ class TestRegenPath:
             prompt_captured.append(prompt)
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             asyncio.run(regen_path(brain, "project"))
 
         prompt = prompt_captured[0]
@@ -863,7 +865,7 @@ class TestRegenPath:
             prompts.append(prompt)
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture_and_return):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             count = asyncio.run(regen_path(brain, "area"))
 
         # Should regenerate both the leaf and root
@@ -885,7 +887,7 @@ class TestRegenPath:
             prompt_captured.append(prompt)
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=capture):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture):
             asyncio.run(regen_path(brain, "leaf"))
 
         prompt = prompt_captured[0]
@@ -911,7 +913,7 @@ class TestRegenPath:
         )
         save_insight_state(brain, istate)
 
-        with patch("brain_sync.regen.invoke_claude") as mock_claude:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock_claude:
             count = asyncio.run(regen_path(brain, "project", max_depth=1))
 
         assert count == 0
@@ -950,7 +952,7 @@ class TestRegenPath:
             ),
         )
 
-        with patch("brain_sync.regen.invoke_claude") as mock_claude:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock_claude:
             count_a = asyncio.run(regen_path(brain, "parent/leaf-a", max_depth=2))
             count_b = asyncio.run(regen_path(brain, "parent/leaf-b", max_depth=2))
 
@@ -1154,7 +1156,7 @@ class TestStructuralHash:
 
         # First regen to establish parent hash
         with patch(
-            "brain_sync.regen.invoke_claude",
+            "brain_sync.regen.engine.invoke_claude",
             side_effect=TestRegenPath._mock_claude_return_summary(
                 "# Parent V1\n\nParent summary content.",
             ),
@@ -1171,7 +1173,7 @@ class TestStructuralHash:
 
         # Second regen should trigger (structural change)
         with patch(
-            "brain_sync.regen.invoke_claude",
+            "brain_sync.regen.engine.invoke_claude",
             side_effect=TestRegenPath._mock_claude_return_summary(
                 "# Parent V2\n\nParent summary with both children included.",
             ),
@@ -1321,7 +1323,7 @@ class TestRegenAll:
                     break
             return ClaudeResult(success=True, output=f"# Summary for {area}\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=track_and_return):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=track_and_return):
             total = asyncio.run(regen_all(brain))
 
         assert total >= 2
@@ -1330,7 +1332,7 @@ class TestRegenAll:
 
     def test_regen_all_empty(self, brain):
         """regen_all with no content returns 0."""
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock:
             total = asyncio.run(regen_all(brain))
         assert total == 0
         mock.assert_not_called()
@@ -1355,7 +1357,7 @@ class TestRegenAll:
         # Verify it exists
         assert load_insight_state(brain, "old/deleted") is not None
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude_return_summary()):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude_return_summary()):
             asyncio.run(regen_all(brain))
 
         # Orphaned state should be cleaned up
@@ -1376,7 +1378,7 @@ class TestRegenConfigDefaults:
         """Config loading handles write_journal field."""
         config_file = tmp_path / "config.json"
         config_file.write_text('{"regen": {"write_journal": true, "max_turns": 4}}', encoding="utf-8")
-        with patch("brain_sync.regen.CONFIG_FILE", config_file):
+        with patch("brain_sync.regen.engine.CONFIG_FILE", config_file):
             cfg = RegenConfig.load()
         assert cfg.write_journal is True
         assert cfg.max_turns == 4
@@ -1596,7 +1598,7 @@ class TestOutputValidation:
         async def empty_output(prompt, cwd, **kwargs):
             return ClaudeResult(success=True, output="short")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=empty_output):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=empty_output):
             with pytest.raises(RegenFailed):
                 asyncio.run(regen_path(brain, "project"))
 
@@ -1609,7 +1611,7 @@ class TestOutputValidation:
         async def valid_output(prompt, cwd, **kwargs):
             return ClaudeResult(success=True, output="# Summary\n\nThis is a valid summary.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=valid_output):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=valid_output):
             asyncio.run(regen_path(brain, "project"))
 
         summary_path = managed_summary(brain, "project")
@@ -1731,9 +1733,9 @@ class TestChunking:
         # Patch _split_markdown_chunks to return >30 chunks
         fake_chunks = ["chunk"] * (MAX_CHUNKS + 1)
         with (
-            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
-            patch("brain_sync.regen._split_markdown_chunks", return_value=fake_chunks),
-            patch("brain_sync.regen._preprocess_content", side_effect=lambda c, f: "x" * 200_000),
+            patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.engine._split_markdown_chunks", return_value=fake_chunks),
+            patch("brain_sync.regen.engine._preprocess_content", side_effect=lambda c, f: "x" * 200_000),
         ):
             with pytest.raises(RegenFailed, match="exceeds limit"):
                 asyncio.run(regen_path(brain, "huge"))
@@ -1824,8 +1826,8 @@ class TestChunkedRegenFlow:
             )
 
         with (
-            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
-            patch("brain_sync.regen.CHUNK_TARGET_CHARS", 2000),
+            patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.engine.CHUNK_TARGET_CHARS", 2000),
         ):
             count = asyncio.run(regen_path(brain, "prd"))
 
@@ -1857,9 +1859,9 @@ class TestChunkedRegenFlow:
             telemetry_calls.append(kwargs)
 
         with (
-            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
-            patch("brain_sync.regen._record_telemetry", side_effect=capture_telemetry),
-            patch("brain_sync.regen.CHUNK_TARGET_CHARS", 1500),
+            patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.engine._record_telemetry", side_effect=capture_telemetry),
+            patch("brain_sync.regen.engine.CHUNK_TARGET_CHARS", 1500),
         ):
             asyncio.run(regen_path(brain, "tok", session_id="test-session-1"))
 
@@ -1909,7 +1911,7 @@ class TestTokenBudgetEnforcement:
 
         invalidate_global_context_cache()
         # Set budget low enough that huge + large can't fit alongside overhead
-        with patch("brain_sync.regen.MAX_PROMPT_TOKENS", 10_000):
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 10_000):
             result = _build_prompt("vary", kdir, {}, idir, brain)
 
         assert result.oversized_files is not None
@@ -1939,7 +1941,7 @@ class TestTokenBudgetEnforcement:
 
         invalidate_global_context_cache()
         # Budget so low the file can't fit
-        with patch("brain_sync.regen.MAX_PROMPT_TOKENS", 5_000):
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000):
             result = _build_prompt("defer", kdir, {}, idir, brain)
 
         assert result.oversized_files is not None
@@ -1971,7 +1973,7 @@ class TestTokenBudgetEnforcement:
 
         invalidate_global_context_cache()
         # Budget so low nothing fits
-        with patch("brain_sync.regen.MAX_PROMPT_TOKENS", 3_000):
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 3_000):
             result = _build_prompt("allbig", kdir, {}, idir, brain)
 
         assert result.oversized_files is not None
@@ -1999,8 +2001,8 @@ class TestTokenBudgetEnforcement:
             )
 
         with (
-            patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke),
-            patch("brain_sync.regen.MAX_PROMPT_TOKENS", 5_000),
+            patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
+            patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000),
         ):
             count = asyncio.run(regen_path(brain, "e2e"))
 
@@ -2071,7 +2073,7 @@ class TestJournalWriting:
             return ClaudeResult(success=True, output=structured_output)
 
         config = RegenConfig(write_journal=True)
-        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
             asyncio.run(regen_path(brain, "project", config=config))
 
         # Summary written
@@ -2106,7 +2108,7 @@ class TestJournalWriting:
             return ClaudeResult(success=True, output=structured_output)
 
         config = RegenConfig(write_journal=True, similarity_threshold=0.97)
-        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
             count = asyncio.run(regen_path(brain, "project", config=config))
 
         # Summary NOT rewritten (similarity guard blocked it)
@@ -2146,7 +2148,7 @@ class TestJournalWriting:
             return ClaudeResult(success=True, output=structured_output)
 
         config = RegenConfig(write_journal=True)
-        with patch("brain_sync.regen.invoke_claude", side_effect=mock_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
             asyncio.run(regen_path(brain, "project", config=config))
 
         # Summary written
@@ -2400,7 +2402,7 @@ class TestRegenSingleFolder:
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Content", encoding="utf-8")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude()):
             result = asyncio.run(regen_single_folder(brain, "project"))
 
         assert result.action == "regenerated"
@@ -2414,11 +2416,11 @@ class TestRegenSingleFolder:
         (kdir / "doc.md").write_text("# Content", encoding="utf-8")
 
         # First regen to populate hashes
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude()):
             asyncio.run(regen_single_folder(brain, "project"))
 
         # Second call — nothing changed
-        with patch("brain_sync.regen.invoke_claude") as mock:
+        with patch("brain_sync.regen.engine.invoke_claude") as mock:
             result = asyncio.run(regen_single_folder(brain, "project"))
 
         assert result.action == "skipped_unchanged"
@@ -2434,7 +2436,7 @@ class TestRegenSingleFolder:
         (sub / "file.md").write_text("sub content", encoding="utf-8")
 
         # First regen
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude()):
             asyncio.run(regen_single_folder(brain, "project"))
 
         # Rename sub dir (content unchanged, structure changed)
@@ -2469,7 +2471,7 @@ class TestRegenSingleFolder:
         summary_text = "# Summary\n\nThis is the generated summary."
 
         # First regen
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude(summary_text)):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude(summary_text)):
             asyncio.run(regen_single_folder(brain, "project"))
 
         # Modify content to trigger regen
@@ -2477,7 +2479,7 @@ class TestRegenSingleFolder:
 
         # Return nearly identical summary (>97% similar)
         similar = "# Summary\n\nThis is the generated summary."
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude(similar)):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude(similar)):
             result = asyncio.run(regen_single_folder(brain, "project"))
 
         assert result.action == "skipped_similarity"
@@ -2520,7 +2522,7 @@ class TestRegenSingleFolder:
         async def fail_invoke(prompt: str, cwd: Path, **kwargs):
             return ClaudeResult(success=False, output="")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=fail_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=fail_invoke):
             with pytest.raises(RegenFailed):
                 asyncio.run(regen_single_folder(brain, "project"))
 
@@ -2547,7 +2549,7 @@ class TestRegenSingleFolder:
         async def fail_invoke(prompt: str, cwd: Path, **kwargs):
             return ClaudeResult(success=False, output="")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=fail_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=fail_invoke):
             with pytest.raises(RegenFailed):
                 asyncio.run(regen_single_folder(brain, "project"))
 
@@ -2588,7 +2590,7 @@ class TestRegenAllWave:
                     break
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=track_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke):
             total = asyncio.run(regen_all(brain))
 
         # Each path should appear at most once
@@ -2609,7 +2611,7 @@ class TestRegenAllWave:
         (sub2 / "doc.md").write_text("# Sub2", encoding="utf-8")
 
         # First regen — populate all hashes
-        with patch("brain_sync.regen.invoke_claude", side_effect=self._mock_claude()):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=self._mock_claude()):
             asyncio.run(regen_all(brain))
 
         # Second regen — nothing changed
@@ -2620,7 +2622,7 @@ class TestRegenAllWave:
             call_count += 1
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=count_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=count_invoke):
             total = asyncio.run(regen_all(brain))
 
         assert total == 0
@@ -2646,7 +2648,7 @@ class TestRegenAllWave:
             call_idx += 1
             return ClaudeResult(success=True, output=f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=unique_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=unique_invoke):
             asyncio.run(regen_all(brain))
 
         # Modify only sub1
@@ -2664,7 +2666,7 @@ class TestRegenAllWave:
                     break
             return ClaudeResult(success=True, output=f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=track_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke):
             total = asyncio.run(regen_all(brain))
 
         # sub1 changed → parent dirtied → parent processed once
@@ -2694,7 +2696,7 @@ class TestRegenAllWave:
                     break
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=fail_on_sub1):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=fail_on_sub1):
             asyncio.run(regen_all(brain))
 
         # sub1 failed → parent should NOT be processed
@@ -2748,7 +2750,7 @@ class TestRegenAllWave:
             call_count += 1
             return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
 
-        with patch("brain_sync.regen.invoke_claude", side_effect=count_invoke):
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=count_invoke):
             asyncio.run(regen_all(brain))
 
         # Backfill should NOT trigger any Claude calls — parent not dirtied

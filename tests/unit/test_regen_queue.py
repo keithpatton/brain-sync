@@ -223,7 +223,7 @@ class TestWaveProcessing:
 
         with (
             patch("brain_sync.regen_queue.acquire_regen_ownership", return_value=True),
-            patch("brain_sync.regen.invoke_claude", side_effect=track_invoke),
+            patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke),
         ):
             asyncio.run(q.process_ready())
 
@@ -259,7 +259,7 @@ class TestWaveProcessing:
 
         with (
             patch("brain_sync.regen_queue.acquire_regen_ownership", side_effect=ownership_fails_for_area),
-            patch("brain_sync.regen.invoke_claude", side_effect=track_invoke),
+            patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke),
         ):
             asyncio.run(q.process_ready())
 

@@ -223,7 +223,7 @@ class TestManagedLayoutChecks:
         (brain / "knowledge" / "project").mkdir(parents=True)
         save_insight_state(brain, InsightState(knowledge_path="project"))
         with patch(
-            "brain_sync.regen.classify_folder_change",
+            "brain_sync.regen.engine.classify_folder_change",
             return_value=(ChangeEvent(change_type="content", structural=False), "new", "structure"),
         ):
             findings = check_regen_change_detection(brain)

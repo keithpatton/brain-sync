@@ -1,0 +1,1 @@
+"""Packaged regen output templates."""

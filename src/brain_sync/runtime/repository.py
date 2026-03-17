@@ -913,7 +913,7 @@ def _seed_from_hint(root: Path, m: SourceManifest, target_path: str) -> SourceSt
         if path_is_file(local_file):
             # Inline imports to avoid circular deps
             from brain_sync.brain.fileops import content_hash as compute_hash
-            from brain_sync.pipeline import strip_managed_header
+            from brain_sync.sync.pipeline import strip_managed_header
 
             try:
                 raw = read_text(local_file, encoding="utf-8")

@@ -57,7 +57,7 @@ def handle_run(args) -> None:
         log.error("--root '%s' is not a directory", root)
         sys.exit(1)
 
-    from brain_sync.__main__ import run
+    from brain_sync.sync.daemon import run
 
     loop = asyncio.new_event_loop()
 
@@ -470,7 +470,7 @@ def handle_update(args) -> None:
 
 def handle_reconcile(args) -> None:
     from brain_sync.application.sources import reconcile_sources
-    from brain_sync.reconcile import reconcile_knowledge_tree
+    from brain_sync.sync.reconcile import reconcile_knowledge_tree
 
     root = _resolve_root_or_exit(args)
 
@@ -567,7 +567,7 @@ def handle_regen(args) -> None:
 
     async def _do_regen() -> int:
         from brain_sync.regen import regen_all, regen_path
-        from brain_sync.regen_lifecycle import regen_session
+        from brain_sync.regen.lifecycle import regen_session
 
         # reclaim_stale only for full regen — single-path callers should not
         # implicitly clean up unrelated stale rows from prior crashes.
