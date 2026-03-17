@@ -33,7 +33,7 @@ from brain_sync.runtime.repository import (
     delete_source as db_delete_source,
 )
 from brain_sync.runtime.repository import load_sync_progress
-from brain_sync.sources import canonical_id, detect_source_type
+from brain_sync.sources import UnsupportedSourceError, canonical_id, detect_source_type
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +114,14 @@ class InvalidChildDiscoveryRequestError(ValueError):
         )
 
 
+class UnsupportedSourceUrlError(ValueError):
+    """Raised when a URL does not map to any supported source adapter."""
+
+    def __init__(self, source: str):
+        self.source = source
+        super().__init__(f"Unsupported source URL: {source}")
+
+
 def _resolve_source(state, source: str) -> str | None:
     """Find a source by canonical ID or URL."""
     if source in state.sources:
@@ -130,7 +138,10 @@ def check_source_exists(root: Path, url: str) -> SourceAlreadyExistsError | None
     Returns a SourceAlreadyExistsError if the source exists, None otherwise.
     Does not raise — caller decides how to handle the result.
     """
-    stype = detect_source_type(url)
+    try:
+        stype = detect_source_type(url)
+    except UnsupportedSourceError as exc:
+        raise UnsupportedSourceUrlError(url) from exc
     cid = canonical_id(stype, url)
     state = load_state(root)
     if cid in state.sources:
@@ -163,7 +174,10 @@ def add_source(
     if child_path is not None and not fetch_children:
         raise InvalidChildDiscoveryRequestError(child_path)
 
-    stype = detect_source_type(url)
+    try:
+        stype = detect_source_type(url)
+    except UnsupportedSourceError as exc:
+        raise UnsupportedSourceUrlError(url) from exc
     cid = canonical_id(stype, url)
     state = load_state(root)
 

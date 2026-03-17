@@ -25,9 +25,8 @@ from brain_sync.application import (
     SourceNotFoundError,
 )
 from brain_sync.application.init import init_brain
-from brain_sync.application.sources import ReconcileEntry
+from brain_sync.application.sources import ReconcileEntry, UnsupportedSourceUrlError
 from brain_sync.brain.layout import area_insights_dir
-from brain_sync.sources import UnsupportedSourceError
 
 pytestmark = pytest.mark.mcp
 
@@ -283,7 +282,7 @@ class TestBrainSyncAdd:
 
     @patch(
         "brain_sync.interfaces.mcp.server.add_source",
-        side_effect=UnsupportedSourceError("https://bad-url.example.com"),
+        side_effect=UnsupportedSourceUrlError("https://bad-url.example.com"),
     )
     def test_add_url_invalid(self, mock_add, _dummy_root):
         from brain_sync.interfaces.mcp.server import brain_sync_add

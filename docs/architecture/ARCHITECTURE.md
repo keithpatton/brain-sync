@@ -426,6 +426,9 @@ performance hint rather than a full correctness proof.
 - Deterministic `FakeBackend` support reduced subprocess overhead in tests.
 - `runtime/repository.py` no longer depends on `brain.tree` for path normalization;
   runtime-path normalization is now local to the runtime persistence layer.
+- Placement suggestion, local-file add/remove, and brain query/open workflows
+  now live behind `application/` entrypoints consumed by CLI and MCP, reducing
+  direct transport reach-through into `brain/`, `query/`, and `sources/`.
 
 ---
 

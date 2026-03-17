@@ -6,13 +6,21 @@ import asyncio
 import logging
 import signal
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
+from brain_sync.application.placement import PlacementCandidateView
 from brain_sync.application.roots import BrainNotFoundError, InvalidBrainRootError
-from brain_sync.brain.fileops import path_exists, path_is_dir, path_is_file
-from brain_sync.query.placement import PlacementSelection
+from brain_sync.brain.fileops import path_is_dir
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PlacementSelection:
+    path: str
+    cancelled: bool = False
 
 
 def _get_root(args) -> Path | None:
@@ -113,29 +121,14 @@ def _resolve_root_or_exit(args) -> Path:
     return root
 
 
-def _interactive_placement(
-    root: Path,
+def _prompt_for_placement(
     title: str,
-    excerpt: str,
     filename: str,
-    source: str | None,
-    subtree: str | None,
+    candidates: list[PlacementCandidateView],
     dry_run: bool,
 ) -> PlacementSelection:
-    """Show interactive placement suggestions and return user's choice."""
-    from brain_sync.application.query_index import load_area_index
-    from brain_sync.query.placement import suggest_placement
-
-    index = load_area_index(root)
-    result = suggest_placement(
-        index,
-        document_title=title,
-        document_excerpt=excerpt,
-        source=source,
-        subtree=subtree,
-    )
-
-    if not result.candidates:
+    """Show interactive placement suggestions and return the user's choice."""
+    if not candidates:
         log.info("No matching areas found for '%s'.", title)
         log.info("Consider creating a new area in knowledge/.")
         if dry_run:
@@ -152,7 +145,7 @@ def _interactive_placement(
 
     log.info("Suggested placement for '%s':", title)
     log.info("")
-    for i, c in enumerate(result.candidates, 1):
+    for i, c in enumerate(candidates, 1):
         log.info("  %d  %-40s score %d", i, c.path + "/" + filename, c.score)
     log.info("")
 
@@ -160,7 +153,7 @@ def _interactive_placement(
         log.info("(dry-run) No changes made.")
         return PlacementSelection(path="", cancelled=True)
 
-    prompt = f"Select [1-{len(result.candidates)}], (c)ustom path, or (n) to cancel: "
+    prompt = f"Select [1-{len(candidates)}], (c)ustom path, or (n) to cancel: "
     choice = input(prompt).strip().lower()
 
     if choice == "n":
@@ -175,9 +168,9 @@ def _interactive_placement(
     else:
         try:
             idx = int(choice) - 1
-            if 0 <= idx < len(result.candidates):
+            if 0 <= idx < len(candidates):
                 return PlacementSelection(
-                    path=result.candidates[idx].path + "/" + filename,
+                    path=candidates[idx].path + "/" + filename,
                 )
             log.error("Invalid selection.")
             return PlacementSelection(path="", cancelled=True)
@@ -186,26 +179,15 @@ def _interactive_placement(
             return PlacementSelection(path="", cancelled=True)
 
 
-def _resolve_collision(dest: Path, max_suffix: int = 10) -> Path | None:
-    """If dest exists, try numeric suffixes (-2, -3, ...). Returns None if all taken."""
-    if not path_exists(dest):
-        return dest
-    stem = dest.stem
-    suffix = dest.suffix
-    parent = dest.parent
-    for i in range(2, max_suffix + 1):
-        candidate = parent / f"{stem}-{i}{suffix}"
-        if not path_exists(candidate):
-            return candidate
-    return None
-
-
 def handle_add(args) -> None:
-    from urllib.parse import urlparse
-
-    from brain_sync.application.sources import InvalidChildDiscoveryRequestError, SourceAlreadyExistsError, add_source
-    from brain_sync.query.placement import extract_title_from_url
-    from brain_sync.sources import UnsupportedSourceError
+    from brain_sync.application.placement import DocumentTitleRequiredError, suggest_document_placement
+    from brain_sync.application.sources import (
+        InvalidChildDiscoveryRequestError,
+        SourceAlreadyExistsError,
+        UnsupportedSourceUrlError,
+        add_source,
+        check_source_exists,
+    )
 
     # URL-only: reject non-URLs with helpful hint
     parsed = urlparse(args.source)
@@ -215,41 +197,43 @@ def handle_add(args) -> None:
 
     root = _resolve_root_or_exit(args)
 
-    # Early duplicate check — before interactive placement to avoid wasted effort
-    from brain_sync.application.sources import check_source_exists
-
-    existing = check_source_exists(root, args.source)
-    if existing is not None:
-        log.warning("Source already registered: %s", existing.canonical_id)
-        log.warning("  URL: %s", existing.source_url)
-        log.warning("  Path: %s", existing.target_path)
+    try:
+        existing = check_source_exists(root, args.source)
+        if existing is not None:
+            log.warning("Source already registered: %s", existing.canonical_id)
+            log.warning("  URL: %s", existing.source_url)
+            log.warning("  Path: %s", existing.target_path)
+            return
+    except UnsupportedSourceUrlError:
+        log.exception("Unsupported source")
         return
 
     if args.target_path is None:
-        # Interactive placement — resolve real title for Google Docs
-        from brain_sync.sources import canonical_filename, detect_source_type, extract_id
-        from brain_sync.sources.title_resolution import resolve_source_title_sync
-
-        title = resolve_source_title_sync(args.source) or extract_title_from_url(args.source) or "Untitled"
-        source_type = detect_source_type(args.source)
-        doc_id = extract_id(source_type, args.source)
-        filename = canonical_filename(source_type, doc_id, title)
         subtree = args.subtree
         if subtree is None:
             subtree = _detect_subtree(root)
 
-        selection = _interactive_placement(
-            root,
-            title,
-            "",
+        try:
+            placement, _ = suggest_document_placement(
+                root,
+                source_url=args.source,
+                subtree=subtree,
+                allow_url_title_fallback=True,
+                fallback_title="Untitled",
+            )
+        except DocumentTitleRequiredError as e:
+            log.warning("%s", e)
+            return
+
+        filename = placement.suggested_filename or "document.md"
+        selection = _prompt_for_placement(
+            placement.document_title,
             filename,
-            args.source,
-            subtree,
+            placement.candidates,
             getattr(args, "dry_run", False),
         )
         if selection.cancelled:
             return
-        # Extract directory portion from selection path
         target_path = str(Path(selection.path).parent)
     else:
         target_path = args.target_path
@@ -263,7 +247,7 @@ def handle_add(args) -> None:
             sync_attachments=args.sync_attachments,
             child_path=getattr(args, "child_path", None),
         )
-    except UnsupportedSourceError:
+    except UnsupportedSourceUrlError:
         log.exception("Unsupported source")
         return
     except SourceAlreadyExistsError as e:
@@ -290,82 +274,99 @@ def handle_add(args) -> None:
 
 
 def handle_add_file(args) -> None:
-    import shutil
-
+    from brain_sync.application.local_files import (
+        InvalidKnowledgePathError,
+        LocalFileCollisionError,
+        LocalFileNotFoundError,
+        UnsupportedLocalFileTypeError,
+        add_local_file,
+    )
+    from brain_sync.application.placement import (
+        extract_file_excerpt,
+        suggest_document_placement,
+    )
     from brain_sync.brain.fileops import ADDFILE_EXTENSIONS
-    from brain_sync.query.placement import extract_file_excerpt
 
     file_path = Path(args.file).resolve()
     if not file_path.exists():
         log.error("File not found: %s", file_path)
         sys.exit(1)
-
-    ext = file_path.suffix.lower()
-    if ext not in ADDFILE_EXTENSIONS:
-        log.error("Unsupported file type: %s. add-file supports: %s", ext, ", ".join(sorted(ADDFILE_EXTENSIONS)))
+    if file_path.suffix.lower() not in ADDFILE_EXTENSIONS:
+        log.error(
+            "Unsupported file type: %s. add-file supports: %s",
+            file_path.suffix.lower(),
+            ", ".join(sorted(ADDFILE_EXTENSIONS)),
+        )
         sys.exit(1)
 
     root = _resolve_root_or_exit(args)
 
     if args.target_path is not None:
-        target_dir = root / "knowledge" / args.target_path
+        target_path = args.target_path
     else:
         title = file_path.stem
         excerpt = extract_file_excerpt(file_path)
-        filename = file_path.name
         subtree = args.subtree
         if subtree is None:
             subtree = _detect_subtree(root)
 
-        selection = _interactive_placement(
+        placement, _ = suggest_document_placement(
             root,
-            title,
-            excerpt,
-            filename,
-            str(file_path),
-            subtree,
-            getattr(args, "dry_run", False),
+            document_title=title,
+            document_excerpt=excerpt,
+            subtree=subtree,
         )
+        selection = _prompt_for_placement(title, file_path.name, placement.candidates, getattr(args, "dry_run", False))
         if selection.cancelled:
             return
-        target_dir = root / "knowledge" / str(Path(selection.path).parent)
+        target_path = str(Path(selection.path).parent)
 
-    dest = _resolve_collision(target_dir / file_path.name)
-    if dest is None:
-        log.error("File already exists and all numeric suffixes taken: %s", target_dir / file_path.name)
+    try:
+        result = add_local_file(
+            root,
+            source=file_path,
+            target_path=target_path,
+            copy=not getattr(args, "move", False),
+        )
+    except LocalFileNotFoundError as e:
+        log.error("File not found: %s", e.source)
+        sys.exit(1)
+    except UnsupportedLocalFileTypeError as e:
+        log.error("%s", e)
+        sys.exit(1)
+    except LocalFileCollisionError as e:
+        log.error("%s", e)
         return
+    except InvalidKnowledgePathError as e:
+        log.error("%s", e)
+        sys.exit(1)
 
-    target_dir.mkdir(parents=True, exist_ok=True)
-    if getattr(args, "move", False):
-        shutil.move(str(file_path), str(dest))
-        log.info("Moved to %s", dest.relative_to(root))
-    else:
-        shutil.copy2(str(file_path), str(dest))
-        log.info("Copied to %s", dest.relative_to(root))
+    verb = "Moved" if result.action == "moved" else "Copied"
+    log.info("%s to %s", verb, result.path)
 
 
 def handle_remove_file(args) -> None:
-    root = _resolve_root_or_exit(args)
-    knowledge_root = root / "knowledge"
-    target = knowledge_root / args.file
+    from brain_sync.application import (
+        InvalidKnowledgePathError,
+        KnowledgeFileNotFoundError,
+        KnowledgePathIsDirectoryError,
+        remove_local_file,
+    )
 
-    # Safety: ensure target is within knowledge/
+    root = _resolve_root_or_exit(args)
     try:
-        target.resolve().relative_to(knowledge_root.resolve())
-    except ValueError:
+        result = remove_local_file(root, path=args.file)
+    except InvalidKnowledgePathError:
         log.error("Path must be within knowledge/: %s", args.file)
         sys.exit(1)
-
-    if not path_exists(target):
+    except KnowledgeFileNotFoundError:
         log.error("File not found: knowledge/%s", args.file)
         sys.exit(1)
-
-    if not path_is_file(target):
+    except KnowledgePathIsDirectoryError:
         log.error("Not a file: knowledge/%s", args.file)
         sys.exit(1)
 
-    target.unlink()
-    log.info("Removed knowledge/%s. Insights will update on next regen.", args.file)
+    log.info("Removed knowledge/%s. %s", result.path, result.hint)
 
 
 def _detect_subtree(root: Path) -> str | None:

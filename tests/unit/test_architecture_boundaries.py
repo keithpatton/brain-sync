@@ -106,33 +106,13 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
         {
             "brain_sync.brain.fileops",
             "brain_sync.brain.tree",
-            "brain_sync.query.area_index",
-            "brain_sync.query.placement",
-            "brain_sync.regen",
-            "brain_sync.regen.lifecycle",
-            "brain_sync.runtime.repository",
-            "brain_sync.runtime.token_tracking",
-            "brain_sync.sources",
             "brain_sync.sources.docx",
-            "brain_sync.sources.title_resolution",
             "brain_sync.sync.daemon",
-            "brain_sync.sync.reconcile",
         }
     ),
     "src/brain_sync/interfaces/mcp/server.py": frozenset(
         {
-            "brain_sync.brain.fileops",
-            "brain_sync.brain.layout",
-            "brain_sync.brain.repository",
-            "brain_sync.brain.tree",
-            "brain_sync.query.area_index",
-            "brain_sync.query.placement",
-            "brain_sync.regen",
-            "brain_sync.regen.lifecycle",
             "brain_sync.runtime.config",
-            "brain_sync.runtime.token_tracking",
-            "brain_sync.sources",
-            "brain_sync.sources.title_resolution",
             "brain_sync.util.logging",
         }
     ),
@@ -291,6 +271,16 @@ def test_in_repo_python_files_use_canonical_module_paths() -> None:
                 violations.append(f"{rel}: {', '.join(hits)}")
 
     message = "In-repo Python files must use canonical package paths only:\n" + "\n".join(violations)
+    assert violations == [], message
+
+
+def test_application_barrel_reexports_only_application_submodules() -> None:
+    barrel = _ROOT / "src" / "brain_sync" / "application" / "__init__.py"
+    imported = _imported_modules(barrel)
+    violations = sorted(module for module in imported if not module.startswith("brain_sync.application."))
+    message = "brain_sync.application.__init__ must re-export only application-owned submodules:\n" + "\n".join(
+        violations
+    )
     assert violations == [], message
 
 

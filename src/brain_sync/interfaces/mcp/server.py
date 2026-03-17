@@ -24,127 +24,70 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from brain_sync.application import (
+from brain_sync.application.browse import (
+    DEFAULT_FILE_CHARS as DEFAULT_FILE_CHARS,
+)
+from brain_sync.application.browse import (
+    MAX_AREAS_LISTED as MAX_AREAS_LISTED,
+)
+from brain_sync.application.browse import (
+    MAX_CHILDREN as MAX_CHILDREN,
+)
+from brain_sync.application.browse import (
+    MAX_FILE_CHARS as MAX_FILE_CHARS,
+)
+from brain_sync.application.browse import (
+    MAX_SUMMARY_CHARS as MAX_SUMMARY_CHARS,
+)
+from brain_sync.application.browse import (
+    TRUNCATION_MARKER as TRUNCATION_MARKER,
+)
+from brain_sync.application.browse import (
+    AreaNotFoundError,
+    BrainFileNotFoundError,
+    UnsupportedBrainFileTypeError,
+    get_brain_context,
+    open_area,
+    open_file,
+    query_brain,
+)
+from brain_sync.application.browse import (
+    _safe_resolve as _safe_resolve,
+)
+from brain_sync.application.local_files import (
+    InvalidKnowledgePathError,
+    KnowledgeFileNotFoundError,
+    KnowledgePathIsDirectoryError,
+    LocalFileCollisionError,
+    LocalFileNotFoundError,
+    UnsupportedLocalFileTypeError,
+    add_local_file,
+    remove_local_file,
+)
+from brain_sync.application.placement import DocumentTitleRequiredError, suggest_document_placement
+from brain_sync.application.query_index import AreaIndex
+from brain_sync.application.regen import RegenFailed, run_regen
+from brain_sync.application.roots import resolve_root
+from brain_sync.application.sources import (
     InvalidChildDiscoveryRequestError,
     SourceAlreadyExistsError,
     SourceNotFoundError,
+    UnsupportedSourceUrlError,
     add_source,
     list_sources,
     move_source,
     reconcile_sources,
     remove_source,
-    resolve_root,
     update_source,
 )
-from brain_sync.application.query_index import AreaIndex, load_area_index
-from brain_sync.application.regen import RegenFailed, run_regen
 from brain_sync.application.status import get_usage_summary
-from brain_sync.brain.fileops import iterdir_paths, path_exists, path_is_dir, path_is_file, read_text
-from brain_sync.brain.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
-from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
-from brain_sync.brain.tree import get_child_dirs, is_content_dir, is_readable_file, normalize_path
-from brain_sync.query.placement import suggest_placement
-from brain_sync.sources import UnsupportedSourceError
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants — token budget enforcement
-# ---------------------------------------------------------------------------
 
-TRUNCATION_MARKER = "[truncated — call brain_sync_open_file(path=..., offset=N) to read more]"
-MAX_SUMMARY_CHARS = 12000  # ~3000 tokens
-MAX_CHILD_SUMMARY_CHARS = 2000  # ~500 tokens each
-MAX_CHILDREN = 5  # max child summaries returned
-MAX_INSIGHT_FILE_CHARS = 8000  # other insight artifacts
-MAX_AREA_PAYLOAD = 40000  # total response chars — hard cap
-MAX_AREAS_LISTED = 50
-MAX_GLOBAL_CONTEXT_FILE_CHARS = 4000
-MAX_FILE_CHARS = 1_000_000
-DEFAULT_FILE_CHARS = 200_000
-ALLOWED_EXTENSIONS = frozenset({".md", ".txt", ".json", ".yaml", ".yml"})
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _truncate(text: str, limit: int) -> str:
-    """Truncate text to limit chars, appending marker if truncated."""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n" + TRUNCATION_MARKER
-
-
-def _safe_resolve(root: Path, rel_path: str) -> Path | None:
-    """Resolve a relative path within the brain root safely.
-
-    Returns None if the resolved path escapes the root (including via symlinks).
-    """
-    try:
-        resolved = (root / rel_path).resolve()
-        if not resolved.is_relative_to(root.resolve()):
-            return None
-        return resolved
-    except (OSError, ValueError):
-        return None
-
-
-def _read_file_safe(path: Path, max_chars: int | None = None) -> str:
-    """Read a text file safely with utf-8, ignoring decode errors."""
-    try:
-        text = read_text(path, encoding="utf-8", errors="ignore")
-        if max_chars is not None:
-            return _truncate(text, max_chars)
-        return text
-    except OSError as exc:
-        log.debug("Failed to read %s: %s", path, exc)
-        return ""
-
-
-def _collect_global_context_structured(root: Path) -> dict[str, str | bool]:
-    """Load global context for MCP responses.
-
-    Global context is `_core`'s distilled meaning: its managed summary when
-    present. Raw `knowledge/_core/` files remain available through
-    ``brain_sync_open_file()`` but are not returned here.
-    """
-    summary_path = area_summary_path(root, "_core")
-    rel_path = "knowledge/_core/.brain-sync/insights/summary.md"
-    if path_is_file(summary_path):
-        return {
-            "path": rel_path,
-            "content": _read_file_safe(summary_path, MAX_GLOBAL_CONTEXT_FILE_CHARS),
-            "present": True,
-        }
-    return {
-        "path": rel_path,
-        "content": "",
-        "present": False,
-    }
-
-
-def _collect_areas(root: Path) -> list[dict]:
-    """Collect all insight areas with summary existence status."""
-    areas: list[dict] = []
-    knowledge_root = root / "knowledge"
-    if not path_is_dir(knowledge_root):
-        return areas
-
-    def _walk(directory: Path, prefix: str) -> None:
-        for child in iterdir_paths(directory):
-            if not is_content_dir(child):
-                continue
-            if child.name == "_core":
-                continue
-            child_rel = prefix + "/" + child.name if prefix else child.name
-            has_summary = path_is_file(area_summary_path(root, child_rel))
-            areas.append({"path": child_rel, "has_summary": has_summary})
-            _walk(child, child_rel)
-
-    _walk(knowledge_root, "")
-    return areas
+def _drop_none_values(payload: dict) -> dict:
+    """Remove top-level keys whose values are None."""
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +127,7 @@ def _runtime(ctx: Context) -> BrainRuntime:
 
 
 def _get_index(rt: BrainRuntime) -> AreaIndex:
-    """Get the area index, rebuilding if stale."""
-    previous = rt.area_index
-    rt.area_index = load_area_index(rt.root, previous)
-    if rt.area_index is not previous:
-        log.debug("Area index stale, rebuilding")
+    """Return the MCP-cached area index."""
     return rt.area_index
 
 
@@ -264,7 +203,7 @@ def brain_sync_add(
         }
     except InvalidChildDiscoveryRequestError as e:
         return {"status": "error", "error": "invalid_child_discovery_request", "message": str(e)}
-    except UnsupportedSourceError:
+    except UnsupportedSourceUrlError:
         return {"status": "error", "error": "unsupported_url", "source": source}
 
 
@@ -284,32 +223,18 @@ def brain_sync_add_file(
     copy: bool = True,
 ) -> dict:
     """Add a local file to the brain."""
-    from brain_sync.brain.fileops import ADDFILE_EXTENSIONS
-
     rt = _runtime(ctx)
-    repository = BrainRepository(rt.root)
-
-    file_path = Path(source).resolve()
-    if not file_path.exists():
-        return {"status": "error", "error": "file_not_found", "source": source}
-
-    ext = file_path.suffix.lower()
-    if ext not in ADDFILE_EXTENSIONS:
-        return {
-            "status": "error",
-            "error": "unsupported_file_type",
-            "message": f"Unsupported file type: {ext}. add-file supports: {', '.join(sorted(ADDFILE_EXTENSIONS))}",
-        }
-
     try:
-        dest = repository.add_local_file(file_path, target_path, copy=copy)
-    except BrainRepositoryInvariantError as exc:
+        result = add_local_file(rt.root, source=Path(source), target_path=target_path, copy=copy)
+        return {"status": "ok", **asdict(result)}
+    except LocalFileNotFoundError:
+        return {"status": "error", "error": "file_not_found", "source": source}
+    except UnsupportedLocalFileTypeError as exc:
+        return {"status": "error", "error": "unsupported_file_type", "message": str(exc)}
+    except LocalFileCollisionError as exc:
         return {"status": "error", "error": "collision", "message": str(exc)}
-
-    action = "copied" if copy else "moved"
-
-    rel = normalize_path(dest.relative_to(rt.root))
-    return {"status": "ok", "action": action, "path": rel}
+    except InvalidKnowledgePathError as exc:
+        return {"status": "error", "error": "invalid_path", "message": str(exc)}
 
 
 @server.tool(
@@ -324,19 +249,15 @@ def brain_sync_add_file(
 def brain_sync_remove_file(ctx: Context, path: str) -> dict:
     """Remove a file from knowledge/."""
     rt = _runtime(ctx)
-    repository = BrainRepository(rt.root)
-    target = rt.root / "knowledge" / path
     try:
-        deleted = repository.delete_local_file(path)
-    except BrainRepositoryInvariantError as exc:
-        if path_exists(target) and not path_is_file(target):
-            return {"status": "error", "error": "not_a_file", "path": path}
+        result = remove_local_file(rt.root, path=path)
+        return {"status": "ok", **asdict(result)}
+    except KnowledgePathIsDirectoryError:
+        return {"status": "error", "error": "not_a_file", "path": path}
+    except InvalidKnowledgePathError as exc:
         return {"status": "error", "error": "invalid_path", "message": str(exc)}
-    if not deleted:
-        if path_exists(target) and not path_is_file(target):
-            return {"status": "error", "error": "not_a_file", "path": path}
+    except KnowledgeFileNotFoundError:
         return {"status": "error", "error": "file_not_found", "path": path}
-    return {"status": "ok", "path": path, "hint": "Insights will update on next regen."}
 
 
 @server.tool(
@@ -454,20 +375,19 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
     """Regenerate insight summaries."""
     rt = _runtime(ctx)
     async with rt.regen_lock:
-        normalized_path = normalize_path(path) if path else None
         try:
-            count = await run_regen(rt.root, normalized_path)
+            count = await run_regen(rt.root, path)
             return {
                 "status": "ok",
                 "summaries_regenerated": count,
-                "path": normalized_path or "all",
+                "path": path or "all",
             }
         except Exception as e:
             return {
                 "status": "error",
                 "error_type": type(e).__name__,
                 "error": str(e),
-                "path": normalized_path or "all",
+                "path": path or "all",
                 # v1 heuristic: RegenFailed (exhausted retries, validation)
                 # is treated as non-retryable. In practice a RegenFailed
                 # from a transient upstream issue could be retryable, and
@@ -501,43 +421,28 @@ def brain_sync_suggest_placement(
     max_results: int = 5,
 ) -> dict:
     """Suggest placement areas for a new document."""
-    # Title resolution: explicit title wins, else resolve from URL
-    if not document_title and source_url:
-        from brain_sync.sources.title_resolution import resolve_source_title_sync
-
-        document_title = resolve_source_title_sync(source_url) or ""
-
-    if not document_title:
+    rt = _runtime(ctx)
+    try:
+        result, index = suggest_document_placement(
+            rt.root,
+            document_title=document_title,
+            document_excerpt=document_excerpt,
+            source_url=source_url,
+            subtree=subtree,
+            max_results=max_results,
+            current_index=_get_index(rt),
+        )
+    except DocumentTitleRequiredError:
         return {"status": "error", "error": "no_title", "message": "Provide document_title or source_url"}
 
-    rt = _runtime(ctx)
-    index = _get_index(rt)
-    result = suggest_placement(
-        index,
-        document_title=document_title,
-        document_excerpt=document_excerpt,
-        subtree=subtree,
-        max_results=max_results,
-    )
-
-    # Compute canonical filename when source_url is available
-    suggested_filename: str | None = None
-    if source_url:
-        try:
-            from brain_sync.sources import canonical_filename, detect_source_type, extract_id
-
-            st = detect_source_type(source_url)
-            did = extract_id(st, source_url)
-            suggested_filename = canonical_filename(st, did, document_title)
-        except Exception:
-            pass  # best-effort
+    rt.area_index = index
 
     response: dict = {
         "status": "ok",
         "candidates": [{"path": c.path, "score": c.score, "reasoning": c.reasoning} for c in result.candidates],
         "query_terms": result.query_terms,
         "total_areas": result.total_areas,
-        "suggested_filename": suggested_filename,
+        "suggested_filename": result.suggested_filename,
     }
 
     if not result.candidates:
@@ -545,7 +450,7 @@ def brain_sync_suggest_placement(
 
     log.debug(
         "brain_sync_suggest_placement(title=%r) → %d candidates",
-        document_title,
+        result.document_title,
         len(result.candidates),
     )
     return response
@@ -573,33 +478,24 @@ def brain_sync_query(
 ) -> dict:
     """Search the brain for areas matching a query."""
     rt = _runtime(ctx)
-    index = _get_index(rt)
-    matches = index.search(query, max_results=max_results)
-
-    result: dict = {
-        "status": "ok",
-        "matches": matches,
-    }
-
-    if include_global:
-        result["global_context"] = _collect_global_context_structured(rt.root)
-
-    # Areas listing (capped)
-    all_areas = _collect_areas(rt.root)
-    total = len(all_areas)
-    truncated = total > MAX_AREAS_LISTED
-    result["areas"] = all_areas[:MAX_AREAS_LISTED]
-    result["areas_truncated"] = truncated
-    result["total_areas"] = total
+    result, index = query_brain(
+        rt.root,
+        query=query,
+        include_global=include_global,
+        max_results=max_results,
+        current_index=_get_index(rt),
+    )
+    rt.area_index = index
+    payload = _drop_none_values({"status": "ok", **asdict(result)})
 
     log.debug(
         "brain_sync_query(query=%r, include_global=%s) → %d matches, %d areas",
         query,
         include_global,
-        len(matches),
-        total,
+        len(result.matches),
+        result.total_areas,
     )
-    return result
+    return payload
 
 
 @server.tool(
@@ -614,20 +510,9 @@ def brain_sync_query(
 def brain_sync_get_context(ctx: Context) -> dict:
     """Load global brain context for orientation."""
     rt = _runtime(ctx)
-    global_context = _collect_global_context_structured(rt.root)
-    all_areas = _collect_areas(rt.root)
-    total = len(all_areas)
-    truncated = total > MAX_AREAS_LISTED
-
-    result = {
-        "status": "ok",
-        "global_context": global_context,
-        "areas": all_areas[:MAX_AREAS_LISTED],
-        "areas_truncated": truncated,
-        "total_areas": total,
-    }
-    log.debug("brain_sync_get_context() → %d areas", total)
-    return result
+    result = get_brain_context(rt.root)
+    log.debug("brain_sync_get_context() → %d areas", result.total_areas)
+    return _drop_none_values({"status": "ok", **asdict(result)})
 
 
 @server.tool(
@@ -645,112 +530,23 @@ def brain_sync_open_area(
 ) -> dict:
     """Load full insight context for a brain area."""
     rt = _runtime(ctx)
-    insights_dir = area_insights_dir(rt.root, path)
-    if insights_dir is None or not path_is_dir(insights_dir):
+    try:
+        result = open_area(
+            rt.root,
+            path=path,
+            include_children=include_children,
+            include_knowledge_list=include_knowledge_list,
+        )
+    except AreaNotFoundError:
         return {"status": "error", "error": "not_found", "path": path}
 
-    knowledge_dir = _safe_resolve(rt.root, "knowledge/" + path)
-    payload_size = 0
-
-    # Read insight files (excluding journal/)
-    insights: dict[str, str] = {}
-    for p in iterdir_paths(insights_dir):
-        if not path_is_file(p) or p.suffix.lower() not in {".md", ".txt"}:
-            continue
-        if p.name.startswith("."):
-            continue
-        rel_parts = p.relative_to(insights_dir).parts
-        if "journal" in rel_parts:
-            continue
-
-        if p.name == SUMMARY_FILENAME:
-            content = _read_file_safe(p, MAX_SUMMARY_CHARS)
-        else:
-            content = _read_file_safe(p, MAX_INSIGHT_FILE_CHARS)
-
-        insights[p.name] = content
-        payload_size += len(content)
-
-    # Children listing (always)
-    child_dirs = get_child_dirs(knowledge_dir) if knowledge_dir is not None and path_is_dir(knowledge_dir) else []
-    children: list[dict] = []
-    for d in sorted(child_dirs, key=lambda d: d.name):
-        child_path = f"{path}/{d.name}" if path else d.name
-        children.append(
-            {
-                "name": d.name,
-                "has_summary": path_is_file(area_summary_path(rt.root, child_path)),
-            }
-        )
-    total_children = len(children)
-
-    # Child summaries (optional, capped)
-    child_summaries: dict[str, str] = {}
-    children_truncated = False
-    if include_children:
-        for i, d in enumerate(sorted(child_dirs, key=lambda d: d.name)):
-            if i >= MAX_CHILDREN:
-                children_truncated = True
-                break
-            child_path = f"{path}/{d.name}" if path else d.name
-            summary_path = area_summary_path(rt.root, child_path)
-            if path_is_file(summary_path):
-                content = _read_file_safe(summary_path, MAX_CHILD_SUMMARY_CHARS)
-                child_summaries[d.name] = content
-                payload_size += len(content)
-
-    # Knowledge file listing (optional)
-    knowledge_files: list[str] = []
-    if include_knowledge_list and knowledge_dir is not None and path_is_dir(knowledge_dir):
-        for p in iterdir_paths(knowledge_dir):
-            if is_readable_file(p):
-                knowledge_files.append(p.name)
-
-    # Enforce MAX_AREA_PAYLOAD — progressive degradation
-    if payload_size > MAX_AREA_PAYLOAD:
-        # Step 1: Drop non-summary insight artifacts
-        for key in list(insights.keys()):
-            if key != SUMMARY_FILENAME:
-                payload_size -= len(insights[key])
-                insights[key] = TRUNCATION_MARKER
-                payload_size += len(TRUNCATION_MARKER)
-
-    if payload_size > MAX_AREA_PAYLOAD:
-        # Step 2: Truncate child summaries further
-        for key in list(child_summaries.keys()):
-            old_len = len(child_summaries[key])
-            reduced = MAX_CHILD_SUMMARY_CHARS // 2
-            child_summaries[key] = _truncate(child_summaries[key], reduced)
-            payload_size -= old_len - len(child_summaries[key])
-
-    if payload_size > MAX_AREA_PAYLOAD:
-        # Step 3: Truncate summary as last resort
-        if SUMMARY_FILENAME in insights:
-            old_len = len(insights[SUMMARY_FILENAME])
-            insights[SUMMARY_FILENAME] = _truncate(insights[SUMMARY_FILENAME], MAX_AREA_PAYLOAD // 2)
-            payload_size -= old_len - len(insights[SUMMARY_FILENAME])
-
-    result: dict = {
-        "status": "ok",
-        "path": path,
-        "insights": insights,
-        "children": children,
-        "total_children": total_children,
-    }
-    if include_children:
-        result["child_summaries"] = child_summaries
-        result["children_truncated"] = children_truncated
-    if include_knowledge_list:
-        result["knowledge_files"] = knowledge_files
-
     log.debug(
-        "brain_sync_open_area(%r) → %d insight files, %d children, payload %d chars",
+        "brain_sync_open_area(%r) → %d insight files, %d children",
         path,
-        len(insights),
-        total_children,
-        payload_size,
+        len(result.insights),
+        result.total_children,
     )
-    return result
+    return _drop_none_values({"status": "ok", **asdict(result)})
 
 
 @server.tool(
@@ -771,62 +567,21 @@ def brain_sync_open_file(
 ) -> dict:
     """Read a specific file from the brain with pagination support."""
     rt = _runtime(ctx)
-    resolved = _safe_resolve(rt.root, path)
-    if resolved is None:
+    try:
+        result = open_file(rt.root, path=path, offset=offset, limit=limit)
+    except BrainFileNotFoundError:
         return {"status": "error", "error": "not_found", "path": path}
+    except UnsupportedBrainFileTypeError as exc:
+        return {"status": "error", "error": "unsupported_type", "path": path, "extension": exc.extension}
 
-    if not path_is_file(resolved):
-        return {"status": "error", "error": "not_found", "path": path}
-
-    ext = resolved.suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        return {"status": "error", "error": "unsupported_type", "path": path, "extension": ext}
-
-    limit = min(limit, MAX_FILE_CHARS)
-    offset = max(0, offset)
-
-    # Read full file — seek() on text-mode files uses opaque positions
-    # (not character offsets), so we must read-then-slice for correctness.
-    # Knowledge files are at most ~500 KB; this is fine.
-    text = read_text(resolved, encoding="utf-8", errors="replace")
-
-    if offset >= len(text):
-        return {
-            "status": "ok",
-            "path": path,
-            "content": "",
-            "offset": offset,
-            "limit": limit,
-            "truncated": False,
-        }
-
-    raw = text[offset : offset + limit + 512]
-
-    # Align to newline boundary to preserve Markdown structure
-    if len(raw) > limit:
-        last_nl = raw.rfind("\n", 0, limit)
-        chunk = raw[: last_nl + 1] if last_nl != -1 else raw[:limit]
-        has_more = True
-    else:
-        chunk = raw
-        has_more = False
-
-    next_offset = offset + len(chunk)
-
-    result: dict = {
-        "status": "ok",
-        "path": path,
-        "content": chunk,
-        "offset": offset,
-        "limit": limit,
-        "truncated": has_more,
-    }
-    if has_more:
-        result["next_offset"] = next_offset
-        result["hint"] = f'Call brain_sync_open_file(path="{path}", offset={next_offset}) to continue.'
-
-    log.debug("brain_sync_open_file(%r, offset=%d) → %d chars, truncated=%s", path, offset, len(chunk), has_more)
-    return result
+    log.debug(
+        "brain_sync_open_file(%r, offset=%d) → %d chars, truncated=%s",
+        path,
+        result.offset,
+        len(result.content),
+        result.truncated,
+    )
+    return _drop_none_values({"status": "ok", **asdict(result)})
 
 
 # ---------------------------------------------------------------------------
