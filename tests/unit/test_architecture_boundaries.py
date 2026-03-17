@@ -231,10 +231,6 @@ def _off_graph_imports(rel_path: str, modules: set[str]) -> set[str]:
     return off_graph
 
 
-def _matches_prefix(module: str, prefix: str) -> bool:
-    return module == prefix or module.startswith(prefix + ".")
-
-
 def _assert_exact_allowlist(
     *,
     allowlist: dict[str, frozenset[str]],
@@ -244,14 +240,12 @@ def _assert_exact_allowlist(
     violations: list[str] = []
     stale: list[str] = []
 
-    for rel_path, allowed_prefixes in sorted(allowlist.items()):
+    for rel_path, allowed_modules in sorted(allowlist.items()):
         actual = actual_off_graph.get(rel_path, set())
         if not actual:
             stale.append(rel_path)
             continue
-        unexpected = sorted(
-            module for module in actual if not any(_matches_prefix(module, prefix) for prefix in allowed_prefixes)
-        )
+        unexpected = sorted(module for module in actual if module not in allowed_modules)
         if unexpected:
             violations.append(f"{rel_path}: {', '.join(unexpected)}")
 
