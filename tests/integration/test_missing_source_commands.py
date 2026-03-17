@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from brain_sync.application.init import init_brain
+from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import (
     add_source,
     list_sources,
@@ -14,7 +15,6 @@ from brain_sync.application.sources import (
     update_source,
 )
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest
-from brain_sync.runtime.repository import load_state
 
 pytestmark = pytest.mark.integration
 

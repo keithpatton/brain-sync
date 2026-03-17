@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from brain_sync.application.init import init_brain
+from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import (
+    InvalidChildDiscoveryRequestError,
     add_source,
     move_source,
     reconcile_sources,
@@ -15,7 +17,8 @@ from brain_sync.application.sources import (
     update_source,
 )
 from brain_sync.brain.manifest import read_all_source_manifests, read_source_manifest
-from brain_sync.runtime.repository import _connect, load_state
+from brain_sync.runtime.child_requests import load_child_discovery_request
+from brain_sync.runtime.repository import _connect
 
 pytestmark = pytest.mark.integration
 
@@ -62,10 +65,23 @@ class TestAddSourceWritesManifest:
             child_path="children",
         )
         manifest = read_source_manifest(brain, result.canonical_id)
+        request = load_child_discovery_request(brain, result.canonical_id)
         assert manifest is not None
         assert manifest.sync_attachments is True
-        assert manifest.fetch_children is False
-        assert manifest.child_path is None
+        assert not hasattr(manifest, "fetch_children")
+        assert not hasattr(manifest, "child_path")
+        assert request is not None
+        assert request.fetch_children is True
+        assert request.child_path == "children"
+
+    def test_add_rejects_child_path_without_fetch_children(self, brain: Path):
+        with pytest.raises(InvalidChildDiscoveryRequestError):
+            add_source(
+                brain,
+                url=CONFLUENCE_URL,
+                target_path="area",
+                child_path="children",
+            )
 
 
 class TestRemoveSourceDeletesManifest:
@@ -115,12 +131,29 @@ class TestUpdateSourceUpdatesManifest:
         assert manifest is not None
         assert manifest.sync_attachments is True
 
-    def test_updates_child_path(self, brain: Path):
-        result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
+    def test_updates_child_path_for_pending_request(self, brain: Path):
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="area", fetch_children=True, child_path="children")
         update_source(brain, source=result.canonical_id, child_path="kids")
         manifest = read_source_manifest(brain, result.canonical_id)
+        request = load_child_discovery_request(brain, result.canonical_id)
         assert manifest is not None
-        assert manifest.child_path is None
+        assert not hasattr(manifest, "child_path")
+        assert request is not None
+        assert request.fetch_children is True
+        assert request.child_path == "kids"
+
+    def test_update_rejects_child_path_without_pending_request(self, brain: Path):
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
+
+        with pytest.raises(InvalidChildDiscoveryRequestError):
+            update_source(brain, source=result.canonical_id, child_path="kids")
+
+    def test_update_clears_pending_child_request_when_fetch_children_is_disabled(self, brain: Path):
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="area", fetch_children=True, child_path="children")
+
+        update_source(brain, source=result.canonical_id, fetch_children=False)
+
+        assert load_child_discovery_request(brain, result.canonical_id) is None
 
 
 class TestReconcileBootstrapsMigration:

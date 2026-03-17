@@ -1,28 +1,33 @@
 # Compatibility
 
-This document defines the supported compatibility baseline for the first
-supportable brain-sync release and the testing expectations that follow
-from it.
+This document defines the supported app-version / Brain Format / runtime DB
+schema compatibility rows and the testing expectations that follow from
+them.
 
 Version terminology is defined in [VERSIONING.md](VERSIONING.md).
 
 ---
 
-## Supported Baseline
+## Supported Rows
 
-The first supportable release baseline is:
+The current supported rows are:
 
 | App version | Brain Format | Runtime DB schema | Support status |
 |---|---|---|---|
-| `0.5.0` | `1.0` | `v23` | Supported |
+| `0.5.0` | `1.0` | `v23` | Supported as upgrade source |
+| `0.6.0` | `1.0` | `v24` | Supported |
 
 Canonical compatibility statement:
 
-`brain-sync 0.5.0 supports Brain Format 1.0 with runtime DB schema v23`
+`brain-sync 0.6.0 supports Brain Format 1.0 with runtime DB schema v24`
+
+Transition statement:
+
+`brain-sync 0.6.0 must accept supported Brain Format 1.0 brains carrying runtime DB schema v23 and migrate that runtime state to v24 in place`
 
 If a packaging layer later emits a four-part installer version such as
-`0.5.0.0`, that installer build still maps to the same canonical app
-version `0.5.0` unless the packaging policy says otherwise.
+`0.6.0.0`, that installer build still maps to the same canonical app
+version `0.6.0` unless the packaging policy says otherwise.
 
 ---
 
@@ -40,14 +45,17 @@ aliases from the ontology migration are not supported compatibility surfaces.
 
 ## Supported Operations
 
-For the supported baseline above, brain-sync must support:
+For the supported rows above, brain-sync must support:
 
 - creating a fresh Brain Format `1.0` brain via `brain-sync init`
 - operating on an existing valid Brain Format `1.0` brain
 - repairing repairable drift in a Brain Format `1.0` brain via doctor
   and rebuild flows
-- deleting and rebuilding runtime DB state without changing portable
-  brain state
+- opening Brain Format `1.0` brains whose machine-local runtime DB is still on
+  supported upgrade-source schemas such as `v23`
+- migrating supported runtime DB versions in place during app upgrades
+- recovering by rebuilding runtime DB state when it is missing, corrupt,
+  or on an unsupported schema without changing portable brain state
 
 This support applies to brains already in Brain Format `1.0`.
 
@@ -55,8 +63,8 @@ This support applies to brains already in Brain Format `1.0`.
 
 ## Unsupported Legacy Inputs
 
-Pre-Brain Format `1.0` development layouts are **not** supported upgrade targets for
-the first supportable release.
+Pre-Brain Format `1.0` development layouts are **not** supported upgrade
+targets for the supported rows above.
 
 This means:
 
@@ -72,20 +80,24 @@ that is outside the initial Brain Format `1.0` support baseline.
 
 ## Compatibility Test Obligations
 
-Every supported compatibility row must have tests that prove:
+Every supported compatibility row or transition row must have tests that
+prove:
 
 1. Fresh init creates a conforming brain of the supported Brain Format.
 2. A drifted supported-format brain can be repaired without loss of user
    knowledge.
-3. Runtime DB deletion and rebuild do not invalidate the supported
+3. Supported runtime DB versions migrate in place without unnecessarily
+   discarding machine-local user state.
+4. Runtime DB deletion and rebuild do not invalidate the supported
    Brain Format.
-4. Unsupported legacy layouts are detected clearly and are not silently
+5. Unsupported legacy layouts are detected clearly and are not silently
    treated as supported-format brains.
 
-For the initial baseline, this means tests should cover:
+For the current supported rows, this means tests should cover:
 
 - fresh Brain Format `1.0` conformance
 - Brain Format `1.0` drift repair
+- runtime DB `v23` to `v24` in-place migration
 - Brain Format `1.0` runtime rebuild
 - unsupported pre-Brain Format `1.0` legacy detection / re-init guidance
 
@@ -102,6 +114,7 @@ Recommended primitives:
 - `build_drifted_brain_v1(root, drift=...)`
 - `build_legacy_pre_v1_brain(root, scenario=...)`
 - `assert_brain_format_v1(root)`
+- `assert_runtime_schema_migrates(root, from_version=..., to_version=...)`
 - `assert_runtime_rebuildable(root)`
 - `assert_unsupported_legacy_brain(root)`
 
@@ -114,6 +127,9 @@ Recommended placement:
 
 This keeps "does this module behave correctly?" separate from "what
 portable brain formats does this release support?"
+
+For the current transition, it also answers "which earlier supported rows must
+still upgrade cleanly into the current row?"
 
 ---
 
@@ -135,16 +151,3 @@ At that point, compatibility tests should expand to include:
 - explicit policy for deprecated or read-only legacy formats
 
 ---
-
-## Current Product Direction
-
-For the current support baseline:
-
-- Brain Format `1.0` is the first supportable portable format
-- runtime DB schema `v23` is the first supportable runtime cache schema
-  aligned to that format
-- app version `0.5.0` is the intended first supportable release line
-
-That gives brain-sync a clean baseline from which future supported
-upgrades can be defined explicitly instead of being inferred from
-internal migrations.

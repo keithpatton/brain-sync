@@ -217,34 +217,18 @@ class BrainRepository:
             delete_source_manifest(self.root, canonical_id)
         return existed
 
-    def update_source_flags(
+    def update_source_sync_settings(
         self,
         canonical_id: str,
         *,
-        fetch_children: bool | None = None,
         sync_attachments: bool | None = None,
-        child_path: str | None = ...,  # type: ignore[assignment]
     ) -> bool:
-        """Update manifest-only source flags."""
+        """Update durable manifest-backed source settings."""
         manifest = read_source_manifest(self.root, canonical_id)
         if manifest is None:
             return False
-        if fetch_children is not None:
-            manifest.fetch_children = fetch_children
         if sync_attachments is not None:
             manifest.sync_attachments = sync_attachments
-        if child_path is not ...:
-            manifest.child_path = child_path  # type: ignore[assignment]
-        write_source_manifest(self.root, manifest)
-        return True
-
-    def clear_source_children_flag(self, canonical_id: str) -> bool:
-        """Clear the one-shot fetch_children flag and child_path."""
-        manifest = read_source_manifest(self.root, canonical_id)
-        if manifest is None:
-            return False
-        manifest.fetch_children = False
-        manifest.child_path = None
         write_source_manifest(self.root, manifest)
         return True
 

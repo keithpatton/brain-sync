@@ -138,7 +138,11 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
     ),
     "src/brain_sync/sync/daemon.py": frozenset(
         {
+            "brain_sync.application.insights",
             "brain_sync.application.sources",
+            "brain_sync.application.reconcile",
+            "brain_sync.application.regen",
+            "brain_sync.application.source_state",
             "brain_sync.regen",
             "brain_sync.regen.lifecycle",
             "brain_sync.regen.queue",
@@ -163,17 +167,7 @@ _RULE_EXCEPTION_IMPORTS = {
 
 # Transitional debt documented in docs/architecture/ARCHITECTURE.md.
 _TRANSITIONAL_DEBT_IMPORTS = {
-    "src/brain_sync/runtime/repository.py": frozenset(
-        {
-            "brain_sync.brain.fileops",
-            "brain_sync.brain.layout",
-            "brain_sync.brain.managed_markdown",
-            "brain_sync.brain.manifest",
-            "brain_sync.brain.repository",
-            "brain_sync.brain.sidecar",
-            "brain_sync.brain.tree",
-        }
-    ),
+    "src/brain_sync/runtime/repository.py": frozenset({"brain_sync.brain.tree"}),
     "src/brain_sync/sync/reconcile.py": frozenset({"brain_sync.regen"}),
     "src/brain_sync/sync/watcher.py": frozenset({"brain_sync.regen"}),
 }

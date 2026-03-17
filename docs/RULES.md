@@ -774,14 +774,20 @@ Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
 [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory),
 **not** inside the brain root)
 
-The runtime database contains 4 tables:
+The runtime database contains 5 tables:
 
 | Table | Purpose | Authoritative |
 |---|---|---|
 | `meta` | Schema version tracking | Yes (for DB migrations) |
 | `sync_cache` | Machine-local polling schedule and sync progress | No — rebuildable from manifests |
+| `child_discovery_requests` | Machine-local one-shot child-discovery request state | No — machine-local daemon handoff state |
 | `regen_locks` | Cross-process regen coordination | No — transient per daemon session |
 | `token_events` | Append-only LLM cost telemetry | No — machine-local observability, persisted for local inspection only |
+
+When a supported runtime schema upgrade exists, normal upgrades should migrate
+runtime DB state in place unless compatibility docs explicitly say otherwise.
+Rebuild is the fallback for missing, corrupt, or unsupported runtime DB state,
+not the default upgrade path.
 
 Earlier runtime-only tables are intentionally absent:
 
@@ -900,7 +906,9 @@ watching.
 `fetch_children` and `child_path` are one-shot operational commands, not
 durable source state. Brain Format 1.0 treats them as command
 parameters consumed at execution time, keeping manifests focused on
-durable registration intent.
+durable registration intent. `child_path` only has meaning while there is an
+active pending child-discovery request; it must not persist as latent durable
+or runtime configuration once `fetch_children` is no longer pending.
 
 ---
 

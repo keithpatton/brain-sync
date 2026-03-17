@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.application.insights import save_insight_state
 from brain_sync.runtime.repository import (
     SCHEMA_VERSION,
     InsightState,
     _connect,
     reclaim_stale_running_states,
     release_owned_running_states,
-    save_insight_state,
 )
 
 pytestmark = pytest.mark.unit

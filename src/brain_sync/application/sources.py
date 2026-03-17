@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from brain_sync.application.roots import _require_root
+from brain_sync.application.source_state import load_state
 from brain_sync.brain.fileops import (
     canonical_prefix,
     path_is_dir,
@@ -21,10 +22,17 @@ from brain_sync.brain.manifest import (
 )
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import normalize_path
+from brain_sync.runtime.child_requests import (
+    ChildDiscoveryRequest,
+    clear_child_discovery_request,
+    load_all_child_discovery_requests,
+    load_child_discovery_request,
+    save_child_discovery_request,
+)
 from brain_sync.runtime.repository import (
     SourceState,
     SyncState,
-    load_state,
+    load_sync_progress,
     save_sync_progress,
 )
 from brain_sync.runtime.repository import (
@@ -100,6 +108,17 @@ class SourceNotFoundError(Exception):
         super().__init__(f"Source not found: {source}")
 
 
+class InvalidChildDiscoveryRequestError(ValueError):
+    """Raised when child-discovery request fields do not form a valid one-shot request."""
+
+    def __init__(self, child_path: str | None):
+        self.child_path = child_path
+        super().__init__(
+            "child_path requires an active child-discovery request; pass fetch_children=True "
+            "or update an already-pending request"
+        )
+
+
 def _resolve_source(state, source: str) -> str | None:
     """Find a source by canonical ID or URL."""
     if source in state.sources:
@@ -146,6 +165,8 @@ def add_source(
     existing = check_source_exists(root, url)
     if existing is not None:
         raise existing
+    if child_path is not None and not fetch_children:
+        raise InvalidChildDiscoveryRequestError(child_path)
 
     stype = detect_source_type(url)
     cid = canonical_id(stype, url)
@@ -159,21 +180,25 @@ def add_source(
             source_url=url,
             source_type=stype.value,
             materialized_path="",  # unknown until first sync writes the file
-            fetch_children=fetch_children,
             sync_attachments=sync_attachments,
             target_path=target_path,
-            child_path=child_path,
         ),
     )
+
+    if fetch_children:
+        save_child_discovery_request(
+            root,
+            cid,
+            fetch_children=fetch_children,
+            child_path=child_path,
+        )
 
     state.sources[cid] = SourceState(
         canonical_id=cid,
         source_url=url,
         source_type=stype.value,
         target_path=target_path,
-        fetch_children=fetch_children,
         sync_attachments=sync_attachments,
-        child_path=child_path,
     )
     save_sync_progress(root, state)
     repository.ensure_knowledge_dir(target_path)
@@ -239,6 +264,7 @@ def remove_source(
     save_sync_progress(root, state)
 
     db_delete_source(root, cid)
+    clear_child_discovery_request(root, cid)
 
     # Phase 1: delete manifest (bypasses two-stage — explicit remove is immediate)
     repository.delete_source_registration(cid)
@@ -259,12 +285,14 @@ def list_sources(
     """List registered sync sources."""
     root = _require_root(root)
     state = load_state(root)
+    child_requests = load_all_child_discovery_requests(root)
 
     results: list[SourceInfo] = []
     for cid, ss in sorted(state.sources.items()):
         target = getattr(ss, "target_path", "")
         if filter_path and not target.startswith(filter_path):
             continue
+        request = child_requests.get(cid)
         results.append(
             SourceInfo(
                 canonical_id=cid,
@@ -273,7 +301,7 @@ def list_sources(
                 last_checked_utc=ss.last_checked_utc,
                 last_changed_utc=ss.last_changed_utc,
                 current_interval_secs=ss.current_interval_secs,
-                fetch_children=getattr(ss, "fetch_children", False),
+                fetch_children=request.fetch_children if request is not None else False,
                 sync_attachments=getattr(ss, "sync_attachments", False),
             )
         )
@@ -364,33 +392,43 @@ def update_source(
             source_url=manifest.source_url,
             source_type=manifest.source_type,
             target_path=manifest.target_path,
-            fetch_children=manifest.fetch_children,
             sync_attachments=manifest.sync_attachments,
-            child_path=manifest.child_path,
         )
 
+    existing_request = load_child_discovery_request(root, cid) or ChildDiscoveryRequest(canonical_id=cid)
+
     # Apply provided flags to in-memory state
-    if fetch_children is not None:
-        ss.fetch_children = fetch_children
     if sync_attachments is not None:
         ss.sync_attachments = sync_attachments
+    next_fetch_children = existing_request.fetch_children
+    next_child_path = existing_request.child_path
+    if fetch_children is not None:
+        next_fetch_children = fetch_children
     if child_path is not ...:
-        ss.child_path = child_path  # type: ignore[assignment]
+        if child_path is not None and not next_fetch_children:
+            raise InvalidChildDiscoveryRequestError(child_path)
+        next_child_path = child_path  # type: ignore[assignment]
+    if not next_fetch_children:
+        next_child_path = None
 
     repository = BrainRepository(root)
-    repository.update_source_flags(
+    repository.update_source_sync_settings(
         cid,
-        fetch_children=fetch_children,
         sync_attachments=sync_attachments,
-        child_path=child_path,
+    )
+    save_child_discovery_request(
+        root,
+        cid,
+        fetch_children=next_fetch_children,
+        child_path=next_child_path,
     )
 
     return UpdateResult(
         canonical_id=cid,
         source_url=ss.source_url,
-        fetch_children=ss.fetch_children,
+        fetch_children=next_fetch_children,
         sync_attachments=ss.sync_attachments,
-        child_path=ss.child_path,
+        child_path=next_child_path,
     )
 
 
@@ -497,9 +535,7 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
     manifest_dir = root / ".brain-sync" / "sources"
     orphan_count = 0
     if path_is_dir(manifest_dir):
-        from brain_sync.runtime.repository import _load_db_sync_progress
-
-        db_sources = _load_db_sync_progress(root)
+        db_sources = load_sync_progress(root)
         for db_cid in db_sources:
             if db_cid not in all_manifests:
                 db_delete_source(root, db_cid)

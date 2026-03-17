@@ -13,13 +13,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
-if TYPE_CHECKING:
-    from brain_sync.brain.manifest import SourceManifest
-
-from brain_sync.brain.fileops import path_is_file, read_text
-from brain_sync.brain.layout import area_insights_dir, knowledge_root
 from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
@@ -27,7 +22,7 @@ from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = RUNTIME_DB_SCHEMA_VERSION
-_ALLOWED_RUNTIME_TABLES = frozenset({"meta", "sync_cache", "regen_locks", "token_events"})
+_ALLOWED_RUNTIME_TABLES = frozenset({"meta", "sync_cache", "regen_locks", "token_events", "child_discovery_requests"})
 
 _TOKEN_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS token_events (
@@ -112,9 +107,18 @@ CREATE TABLE IF NOT EXISTS regen_locks (
 );
 """
 
-# Legacy migration placeholders. The runtime DB is rebuildable in v23, so
-# historical schema upgrades are intentionally unsupported. The old migration
-# function is retained only as a guard rail with an explicit failure mode.
+_CHILD_DISCOVERY_REQUESTS_DDL = """
+CREATE TABLE IF NOT EXISTS child_discovery_requests (
+    canonical_id TEXT PRIMARY KEY,
+    fetch_children INTEGER NOT NULL DEFAULT 0 CHECK(fetch_children IN (0,1)),
+    child_path TEXT,
+    updated_utc TEXT NOT NULL
+);
+"""
+
+# Legacy migration placeholders. Supported runtime upgrades are handled by
+# _migrate_runtime_db(); the older deep-history migration path is retained only
+# as a guard rail with an explicit failure mode for unsupported schemas.
 _INSIGHT_STATE_DDL = ""
 _DAEMON_STATUS_DDL = ""
 _SCHEMA_V2_ADDITIONS = ""
@@ -152,9 +156,7 @@ class SourceState(_PathNormalized):
     next_check_utc: str | None = None
     interval_seconds: int | None = None
     target_path: str = ""
-    fetch_children: bool = False
     sync_attachments: bool = False
-    child_path: str | None = None
 
 
 @dataclass
@@ -207,11 +209,29 @@ def _initialize_runtime_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_SYNC_CACHE_DDL)
     conn.executescript(_REGEN_LOCKS_DDL)
     conn.executescript(_TOKEN_EVENTS_DDL)
+    conn.executescript(_CHILD_DISCOVERY_REQUESTS_DDL)
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def _migrate_runtime_db(conn: sqlite3.Connection, from_version: int) -> int:
+    """Migrate a supported runtime DB schema in place."""
+    version = from_version
+
+    if version == 23:
+        conn.executescript(_CHILD_DISCOVERY_REQUESTS_DDL)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        conn.commit()
+        log.info("Migrated runtime DB schema from v23 to v%d", SCHEMA_VERSION)
+        version = SCHEMA_VERSION
+
+    return version
 
 
 def _reset_runtime_db(db: Path) -> None:
@@ -844,6 +864,11 @@ def _connect(root: Path) -> sqlite3.Connection:
         if current_version == SCHEMA_VERSION and not unexpected_tables:
             return conn
 
+        if current_version is not None and not unexpected_tables:
+            migrated_version = _migrate_runtime_db(conn, current_version)
+            if migrated_version == SCHEMA_VERSION:
+                return conn
+
         conn.close()
         log.warning(
             "Resetting runtime DB at %s to schema v%d (found version=%s, extra tables=%s)",
@@ -855,13 +880,8 @@ def _connect(root: Path) -> sqlite3.Connection:
         _reset_runtime_db(db)
 
 
-def _load_db_sync_progress(root: Path) -> dict[str, SourceState]:
-    """Read all sync_cache rows from the DB. Returns {canonical_id: partial SourceState}.
-
-    The returned SourceState objects contain only sync-progress fields.
-    Intent fields (source_url, source_type, target_path, flags) are empty/defaults
-    and must be populated from manifests by load_state().
-    """
+def load_sync_progress(root: Path) -> dict[str, SourceState]:
+    """Read all sync_cache rows from the DB as runtime-only progress records."""
     try:
         conn = _connect(root)
     except Exception as e:
@@ -897,50 +917,6 @@ def _load_db_sync_progress(root: Path) -> dict[str, SourceState]:
     return result
 
 
-def _seed_from_hint(root: Path, m: SourceManifest, target_path: str) -> SourceState:
-    """Create a SourceState from a manifest with no DB row, seeding from sync_hint if possible."""
-    ss = SourceState(
-        canonical_id=m.canonical_id,
-        source_url=m.source_url,
-        source_type=m.source_type,
-        target_path=target_path,
-        fetch_children=m.fetch_children,
-        sync_attachments=m.sync_attachments,
-        child_path=m.child_path,
-    )
-
-    # Try to seed from sync_hint to avoid thundering-herd re-fetch
-    if m.sync_hint and m.sync_hint.content_hash and m.materialized_path:
-        local_file = root / "knowledge" / m.materialized_path
-        if path_is_file(local_file):
-            # Inline imports to avoid circular deps
-            from brain_sync.brain.fileops import content_hash as compute_hash
-            from brain_sync.brain.managed_markdown import strip_managed_header
-
-            try:
-                raw = read_text(local_file, encoding="utf-8")
-                body = strip_managed_header(raw)
-                local_hash = compute_hash(body.encode("utf-8"))
-                if local_hash == m.sync_hint.content_hash:
-                    ss.content_hash = m.sync_hint.content_hash
-                    ss.last_checked_utc = m.sync_hint.last_synced_utc
-                    # Seed scheduler fields so schedule_from_persisted() is used
-                    if m.sync_hint.last_synced_utc:
-                        from datetime import datetime, timedelta
-
-                        try:
-                            last = datetime.fromisoformat(m.sync_hint.last_synced_utc)
-                            ss.next_check_utc = (last + timedelta(seconds=1800)).isoformat()
-                            ss.interval_seconds = 1800
-                        except (ValueError, TypeError):
-                            pass
-                    log.info("Seeded %s from sync_hint (hash match)", m.canonical_id)
-            except OSError:
-                pass
-
-    return ss
-
-
 def _has_sync_progress(ss: SourceState) -> bool:
     """Check if a SourceState has any persistable sync progress."""
     return (
@@ -949,53 +925,6 @@ def _has_sync_progress(ss: SourceState) -> bool:
         or ss.metadata_fingerprint is not None
         or ss.next_check_utc is not None
     )
-
-
-def load_state(root: Path) -> SyncState:
-    db_sources = _load_db_sync_progress(root)
-
-    # Manifests are authoritative for source intent. DB is progress-only cache.
-    from brain_sync.brain.manifest import read_all_source_manifests
-
-    manifests = read_all_source_manifests(root)
-
-    merged: dict[str, SourceState] = {}
-    for cid, m in manifests.items():
-        # Skip missing-status sources — they are not schedulable
-        if m.status == "missing":
-            continue
-
-        # Derive target_path: explicit field > materialized_path parent > ""
-        target_path = m.target_path
-        if not target_path and m.materialized_path:
-            target_path = normalize_path(Path(m.materialized_path).parent)
-
-        if cid in db_sources:
-            # Merge: manifest intent + DB progress
-            db = db_sources[cid]
-            merged[cid] = SourceState(
-                # Intent from manifest
-                canonical_id=cid,
-                source_url=m.source_url,
-                source_type=m.source_type,
-                target_path=target_path,
-                fetch_children=m.fetch_children,
-                sync_attachments=m.sync_attachments,
-                child_path=m.child_path,
-                # Progress from DB
-                last_checked_utc=db.last_checked_utc,
-                last_changed_utc=db.last_changed_utc,
-                current_interval_secs=db.current_interval_secs,
-                content_hash=db.content_hash,
-                metadata_fingerprint=db.metadata_fingerprint,
-                next_check_utc=db.next_check_utc,
-                interval_seconds=db.interval_seconds,
-            )
-        else:
-            # Manifest-only: seed from sync_hint if possible
-            merged[cid] = _seed_from_hint(root, m, target_path)
-
-    return SyncState(sources=merged)
 
 
 def save_sync_progress(root: Path, state: SyncState) -> None:
@@ -1042,15 +971,6 @@ def save_sync_progress(root: Path, state: SyncState) -> None:
 save_state = save_sync_progress  # deprecated alias
 
 
-def update_source_target_path(root: Path, canonical_id: str, new_target_path: str) -> None:
-    """No-op: target_path is now manifest-only (v21+).
-
-    Kept as a stub for callers that haven't been updated yet.
-    """
-    # target_path lives in manifests now, not in the DB.
-    pass
-
-
 def delete_source(root: Path, canonical_id: str) -> None:
     """Delete a sync_cache row from the DB by canonical ID."""
     conn = _connect(root)
@@ -1059,32 +979,6 @@ def delete_source(root: Path, canonical_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-def update_source_flags(
-    root: Path,
-    canonical_id: str,
-    *,
-    fetch_children: bool | None = None,
-    sync_attachments: bool | None = None,
-    child_path: str | None = ...,  # type: ignore[assignment]  # sentinel
-) -> None:
-    """No-op: source flags are now manifest-only (v21+).
-
-    Kept as a stub for callers that haven't been updated yet.
-    """
-    # Flags live in manifests now, not in the DB.
-    pass
-
-
-def clear_children_flag(root: Path, canonical_id: str) -> None:
-    """Clear the one-shot fetch_children flag and child_path after processing.
-
-    In v21+, these flags live in manifests. This updates the manifest directly.
-    """
-    from brain_sync.brain.repository import BrainRepository
-
-    BrainRepository(root).clear_source_children_flag(canonical_id)
 
 
 def ensure_db(root: Path) -> None:
@@ -1108,7 +1002,7 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
         conn.close()
 
 
-# --- Insight state operations ---
+# --- Runtime lifecycle state operations ---
 
 
 _MAX_ERROR_REASON_LEN = 500
@@ -1124,13 +1018,9 @@ def _clamp_error_reason(reason: str | None) -> str | None:
     return cleaned
 
 
-def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
-    """Load insight state: hashes from sidecar, lifecycle from regen_locks."""
-    from brain_sync.brain.sidecar import read_regen_meta
-
+def load_regen_lock(root: Path, knowledge_path: str) -> RegenLock | None:
+    """Load runtime lifecycle fields for a single knowledge path."""
     knowledge_path = normalize_path(knowledge_path)
-
-    # Read lifecycle from regen_locks
     conn = _connect(root)
     try:
         row = conn.execute(
@@ -1142,45 +1032,16 @@ def load_insight_state(root: Path, knowledge_path: str) -> InsightState | None:
     finally:
         conn.close()
 
-    # Read hashes from sidecar
-    insights_dir = area_insights_dir(root, knowledge_path)
-    meta = read_regen_meta(insights_dir)
-
-    if row is None and meta is None:
+    if row is None:
         return None
 
-    return InsightState(
-        knowledge_path=knowledge_path,
-        content_hash=meta.content_hash if meta else None,
-        summary_hash=meta.summary_hash if meta else None,
-        structure_hash=meta.structure_hash if meta else None,
+    return RegenLock(
+        knowledge_path=row[0],
         regen_started_utc=row[2] if row else None,
-        last_regen_utc=meta.last_regen_utc if meta else None,
         regen_status=row[1] if row else "idle",
         owner_id=row[3] if row else None,
         error_reason=row[4] if row else None,
     )
-
-
-def save_portable_insight_state(root: Path, istate: InsightState) -> bool:
-    """Persist durable insight-state fields without touching runtime lifecycle."""
-    from brain_sync.brain.repository import BrainRepository
-
-    kp = normalize_path(istate.knowledge_path)
-    if istate.content_hash is None:
-        return False
-
-    try:
-        return BrainRepository(root).save_portable_insight_state(
-            kp,
-            content_hash=istate.content_hash,
-            summary_hash=istate.summary_hash,
-            structure_hash=istate.structure_hash,
-            last_regen_utc=istate.last_regen_utc,
-        )
-    except Exception:
-        log.warning("Failed to write sidecar for %s", kp, exc_info=True)
-        return False
 
 
 def save_regen_lock(root: Path, lock: RegenLock) -> None:
@@ -1213,29 +1074,8 @@ def save_regen_lock(root: Path, lock: RegenLock) -> None:
         conn.close()
 
 
-def save_insight_state(root: Path, istate: InsightState) -> None:
-    """Save insight state: hashes to sidecar, lifecycle to regen_locks."""
-    save_portable_insight_state(root, istate)
-    save_regen_lock(
-        root,
-        RegenLock(
-            knowledge_path=istate.knowledge_path,
-            regen_status=istate.regen_status,
-            regen_started_utc=istate.regen_started_utc,
-            owner_id=istate.owner_id,
-            error_reason=istate.error_reason,
-        ),
-    )
-
-
-def load_all_insight_states(root: Path) -> list[InsightState]:
-    """Load all insight states: hashes from sidecars, lifecycle from regen_locks."""
-    from brain_sync.brain.sidecar import read_all_regen_meta
-
-    # Read all sidecars
-    all_meta = read_all_regen_meta(knowledge_root(root))
-
-    # Read all regen_locks
+def load_all_regen_locks(root: Path) -> list[RegenLock]:
+    """Load all runtime lifecycle rows from regen_locks."""
     conn = _connect(root)
     try:
         rows = conn.execute(
@@ -1244,42 +1084,18 @@ def load_all_insight_states(root: Path) -> list[InsightState]:
     finally:
         conn.close()
 
-    locks_by_path: dict[str, tuple] = {r[0]: r for r in rows}
-
-    # Merge: union of all paths from both sources
-    all_paths = set(all_meta.keys()) | set(locks_by_path.keys())
-    result: list[InsightState] = []
-    for kp in all_paths:
-        meta = all_meta.get(kp)
-        lock = locks_by_path.get(kp)
+    result: list[RegenLock] = []
+    for row in rows:
         result.append(
-            InsightState(
-                knowledge_path=kp,
-                content_hash=meta.content_hash if meta else None,
-                summary_hash=meta.summary_hash if meta else None,
-                structure_hash=meta.structure_hash if meta else None,
-                regen_started_utc=lock[2] if lock else None,
-                last_regen_utc=meta.last_regen_utc if meta else None,
-                regen_status=lock[1] if lock else "idle",
-                owner_id=lock[3] if lock else None,
-                error_reason=lock[4] if lock else None,
+            RegenLock(
+                knowledge_path=row[0],
+                regen_started_utc=row[2],
+                regen_status=row[1],
+                owner_id=row[3],
+                error_reason=row[4],
             )
         )
     return result
-
-
-def delete_insight_state(root: Path, knowledge_path: str) -> None:
-    """Delete regen_locks row + sidecar for a knowledge path."""
-    from brain_sync.brain.repository import BrainRepository
-
-    knowledge_path = normalize_path(knowledge_path)
-
-    try:
-        BrainRepository(root).delete_portable_insight_state(knowledge_path)
-    except Exception:
-        log.warning("Failed to delete sidecar for %s", knowledge_path, exc_info=True)
-
-    delete_regen_lock(root, knowledge_path)
 
 
 def delete_regen_lock(root: Path, knowledge_path: str) -> None:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.application.source_state import load_state
 from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
@@ -16,7 +17,6 @@ from brain_sync.runtime.repository import (
     SourceState,
     SyncState,
     _has_sync_progress,
-    load_state,
     save_state,
 )
 from brain_sync.sync.pipeline import extract_source_id
@@ -52,10 +52,8 @@ def _write_manifest(root: Path, cid: str, url: str, **kwargs) -> None:
             source_url=url,
             source_type="confluence",
             materialized_path=kwargs.get("materialized_path", ""),
-            fetch_children=kwargs.get("fetch_children", False),
             sync_attachments=kwargs.get("sync_attachments", False),
             target_path=kwargs.get("target_path", ""),
-            child_path=kwargs.get("child_path"),
             status=kwargs.get("status", "active"),
             sync_hint=kwargs.get("sync_hint"),
         ),
@@ -66,7 +64,7 @@ class TestLoadStateMerge:
     def test_merges_manifest_intent_with_db_progress(self, brain: Path):
         """Manifest provides intent fields, DB provides progress fields."""
         ensure_manifest_dir(brain)
-        _write_manifest(brain, CONFLUENCE_CID, CONFLUENCE_URL, target_path="eng", fetch_children=True)
+        _write_manifest(brain, CONFLUENCE_CID, CONFLUENCE_URL, target_path="eng")
 
         # Save progress in DB
         state = SyncState()
@@ -278,9 +276,9 @@ class TestSaveStateProgressGuard:
         save_state(brain, state)
 
         # Verify no row exists in DB
-        from brain_sync.runtime.repository import _load_db_sync_progress
+        from brain_sync.runtime.repository import load_sync_progress
 
-        db_sources = _load_db_sync_progress(brain)
+        db_sources = load_sync_progress(brain)
         assert CONFLUENCE_CID not in db_sources
 
     def test_progress_source_inserted_into_db(self, brain: Path):
@@ -299,8 +297,8 @@ class TestSaveStateProgressGuard:
         )
         save_state(brain, state)
 
-        from brain_sync.runtime.repository import _load_db_sync_progress
+        from brain_sync.runtime.repository import load_sync_progress
 
-        db_sources = _load_db_sync_progress(brain)
+        db_sources = load_sync_progress(brain)
         assert CONFLUENCE_CID in db_sources
         assert db_sources[CONFLUENCE_CID].content_hash == "abc123"

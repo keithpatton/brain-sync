@@ -14,6 +14,7 @@ from brain_sync.application.doctor import (
     doctor,
     rebuild_db,
 )
+from brain_sync.application.insights import load_all_insight_states, save_insight_state
 from brain_sync.application.sources import add_source
 from brain_sync.brain.layout import area_attachments_root, area_insights_dir, area_summary_path
 from brain_sync.brain.manifest import (
@@ -24,8 +25,6 @@ from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_met
 from brain_sync.runtime.repository import (
     InsightState,
     _connect,
-    load_all_insight_states,
-    save_insight_state,
 )
 from brain_sync.sync.pipeline import prepend_managed_header
 

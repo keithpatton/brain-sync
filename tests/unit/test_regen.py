@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain_sync.application.insights import delete_insight_state, load_insight_state, save_insight_state
 from brain_sync.brain.fileops import atomic_write_bytes
 from brain_sync.brain.layout import area_insights_dir, area_summary_path, brain_manifest_path
 from brain_sync.brain.tree import find_all_content_paths as _find_all_content_paths
@@ -49,9 +50,6 @@ from brain_sync.regen import (
 from brain_sync.runtime.repository import (
     InsightState,
     _connect,
-    delete_insight_state,
-    load_insight_state,
-    save_insight_state,
 )
 from brain_sync.util.retry import claude_breaker
 

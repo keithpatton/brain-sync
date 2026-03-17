@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from brain_sync.application.init import init_brain
+from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import (
     add_source,
     list_sources,
@@ -23,7 +24,6 @@ from brain_sync.brain.manifest import (
 from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.repository import (
     SourceState,
-    load_state,
     save_state,
 )
 from brain_sync.sync.pipeline import prepend_managed_header

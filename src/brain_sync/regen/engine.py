@@ -37,7 +37,7 @@ from brain_sync.brain.fileops import (
 )
 from brain_sync.brain.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.brain.repository import BrainRepository
-from brain_sync.brain.sidecar import load_regen_hashes
+from brain_sync.brain.sidecar import load_regen_hashes, read_all_regen_meta
 from brain_sync.brain.tree import (
     find_all_content_paths,
     get_child_dirs,
@@ -50,8 +50,8 @@ from brain_sync.runtime.config import CONFIG_FILE
 from brain_sync.runtime.repository import (
     RegenLock,
     delete_regen_lock,
-    load_all_insight_states,
-    load_insight_state,
+    load_all_regen_locks,
+    load_regen_lock,
     save_regen_lock,
 )
 from brain_sync.runtime.token_tracking import OP_REGEN
@@ -1235,8 +1235,8 @@ def classify_folder_change(
         insights_dir = area_insights_dir(root, knowledge_path)
         if path_exists(insights_dir / "summary.md"):
             log.info("Backfilling structure_hash for %s (post-v18 migration)", knowledge_path or "(root)")
-            # Load full DB state for lifecycle fields, update hashes
-            istate = load_insight_state(root, knowledge_path)
+            # Load runtime lifecycle fields, update hashes with the current algorithm.
+            lock = load_regen_lock(root, knowledge_path)
             _save_area_state(
                 root,
                 BrainRepository(root),
@@ -1244,11 +1244,11 @@ def classify_folder_change(
                 content_hash=new_content_hash,
                 summary_hash=meta.summary_hash,
                 structure_hash=new_structure_hash,
-                regen_started_utc=istate.regen_started_utc if istate else None,
-                last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
-                regen_status=istate.regen_status if istate else "idle",
-                owner_id=istate.owner_id if istate else None,
-                error_reason=istate.error_reason if istate else None,
+                regen_started_utc=lock.regen_started_utc if lock else None,
+                last_regen_utc=meta.last_regen_utc,
+                regen_status=lock.regen_status if lock else "idle",
+                owner_id=lock.owner_id if lock else None,
+                error_reason=lock.error_reason if lock else None,
             )
             return ChangeEvent(change_type="none", structural=False), new_content_hash, new_structure_hash
 
@@ -1358,7 +1358,7 @@ async def regen_single_folder(
     # Load regen hashes from sidecar (authoritative), DB fallback
     meta = load_regen_hashes(root, current_path)
     # Load DB state for lifecycle fields (regen_status, owner_id, etc.)
-    istate = load_insight_state(root, current_path)
+    lock = load_regen_lock(root, current_path)
 
     # Collect child summaries and compute split hashes
     child_summaries = _collect_child_summaries(root, current_path, child_dirs)
@@ -1391,11 +1391,11 @@ async def regen_single_folder(
             content_hash=new_content_hash,
             summary_hash=meta.summary_hash,
             structure_hash=new_structure_hash,
-            regen_started_utc=istate.regen_started_utc if istate else None,
-            last_regen_utc=istate.last_regen_utc if istate else meta.last_regen_utc,
-            regen_status=istate.regen_status if istate else "idle",
-            owner_id=istate.owner_id if istate else None,
-            error_reason=istate.error_reason if istate else None,
+            regen_started_utc=lock.regen_started_utc if lock else None,
+            last_regen_utc=meta.last_regen_utc if meta else None,
+            regen_status=lock.regen_status if lock else "idle",
+            owner_id=lock.owner_id if lock else None,
+            error_reason=lock.error_reason if lock else None,
         )
         return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
 
@@ -1422,10 +1422,10 @@ async def regen_single_folder(
             content_hash=meta.content_hash or new_content_hash if meta else new_content_hash,
             summary_hash=meta.summary_hash if meta else None,
             structure_hash=new_structure_hash,
-            regen_started_utc=istate.regen_started_utc if istate else None,
-            last_regen_utc=istate.last_regen_utc if istate else (meta.last_regen_utc if meta else None),
-            regen_status=istate.regen_status if istate else "idle",
-            owner_id=istate.owner_id if istate else None,
+            regen_started_utc=lock.regen_started_utc if lock else None,
+            last_regen_utc=meta.last_regen_utc if meta else None,
+            regen_status=lock.regen_status if lock else "idle",
+            owner_id=lock.owner_id if lock else None,
         )
         return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
 
@@ -1867,11 +1867,12 @@ async def regen_all(
     # Clean up orphaned insight states whose knowledge dirs no longer exist
     content_path_set = set(content_paths)
     content_path_set.add("")  # root is always valid
-    all_states = load_all_insight_states(root)
+    all_paths = set(read_all_regen_meta(root / "knowledge").keys()) | {
+        lock.knowledge_path for lock in load_all_regen_locks(root)
+    }
     repository = BrainRepository(root)
     orphaned = 0
-    for istate in all_states:
-        kp = istate.knowledge_path
+    for kp in all_paths:
         knowledge_dir = root / "knowledge" / kp if kp else root / "knowledge"
         if not path_is_dir(knowledge_dir) and kp not in content_path_set:
             _delete_area_state(root, repository, kp)

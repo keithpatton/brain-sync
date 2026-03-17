@@ -112,6 +112,7 @@ Current tables:
 | -------------- | ------------------------------------------------------------------------------------------------------- |
 | `meta`         | Schema version for migration                                                                            |
 | `sync_cache`   | Machine-local polling schedule state                                                                    |
+| `child_discovery_requests` | Machine-local one-shot child-discovery request state                                         |
 | `regen_locks`  | Cross-process regen coordination                                                                        |
 | `token_events` | Append-only LLM cost telemetry persisted for local observability; not part of core brain-state recovery |
 

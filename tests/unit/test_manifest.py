@@ -71,8 +71,8 @@ class TestRoundTrip:
         assert loaded.canonical_id == manifest.canonical_id
         assert loaded.target_path == "engineering"
         assert loaded.status == "active"
-        assert loaded.fetch_children is False
-        assert loaded.child_path is None
+        assert not hasattr(loaded, "fetch_children")
+        assert not hasattr(loaded, "child_path")
 
     def test_sync_hint_roundtrip(self, root: Path) -> None:
         manifest = _make_manifest(sync_hint=SyncHint(content_hash="abc123", last_synced_utc="2026-03-14T10:00:00Z"))
@@ -97,7 +97,7 @@ class TestRoundTrip:
 
 
 class TestLegacyReadTolerance:
-    def test_reads_manifest_version_and_one_shot_fields_as_fallback(self, root: Path) -> None:
+    def test_reads_manifest_version_and_ignores_runtime_only_legacy_fields(self, root: Path) -> None:
         path = root / MANIFEST_DIR / "c12345.json"
         path.write_text(
             json.dumps(
@@ -120,8 +120,9 @@ class TestLegacyReadTolerance:
 
         assert loaded is not None
         assert loaded.version == 1
-        assert loaded.fetch_children is True
-        assert loaded.child_path == "children"
+        assert loaded.source_url == "https://example.com"
+        assert not hasattr(loaded, "fetch_children")
+        assert not hasattr(loaded, "child_path")
 
     def test_reads_google_doc_durable_type_and_maps_back_to_runtime_value(self, root: Path) -> None:
         manifest = SourceManifest(
@@ -166,7 +167,7 @@ class TestUpdateHelpers:
 
 class TestJsonFormat:
     def test_writes_version_and_omits_removed_runtime_only_fields(self, root: Path) -> None:
-        manifest = _make_manifest(fetch_children=True, child_path="children")
+        manifest = _make_manifest()
         write_source_manifest(root, manifest)
 
         data = json.loads((root / MANIFEST_DIR / "c12345.json").read_text(encoding="utf-8"))

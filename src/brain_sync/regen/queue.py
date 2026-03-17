@@ -25,7 +25,7 @@ from brain_sync.regen import (
     regen_path,
     regen_single_folder,
 )
-from brain_sync.runtime.repository import RegenLock, acquire_regen_ownership, load_insight_state, save_regen_lock
+from brain_sync.runtime.repository import RegenLock, acquire_regen_ownership, load_regen_lock, save_regen_lock
 
 log = logging.getLogger(__name__)
 
@@ -218,12 +218,12 @@ class RegenQueue:
                 error,
             )
             try:
-                cur_istate = load_insight_state(self.root, knowledge_path)
+                current_lock = load_regen_lock(self.root, knowledge_path)
                 save_regen_lock(
                     self.root,
                     RegenLock(
                         knowledge_path=knowledge_path,
-                        regen_started_utc=cur_istate.regen_started_utc if cur_istate else None,
+                        regen_started_utc=current_lock.regen_started_utc if current_lock else None,
                         regen_status="failed",
                         error_reason=f"Retries exhausted ({MAX_RETRIES}): {error}",
                         owner_id=self.owner_id,

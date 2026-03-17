@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from watchdog.events import DirMovedEvent
 
+from brain_sync.application.insights import load_insight_state, save_insight_state
 from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
@@ -14,7 +15,7 @@ from brain_sync.brain.manifest import (
     read_source_manifest,
     write_source_manifest,
 )
-from brain_sync.runtime.repository import InsightState, _connect, load_insight_state, save_insight_state
+from brain_sync.runtime.repository import InsightState, _connect
 from brain_sync.sync.watcher import FolderMove, KnowledgeEventHandler, mirror_folder_move
 
 pytestmark = pytest.mark.unit

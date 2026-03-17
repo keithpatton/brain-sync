@@ -123,10 +123,10 @@ def _interactive_placement(
     dry_run: bool,
 ) -> PlacementSelection:
     """Show interactive placement suggestions and return user's choice."""
-    from brain_sync.query.area_index import AreaIndex
+    from brain_sync.application.query_index import load_area_index
     from brain_sync.query.placement import suggest_placement
 
-    index = AreaIndex.build(root)
+    index = load_area_index(root)
     result = suggest_placement(
         index,
         document_title=title,
@@ -203,7 +203,7 @@ def _resolve_collision(dest: Path, max_suffix: int = 10) -> Path | None:
 def handle_add(args) -> None:
     from urllib.parse import urlparse
 
-    from brain_sync.application.sources import SourceAlreadyExistsError, add_source
+    from brain_sync.application.sources import InvalidChildDiscoveryRequestError, SourceAlreadyExistsError, add_source
     from brain_sync.query.placement import extract_title_from_url
     from brain_sync.sources import UnsupportedSourceError
 
@@ -270,6 +270,9 @@ def handle_add(args) -> None:
         log.warning("Source already registered: %s", e.canonical_id)
         log.warning("  URL: %s", e.source_url)
         log.warning("  Path: %s", e.target_path)
+        return
+    except InvalidChildDiscoveryRequestError as e:
+        log.warning("%s", e)
         return
     except BrainNotFoundError as e:
         log.error("Cannot resolve brain root: %s", e)
@@ -461,7 +464,7 @@ def handle_move(args) -> None:
 
 
 def handle_update(args) -> None:
-    from brain_sync.application.sources import SourceNotFoundError, update_source
+    from brain_sync.application.sources import InvalidChildDiscoveryRequestError, SourceNotFoundError, update_source
 
     try:
         child_path_val = getattr(args, "child_path", None)
@@ -474,6 +477,9 @@ def handle_update(args) -> None:
         )
     except SourceNotFoundError as e:
         log.warning("Source not found: %s", e.source)
+        return
+    except InvalidChildDiscoveryRequestError as e:
+        log.warning("%s", e)
         return
     except BrainNotFoundError as e:
         log.error("Cannot resolve brain root: %s", e)
@@ -488,8 +494,8 @@ def handle_update(args) -> None:
 
 
 def handle_reconcile(args) -> None:
+    from brain_sync.application.reconcile import reconcile_knowledge_tree
     from brain_sync.application.sources import reconcile_sources
-    from brain_sync.sync.reconcile import reconcile_knowledge_tree
 
     root = _resolve_root_or_exit(args)
 
@@ -522,33 +528,16 @@ def handle_reconcile(args) -> None:
 
 
 def handle_status(args) -> None:
-    from brain_sync.application.sources import list_sources
-    from brain_sync.runtime.repository import load_all_insight_states
-    from brain_sync.runtime.token_tracking import get_usage_summary
+    from brain_sync.application.status import build_status_summary
 
     root = _resolve_root_or_exit(args)
 
-    # Source count
     try:
-        sources = list_sources(root=root)
-        log.info("Sources: %d registered", len(sources))
-    except Exception:
-        log.exception("Failed to load sources")
-
-    # Regen health
-    try:
-        states = load_all_insight_states(root)
-        by_status: dict[str, int] = {}
-        for s in states:
-            by_status[s.regen_status] = by_status.get(s.regen_status, 0) + 1
-        parts = [f"{status}={count}" for status, count in sorted(by_status.items())]
+        summary = build_status_summary(root, usage_days=7)
+        log.info("Sources: %d registered", summary.source_count)
+        parts = [f"{status}={count}" for status, count in sorted(summary.insight_states_by_status.items())]
         log.info("Insight states: %s", ", ".join(parts) if parts else "none")
-    except Exception:
-        log.exception("Failed to load insight states")
-
-    # Token usage
-    try:
-        usage = get_usage_summary(root, days=7)
+        usage = summary.usage
         log.info(
             "Token usage (7d): %d invocations, %d input, %d output, %d total",
             usage["total_invocations"],
@@ -557,7 +546,7 @@ def handle_status(args) -> None:
             usage["total_tokens"],
         )
     except Exception:
-        log.exception("Failed to load token usage")
+        log.exception("Failed to load status")
 
 
 def handle_regen(args) -> None:
@@ -585,16 +574,9 @@ def handle_regen(args) -> None:
     )
 
     async def _do_regen() -> int:
-        from brain_sync.regen import regen_all, regen_path
-        from brain_sync.regen.lifecycle import regen_session
+        from brain_sync.application.regen import run_regen
 
-        # reclaim_stale only for full regen — single-path callers should not
-        # implicitly clean up unrelated stale rows from prior crashes.
-        async with regen_session(root, reclaim_stale=not knowledge_path) as session:
-            if knowledge_path:
-                return await regen_path(root, knowledge_path, owner_id=session.owner_id, session_id=session.session_id)
-            else:
-                return await regen_all(root, owner_id=session.owner_id, session_id=session.session_id)
+        return await run_regen(root, knowledge_path or None)
 
     loop = asyncio.new_event_loop()
     try:

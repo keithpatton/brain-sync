@@ -73,6 +73,8 @@ async def process_source(
     source_state: SourceState,
     http_client: httpx.AsyncClient,
     root: Path | None = None,
+    *,
+    fetch_children: bool = False,
 ) -> tuple[bool, list[ChildDiscoveryResult]]:
     """Fetch, assemble, and materialize one source.
 
@@ -152,7 +154,7 @@ async def process_source(
             filename = new_filename
 
     # Child discovery (one-shot flag, capability-gated)
-    if source_state.fetch_children and caps.supports_children and root is not None:
+    if fetch_children and caps.supports_children and root is not None:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
             from brain_sync.sources.confluence.attachments import discover_children

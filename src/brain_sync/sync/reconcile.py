@@ -19,7 +19,6 @@ from brain_sync.brain.tree import find_all_content_paths
 from brain_sync.regen import classify_folder_change
 from brain_sync.runtime.repository import (
     delete_regen_lock,
-    load_all_insight_states,
 )
 
 log = logging.getLogger(__name__)
@@ -47,8 +46,8 @@ def _deepest_untracked_paths(paths: set[str]) -> list[str]:
     return deepest
 
 
-def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
-    """Reconcile knowledge/ folder tree against regen_locks DB + sidecars.
+def reconcile_knowledge_tree(root: Path, *, tracked_paths: set[str]) -> TreeReconcileResult:
+    """Reconcile knowledge/ folder tree against known cross-plane insight paths.
 
     Three-part algorithm:
     A) Clean orphan state — DB rows pointing to non-existent knowledge dirs
@@ -64,10 +63,9 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
 
     # Part A: Clean orphan state
     fs_paths = set(find_all_content_paths(knowledge_root))
-    db_states = load_all_insight_states(root)
-    db_paths = {s.knowledge_path for s in db_states if s.knowledge_path}
+    tracked_non_root_paths = {path for path in tracked_paths if path}
 
-    orphan_db_paths = db_paths - fs_paths
+    orphan_db_paths = tracked_non_root_paths - fs_paths
     for orphan in orphan_db_paths:
         repository.delete_portable_insight_state(orphan)
         delete_regen_lock(root, orphan)
@@ -82,8 +80,8 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
         result.orphans_cleaned.append(orphan)
 
     # Part B: Hash-check tracked folders (offline file add/delete detection)
-    tracked_paths = db_paths & fs_paths
-    for path in tracked_paths:
+    tracked_existing_paths = tracked_non_root_paths & fs_paths
+    for path in tracked_existing_paths:
         change, _, _ = classify_folder_change(root, path)
         if change.change_type != "none":
             result.content_changed.append(path)
@@ -93,14 +91,13 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     # out "". Handle root explicitly when a root DB row exists — this catches
     # offline changes to root-level files AND child directory changes that affect
     # the root summary. classify_folder_change(root, "") handles both cases.
-    has_root_db_row = any(s.knowledge_path == "" for s in db_states)
-    if has_root_db_row:
+    if "" in tracked_paths:
         change, _, _ = classify_folder_change(root, "")
         if change.change_type != "none":
             result.content_changed.append("")
 
     # Part C: Scoped enqueue for untracked folders
-    untracked_paths = fs_paths - db_paths
+    untracked_paths = fs_paths - tracked_non_root_paths
     for path in _deepest_untracked_paths(untracked_paths):
         result.enqueued_paths.append(path)
 

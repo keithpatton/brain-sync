@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 BRAIN_FORMAT_VERSION = "1.0"
 BRAIN_MANIFEST_VERSION = 1
 SOURCE_MANIFEST_VERSION = 1

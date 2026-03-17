@@ -124,29 +124,15 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
 
     # Update insight_state paths in DB
     try:
-        from brain_sync.runtime.repository import load_all_insight_states, update_insight_path
+        from brain_sync.runtime.repository import load_all_regen_locks, update_insight_path
 
-        all_states = load_all_insight_states(root)
-        for istate in all_states:
-            if istate.knowledge_path == src_rel_str or istate.knowledge_path.startswith(src_rel_str + "/"):
-                new_path = dest_rel_str + istate.knowledge_path[len(src_rel_str) :]
-                update_insight_path(root, istate.knowledge_path, new_path)
-                log.debug("Updated insight_state: %s -> %s", istate.knowledge_path, new_path)
+        for lock in load_all_regen_locks(root):
+            if lock.knowledge_path == src_rel_str or lock.knowledge_path.startswith(src_rel_str + "/"):
+                new_path = dest_rel_str + lock.knowledge_path[len(src_rel_str) :]
+                update_insight_path(root, lock.knowledge_path, new_path)
+                log.debug("Updated insight_state: %s -> %s", lock.knowledge_path, new_path)
     except Exception as e:
         log.warning("Failed to update insight_state after move: %s", e)
-
-    # Update sources target_path directly in DB
-    try:
-        from brain_sync.runtime.repository import load_state, update_source_target_path
-
-        state = load_state(root)
-        for ss in state.sources.values():
-            if ss.target_path == src_rel_str or ss.target_path.startswith(src_rel_str + "/"):
-                new_tp = dest_rel_str + ss.target_path[len(src_rel_str) :]
-                log.info("Updated source target_path: %s -> %s", ss.target_path, new_tp)
-                update_source_target_path(root, ss.canonical_id, new_tp)
-    except Exception as e:
-        log.warning("Failed to update source target_paths after move: %s", e)
 
     # Update manifests: portable source intent/reality move with the folder.
     try:

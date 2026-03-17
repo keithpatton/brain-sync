@@ -8,15 +8,16 @@ from pathlib import Path
 
 import httpx
 
+from brain_sync.application.insights import load_insight_state
+from brain_sync.application.reconcile import reconcile_knowledge_tree
+from brain_sync.application.source_state import load_state
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import normalize_path
-from brain_sync.regen import classify_folder_change
 from brain_sync.regen.queue import RegenQueue
+from brain_sync.runtime.child_requests import clear_child_discovery_request, load_child_discovery_request
 from brain_sync.runtime.repository import (
     RegenLock,
     SyncState,
-    load_insight_state,
-    load_state,
     save_regen_lock,
     save_sync_progress,
     write_daemon_status,
@@ -61,15 +62,15 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
+    from brain_sync.application.regen import classify_folder_change, invalidate_global_context_cache
     from brain_sync.application.sources import reconcile_sources
     from brain_sync.regen.lifecycle import regen_session
-    from brain_sync.sync.reconcile import reconcile_knowledge_tree
 
     # Reconcile target_paths with filesystem before loading state for sync.
     # This handles files moved while the daemon was not running.
     # INVARIANT: reconcile must run before _ensure_source_states() because
-    # reconcile mutates sources.target_path in the DB and load_state() must
-    # read the corrected values.
+    # reconcile repairs manifest-backed placement before the scheduler loads
+    # source state for the sync loop.
     pid = os.getpid()
     repository = BrainRepository(root)
 
@@ -111,8 +112,6 @@ async def run(root: Path) -> None:
                 # Invalidate the _core-derived global context cache if _core/ is involved.
                 for path in (entry.old_path, entry.new_path):
                     if path == "_core" or path.startswith("_core/"):
-                        from brain_sync.regen import invalidate_global_context_cache
-
                         invalidate_global_context_cache()
                         break
 
@@ -190,7 +189,13 @@ async def run(root: Path) -> None:
                         ss = state.sources[key]
 
                         try:
-                            changed, discovered_children = await process_source(ss, http_client, root=root)
+                            child_request = load_child_discovery_request(root, key)
+                            changed, discovered_children = await process_source(
+                                ss,
+                                http_client,
+                                root=root,
+                                fetch_children=child_request.fetch_children if child_request is not None else False,
+                            )
                             interval = compute_interval(ss.last_changed_utc)
                             ss.current_interval_secs = interval
                             # Enqueue regen if content changed
@@ -198,23 +203,23 @@ async def run(root: Path) -> None:
                                 regen_queue.enqueue(ss.target_path)
                                 # Invalidate the _core-derived global context cache if the source targets _core/.
                                 if ss.target_path == "_core" or ss.target_path.startswith("_core/"):
-                                    from brain_sync.regen import invalidate_global_context_cache
-
                                     invalidate_global_context_cache()
 
                             # Process discovered children (one-shot pattern)
-                            if discovered_children:
+                            if child_request is not None and child_request.fetch_children and discovered_children:
                                 from brain_sync.application.sources import SourceAlreadyExistsError, add_source
                                 from brain_sync.sources import slugify
 
                                 parent_target = ss.target_path
 
                                 # Compute child target path
-                                if ss.child_path == ".":
+                                if child_request.child_path == ".":
                                     child_target_base = parent_target
-                                elif ss.child_path:
+                                elif child_request.child_path:
                                     child_target_base = (
-                                        f"{parent_target}/{ss.child_path}" if parent_target else ss.child_path
+                                        f"{parent_target}/{child_request.child_path}"
+                                        if parent_target
+                                        else child_request.child_path
                                     )
                                 else:
                                     # Default: {parent_target}/{parent_canonical_slug}/
@@ -246,10 +251,8 @@ async def run(root: Path) -> None:
                                     except Exception as child_err:
                                         log.warning("Failed to add child %s: %s", child.canonical_id, child_err)
 
-                                # Clear the one-shot flag AFTER all children processed
-                                repository.clear_source_children_flag(key)
-                                ss.fetch_children = False
-                                ss.child_path = None
+                            if child_request is not None and child_request.fetch_children:
+                                clear_child_discovery_request(root, key)
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)
                             ss.current_interval_secs = min(
@@ -304,8 +307,6 @@ async def run(root: Path) -> None:
                     # Final shutdown reconcile keeps runtime state consistent
                     # even if a filesystem rename landed on disk without the
                     # watcher loop processing the corresponding move event.
-                    from brain_sync.sync.reconcile import reconcile_knowledge_tree
-
                     reconcile_knowledge_tree(root)
                 except Exception:
                     log.warning("Failed shutdown reconcile", exc_info=True)

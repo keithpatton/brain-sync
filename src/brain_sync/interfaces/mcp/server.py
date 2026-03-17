@@ -25,6 +25,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 
 from brain_sync.application import (
+    InvalidChildDiscoveryRequestError,
     SourceAlreadyExistsError,
     SourceNotFoundError,
     add_source,
@@ -35,14 +36,14 @@ from brain_sync.application import (
     resolve_root,
     update_source,
 )
+from brain_sync.application.query_index import AreaIndex, load_area_index
+from brain_sync.application.regen import RegenFailed, run_regen
+from brain_sync.application.status import get_usage_summary
 from brain_sync.brain.fileops import iterdir_paths, path_exists, path_is_dir, path_is_file, read_text
 from brain_sync.brain.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
 from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
 from brain_sync.brain.tree import get_child_dirs, is_content_dir, is_readable_file, normalize_path
-from brain_sync.query.area_index import AreaIndex
 from brain_sync.query.placement import suggest_placement
-from brain_sync.regen import RegenFailed, regen_all, regen_path
-from brain_sync.regen.lifecycle import regen_session
 from brain_sync.sources import UnsupportedSourceError
 
 log = logging.getLogger(__name__)
@@ -184,9 +185,10 @@ def _runtime(ctx: Context) -> BrainRuntime:
 
 def _get_index(rt: BrainRuntime) -> AreaIndex:
     """Get the area index, rebuilding if stale."""
-    if rt.area_index.is_stale(rt.root):
+    previous = rt.area_index
+    rt.area_index = load_area_index(rt.root, previous)
+    if rt.area_index is not previous:
         log.debug("Area index stale, rebuilding")
-        rt.area_index = AreaIndex.build(rt.root)
     return rt.area_index
 
 
@@ -260,6 +262,8 @@ def brain_sync_add(
             "source_url": e.source_url,
             "target_path": e.target_path,
         }
+    except InvalidChildDiscoveryRequestError as e:
+        return {"status": "error", "error": "invalid_child_discovery_request", "message": str(e)}
     except UnsupportedSourceError:
         return {"status": "error", "error": "unsupported_url", "source": source}
 
@@ -365,7 +369,7 @@ def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> 
         "Update settings for a registered source. "
         "Pass only the flags you want to change — omitted flags are left unchanged. "
         "Use fetch_children (one-shot) and sync_attachments / no sync_attachments toggles. "
-        "child_path controls where discovered children are placed."
+        "child_path controls where discovered children are placed for the active pending request."
     ),
 )
 def brain_sync_update(
@@ -392,6 +396,8 @@ def brain_sync_update(
             "error": "source_not_found",
             "source": source,
         }
+    except InvalidChildDiscoveryRequestError as e:
+        return {"status": "error", "error": "invalid_child_discovery_request", "message": str(e)}
 
 
 @server.tool(
@@ -448,30 +454,26 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
     """Regenerate insight summaries."""
     rt = _runtime(ctx)
     async with rt.regen_lock:
-        async with regen_session(rt.root) as session:
-            try:
-                if path:
-                    path = normalize_path(path)
-                    count = await regen_path(rt.root, path, owner_id=session.owner_id, session_id=session.session_id)
-                else:
-                    count = await regen_all(rt.root, owner_id=session.owner_id, session_id=session.session_id)
-                return {
-                    "status": "ok",
-                    "summaries_regenerated": count,
-                    "path": path or "all",
-                }
-            except Exception as e:
-                return {
-                    "status": "error",
-                    "error_type": type(e).__name__,
-                    "error": str(e),
-                    "path": path or "all",
-                    # v1 heuristic: RegenFailed (exhausted retries, validation)
-                    # is treated as non-retryable. In practice a RegenFailed
-                    # from a transient upstream issue could be retryable, and
-                    # some non-RegenFailed errors may not be.
-                    "retryable": not isinstance(e, RegenFailed),
-                }
+        normalized_path = normalize_path(path) if path else None
+        try:
+            count = await run_regen(rt.root, normalized_path)
+            return {
+                "status": "ok",
+                "summaries_regenerated": count,
+                "path": normalized_path or "all",
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "path": normalized_path or "all",
+                # v1 heuristic: RegenFailed (exhausted retries, validation)
+                # is treated as non-retryable. In practice a RegenFailed
+                # from a transient upstream issue could be retryable, and
+                # some non-RegenFailed errors may not be.
+                "retryable": not isinstance(e, RegenFailed),
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -894,8 +896,6 @@ def brain_sync_doctor(ctx: Context, mode: str = "check") -> dict:
 )
 def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
     """Return token usage telemetry summary."""
-    from brain_sync.runtime.token_tracking import get_usage_summary
-
     rt = _runtime(ctx)
     try:
         summary = get_usage_summary(rt.root, days=days)

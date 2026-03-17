@@ -1,4 +1,4 @@
-"""brain-sync doctor for the Brain Format 1.0 / runtime v23 contract."""
+"""brain-sync doctor for the Brain Format 1.0 / supported runtime compatibility contract."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from brain_sync.application.insights import load_all_insight_states, load_insight_state
 from brain_sync.application.roots import InvalidBrainRootError, _require_root
+from brain_sync.application.source_state import seed_source_state_from_hint
 from brain_sync.brain.fileops import (
     iterdir_paths,
     path_exists,
@@ -40,13 +42,10 @@ from brain_sync.runtime.repository import (
     RegenLock,
     SyncState,
     _connect,
-    _load_db_sync_progress,
-    _seed_from_hint,
     delete_regen_lock,
     delete_source,
     ensure_db,
-    load_all_insight_states,
-    load_insight_state,
+    load_sync_progress,
     save_regen_lock,
     save_state,
 )
@@ -319,7 +318,7 @@ def check_unregistered_synced_files(
 
 def check_db_source_consistency(root: Path, manifests: dict[str, SourceManifest]) -> list[Finding]:
     findings: list[Finding] = []
-    for cid in _load_db_sync_progress(root):
+    for cid in load_sync_progress(root):
         if cid not in manifests:
             findings.append(
                 Finding(
@@ -651,7 +650,7 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
     for cid, manifest in manifests.items():
         if manifest.status == "active":
             target_path = normalize_path(manifest.target_path) if manifest.target_path else ""
-            state.sources[cid] = _seed_from_hint(root, manifest, target_path)
+            state.sources[cid] = seed_source_state_from_hint(root, manifest, target_path)
     if state.sources:
         save_state(root, state)
     return doctor(root, fix=False)

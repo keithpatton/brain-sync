@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from brain_sync.application.init import init_brain
+from brain_sync.application.source_state import load_state
 from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
@@ -18,7 +19,6 @@ from brain_sync.brain.manifest import (
 from brain_sync.runtime.repository import (
     SourceState,
     SyncState,
-    load_state,
     save_state,
 )
 
@@ -43,7 +43,6 @@ def _make_manifest(cid: str, url: str, tp: str = "") -> SourceManifest:
         source_url=url,
         source_type="confluence",
         materialized_path="",
-        fetch_children=False,
         sync_attachments=False,
         target_path=tp,
     )

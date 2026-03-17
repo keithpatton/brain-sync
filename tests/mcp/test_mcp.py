@@ -567,7 +567,7 @@ class TestBrainSyncReconcile:
 class TestBrainSyncRegen:
     @pytest.mark.asyncio
     async def test_regen_path(self, _dummy_root):
-        with patch("brain_sync.interfaces.mcp.server.regen_path", new_callable=AsyncMock, return_value=3):
+        with patch("brain_sync.interfaces.mcp.server.run_regen", new_callable=AsyncMock, return_value=3):
             from brain_sync.interfaces.mcp.server import brain_sync_regen
 
             ctx = _make_ctx(_dummy_root)
@@ -578,7 +578,7 @@ class TestBrainSyncRegen:
 
     @pytest.mark.asyncio
     async def test_regen_all(self, _dummy_root):
-        with patch("brain_sync.interfaces.mcp.server.regen_all", new_callable=AsyncMock, return_value=7):
+        with patch("brain_sync.interfaces.mcp.server.run_regen", new_callable=AsyncMock, return_value=7):
             from brain_sync.interfaces.mcp.server import brain_sync_regen
 
             ctx = _make_ctx(_dummy_root)

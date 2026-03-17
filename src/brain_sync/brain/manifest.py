@@ -62,9 +62,6 @@ class SourceManifest:
     status: str = "active"  # "active" or "missing"
     missing_since_utc: str | None = None
     sync_hint: SyncHint | None = None
-    # Deprecated runtime-only flags. Readers still tolerate them, but writers do not persist them.
-    fetch_children: bool = False
-    child_path: str | None = None
 
     def __init__(
         self,
@@ -80,8 +77,6 @@ class SourceManifest:
         status: str = "active",
         missing_since_utc: str | None = None,
         sync_hint: SyncHint | None = None,
-        fetch_children: bool = False,
-        child_path: str | None = None,
     ) -> None:
         self.version = (
             version if version is not None else manifest_version if manifest_version is not None else MANIFEST_VERSION
@@ -95,8 +90,6 @@ class SourceManifest:
         self.status = status
         self.missing_since_utc = missing_since_utc
         self.sync_hint = sync_hint
-        self.fetch_children = fetch_children
-        self.child_path = child_path
 
     @property
     def manifest_version(self) -> int:
@@ -163,8 +156,6 @@ def _deserialize_manifest(data: bytes, *, source_path: str = "<unknown>") -> Sou
         materialized_path=d["materialized_path"],
         sync_attachments=d["sync_attachments"],
         target_path=d.get("target_path", ""),
-        fetch_children=d.get("fetch_children", False),
-        child_path=d.get("child_path"),
         status=d.get("status", "active"),
         missing_since_utc=d.get("missing_since_utc"),
         sync_hint=hint,

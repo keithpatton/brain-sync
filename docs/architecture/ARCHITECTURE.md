@@ -162,8 +162,11 @@ maintains a separate top-level insight mirror.
 | `regen_locks` plus `sync_cache` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, progress cache, telemetry, and process state |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
-The filesystem remains authoritative. Runtime state is disposable and must be
-rebuildable from manifests and per-area insight state.
+The filesystem remains authoritative. Runtime state is machine-local and
+recoverable enough to keep the portable brain valid, but supported runtime
+schema upgrades are expected to migrate in place so local history and telemetry
+are preserved during normal app upgrades. Rebuild is the fallback for missing,
+corrupt, or unsupported runtime state.
 
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are
@@ -263,6 +266,7 @@ The system uses a tiered authority model:
 |---|---|---|---|
 | Source registration intent | `.brain-sync/sources/*.json` | Yes | No |
 | Source sync freshness hint | manifest `sync_hint` plus `sync_cache` | Hint yes, DB no | Yes |
+| Child-discovery requests | `child_discovery_requests` | No | Yes |
 | Insight hashes | `knowledge/**/.brain-sync/insights/insight-state.json` | Yes | Yes |
 | Regen lifecycle | `regen_locks` | No | Yes |
 | Token telemetry | `token_events` | No | Loss accepted |
@@ -353,6 +357,7 @@ Current runtime DB tables:
 |---|---|---|
 | `meta` | Runtime schema marker | Recreated |
 | `sync_cache` | Polling schedule and sync progress cache | Rebuilt from manifests and sync hints |
+| `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
 | `token_events` | Local telemetry history | History lost only |
 
@@ -371,9 +376,11 @@ offline changes.
 Some seams are still tolerated as transitional debt rather than part of the
 normative package graph:
 
-- `runtime/repository.py` still imports `brain/` helpers to project portable
-  manifests and insight sidecars into runtime views. This is not a general
-  `runtime -> brain` allowance; it is debt carried in one file.
+- `runtime/repository.py` no longer owns manifest/sidecar projection, but it
+  still defines mixed-plane DTOs (`SourceState`, `SyncState`, `InsightState`)
+  that are consumed by application-owned projection modules. This is not a
+  general `runtime -> application` allowance; it is bounded transitional debt
+  until type ownership is split more truthfully in a later hardening pass.
 - `sync/reconcile.py` and `sync/watcher.py` still reach into `regen/` for
   folder classification and cache invalidation helpers. This is not a general
   `sync -> regen` allowance; it is a bounded transitional seam.
@@ -408,6 +415,8 @@ performance hint rather than a full correctness proof.
   replacing `__main__.py` as the owner of the daemon loop.
 - regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
+- `0.6.0` / `v24` keeps Brain Format `1.0` stable while shifting normal
+  runtime-schema evolution toward in-place migration for supported upgrades.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.
@@ -416,6 +425,8 @@ performance hint rather than a full correctness proof.
   live under their owning `sources/` and `interfaces/` packages rather than
   root-level convenience locations.
 - Public state APIs replaced several direct command-layer uses of private DB helpers.
+- Cross-plane source and insight projection moved into `application/` entrypoints,
+  with DTO ownership cleanup intentionally deferred as follow-up hardening debt.
 - Deterministic `FakeBackend` support reduced subprocess overhead in tests.
 
 ---

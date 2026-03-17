@@ -7,6 +7,10 @@ not inside the portable brain.
 
 Runtime versioning is defined in [../VERSIONING.md](../VERSIONING.md).
 
+Supported runtime schema versions should migrate in place during normal app
+upgrades. Rebuild is the fallback for missing, corrupt, or unsupported runtime
+state.
+
 Implementation references in this document point at canonical package owners,
 not compatibility shims.
 
@@ -169,7 +173,7 @@ state.
 ```
 
 The runtime DB schema version is recorded in the `meta` table as
-`schema_version`. The current schema version is `23`.
+`schema_version`. The current schema version is `24`.
 
 ### `meta`
 
@@ -208,6 +212,17 @@ Cross-process runtime lifecycle state for regeneration ownership.
 | `regen_started_utc` | text or null | UTC time current regen began |
 | `owner_id` | text or null | Regen session owner identifier |
 | `error_reason` | text or null | Last failure reason for failed state |
+
+### `child_discovery_requests`
+
+Machine-local one-shot child-discovery request state for registered sources.
+
+| Field | Type | Description |
+|---|---|---|
+| `canonical_id` | text | Source canonical ID; primary key |
+| `fetch_children` | integer | Boolean flag encoded as `0` or `1` |
+| `child_path` | text or null | Runtime-only placement hint for discovered children |
+| `updated_utc` | text | UTC timestamp of the last request update |
 
 ### `token_events`
 
