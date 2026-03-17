@@ -113,6 +113,10 @@ These rules are normative for future feature work and refactoring. For
 explanatory rationale and subsystem discussion, see
 `docs/architecture/ARCHITECTURE.md`.
 
+Architecture fitness tests in `tests/unit/test_architecture_boundaries.py`
+enforce these package-boundary rules, the closed orchestration-surface set,
+and the exact file-level exceptions listed below.
+
 ### Canonical Package Owners
 
 The canonical subsystem packages are:
@@ -149,7 +153,7 @@ boundary and `runtime.repository` as the runtime-state write boundary.
 
 ### Dependency Direction
 
-The only allowed package directions are:
+For normal subsystem modules, the allowed package directions are:
 
 - `interfaces -> application`
 - `application -> brain / runtime / sync / regen / query / sources / llm / util`
@@ -161,9 +165,40 @@ The only allowed package directions are:
 - `brain -> util`
 - `runtime -> util`
 
-Entry points may depend on `application`, `interfaces`, and `sync` for process
-bootstrap. Lower-level packages must not import upward into entrypoints,
-application, or transport layers unless explicitly listed above.
+Lower-level packages must not import upward into entrypoints, `application`, or
+transport layers unless explicitly listed below.
+
+### Closed Orchestration Surfaces
+
+The following files are the only named orchestration / entrypoint surfaces:
+
+- `src/brain_sync/__main__.py`
+- `src/brain_sync/interfaces/cli/handlers.py`
+- `src/brain_sync/interfaces/mcp/server.py`
+- `src/brain_sync/sync/daemon.py`
+
+These files are allowed to compose multiple lower subsystems because bootstrap,
+transport adaptation, and long-running process wiring are their explicit job.
+This status belongs to the named file, not to the containing package.
+
+No new orchestration surface may be added without updating this document and
+the architecture fitness tests.
+
+### Exact Allowed Exceptions
+
+The following off-graph imports are intentionally allowed today:
+
+| File | Allowed non-graph imports | Why |
+|---|---|---|
+| `src/brain_sync/query/placement.py` | `brain_sync.sources.docx` | Local `.docx` excerpt extraction for placement heuristics |
+| `src/brain_sync/sources/confluence/attachments.py` | `brain_sync.brain.fileops`, `brain_sync.brain.repository`, `brain_sync.sync.attachments` | Provider-specific attachment discovery bridging to sync-owned materialization |
+| `src/brain_sync/sources/confluence/auth.py` | `brain_sync.runtime.config` | Provider auth may read and write machine-local config |
+| `src/brain_sync/sources/confluence/rest.py` | `brain_sync.runtime.config` | Provider REST auth loading needs machine-local config |
+| `src/brain_sync/sources/googledocs/auth.py` | `brain_sync.runtime.config` | OAuth token loading and persistence are machine-local |
+| `src/brain_sync/sources/test/__init__.py` | `brain_sync.runtime.config` | Test adapter subprocesses may resolve the configured brain root |
+
+These exceptions are exact and closed. Do not generalize them into package-wide
+allowances without an intentional architecture decision.
 
 ### Package Ownership Constraints
 

@@ -8,8 +8,8 @@ import re
 
 import httpx
 
-from brain_sync.query.placement import extract_title_from_url
 from brain_sync.sources import SourceType, detect_source_type, extract_google_doc_id
+from brain_sync.util.urls import extract_title_from_url
 
 log = logging.getLogger(__name__)
 

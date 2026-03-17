@@ -14,7 +14,6 @@ from pathlib import Path
 import yaml
 
 from brain_sync.brain.fileops import read_bytes
-from brain_sync.sources import to_durable_source_type
 
 MANAGED_HEADER_SOURCE = "<!-- brain-sync-source: {} -->"
 MANAGED_HEADER_WARNING = "<!-- brain-sync-managed: local edits may be overwritten -->"
@@ -27,6 +26,12 @@ _MANAGED_FRONTMATTER_KEYS = (
     "brain_sync_canonical_id",
     "brain_sync_source_url",
 )
+
+
+def _to_durable_source_type(source_type: str) -> str:
+    if source_type == "googledocs":
+        return "google_doc"
+    return source_type
 
 
 def split_frontmatter(text: str) -> tuple[dict[str, object], str]:
@@ -58,7 +63,7 @@ def render_frontmatter(data: dict[str, object], body: str) -> str:
 def canonical_source_type_for_frontmatter(source_type: str | None, canonical_id: str) -> str:
     """Infer the durable source type string stored in managed frontmatter."""
     if source_type:
-        return to_durable_source_type(source_type)
+        return _to_durable_source_type(source_type)
     if canonical_id.startswith("gdoc:"):
         return "google_doc"
     return canonical_id.split(":", 1)[0]

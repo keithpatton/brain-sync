@@ -59,6 +59,7 @@ from brain_sync.brain.manifest import (
     write_source_manifest,
 )
 from brain_sync.brain.tree import normalize_path
+from brain_sync.util.text import slugify
 
 log = logging.getLogger(__name__)
 
@@ -724,6 +725,4 @@ class BrainRepository:
 
 
 def _slug(text: str) -> str:
-    from brain_sync.sources import slugify
-
     return slugify(text)

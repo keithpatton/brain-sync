@@ -11,7 +11,13 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from brain_sync.runtime.repository import SourceState
+
+@runtime_checkable
+class SourceStateLike(Protocol):
+    canonical_id: str
+    source_url: str
+    source_type: str
+    metadata_fingerprint: str | None
 
 
 class UpdateStatus(Enum):
@@ -84,14 +90,14 @@ class SourceAdapter(Protocol):
 
     async def check_for_update(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult: ...
 
     async def fetch(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
         root: Path | None = None,

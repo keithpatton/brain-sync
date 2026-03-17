@@ -299,7 +299,8 @@ compatibility decision documented in `docs/COMPATIBILITY.md` and explained in
 
 Architecture boundary tests should enforce these seams where practical. Do not
 weaken an existing boundary test to accommodate a new import without updating
-the architecture contract intentionally.
+the architecture contract intentionally. The executable fitness test lives in
+`tests/unit/test_architecture_boundaries.py`.
 
 ## Source Adapter Architecture
 

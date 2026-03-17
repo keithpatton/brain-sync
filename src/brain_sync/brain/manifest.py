@@ -20,13 +20,24 @@ from brain_sync.brain.fileops import (
     read_bytes,
 )
 from brain_sync.brain.layout import BRAIN_MANIFEST_FILENAME, SOURCE_MANIFEST_VERSION, source_manifests_dir
-from brain_sync.sources import from_durable_source_type, to_durable_source_type
 
 log = logging.getLogger(__name__)
 
 MANIFEST_DIR = ".brain-sync/sources"
 MANIFEST_VERSION_FILE = f".brain-sync/{BRAIN_MANIFEST_FILENAME}"
 MANIFEST_VERSION = SOURCE_MANIFEST_VERSION
+
+
+def _to_durable_source_type(source_type: str) -> str:
+    if source_type == "googledocs":
+        return "google_doc"
+    return source_type
+
+
+def _from_durable_source_type(source_type: str) -> str:
+    if source_type == "google_doc":
+        return "googledocs"
+    return source_type
 
 
 @dataclass
@@ -108,7 +119,7 @@ def ensure_manifest_dir(root: Path) -> None:
 
 def _serialize_manifest(manifest: SourceManifest) -> bytes:
     d = asdict(manifest)
-    d["source_type"] = to_durable_source_type(d["source_type"])
+    d["source_type"] = _to_durable_source_type(d["source_type"])
     d.pop("fetch_children", None)
     d.pop("child_path", None)
     # Omit empty/None-valued optional fields for cleaner JSON
@@ -148,7 +159,7 @@ def _deserialize_manifest(data: bytes, *, source_path: str = "<unknown>") -> Sou
         version=version,
         canonical_id=d["canonical_id"],
         source_url=d["source_url"],
-        source_type=from_durable_source_type(d["source_type"]),
+        source_type=_from_durable_source_type(d["source_type"]),
         materialized_path=d["materialized_path"],
         sync_attachments=d["sync_attachments"],
         target_path=d.get("target_path", ""),

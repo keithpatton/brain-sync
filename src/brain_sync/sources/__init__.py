@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from enum import Enum
 
+from brain_sync.util.text import slugify
+
 
 class SourceType(Enum):
     CONFLUENCE = "confluence"
@@ -82,16 +84,6 @@ def extract_google_doc_id(url: str) -> str:
     if not m:
         raise URLParseError(f"Cannot extract Google Doc ID from: {url}")
     return m.group(1)
-
-
-def slugify(title: str) -> str:
-    """Convert a document title to a safe, kebab-case filename stem."""
-    s = title.lower()
-    s = re.sub(r"[^\w\s-]", "", s)  # remove non-word chars except spaces/hyphens
-    s = re.sub(r"[\s_]+", "-", s)  # spaces/underscores to hyphens
-    s = re.sub(r"-{2,}", "-", s)  # collapse multiple hyphens
-    s = s.strip("-")
-    return s or "untitled"
 
 
 def extract_test_doc_id(url: str) -> str:

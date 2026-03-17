@@ -7,13 +7,13 @@ from typing import Any
 
 import httpx
 
-from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import extract_google_doc_id
 from brain_sync.sources.base import (
     AuthProvider,
     DiscoveredImage,
     SourceCapabilities,
     SourceFetchResult,
+    SourceStateLike,
     UpdateCheckResult,
     UpdateStatus,
 )
@@ -49,7 +49,7 @@ class GoogleDocsAdapter:
 
     async def check_for_update(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
@@ -74,7 +74,7 @@ class GoogleDocsAdapter:
 
     async def fetch(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
         root: None = None,

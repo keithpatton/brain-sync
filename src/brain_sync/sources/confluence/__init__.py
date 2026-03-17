@@ -8,12 +8,12 @@ from typing import Any
 
 import httpx
 
-from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import extract_confluence_page_id
 from brain_sync.sources.base import (
     AuthProvider,
     SourceCapabilities,
     SourceFetchResult,
+    SourceStateLike,
     UpdateCheckResult,
     UpdateStatus,
 )
@@ -57,7 +57,7 @@ class ConfluenceAdapter:
 
     async def check_for_update(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
@@ -76,7 +76,7 @@ class ConfluenceAdapter:
 
     async def fetch(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
         root: None = None,

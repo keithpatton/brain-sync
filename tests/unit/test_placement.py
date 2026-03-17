@@ -13,6 +13,7 @@ import pytest
 from brain_sync.query.area_index import AreaIndex
 from brain_sync.query.placement import (
     MAX_QUERY_TERMS,
+    InvalidSourceSpecifierError,
     PlacementCandidate,
     SourceKind,
     SuggestPlacementResult,
@@ -22,7 +23,6 @@ from brain_sync.query.placement import (
     extract_title_from_url,
     suggest_placement,
 )
-from brain_sync.sources import UnsupportedSourceError
 
 pytestmark = pytest.mark.unit
 
@@ -280,7 +280,7 @@ class TestClassifySource:
         assert classify_source(str(f)) == SourceKind.FILE
 
     def test_neither_raises(self):
-        with pytest.raises(UnsupportedSourceError):
+        with pytest.raises(InvalidSourceSpecifierError):
             classify_source("not-a-url-and-not-a-file-path-xyz")
 
     def test_relative_path_not_resolved(self, tmp_path, monkeypatch):

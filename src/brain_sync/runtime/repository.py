@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from brain_sync.brain.manifest import SourceManifest
 
-from brain_sync.brain.fileops import glob_paths, path_is_dir, path_is_file, read_text
+from brain_sync.brain.fileops import path_is_file, read_text
 from brain_sync.brain.layout import area_insights_dir, knowledge_root
 from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
@@ -221,6 +221,7 @@ def _reset_runtime_db(db: Path) -> None:
             candidate.unlink()
 
 
+_UNSUPPORTED_LEGACY_MIGRATION_NOTES = '''
 def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
     """Compute canonical_id for migration. Falls back to unknown:{url} on failure."""
     try:
@@ -230,13 +231,6 @@ def _compute_canonical_id_from_row(source_type: str, source_url: str) -> str:
         return canonical_id(stype, source_url)
     except (ValueError, KeyError):
         return f"unknown:{source_url}"
-
-
-def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = None) -> None:
-    """Legacy migration path retained only to fail closed."""
-    raise RuntimeError(
-        "Legacy runtime DB migrations are unsupported in Brain Format 1.0; delete the runtime DB and let it rebuild."
-    )
 
     if from_version < 2:
         conn.executescript(_SCHEMA_V2_ADDITIONS)
@@ -819,6 +813,14 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
         from_version = 21
 
     log.info("Migrated DB schema to v%d", SCHEMA_VERSION)
+'''
+
+
+def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = None) -> None:
+    """Legacy migration path retained only to fail closed."""
+    raise RuntimeError(
+        "Legacy runtime DB migrations are unsupported in Brain Format 1.0; delete the runtime DB and let it rebuild."
+    )
 
 
 def _connect(root: Path) -> sqlite3.Connection:
@@ -913,7 +915,7 @@ def _seed_from_hint(root: Path, m: SourceManifest, target_path: str) -> SourceSt
         if path_is_file(local_file):
             # Inline imports to avoid circular deps
             from brain_sync.brain.fileops import content_hash as compute_hash
-            from brain_sync.sync.pipeline import strip_managed_header
+            from brain_sync.brain.managed_markdown import strip_managed_header
 
             try:
                 raw = read_text(local_file, encoding="utf-8")

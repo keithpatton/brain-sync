@@ -14,10 +14,10 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from urllib.parse import unquote_plus, urlparse
+from urllib.parse import urlparse
 
 from brain_sync.query.area_index import AreaIndex
-from brain_sync.sources import UnsupportedSourceError
+from brain_sync.util.urls import extract_title_from_url as _extract_title_from_url
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,15 @@ class SourceKind(Enum):
     FILE = "file"
 
 
+class InvalidSourceSpecifierError(ValueError):
+    """Raised when a placement source is neither a URL nor an existing file."""
+
+
+def extract_title_from_url(url: str) -> str:
+    """Compatibility wrapper for the neutral URL-title helper."""
+    return _extract_title_from_url(url)
+
+
 def classify_source(source: str) -> SourceKind:
     """Deterministic source classification: URL or existing file.
 
@@ -46,26 +55,7 @@ def classify_source(source: str) -> SourceKind:
         return SourceKind.URL
     if Path(source).exists():
         return SourceKind.FILE
-    raise UnsupportedSourceError(f"Not a URL or existing file: {source}")
-
-
-def extract_title_from_url(url: str) -> str:
-    """Extract a human-readable title from a URL slug.
-
-    Takes the last non-empty path segment, replaces hyphens/underscores
-    with spaces, and decodes percent-encoding.
-    """
-    parsed = urlparse(url)
-    segments = [s for s in parsed.path.split("/") if s]
-    if not segments:
-        return ""
-    slug = segments[-1]
-    slug = unquote_plus(slug)
-    slug = slug.replace("-", " ").replace("_", " ")
-    # Collapse multiple spaces
-    slug = re.sub(r"\s+", " ", slug).strip()
-    # Title-case each word
-    return slug.title() if slug else ""
+    raise InvalidSourceSpecifierError(f"Not a URL or existing file: {source}")
 
 
 def extract_file_excerpt(path: Path, limit: int = 500) -> str:

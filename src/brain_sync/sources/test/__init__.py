@@ -34,11 +34,11 @@ from typing import Any
 
 import httpx
 
-from brain_sync.runtime.repository import SourceState
 from brain_sync.sources.base import (
     AuthProvider,
     SourceCapabilities,
     SourceFetchResult,
+    SourceStateLike,
     UpdateCheckResult,
     UpdateStatus,
 )
@@ -122,7 +122,7 @@ class TestAdapter:
 
     async def check_for_update(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
@@ -155,7 +155,7 @@ class TestAdapter:
 
     async def fetch(
         self,
-        source_state: SourceState,
+        source_state: SourceStateLike,
         auth: object,
         client: httpx.AsyncClient,
         root: Path | None = None,
@@ -187,7 +187,7 @@ class TestAdapter:
         )
 
 
-def _resolve_root(source_state: SourceState) -> Path | None:
+def _resolve_root(source_state: SourceStateLike) -> Path | None:
     """Resolve brain root from the module-level registry or config."""
     root = _root_registry.get(source_state.canonical_id)
     if root is not None:

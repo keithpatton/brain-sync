@@ -70,6 +70,20 @@ The exact allowed and forbidden dependency directions are normative in
 `docs/RULES.md`. This document explains why those boundaries exist and how to
 classify code when new feature work or refactoring crosses subsystem lines.
 
+### Architecture Fitness Tests
+
+`docs/RULES.md` is the normative package-boundary contract.
+`tests/unit/test_architecture_boundaries.py` is the executable fitness
+function that enforces:
+
+- the normal package dependency graph
+- the closed set of named orchestration surfaces
+- the exact file-level exceptions listed in `docs/RULES.md`
+- a small ratchet for transitional seams that are still debt
+
+If a new orchestration surface or exception is intentional, the rules doc and
+the fitness test should change together.
+
 ## 2.1. Responsibilities And Flows
 
 **Runtime helpers** are split between `runtime/config.py`, which owns config
@@ -351,6 +365,21 @@ offline changes.
 ---
 
 ## 3. Known Technical Debt
+
+### Transitional Boundary Debt
+
+Some seams are still tolerated as transitional debt rather than part of the
+normative package graph:
+
+- `runtime/repository.py` still imports `brain/` helpers to project portable
+  manifests and insight sidecars into runtime views. This is not a general
+  `runtime -> brain` allowance; it is debt carried in one file.
+- `sync/reconcile.py` and `sync/watcher.py` still reach into `regen/` for
+  folder classification and cache invalidation helpers. This is not a general
+  `sync -> regen` allowance; it is a bounded transitional seam.
+
+These seams are ratcheted by the architecture fitness tests so they cannot
+quietly spread to new files or wider imports without review.
 
 **Watcher edge cases**: Windows symlink handling and rapid sequential move
 events still need hardening.
