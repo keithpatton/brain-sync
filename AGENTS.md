@@ -157,6 +157,29 @@ python -m pytest tests/e2e/ -v --timeout=120
 python -m pytest -n auto --timeout=120
 ```
 
+### Test Structure
+
+Keep the tier matrix as the primary test structure. Choose `unit`,
+`integration`, `external`, `mcp`, `system`, or `e2e` based first on process
+model and test scope.
+
+Within a tier, prefer subsystem-aligned placement and naming when a test
+mostly belongs to one stable ownership seam such as `brain`, `runtime`,
+`regen`, `sync`, `query`, `sources`, `application`, or `interfaces`.
+Do not force a source-tree mirror when the clearer truth is a cross-cutting
+behavior, lifecycle flow, or compatibility surface.
+
+Use additional subsystem markers only sparingly. Tier markers remain the
+primary classification. If a file is predominantly about one stable seam, it
+may also use a single subsystem marker to aid filtering. Cross-cutting tests
+do not need subsystem markers.
+
+Compatibility tests should remain clearly separated from seam-owned tests.
+When a test intentionally validates a legacy shim or public compatibility path,
+prefer placing or keeping it under `tests/compat/` or another clearly named
+compatibility-focused location rather than mixing that concern into subsystem
+coverage by default.
+
 ### xdist
 
 Tests are expected to be `xdist`-safe by default. Prefer `-n auto`.
