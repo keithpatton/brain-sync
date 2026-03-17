@@ -183,15 +183,15 @@ Prefer waiting on eventual state over fixed sleeps.
 Disk before DB on all state mutations.
 
 Portable brain writes under the brain root must be mediated through
-`src/brain_sync/brain_repository.py`.
+`src/brain_sync/brain/repository.py`.
 
 Runtime-state writes under `~/.brain-sync/` must be mediated through
-`src/brain_sync/state.py`.
+`src/brain_sync/runtime/repository.py`.
 
-`manifest.py`, `sidecar.py`, and `fileops.py` remain lower-level primitives
-beneath those boundaries. They may still contain write helpers, but normal
-runtime application code must not use them directly for portable-brain
-semantics.
+`brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
+lower-level primitives beneath those boundaries. They may still contain write
+helpers, but normal runtime application code must not use them directly for
+portable-brain semantics.
 
 Narrow exceptions are allowed only for:
 
@@ -220,7 +220,7 @@ access, do not introduce new uses of:
 - `Path.rglob()`
 - plain `open()` reads
 
-Use the shared helpers in `src/brain_sync/fileops.py` instead, such as:
+Use the shared helpers in `src/brain_sync/brain/fileops.py` instead, such as:
 
 - `path_exists()`
 - `path_is_file()`
@@ -233,8 +233,8 @@ Use the shared helpers in `src/brain_sync/fileops.py` instead, such as:
 
 For normal runtime code, do not stop at "use `fileops.py`." If the operation
 is a portable-brain write or write-adjacent authority decision, route it
-through `brain_repository.py` instead. For runtime DB / daemon / token state,
-route it through `state.py`.
+through `brain/repository.py` instead. For runtime DB / daemon / token state,
+route it through `runtime/repository.py`.
 
 This is a repository-specific engineering standard, not a style preference.
 Using raw path operations in these code paths can cause false `NEEDS FETCH`,
@@ -243,18 +243,21 @@ portable brain is used on Windows machines with longer checkout paths.
 
 ## Module Dependency Rule
 
-Core and library modules must not import from CLI, command wiring, or
+Core and library modules must not import from CLI, interface adapters, or
 entrypoint modules.
 
 Allowed direction:
 
-`core -> utilities`
+`interfaces / cli -> application`
 
-`commands / CLI -> core`
+`application -> brain / runtime / sync / regen / query / sources / llm / util`
 
-`entrypoints -> commands`
+`entrypoints -> application / interfaces / sync`
 
 If shared behavior is needed, move it to a neutral module.
+
+Legacy root modules and `commands/` may remain only as compatibility shims once
+their package homes exist. New logic must live under the owning package.
 
 ## Source Adapter Architecture
 

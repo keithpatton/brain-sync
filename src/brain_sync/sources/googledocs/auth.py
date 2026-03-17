@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
 
-from brain_sync.config import CONFIG_DIR, load_config, save_config
+from brain_sync.runtime.config import CONFIG_DIR, load_config, save_config
 from brain_sync.sources.googledocs.rest import FetchError
 
 log = logging.getLogger(__name__)

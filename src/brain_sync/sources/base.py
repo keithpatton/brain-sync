@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from brain_sync.state import SourceState
+    from brain_sync.runtime.repository import SourceState
 
 
 class UpdateStatus(Enum):

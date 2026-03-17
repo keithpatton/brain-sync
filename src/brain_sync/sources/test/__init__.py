@@ -34,6 +34,7 @@ from typing import Any
 
 import httpx
 
+from brain_sync.runtime.repository import SourceState
 from brain_sync.sources.base import (
     AuthProvider,
     SourceCapabilities,
@@ -42,7 +43,6 @@ from brain_sync.sources.base import (
     UpdateStatus,
 )
 from brain_sync.sources.test.auth import TestAuthProvider
-from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ def _resolve_root(source_state: SourceState) -> Path | None:
 
     # Fallback: resolve from config (works in subprocess contexts)
     try:
-        from brain_sync.config import load_config
+        from brain_sync.runtime.config import load_config
 
         cfg = load_config()
         brain_root = cfg.get("brain_root")

@@ -5,7 +5,7 @@ import logging.handlers
 import sys
 from uuid import uuid4
 
-from brain_sync.config import CONFIG_DIR
+from brain_sync.runtime.config import CONFIG_DIR
 
 LOG_DIR = CONFIG_DIR / "logs"
 LOG_FILE = LOG_DIR / "brain-sync.log"

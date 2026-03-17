@@ -7,14 +7,21 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.brain_repository import BrainRepository
-from brain_sync.brain_repository import (
+from brain_sync.brain.fileops import (
+    EXCLUDED_DIRS,
+    content_hash,
+    path_exists,
+    read_bytes,
+)
+from brain_sync.brain.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.repository import (
     attachment_local_path_for_source_dir as repository_attachment_local_path,
 )
-from brain_sync.brain_repository import (
+from brain_sync.brain.repository import (
     ensure_attachment_dir_for_source_dir as repository_ensure_attachment_dir,
 )
-from brain_sync.brain_repository import (
+from brain_sync.brain.repository import (
     source_dir_id as repository_source_dir_id,
 )
 from brain_sync.confluence_rest import (
@@ -23,13 +30,6 @@ from brain_sync.confluence_rest import (
     fetch_attachments,
     fetch_child_pages,
 )
-from brain_sync.fileops import (
-    EXCLUDED_DIRS,
-    content_hash,
-    path_exists,
-    read_bytes,
-)
-from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.sources.base import DiscoveredImage
 
 log = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from brain_sync.config import CONFIG_FILE
+from brain_sync.runtime.config import CONFIG_FILE
 
 log = logging.getLogger(__name__)
 

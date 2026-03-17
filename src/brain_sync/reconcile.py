@@ -12,12 +12,12 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.brain_repository import BrainRepository
-from brain_sync.fileops import path_is_dir
-from brain_sync.fs_utils import find_all_content_paths
-from brain_sync.layout import area_insights_dir
+from brain_sync.brain.fileops import path_is_dir
+from brain_sync.brain.layout import area_insights_dir
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.tree import find_all_content_paths
 from brain_sync.regen import classify_folder_change
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     delete_regen_lock,
     load_all_insight_states,
 )

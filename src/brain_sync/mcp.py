@@ -24,9 +24,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from brain_sync.area_index import AreaIndex
-from brain_sync.brain_repository import BrainRepository, BrainRepositoryInvariantError
-from brain_sync.commands import (
+from brain_sync.application import (
     SourceAlreadyExistsError,
     SourceNotFoundError,
     add_source,
@@ -37,10 +35,12 @@ from brain_sync.commands import (
     resolve_root,
     update_source,
 )
-from brain_sync.commands.placement import suggest_placement
-from brain_sync.fileops import iterdir_paths, path_exists, path_is_dir, path_is_file, read_text
-from brain_sync.fs_utils import get_child_dirs, is_content_dir, is_readable_file, normalize_path
-from brain_sync.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
+from brain_sync.application.placement import suggest_placement
+from brain_sync.area_index import AreaIndex
+from brain_sync.brain.fileops import iterdir_paths, path_exists, path_is_dir, path_is_file, read_text
+from brain_sync.brain.layout import SUMMARY_FILENAME, area_insights_dir, area_summary_path
+from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
+from brain_sync.brain.tree import get_child_dirs, is_content_dir, is_readable_file, normalize_path
 from brain_sync.regen import RegenFailed, regen_all, regen_path
 from brain_sync.regen_lifecycle import regen_session
 from brain_sync.sources import UnsupportedSourceError
@@ -280,7 +280,7 @@ def brain_sync_add_file(
     copy: bool = True,
 ) -> dict:
     """Add a local file to the brain."""
-    from brain_sync.fileops import ADDFILE_EXTENSIONS
+    from brain_sync.brain.fileops import ADDFILE_EXTENSIONS
 
     rt = _runtime(ctx)
     repository = BrainRepository(rt.root)
@@ -843,7 +843,7 @@ def brain_sync_open_file(
 )
 def brain_sync_doctor(ctx: Context, mode: str = "check") -> dict:
     """Diagnose brain health and optionally repair."""
-    from brain_sync.commands.doctor import Severity, deregister_missing, doctor, rebuild_db
+    from brain_sync.application.doctor import Severity, deregister_missing, doctor, rebuild_db
 
     rt = _runtime(ctx)
     try:
@@ -894,7 +894,7 @@ def brain_sync_doctor(ctx: Context, mode: str = "check") -> dict:
 )
 def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
     """Return token usage telemetry summary."""
-    from brain_sync.token_tracking import get_usage_summary
+    from brain_sync.runtime.token_tracking import get_usage_summary
 
     rt = _runtime(ctx)
     try:
@@ -905,8 +905,8 @@ def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
 
 
 if __name__ == "__main__":
-    from brain_sync.config import load_config
     from brain_sync.logging_config import setup_logging
+    from brain_sync.runtime.config import load_config
 
     log_level = load_config().get("log_level", "INFO")
     setup_logging(log_level)

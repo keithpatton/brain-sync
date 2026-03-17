@@ -15,9 +15,9 @@ from watchdog.events import (
 )
 from watchdog.observers import Observer
 
-from brain_sync.brain_repository import BrainRepository
-from brain_sync.fileops import EXCLUDED_DIRS, path_exists
-from brain_sync.fs_utils import normalize_path
+from brain_sync.brain.fileops import EXCLUDED_DIRS, path_exists
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.tree import normalize_path
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
 
     # Update insight_state paths in DB
     try:
-        from brain_sync.state import load_all_insight_states, update_insight_path
+        from brain_sync.runtime.repository import load_all_insight_states, update_insight_path
 
         all_states = load_all_insight_states(root)
         for istate in all_states:
@@ -137,7 +137,7 @@ def mirror_folder_move(root: Path, move: FolderMove) -> None:
 
     # Update sources target_path directly in DB
     try:
-        from brain_sync.state import load_state, update_source_target_path
+        from brain_sync.runtime.repository import load_state, update_source_target_path
 
         state = load_state(root)
         for ss in state.sources.values():

@@ -25,7 +25,7 @@ from brain_sync.regen import (
     regen_path,
     regen_single_folder,
 )
-from brain_sync.state import RegenLock, acquire_regen_ownership, load_insight_state, save_regen_lock
+from brain_sync.runtime.repository import RegenLock, acquire_regen_ownership, load_insight_state, save_regen_lock
 
 log = logging.getLogger(__name__)
 

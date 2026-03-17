@@ -10,7 +10,7 @@ class ConfluenceAuthProvider:
         return get_confluence_auth()
 
     def configure(self, **kwargs: str) -> None:
-        from brain_sync.commands.config import configure_confluence
+        from brain_sync.application.config import configure_confluence
 
         configure_confluence(domain=kwargs["domain"], email=kwargs["email"], token=kwargs["token"])
 

@@ -9,14 +9,13 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.brain_repository import BrainRepository
-from brain_sync.fs_utils import normalize_path
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.tree import normalize_path
 from brain_sync.logging_config import setup_logging
 from brain_sync.pipeline import process_source
 from brain_sync.regen import classify_folder_change
 from brain_sync.regen_queue import RegenQueue
-from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     RegenLock,
     SyncState,
     load_insight_state,
@@ -25,6 +24,7 @@ from brain_sync.state import (
     save_sync_progress,
     write_daemon_status,
 )
+from brain_sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
 from brain_sync.watcher import KnowledgeWatcher, mirror_folder_move
 
 log = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
-    from brain_sync.commands.sources import reconcile_sources
+    from brain_sync.application.sources import reconcile_sources
     from brain_sync.reconcile import reconcile_knowledge_tree
     from brain_sync.regen_lifecycle import regen_session
 
@@ -89,7 +89,7 @@ async def run(root: Path) -> None:
             )
 
     # Prune old telemetry rows on startup
-    from brain_sync.token_tracking import load_retention_days, prune_token_events
+    from brain_sync.runtime.token_tracking import load_retention_days, prune_token_events
 
     prune_token_events(root, load_retention_days())
 
@@ -206,7 +206,7 @@ async def run(root: Path) -> None:
 
                             # Process discovered children (one-shot pattern)
                             if discovered_children:
-                                from brain_sync.commands.sources import SourceAlreadyExistsError, add_source
+                                from brain_sync.application.sources import SourceAlreadyExistsError, add_source
                                 from brain_sync.sources import slugify
 
                                 parent_target = ss.target_path
@@ -354,7 +354,7 @@ def main() -> None:
     # Resolve log level: CLI arg > config.json > default "INFO"
     log_level = args.log_level
     if log_level is None:
-        from brain_sync.config import load_config
+        from brain_sync.runtime.config import load_config
 
         log_level = load_config().get("log_level")
     setup_logging(log_level or "INFO")

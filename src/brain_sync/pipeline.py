@@ -22,11 +22,12 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.brain_repository import BrainRepository
+from brain_sync.brain.fileops import content_hash, path_exists, rediscover_local_path, write_if_changed
+from brain_sync.brain.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
+from brain_sync.brain.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
+from brain_sync.brain.repository import BrainRepository
 from brain_sync.converter import format_comments
-from brain_sync.fileops import content_hash, path_exists, rediscover_local_path, write_if_changed
-from brain_sync.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
-from brain_sync.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
+from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
@@ -35,7 +36,6 @@ from brain_sync.sources import (
 )
 from brain_sync.sources.base import UpdateCheckResult, UpdateStatus
 from brain_sync.sources.registry import get_adapter
-from brain_sync.state import SourceState
 
 __all__ = [
     "ChildDiscoveryResult",

@@ -12,9 +12,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.fileops import iterdir_paths, path_is_dir, path_is_file, read_text, rglob_paths
-from brain_sync.fs_utils import get_child_dirs, is_content_dir
-from brain_sync.layout import MANAGED_DIRNAME, SUMMARY_FILENAME, area_summary_path
+from brain_sync.brain.fileops import iterdir_paths, path_is_dir, path_is_file, read_text, rglob_paths
+from brain_sync.brain.layout import MANAGED_DIRNAME, SUMMARY_FILENAME, area_summary_path
+from brain_sync.brain.tree import get_child_dirs, is_content_dir
 
 log = logging.getLogger(__name__)
 

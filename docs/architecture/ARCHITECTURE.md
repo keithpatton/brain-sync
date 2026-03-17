@@ -16,19 +16,16 @@ All source lives under `src/brain_sync/`.
 | Group | Modules | Purpose |
 |---|---|---|
 | Entry points | `__main__`, `mcp` | Daemon loop and MCP stdio server |
-| Commands / CLI | `commands/`, `cli/` | User-facing operations and CLI wiring |
+| Application / CLI | `application/`, `cli/`, legacy `commands/` shims | User-facing operations and CLI wiring |
+| Portable brain plane | `brain/`, legacy root shims such as `brain_repository`, `manifest`, `sidecar`, `fileops`, `fs_utils`, `layout` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
+| Runtime plane | `runtime/`, legacy root shims such as `state`, `config`, `token_tracking`, `layout` | Machine-local config, DB, daemon status, and telemetry |
 | Sync pipeline | `pipeline`, `converter`, `docx_converter`, `sources/` | Fetch, convert, materialize, and update source content |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind the adapter protocol |
 | REST clients | `confluence_rest` | Confluence REST API wrapper used by adapters and attachment flows |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
 | Regen | `regen`, `regen_lifecycle`, `regen_queue` | Deterministic insight regeneration and queueing |
-| Brain repository | `brain_repository` | Portable brain-state authority for managed filesystem semantics |
-| State | `state`, `token_tracking` | Runtime DB access, daemon status, and telemetry |
-| Layout helpers | `layout` | Centralized path and version helpers for Brain Format `1.0` |
-| Manifests | `manifest` | Source manifest read/write under `.brain-sync/sources/` |
-| Sidecars | `sidecar` | Per-area insight state read/write under `knowledge/**/.brain-sync/insights/` |
 | Attachments / indexing | `attachments`, `area_index` | Attachment storage and area search indexing |
-| Utilities | `config`, `fileops`, `fs_utils`, `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
+| Utilities | `logging_config`, `retry`, `scheduler` | Shared helpers with no domain coupling |
 | Watcher | `watcher` | Filesystem event monitoring and path-update coordination |
 | Reconcile | `reconcile` | Startup filesystem reconciliation against manifest and regen state |
 
@@ -36,20 +33,22 @@ All source lives under `src/brain_sync/`.
 
 ## 2. Module Responsibilities
 
-**Utilities** are low-level helpers. `config.py` is the canonical source for
-the user-level config directory, config file, runtime DB path, and daemon
-status path.
+**Runtime helpers** are split between `runtime/config.py`, which owns config
+file access, and `runtime/paths.py`, which owns machine-local runtime paths.
+Legacy root `config.py` and `layout.py` remain compatibility shims only.
 
 **Core modules** implement sync, reconciliation, and regeneration. The sync
-pipeline fetches and materializes source content into `knowledge/`. `brain_repository`
-owns the portable-brain mutation and resolution rules used by sync, reconcile,
-doctor, and regen-adjacent cleanup. Regen produces derived summaries,
-journals, and per-area insight state from the knowledge tree.
+pipeline fetches and materializes source content into `knowledge/`.
+`brain/repository.py` owns the portable-brain mutation and resolution rules
+used by sync, reconcile, doctor, and regen-adjacent cleanup. Regen produces
+derived summaries, journals, and per-area insight state from the knowledge
+tree.
 
-**Interfaces** expose the system to users and tools. The CLI commands operate
-on the same core modules as the MCP tools. The watcher provides online change
-detection as an edge observer with direct filesystem contact; reconciliation
-provides the equivalent correction path for offline changes.
+**Interfaces** expose the system to users and tools. `application/` owns the
+interface-neutral operations consumed by the CLI and MCP layers. The legacy
+`commands/` package remains as a compatibility shim. The watcher provides
+online change detection as an edge observer with direct filesystem contact;
+reconciliation provides the equivalent correction path for offline changes.
 
 **Entry points** wire everything together. `__main__.py` runs the daemon loop;
 `mcp.py` exposes repository-safe tool access over stdio.
@@ -85,19 +84,20 @@ maintains a separate top-level insight mirror.
 
 | Layer | Owner | Responsibility |
 |---|---|---|
-| `knowledge/` plus source manifests plus managed area artifacts | `brain_repository` used by sync / reconcile / doctor / regen, with watcher as edge observer | Durable portable-brain artifacts, document locations, and managed filesystem policy |
-| `regen_locks` plus `sync_cache` plus daemon/runtime files | `state` | Runtime coordination, progress cache, telemetry, and process state |
+| `knowledge/` plus source manifests plus managed area artifacts | `brain/repository.py` used by sync / reconcile / doctor / regen, with watcher as edge observer | Durable portable-brain artifacts, document locations, and managed filesystem policy |
+| `regen_locks` plus `sync_cache` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, progress cache, telemetry, and process state |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
 The filesystem remains authoritative. Runtime state is disposable and must be
 rebuildable from manifests and per-area insight state.
 
-`state.py` is part of the runtime plane only. Despite the broad name, it is
-not the owner of portable brain semantics or durable brain mutations.
+The legacy root `state.py` shim points at `runtime/repository.py`. The runtime
+plane is not the owner of portable brain semantics or durable brain mutations.
 
-`manifest.py`, `sidecar.py`, and `fileops.py` remain primitive storage /
-filesystem helpers beneath those seams. They are implementation detail, not
-the approved semantic entry points for normal runtime portable-state mutation.
+`brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
+primitive storage / filesystem helpers beneath those seams. They are
+implementation detail, not the approved semantic entry points for normal
+runtime portable-state mutation.
 
 ### Attachment Storage
 
@@ -306,7 +306,9 @@ performance hint rather than a full correctness proof.
 
 ### Resolved (2026-03)
 
-- Config and runtime-path helpers are centralized in `config.py` and `layout.py`.
+- Runtime config now lives under `runtime/config.py`, with machine-local path
+  ownership split into `runtime/paths.py` and portable layout retained in
+  `brain/layout.py`.
 - `regen.py` no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
 - Atomic file writes use fsync-based crash-safe behavior.
@@ -353,7 +355,7 @@ Planned future work:
 | Symbol | Consumer | Notes |
 |---|---|---|
 | `scheduler._scheduled_keys` | `__main__.py` | Attribute access, not import |
-| `commands.context._require_root` | `commands/sources.py` | Intra-package use |
+| `application.roots._require_root` | `application/sources.py` | Intra-package use |
 | `confluence_rest._request` | `sources/confluence/comments.py` | Reuses retry behavior |
 
 ### Test code

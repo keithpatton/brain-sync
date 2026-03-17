@@ -8,9 +8,9 @@ import signal
 import sys
 from pathlib import Path
 
-from brain_sync.commands.context import BrainNotFoundError
-from brain_sync.commands.placement import PlacementSelection
-from brain_sync.fileops import path_exists, path_is_dir, path_is_file
+from brain_sync.application.placement import PlacementSelection
+from brain_sync.application.roots import BrainNotFoundError
+from brain_sync.brain.fileops import path_exists, path_is_dir, path_is_file
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def _get_root(args) -> Path | None:
 
 
 def handle_init(args) -> None:
-    from brain_sync.commands.init import init_brain
+    from brain_sync.application.init import init_brain
 
     result = init_brain(args.root, model=args.model, dry_run=args.dry_run)
 
@@ -37,7 +37,7 @@ def handle_init(args) -> None:
     log.info("  knowledge/_core/ - Always-loaded reference material")
     log.info("  knowledge/**/.brain-sync/insights/ - Auto-generated summaries")
 
-    from brain_sync.commands.init import SKILL_INSTALL_DIR
+    from brain_sync.application.init import SKILL_INSTALL_DIR
 
     log.info("  Skill installed to %s", SKILL_INSTALL_DIR)
 
@@ -46,7 +46,7 @@ def handle_run(args) -> None:
     root = _get_root(args)
     if root is None:
         try:
-            from brain_sync.commands.context import resolve_root
+            from brain_sync.application.roots import resolve_root
 
             root = resolve_root()
         except BrainNotFoundError as e:
@@ -85,7 +85,7 @@ def _resolve_root_or_exit(args) -> Path:
     root = _get_root(args)
     if root is None:
         try:
-            from brain_sync.commands.context import resolve_root
+            from brain_sync.application.roots import resolve_root
 
             root = resolve_root()
         except BrainNotFoundError as e:
@@ -104,8 +104,8 @@ def _interactive_placement(
     dry_run: bool,
 ) -> PlacementSelection:
     """Show interactive placement suggestions and return user's choice."""
+    from brain_sync.application.placement import suggest_placement
     from brain_sync.area_index import AreaIndex
-    from brain_sync.commands.placement import suggest_placement
 
     index = AreaIndex.build(root)
     result = suggest_placement(
@@ -184,8 +184,8 @@ def _resolve_collision(dest: Path, max_suffix: int = 10) -> Path | None:
 def handle_add(args) -> None:
     from urllib.parse import urlparse
 
-    from brain_sync.commands.placement import extract_title_from_url
-    from brain_sync.commands.sources import SourceAlreadyExistsError, add_source
+    from brain_sync.application.placement import extract_title_from_url
+    from brain_sync.application.sources import SourceAlreadyExistsError, add_source
     from brain_sync.sources import UnsupportedSourceError
 
     # URL-only: reject non-URLs with helpful hint
@@ -197,7 +197,7 @@ def handle_add(args) -> None:
     root = _resolve_root_or_exit(args)
 
     # Early duplicate check — before interactive placement to avoid wasted effort
-    from brain_sync.commands.sources import check_source_exists
+    from brain_sync.application.sources import check_source_exists
 
     existing = check_source_exists(root, args.source)
     if existing is not None:
@@ -270,8 +270,8 @@ def handle_add(args) -> None:
 def handle_add_file(args) -> None:
     import shutil
 
-    from brain_sync.commands.placement import extract_file_excerpt
-    from brain_sync.fileops import ADDFILE_EXTENSIONS
+    from brain_sync.application.placement import extract_file_excerpt
+    from brain_sync.brain.fileops import ADDFILE_EXTENSIONS
 
     file_path = Path(args.file).resolve()
     if not file_path.exists():
@@ -352,7 +352,7 @@ def _detect_subtree(root: Path) -> str | None:
     cwd = Path.cwd().resolve()
     try:
         if cwd.is_relative_to(knowledge_root):
-            from brain_sync.fs_utils import normalize_path
+            from brain_sync.brain.tree import normalize_path
 
             rel = normalize_path(cwd.relative_to(knowledge_root))
             if rel:
@@ -364,7 +364,7 @@ def _detect_subtree(root: Path) -> str | None:
 
 
 def handle_remove(args) -> None:
-    from brain_sync.commands.sources import SourceNotFoundError, remove_source
+    from brain_sync.application.sources import SourceNotFoundError, remove_source
 
     try:
         result = remove_source(
@@ -388,7 +388,7 @@ def handle_remove(args) -> None:
 
 
 def handle_list(args) -> None:
-    from brain_sync.commands.sources import list_sources
+    from brain_sync.application.sources import list_sources
 
     try:
         sources = list_sources(
@@ -421,7 +421,7 @@ def handle_list(args) -> None:
 
 
 def handle_move(args) -> None:
-    from brain_sync.commands.sources import SourceNotFoundError, move_source
+    from brain_sync.application.sources import SourceNotFoundError, move_source
 
     try:
         result = move_source(
@@ -442,7 +442,7 @@ def handle_move(args) -> None:
 
 
 def handle_update(args) -> None:
-    from brain_sync.commands.sources import SourceNotFoundError, update_source
+    from brain_sync.application.sources import SourceNotFoundError, update_source
 
     try:
         child_path_val = getattr(args, "child_path", None)
@@ -469,7 +469,7 @@ def handle_update(args) -> None:
 
 
 def handle_reconcile(args) -> None:
-    from brain_sync.commands.sources import reconcile_sources
+    from brain_sync.application.sources import reconcile_sources
     from brain_sync.reconcile import reconcile_knowledge_tree
 
     root = _resolve_root_or_exit(args)
@@ -503,9 +503,9 @@ def handle_reconcile(args) -> None:
 
 
 def handle_status(args) -> None:
-    from brain_sync.commands.sources import list_sources
-    from brain_sync.state import load_all_insight_states
-    from brain_sync.token_tracking import get_usage_summary
+    from brain_sync.application.sources import list_sources
+    from brain_sync.runtime.repository import load_all_insight_states
+    from brain_sync.runtime.token_tracking import get_usage_summary
 
     root = _resolve_root_or_exit(args)
 
@@ -545,7 +545,7 @@ def handle_regen(args) -> None:
     root = _get_root(args)
     if root is None:
         try:
-            from brain_sync.commands.context import resolve_root
+            from brain_sync.application.roots import resolve_root
 
             root = resolve_root()
         except BrainNotFoundError as e:
@@ -636,7 +636,7 @@ def handle_config(args) -> None:
         sys.exit(1)
 
     if args.config_source == "confluence":
-        from brain_sync.commands.config import configure_confluence
+        from brain_sync.application.config import configure_confluence
 
         configure_confluence(
             domain=args.domain,
@@ -644,7 +644,7 @@ def handle_config(args) -> None:
             token=args.token,
         )
     elif args.config_source == "google":
-        from brain_sync.commands.config import configure_google
+        from brain_sync.application.config import configure_google
 
         try:
             if not configure_google(
@@ -658,7 +658,7 @@ def handle_config(args) -> None:
 
 
 def handle_migrate(args) -> None:
-    from brain_sync.commands.sources import migrate_sources
+    from brain_sync.application.sources import migrate_sources
 
     try:
         result = migrate_sources(root=_get_root(args))
@@ -682,14 +682,14 @@ def handle_migrate(args) -> None:
 
 
 def handle_update_skill(args) -> None:
-    from brain_sync.commands.init import update_skill
+    from brain_sync.application.init import update_skill
 
     updated = update_skill()
     log.info("Skill updated (%s)", ", ".join(p.name for p in updated))
 
 
 def handle_doctor(args) -> None:
-    from brain_sync.commands.doctor import Severity, adopt_baseline, deregister_missing, doctor, rebuild_db
+    from brain_sync.application.doctor import Severity, adopt_baseline, deregister_missing, doctor, rebuild_db
 
     # Mutual exclusivity check
     flags = [args.fix, args.rebuild_db, args.deregister_missing, args.adopt_baseline]

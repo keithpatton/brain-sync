@@ -10,6 +10,7 @@ import httpx
 
 from brain_sync.confluence_rest import fetch_page_body, fetch_page_version
 from brain_sync.converter import html_to_markdown
+from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import extract_confluence_page_id
 from brain_sync.sources.base import (
     AuthProvider,
@@ -20,7 +21,6 @@ from brain_sync.sources.base import (
 )
 from brain_sync.sources.confluence.auth import ConfluenceAuthProvider
 from brain_sync.sources.confluence.comments import fetch_structured_comments
-from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
 

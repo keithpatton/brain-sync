@@ -25,9 +25,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from brain_sync.brain_repository import BrainRepository
-from brain_sync.config import CONFIG_FILE
-from brain_sync.fileops import (
+from brain_sync.brain.fileops import (
     TEXT_EXTENSIONS,
     iterdir_paths,
     path_exists,
@@ -37,25 +35,27 @@ from brain_sync.fileops import (
     read_text,
     rglob_paths,
 )
-from brain_sync.fs_utils import (
+from brain_sync.brain.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.sidecar import load_regen_hashes
+from brain_sync.brain.tree import (
     find_all_content_paths,
     get_child_dirs,
     is_content_dir,
     is_readable_file,
     normalize_path,
 )
-from brain_sync.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.retry import async_retry, claude_breaker
-from brain_sync.sidecar import load_regen_hashes
-from brain_sync.state import (
+from brain_sync.runtime.config import CONFIG_FILE
+from brain_sync.runtime.repository import (
     RegenLock,
     delete_regen_lock,
     load_all_insight_states,
     load_insight_state,
     save_regen_lock,
 )
-from brain_sync.token_tracking import OP_REGEN
+from brain_sync.runtime.token_tracking import OP_REGEN
 
 
 @dataclass
@@ -889,7 +889,7 @@ def _record_telemetry(
     model: str,
 ) -> None:
     """Record a token_events row for telemetry."""
-    from brain_sync.token_tracking import record_token_event
+    from brain_sync.runtime.token_tracking import record_token_event
 
     record_token_event(
         root=cwd,

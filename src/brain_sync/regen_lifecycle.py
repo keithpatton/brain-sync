@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from brain_sync.state import (
+from brain_sync.runtime.repository import (
     reclaim_stale_running_states,
     release_owned_running_states,
 )

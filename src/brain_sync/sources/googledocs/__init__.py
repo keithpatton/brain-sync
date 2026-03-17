@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import extract_google_doc_id
 from brain_sync.sources.base import (
     AuthProvider,
@@ -24,7 +25,6 @@ from brain_sync.sources.googledocs.rest import (
     fetch_doc_title,
     generate_tabs_markdown,
 )
-from brain_sync.state import SourceState
 
 log = logging.getLogger(__name__)
 
