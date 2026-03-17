@@ -477,3 +477,7 @@ This document should remain concise and explanatory.
 
 It should be updated whenever module responsibilities, authority models,
 dependency direction, or major structural constraints change.
+
+Repeatable architecture review artifacts live under `docs/architecture/reviews/`.
+Use those files for rerunnable health checks and refactor-readiness assessments
+rather than expanding this document into a review log.

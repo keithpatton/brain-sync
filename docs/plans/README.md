@@ -34,6 +34,17 @@ approval artifact.
 
 Supporting inputs may exist alongside the plan trail when a planner needs extra implementation context. They inform a plan, but they are not part of the plan → review → revision → approval lifecycle.
 
+Architecture reviews under `docs/architecture/reviews/` are one important class
+of supporting input. They diagnose and recommend; they do not authorize work by
+themselves.
+
+When a plan emerges from an architecture review:
+
+- the plan should cite the review in its authoritative inputs or context
+- the review may list the derived plan in a `Derived Plans` section once that
+  plan has been approved
+- the plan remains the authoritative execution artifact
+
 ## Schema
 
 Canonical root plan:
