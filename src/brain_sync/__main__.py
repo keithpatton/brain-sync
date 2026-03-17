@@ -6,8 +6,8 @@ from brain_sync.logging_config import setup_logging
 
 
 def main() -> None:
-    from brain_sync.cli import build_parser
-    from brain_sync.cli.handlers import (
+    from brain_sync.interfaces.cli import build_parser
+    from brain_sync.interfaces.cli.handlers import (
         handle_add,
         handle_add_file,
         handle_config,

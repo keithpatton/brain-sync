@@ -7,16 +7,6 @@ Usage:
 
 from brain_sync.application.doctor import DoctorResult, Finding, Severity, deregister_missing, doctor, rebuild_db
 from brain_sync.application.init import InitResult, init_brain, update_skill
-from brain_sync.application.placement import (
-    PlacementCandidate,
-    PlacementSelection,
-    SourceKind,
-    SuggestPlacementResult,
-    classify_source,
-    extract_file_excerpt,
-    extract_title_from_url,
-    suggest_placement,
-)
 from brain_sync.application.roots import BrainNotFoundError, InvalidBrainRootError, resolve_root, validate_brain_root
 from brain_sync.application.sources import (
     AddResult,
@@ -36,6 +26,16 @@ from brain_sync.application.sources import (
     reconcile_sources,
     remove_source,
     update_source,
+)
+from brain_sync.query.placement import (
+    PlacementCandidate,
+    PlacementSelection,
+    SourceKind,
+    SuggestPlacementResult,
+    classify_source,
+    extract_file_excerpt,
+    extract_title_from_url,
+    suggest_placement,
 )
 
 __all__ = [

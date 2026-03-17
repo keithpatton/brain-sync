@@ -8,6 +8,10 @@ state-mutation rules that must always hold for a valid
 Implementations may change internally, but these rules define the
 external behaviour of the system.
 
+This is the normative home for cross-cutting invariants, guarantees, and
+precedence rules. For design rationale, module ownership, and tradeoffs, see
+`docs/architecture/ARCHITECTURE.md`.
+
 Terminology used here is defined in [GLOSSARY.md](GLOSSARY.md).
 
 ---

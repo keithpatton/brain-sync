@@ -35,6 +35,12 @@ Avoid copying volatile bullet lists into multiple docs; duplicate only stable
 headings or short summaries that are unlikely to change when the linked
 document evolves.
 
+For cross-cutting system behavior, keep normative invariants, guarantees,
+and precedence rules in `docs/RULES.md`. Keep `docs/architecture/` focused on
+explanation: module responsibilities, rationale, tradeoffs, and technical
+debt. When architecture needs to mention a rule, summarize it briefly and link
+to the authoritative rule rather than restating the full constraint.
+
 ## Plan Approval Workflow
 
 When using the `docs/plans/` workflow, agents must preserve separate planner,

@@ -7,6 +7,11 @@ and technical debt. For the normative portable contract, see
 `docs/brain/` and the shared reference docs under `docs/`. Dependency
 direction rules are defined in `AGENTS.md`.
 
+This document is explanatory, not the normative home for invariants or schema
+detail. Exact guarantees, precedence rules, and contract-level constraints
+belong in `docs/RULES.md`, `docs/brain/`, and `docs/runtime/`; architecture
+should summarize those constraints only as needed to explain the design.
+
 ---
 
 ## 1. System Structure
@@ -15,16 +20,17 @@ All source lives under `src/brain_sync/`.
 
 | Group | Modules | Purpose |
 |---|---|---|
-| Entry points | `__main__`, `mcp` | CLI/bootstrap entrypoint and MCP stdio server |
-| Application / CLI | `application/`, `cli/`, legacy `commands/` shims | User-facing operations and CLI wiring |
+| Entry points | `__main__`, `mcp` | CLI/bootstrap entrypoint and legacy MCP shim |
+| Application / interfaces | `application/`, `interfaces/`, legacy `cli/`, `mcp.py`, and `commands/` shims | Interface-neutral operations plus CLI and MCP transport adapters |
 | Portable brain plane | `brain/`, legacy root shims such as `brain_repository`, `manifest`, `sidecar`, `fileops`, `fs_utils`, `layout` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
 | Runtime plane | `runtime/`, legacy root shims such as `state`, `config`, `token_tracking`, `layout` | Machine-local config, DB, daemon status, and telemetry |
 | Sync subsystem | `sync/`, legacy root shims such as `pipeline`, `reconcile`, `watcher`, `scheduler` | Daemon loop, polling, filesystem watching, and source materialization |
+| Query subsystem | `query/`, legacy root shims such as `area_index` and `application/placement` | Read-model indexing and placement/search helpers over portable brain structure |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind the adapter protocol |
 | REST clients | `confluence_rest` | Confluence REST API wrapper used by adapters and attachment flows |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
 | Regen subsystem | `regen/`, legacy root shims such as `regen_lifecycle`, `regen_queue` | Regeneration engine, lifecycle, queueing, and packaged prompt resources |
-| Attachments / indexing | `attachments`, `area_index` | Attachment storage and area search indexing |
+| Attachments | `attachments` | Attachment storage and sync-adjacent materialization helpers |
 | Utilities | `logging_config`, `retry` | Shared helpers with no domain coupling |
 
 ---
@@ -43,14 +49,22 @@ regen-adjacent cleanup. `regen/` owns regeneration, lifecycle, queueing, and
 the packaged prompt/template resources used to rebuild derived meaning.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
-interface-neutral operations consumed by the CLI and MCP layers. The legacy
-`commands/` package remains as a compatibility shim. The watcher provides
-online change detection as an edge observer with direct filesystem contact;
-reconciliation provides the equivalent correction path for offline changes.
+interface-neutral operations consumed by the CLI and MCP layers. `interfaces/`
+owns the CLI parser/handlers and the MCP transport surface. The legacy
+`commands/`, `cli/`, and `mcp.py` paths remain as compatibility shims. The
+watcher provides online change detection as an edge observer with direct
+filesystem contact; reconciliation provides the equivalent correction path for
+offline changes.
+
+**Query helpers** live under `query/`. `query/area_index.py` owns the
+read-optimized area index used by placement and MCP search, and
+`query/placement.py` owns placement suggestions and related read-only
+classification helpers.
 
 **Entry points** wire everything together. `__main__.py` is now the CLI and
 bootstrap surface while `sync/daemon.py` owns the long-running daemon loop.
-`mcp.py` exposes repository-safe tool access over stdio.
+`interfaces/mcp/server.py` exposes repository-safe tool access over stdio, with
+`mcp.py` retained as a compatibility shim.
 
 ### Startup Reconcile Lifecycle
 
@@ -315,8 +329,9 @@ performance hint rather than a full correctness proof.
 - `regen.py` no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
 - Atomic file writes use fsync-based crash-safe behavior.
-- `mcp.py` runtime state moved out of import-time globals.
-- `AreaIndex` was extracted from the entrypoint layer into `area_index.py`.
+- MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
+  root entrypoint module.
+- `AreaIndex` and placement logic now live under the `query/` subsystem.
 - Public state APIs replaced several direct command-layer uses of private DB helpers.
 - Deterministic `FakeBackend` support reduced subprocess overhead in tests.
 

@@ -76,7 +76,7 @@ SAMPLE_MOVE_RESULT = MoveResult(
 
 def _make_ctx(root: Path) -> MagicMock:
     """Create a mock Context whose request_context.lifespan_context is a BrainRuntime."""
-    from brain_sync.mcp import AreaIndex, BrainRuntime
+    from brain_sync.interfaces.mcp.server import AreaIndex, BrainRuntime
 
     rt = BrainRuntime(
         root=root,
@@ -184,12 +184,12 @@ def _dummy_root(tmp_path: Path) -> Path:
 
 class TestImportPurity:
     def test_import_does_not_call_resolve_root(self):
-        """Importing brain_sync.mcp must not call resolve_root()."""
+        """Importing brain_sync.interfaces.mcp.server must not call resolve_root()."""
         import importlib
         import sys
 
         # Remove cached module so we can re-import
-        mod_name = "brain_sync.mcp"
+        mod_name = "brain_sync.interfaces.mcp.server"
         saved = sys.modules.pop(mod_name, None)
         try:
             with patch("brain_sync.commands.context.resolve_root", side_effect=RuntimeError("should not be called")):
@@ -213,18 +213,18 @@ class TestImportPurity:
 
 
 class TestBrainSyncList:
-    @patch("brain_sync.mcp.list_sources", return_value=[])
+    @patch("brain_sync.interfaces.mcp.server.list_sources", return_value=[])
     def test_list_empty(self, mock_list, _dummy_root):
-        from brain_sync.mcp import brain_sync_list
+        from brain_sync.interfaces.mcp.server import brain_sync_list
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_list(ctx)
         assert result == {"status": "ok", "sources": [], "count": 0}
         mock_list.assert_called_once()
 
-    @patch("brain_sync.mcp.list_sources", return_value=[SAMPLE_SOURCE])
+    @patch("brain_sync.interfaces.mcp.server.list_sources", return_value=[SAMPLE_SOURCE])
     def test_list_with_sources(self, mock_list, _dummy_root):
-        from brain_sync.mcp import brain_sync_list
+        from brain_sync.interfaces.mcp.server import brain_sync_list
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_list(ctx)
@@ -232,9 +232,9 @@ class TestBrainSyncList:
         assert result["count"] == 1
         assert result["sources"] == [asdict(SAMPLE_SOURCE)]
 
-    @patch("brain_sync.mcp.list_sources", return_value=[SAMPLE_SOURCE])
+    @patch("brain_sync.interfaces.mcp.server.list_sources", return_value=[SAMPLE_SOURCE])
     def test_list_filter(self, mock_list, _dummy_root):
-        from brain_sync.mcp import brain_sync_list
+        from brain_sync.interfaces.mcp.server import brain_sync_list
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_list(ctx, filter_path="initiatives")
@@ -250,9 +250,9 @@ class TestBrainSyncList:
 
 
 class TestBrainSyncAdd:
-    @patch("brain_sync.mcp.add_source", return_value=SAMPLE_ADD_RESULT)
+    @patch("brain_sync.interfaces.mcp.server.add_source", return_value=SAMPLE_ADD_RESULT)
     def test_add_url_success(self, mock_add, _dummy_root):
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.interfaces.mcp.server import brain_sync_add
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
@@ -265,11 +265,11 @@ class TestBrainSyncAdd:
         mock_add.assert_called_once()
 
     @patch(
-        "brain_sync.mcp.add_source",
+        "brain_sync.interfaces.mcp.server.add_source",
         side_effect=SourceAlreadyExistsError("confluence:12345", "https://example.com", "initiatives/test"),
     )
     def test_add_url_duplicate(self, mock_add, _dummy_root):
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.interfaces.mcp.server import brain_sync_add
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
@@ -282,11 +282,11 @@ class TestBrainSyncAdd:
         assert result["canonical_id"] == "confluence:12345"
 
     @patch(
-        "brain_sync.mcp.add_source",
+        "brain_sync.interfaces.mcp.server.add_source",
         side_effect=UnsupportedSourceError("https://bad-url.example.com"),
     )
     def test_add_url_invalid(self, mock_add, _dummy_root):
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.interfaces.mcp.server import brain_sync_add
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_add(
@@ -299,7 +299,7 @@ class TestBrainSyncAdd:
 
     def test_add_rejects_file_path(self, _dummy_root, tmp_path):
         """add rejects non-URL input with helpful hint."""
-        from brain_sync.mcp import brain_sync_add
+        from brain_sync.interfaces.mcp.server import brain_sync_add
 
         src_file = tmp_path / "notes.md"
         src_file.write_text("content", encoding="utf-8")
@@ -314,7 +314,7 @@ class TestBrainSyncAdd:
 class TestBrainSyncAddFile:
     def test_add_file_copied(self, brain_root, tmp_path):
         """File is copied to knowledge/ by default (MCP copy=True)."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         src_file = tmp_path / "notes.md"
         src_file.write_text("My notes content.", encoding="utf-8")
@@ -331,7 +331,7 @@ class TestBrainSyncAddFile:
 
     def test_add_file_moved(self, brain_root, tmp_path):
         """File is moved when copy=False."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         src_file = tmp_path / "notes.md"
         src_file.write_text("My notes content.", encoding="utf-8")
@@ -345,7 +345,7 @@ class TestBrainSyncAddFile:
 
     def test_add_file_rejects_url(self, brain_root):
         """add-file rejects URL input."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_add_file(
@@ -358,7 +358,7 @@ class TestBrainSyncAddFile:
 
     def test_add_file_unsupported_extension(self, brain_root, tmp_path):
         """Unsupported file types are rejected with helpful message."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         for ext in [".pdf", ".docx", ".png", ".jpg"]:
             src_file = tmp_path / f"doc{ext}"
@@ -372,7 +372,7 @@ class TestBrainSyncAddFile:
 
     def test_add_file_collision_suffix(self, brain_root, tmp_path):
         """Numeric suffix applied when destination exists."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         # Create existing file at destination
         dest_dir = brain_root / "knowledge" / "initiatives" / "AAA"
@@ -390,7 +390,7 @@ class TestBrainSyncAddFile:
 
     def test_add_file_not_found(self, brain_root):
         """Non-existent file source returns error."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_add_file(ctx, source="/nonexistent/path/doc.md", target_path="test")
@@ -399,7 +399,7 @@ class TestBrainSyncAddFile:
 
     def test_add_file_txt_supported(self, brain_root, tmp_path):
         """Plain text files are supported."""
-        from brain_sync.mcp import brain_sync_add_file
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file
 
         src_file = tmp_path / "readme.txt"
         src_file.write_text("plain text", encoding="utf-8")
@@ -418,7 +418,7 @@ class TestBrainSyncAddFile:
 class TestBrainSyncRemoveFile:
     def test_remove_file_success(self, brain_root):
         """File is removed from knowledge/."""
-        from brain_sync.mcp import brain_sync_remove_file
+        from brain_sync.interfaces.mcp.server import brain_sync_remove_file
 
         target = brain_root / "knowledge" / "initiatives" / "AAA" / "notes.md"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -431,7 +431,7 @@ class TestBrainSyncRemoveFile:
 
     def test_remove_file_not_found(self, brain_root):
         """Non-existent file returns error."""
-        from brain_sync.mcp import brain_sync_remove_file
+        from brain_sync.interfaces.mcp.server import brain_sync_remove_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_remove_file(ctx, path="initiatives/AAA/nonexistent.md")
@@ -440,7 +440,7 @@ class TestBrainSyncRemoveFile:
 
     def test_remove_file_path_traversal(self, brain_root, tmp_path):
         """Path traversal outside knowledge/ is blocked."""
-        from brain_sync.mcp import brain_sync_remove_file
+        from brain_sync.interfaces.mcp.server import brain_sync_remove_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_remove_file(ctx, path="../../etc/passwd")
@@ -449,7 +449,7 @@ class TestBrainSyncRemoveFile:
 
     def test_remove_file_is_directory(self, brain_root):
         """Directories are rejected."""
-        from brain_sync.mcp import brain_sync_remove_file
+        from brain_sync.interfaces.mcp.server import brain_sync_remove_file
 
         target_dir = brain_root / "knowledge" / "initiatives" / "AAA"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -466,9 +466,9 @@ class TestBrainSyncRemoveFile:
 
 
 class TestBrainSyncRemove:
-    @patch("brain_sync.mcp.remove_source", return_value=SAMPLE_REMOVE_RESULT)
+    @patch("brain_sync.interfaces.mcp.server.remove_source", return_value=SAMPLE_REMOVE_RESULT)
     def test_remove_success(self, mock_remove, _dummy_root):
-        from brain_sync.mcp import brain_sync_remove
+        from brain_sync.interfaces.mcp.server import brain_sync_remove
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_remove(ctx, source="confluence:12345")
@@ -476,11 +476,11 @@ class TestBrainSyncRemove:
         assert result["canonical_id"] == "confluence:12345"
 
     @patch(
-        "brain_sync.mcp.remove_source",
+        "brain_sync.interfaces.mcp.server.remove_source",
         side_effect=SourceNotFoundError("confluence:99999"),
     )
     def test_remove_not_found(self, mock_remove, _dummy_root):
-        from brain_sync.mcp import brain_sync_remove
+        from brain_sync.interfaces.mcp.server import brain_sync_remove
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_remove(ctx, source="confluence:99999")
@@ -495,9 +495,9 @@ class TestBrainSyncRemove:
 
 
 class TestBrainSyncMove:
-    @patch("brain_sync.mcp.move_source", return_value=SAMPLE_MOVE_RESULT)
+    @patch("brain_sync.interfaces.mcp.server.move_source", return_value=SAMPLE_MOVE_RESULT)
     def test_move_success(self, mock_move, _dummy_root):
-        from brain_sync.mcp import brain_sync_move
+        from brain_sync.interfaces.mcp.server import brain_sync_move
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_move(ctx, source="confluence:12345", to_path="initiatives/moved")
@@ -506,11 +506,11 @@ class TestBrainSyncMove:
         assert result["files_moved"] is True
 
     @patch(
-        "brain_sync.mcp.move_source",
+        "brain_sync.interfaces.mcp.server.move_source",
         side_effect=SourceNotFoundError("confluence:99999"),
     )
     def test_move_not_found(self, mock_move, _dummy_root):
-        from brain_sync.mcp import brain_sync_move
+        from brain_sync.interfaces.mcp.server import brain_sync_move
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_move(ctx, source="confluence:99999", to_path="x")
@@ -530,9 +530,9 @@ SAMPLE_RECONCILE_RESULT = ReconcileResult(
 
 
 class TestBrainSyncReconcile:
-    @patch("brain_sync.mcp.reconcile_sources", return_value=SAMPLE_RECONCILE_RESULT)
+    @patch("brain_sync.interfaces.mcp.server.reconcile_sources", return_value=SAMPLE_RECONCILE_RESULT)
     def test_reconcile_success(self, mock_reconcile, _dummy_root):
-        from brain_sync.mcp import brain_sync_reconcile
+        from brain_sync.interfaces.mcp.server import brain_sync_reconcile
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_reconcile(ctx)
@@ -545,11 +545,11 @@ class TestBrainSyncReconcile:
         assert result["unchanged"] == 3
 
     @patch(
-        "brain_sync.mcp.reconcile_sources",
+        "brain_sync.interfaces.mcp.server.reconcile_sources",
         return_value=ReconcileResult(updated=[], not_found=[], unchanged=5),
     )
     def test_reconcile_noop(self, mock_reconcile, _dummy_root):
-        from brain_sync.mcp import brain_sync_reconcile
+        from brain_sync.interfaces.mcp.server import brain_sync_reconcile
 
         ctx = _make_ctx(_dummy_root)
         result = brain_sync_reconcile(ctx)
@@ -567,8 +567,8 @@ class TestBrainSyncReconcile:
 class TestBrainSyncRegen:
     @pytest.mark.asyncio
     async def test_regen_path(self, _dummy_root):
-        with patch("brain_sync.mcp.regen_path", new_callable=AsyncMock, return_value=3):
-            from brain_sync.mcp import brain_sync_regen
+        with patch("brain_sync.interfaces.mcp.server.regen_path", new_callable=AsyncMock, return_value=3):
+            from brain_sync.interfaces.mcp.server import brain_sync_regen
 
             ctx = _make_ctx(_dummy_root)
             result = await brain_sync_regen(ctx, path="initiatives/test")
@@ -578,8 +578,8 @@ class TestBrainSyncRegen:
 
     @pytest.mark.asyncio
     async def test_regen_all(self, _dummy_root):
-        with patch("brain_sync.mcp.regen_all", new_callable=AsyncMock, return_value=7):
-            from brain_sync.mcp import brain_sync_regen
+        with patch("brain_sync.interfaces.mcp.server.regen_all", new_callable=AsyncMock, return_value=7):
+            from brain_sync.interfaces.mcp.server import brain_sync_regen
 
             ctx = _make_ctx(_dummy_root)
             result = await brain_sync_regen(ctx)
@@ -595,7 +595,7 @@ class TestBrainSyncRegen:
 
 class TestBrainSyncQuery:
     def test_query_with_match(self, brain_root):
-        from brain_sync.mcp import brain_sync_query
+        from brain_sync.interfaces.mcp.server import brain_sync_query
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_query(ctx, query="AAA")
@@ -607,7 +607,7 @@ class TestBrainSyncQuery:
         assert result["total_areas"] > 0
 
     def test_query_with_global(self, brain_root):
-        from brain_sync.mcp import brain_sync_query
+        from brain_sync.interfaces.mcp.server import brain_sync_query
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_query(ctx, query="AAA", include_global=True)
@@ -621,7 +621,7 @@ class TestBrainSyncQuery:
         assert "I am a test user." not in gc["content"]
 
     def test_query_no_match(self, brain_root):
-        from brain_sync.mcp import brain_sync_query
+        from brain_sync.interfaces.mcp.server import brain_sync_query
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_query(ctx, query="nonexistent")
@@ -630,7 +630,7 @@ class TestBrainSyncQuery:
         assert result["matches"] == []
 
     def test_query_max_results(self, brain_root):
-        from brain_sync.mcp import brain_sync_query
+        from brain_sync.interfaces.mcp.server import brain_sync_query
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_query(ctx, query="initiatives", max_results=1)
@@ -640,7 +640,7 @@ class TestBrainSyncQuery:
 
     def test_query_searches_summary_content(self, brain_root):
         """Matches against summary.md content, not just folder names."""
-        from brain_sync.mcp import brain_sync_query
+        from brain_sync.interfaces.mcp.server import brain_sync_query
 
         ctx = _make_ctx(brain_root)
         # "billing" appears only in BBB's summary, not in path
@@ -652,7 +652,7 @@ class TestBrainSyncQuery:
 
     def test_query_path_weighted_higher(self, brain_root):
         """Path matches score higher than body matches."""
-        from brain_sync.mcp import brain_sync_query
+        from brain_sync.interfaces.mcp.server import brain_sync_query
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_query(ctx, query="AAA")
@@ -663,7 +663,7 @@ class TestBrainSyncQuery:
 
     def test_query_areas_capped(self, tmp_path):
         """Areas listing respects MAX_AREAS_LISTED cap."""
-        from brain_sync.mcp import MAX_AREAS_LISTED, brain_sync_query
+        from brain_sync.interfaces.mcp.server import MAX_AREAS_LISTED, brain_sync_query
 
         root = tmp_path / "big-brain"
         init_brain(root)
@@ -687,7 +687,7 @@ class TestBrainSyncQuery:
 
 class TestBrainSyncGetContext:
     def test_get_context(self, brain_root):
-        from brain_sync.mcp import brain_sync_get_context
+        from brain_sync.interfaces.mcp.server import brain_sync_get_context
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_get_context(ctx)
@@ -702,7 +702,7 @@ class TestBrainSyncGetContext:
 
     def test_get_context_missing_core(self, tmp_path):
         """Graceful when _core/ doesn't exist."""
-        from brain_sync.mcp import brain_sync_get_context
+        from brain_sync.interfaces.mcp.server import brain_sync_get_context
 
         root = tmp_path / "empty-brain"
         init_brain(root)
@@ -719,7 +719,7 @@ class TestBrainSyncGetContext:
 
 class TestBrainSyncOpenArea:
     def test_open_area(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import brain_sync_open_area
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_area(ctx, path="initiatives/AAA")
@@ -734,7 +734,7 @@ class TestBrainSyncOpenArea:
         assert "Accounts Service" in child_names
 
     def test_open_area_with_children(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import brain_sync_open_area
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_area(ctx, path="initiatives/AAA", include_children=True)
@@ -745,7 +745,7 @@ class TestBrainSyncOpenArea:
         assert "Handles user accounts" in result["child_summaries"]["Accounts Service"]
 
     def test_open_area_with_knowledge_list(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import brain_sync_open_area
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_area(ctx, path="initiatives/AAA", include_knowledge_list=True)
@@ -755,7 +755,7 @@ class TestBrainSyncOpenArea:
         assert "c12345-doc.md" in result["knowledge_files"]
 
     def test_open_area_not_found(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import brain_sync_open_area
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_area(ctx, path="nonexistent/area")
@@ -765,7 +765,7 @@ class TestBrainSyncOpenArea:
 
     def test_open_area_summary_truncation(self, brain_root):
         """Large summary.md is truncated with marker."""
-        from brain_sync.mcp import MAX_SUMMARY_CHARS, TRUNCATION_MARKER, brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import MAX_SUMMARY_CHARS, TRUNCATION_MARKER, brain_sync_open_area
 
         # Write a large summary
         large_summary = "# Large Summary\n\n" + "x" * (MAX_SUMMARY_CHARS + 5000)
@@ -784,7 +784,7 @@ class TestBrainSyncOpenArea:
 
     def test_open_area_child_limit(self, brain_with_many_children):
         """Area with many children respects MAX_CHILDREN cap."""
-        from brain_sync.mcp import MAX_CHILDREN, brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import MAX_CHILDREN, brain_sync_open_area
 
         ctx = _make_ctx(brain_with_many_children)
         result = brain_sync_open_area(ctx, path="initiatives/AAA", include_children=True)
@@ -796,7 +796,7 @@ class TestBrainSyncOpenArea:
 
     def test_open_area_payload_cap(self, brain_root):
         """Total response respects MAX_AREA_PAYLOAD, drops artifacts first."""
-        from brain_sync.mcp import TRUNCATION_MARKER, brain_sync_open_area
+        from brain_sync.interfaces.mcp.server import TRUNCATION_MARKER, brain_sync_open_area
 
         # Write a very large summary and large artifacts
         insights_dir = _managed_insights(brain_root, "initiatives/AAA")
@@ -816,7 +816,7 @@ class TestBrainSyncOpenArea:
 
 class TestBrainSyncOpenFile:
     def test_open_file(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(ctx, path="knowledge/_core/.brain-sync/insights/summary.md")
@@ -828,7 +828,7 @@ class TestBrainSyncOpenFile:
         assert "next_offset" not in result
 
     def test_open_file_not_found(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(ctx, path="nonexistent/file.md")
@@ -837,7 +837,7 @@ class TestBrainSyncOpenFile:
         assert result["error"] == "not_found"
 
     def test_open_file_path_traversal(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         # Create a file outside brain root
         (brain_root.parent / "secret.md").write_text("secret!", encoding="utf-8")
@@ -849,7 +849,7 @@ class TestBrainSyncOpenFile:
         assert result["error"] == "not_found"
 
     def test_open_file_directory_rejected(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(ctx, path="knowledge/_core/.brain-sync/insights")
@@ -859,7 +859,7 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_binary_rejected(self, brain_root):
         """Binary extensions return unsupported_type error."""
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         (brain_root / "test.pdf").write_bytes(b"fake pdf")
 
@@ -871,7 +871,7 @@ class TestBrainSyncOpenFile:
         assert result["extension"] == ".pdf"
 
     def test_open_file_json_allowed(self, brain_root):
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         (brain_root / "data.json").write_text('{"key": "value"}', encoding="utf-8")
 
@@ -884,7 +884,7 @@ class TestBrainSyncOpenFile:
     @pytest.mark.skipif(os.name == "nt", reason="symlinks may require elevated privileges on Windows")
     def test_open_file_symlink_escape(self, brain_root):
         """Symlink pointing outside brain root is rejected."""
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         outside = brain_root.parent / "outside.md"
         outside.write_text("escaped!", encoding="utf-8")
@@ -899,7 +899,7 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_truncated_includes_metadata(self, brain_root):
         """File larger than DEFAULT_FILE_CHARS returns pagination metadata."""
-        from brain_sync.mcp import DEFAULT_FILE_CHARS, brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import DEFAULT_FILE_CHARS, brain_sync_open_file
 
         # Write a file larger than the default limit with line breaks
         lines = [f"Line {i}: " + "x" * 80 for i in range(2500)]
@@ -919,7 +919,7 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_offset_reads_remainder(self, brain_root):
         """Pagination with offset picks up where previous call left off."""
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         lines = [f"Line {i}: " + "x" * 80 for i in range(2500)]
         large_content = "\n".join(lines)
@@ -939,7 +939,7 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_offset_beyond_eof(self, brain_root):
         """Offset past end of file returns empty content."""
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(
@@ -954,7 +954,7 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_limit_clamped(self, brain_root):
         """Limit larger than MAX_FILE_CHARS is clamped."""
-        from brain_sync.mcp import MAX_FILE_CHARS, brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import MAX_FILE_CHARS, brain_sync_open_file
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_open_file(
@@ -968,7 +968,7 @@ class TestBrainSyncOpenFile:
 
     def test_open_file_newline_alignment(self, brain_root):
         """Chunk boundary aligns to newline, not mid-line."""
-        from brain_sync.mcp import brain_sync_open_file
+        from brain_sync.interfaces.mcp.server import brain_sync_open_file
 
         # Write content where truncation would land mid-line
         lines = [f"Line {i}: " + "y" * 80 for i in range(250)]
@@ -990,7 +990,7 @@ class TestBrainSyncOpenFile:
 
 class TestAreaIndex:
     def test_build_and_search(self, brain_root):
-        from brain_sync.mcp import AreaIndex
+        from brain_sync.interfaces.mcp.server import AreaIndex
 
         index = AreaIndex.build(brain_root)
         assert len(index.entries) > 0
@@ -1001,7 +1001,7 @@ class TestAreaIndex:
 
     def test_search_deterministic_ordering(self, brain_root):
         """Two searches with same query produce identical results."""
-        from brain_sync.mcp import AreaIndex
+        from brain_sync.interfaces.mcp.server import AreaIndex
 
         index = AreaIndex.build(brain_root)
         r1 = index.search("initiatives")
@@ -1010,7 +1010,7 @@ class TestAreaIndex:
 
     def test_missing_summary(self, tmp_path):
         """Areas without summary.md are indexed with empty fields."""
-        from brain_sync.mcp import AreaIndex
+        from brain_sync.interfaces.mcp.server import AreaIndex
 
         root = tmp_path / "brain"
         init_brain(root)
@@ -1025,7 +1025,7 @@ class TestAreaIndex:
 
     def test_journal_dirs_excluded(self, tmp_path):
         """Journal directories (insights-only) are not indexed since AreaIndex walks knowledge/."""
-        from brain_sync.mcp import AreaIndex
+        from brain_sync.interfaces.mcp.server import AreaIndex
 
         root = tmp_path / "brain"
         init_brain(root)
@@ -1046,7 +1046,7 @@ class TestAreaIndex:
 
     def test_staleness_detection(self, brain_root):
         """Index detects when summaries change."""
-        from brain_sync.mcp import AreaIndex
+        from brain_sync.interfaces.mcp.server import AreaIndex
 
         index = AreaIndex.build(brain_root)
         assert not index.is_stale(brain_root)
@@ -1069,7 +1069,7 @@ class TestAreaIndex:
 class TestSuggestPlacement:
     def test_basic_suggestion(self, brain_root):
         """Suggest placement returns candidates matching query terms."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(ctx, document_title="AAA platform architecture")
@@ -1082,7 +1082,7 @@ class TestSuggestPlacement:
 
     def test_no_matches(self, brain_root):
         """Returns empty candidates with hint when nothing matches."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(ctx, document_title="zzzznonexistent")
@@ -1092,7 +1092,7 @@ class TestSuggestPlacement:
 
     def test_subtree_filter(self, brain_root):
         """Subtree restricts results to paths under the prefix."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(
@@ -1106,7 +1106,7 @@ class TestSuggestPlacement:
 
     def test_with_excerpt(self, brain_root):
         """Excerpt provides additional search terms."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(
@@ -1119,7 +1119,7 @@ class TestSuggestPlacement:
 
     def test_max_results_capped(self, brain_root):
         """Max results is respected and capped at 10."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(ctx, document_title="AAA", max_results=1)
@@ -1127,7 +1127,7 @@ class TestSuggestPlacement:
 
     def test_empty_brain(self, tmp_path):
         """Empty brain returns no candidates."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         root = tmp_path / "empty-brain"
         init_brain(root)
@@ -1139,7 +1139,7 @@ class TestSuggestPlacement:
 
     def test_source_url_resolves_title(self, brain_root):
         """source_url without document_title triggers title resolution."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         with patch(
@@ -1156,7 +1156,7 @@ class TestSuggestPlacement:
 
     def test_document_title_wins_over_source_url(self, brain_root):
         """Explicit document_title takes precedence over source_url."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         with patch(
@@ -1172,7 +1172,7 @@ class TestSuggestPlacement:
 
     def test_no_title_no_url_returns_error(self, brain_root):
         """Neither document_title nor source_url returns error."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(ctx)
@@ -1181,7 +1181,7 @@ class TestSuggestPlacement:
 
     def test_source_url_resolution_failure_returns_error(self, brain_root):
         """source_url that can't be resolved returns error."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         with patch(
@@ -1197,7 +1197,7 @@ class TestSuggestPlacement:
 
     def test_suggested_filename_with_source_url(self, brain_root):
         """source_url triggers canonical filename in response."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         with patch(
@@ -1213,7 +1213,7 @@ class TestSuggestPlacement:
 
     def test_suggested_filename_none_without_source_url(self, brain_root):
         """No source_url means suggested_filename is None."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(ctx, document_title="AAA platform")
@@ -1222,7 +1222,7 @@ class TestSuggestPlacement:
 
     def test_suggested_filename_confluence(self, brain_root):
         """Confluence source_url produces c-prefixed filename."""
-        from brain_sync.mcp import brain_sync_suggest_placement
+        from brain_sync.interfaces.mcp.server import brain_sync_suggest_placement
 
         ctx = _make_ctx(brain_root)
         result = brain_sync_suggest_placement(
@@ -1292,7 +1292,7 @@ class TestBrainSyncUsage:
     """Tests for brain_sync_usage MCP tool."""
 
     def test_usage_returns_summary_structure(self, brain_root):
-        from brain_sync.mcp import brain_sync_usage
+        from brain_sync.interfaces.mcp.server import brain_sync_usage
         from brain_sync.state import _connect
         from brain_sync.token_tracking import OP_REGEN, record_token_event
 

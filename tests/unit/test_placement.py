@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.area_index import AreaIndex
 from brain_sync.commands.placement import (
     MAX_QUERY_TERMS,
     PlacementCandidate,
@@ -22,6 +21,7 @@ from brain_sync.commands.placement import (
     extract_title_from_url,
     suggest_placement,
 )
+from brain_sync.query.area_index import AreaIndex
 from brain_sync.sources import UnsupportedSourceError
 
 pytestmark = pytest.mark.unit
