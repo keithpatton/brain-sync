@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from pathlib import Path
@@ -74,16 +75,20 @@ class TestRuntimeState:
         assert not hasattr(loaded, "version")
 
     def test_daemon_status_is_json_file(self, tmp_path: Path) -> None:
-        write_daemon_status(tmp_path, pid=1234, status="starting")
-        write_daemon_status(tmp_path, pid=1234, status="ready")
+        write_daemon_status(pid=1234, status="starting")
+        write_daemon_status(pid=1234, status="ready")
 
         data = json.loads(state_module.DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
-        loaded = read_daemon_status(tmp_path)
+        loaded = read_daemon_status()
 
         assert data["pid"] == 1234
         assert data["status"] == "ready"
         assert loaded is not None
         assert loaded["status"] == "ready"
+
+    def test_daemon_status_helpers_are_config_dir_scoped_not_root_scoped(self) -> None:
+        assert "root" not in inspect.signature(write_daemon_status).parameters
+        assert "root" not in inspect.signature(read_daemon_status).parameters
 
     def test_supported_runtime_db_is_migrated_in_place(self, tmp_path: Path) -> None:
         db_path = state_module.RUNTIME_DB_FILE

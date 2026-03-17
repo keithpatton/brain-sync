@@ -24,6 +24,7 @@ from brain_sync.application import (
     SourceAlreadyExistsError,
     SourceInfo,
     SourceNotFoundError,
+    UpdateResult,
 )
 from brain_sync.application.init import init_brain
 from brain_sync.application.sources import ReconcileEntry, UnsupportedSourceUrlError
@@ -66,6 +67,13 @@ SAMPLE_MOVE_RESULT = MoveResult(
     old_path="initiatives/test",
     new_path="initiatives/moved",
     files_moved=True,
+)
+
+SAMPLE_UPDATE_RESULT = UpdateResult(
+    canonical_id="confluence:12345",
+    source_url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
+    fetch_children=False,
+    sync_attachments=False,
 )
 
 
@@ -183,8 +191,8 @@ def _dummy_root(tmp_path: Path) -> Path:
 
 
 class TestImportPurity:
-    def test_import_does_not_call_resolve_root(self):
-        """Importing brain_sync.interfaces.mcp.server must not call resolve_root()."""
+    def test_import_does_not_call_active_root_resolution(self):
+        """Importing brain_sync.interfaces.mcp.server must not call resolve_active_root()."""
         import importlib
         import sys
 
@@ -192,15 +200,17 @@ class TestImportPurity:
         mod_name = "brain_sync.interfaces.mcp.server"
         saved = sys.modules.pop(mod_name, None)
         try:
-            with patch("brain_sync.application.roots.resolve_root", side_effect=RuntimeError("should not be called")):
-                # The module imports resolve_root from commands (re-export),
+            with patch(
+                "brain_sync.application.roots.resolve_active_root",
+                side_effect=RuntimeError("should not be called"),
+            ):
+                # The module imports the active-root resolver,
                 # but must not *call* it at import time.
-                # We patch the underlying function that resolve_root delegates to.
-                # Since the module references resolve_root by name after import,
+                # Since the module references resolve_active_root by name after import,
                 # we verify it doesn't execute during import.
                 importlib.import_module(mod_name)
         except RuntimeError:
-            pytest.fail("resolve_root() was called at import time")
+            pytest.fail("resolve_active_root() was called at import time")
         finally:
             # Restore original module
             if saved is not None:
@@ -409,6 +419,29 @@ class TestBrainSyncAddFile:
         assert result["status"] == "ok"
         assert (brain_root / "knowledge" / "initiatives" / "AAA" / "readme.txt").exists()
 
+    def test_add_file_marks_cached_index_stale_for_next_query(self, brain_root, tmp_path):
+        from brain_sync.interfaces.mcp.server import brain_sync_add_file, brain_sync_query
+
+        ctx = _make_ctx(brain_root)
+        before = ctx.request_context.lifespan_context.area_index
+
+        src_file = tmp_path / "new-topic.md"
+        src_file.write_text("new area content", encoding="utf-8")
+
+        result = brain_sync_add_file(ctx, source=str(src_file), target_path="initiatives/NewTopic")
+        assert result["status"] == "ok"
+
+        after_mutation = ctx.request_context.lifespan_context.area_index
+        assert after_mutation is before
+        assert after_mutation.is_stale(brain_root)
+
+        query_result = brain_sync_query(ctx, query="NewTopic")
+
+        assert query_result["status"] == "ok"
+        paths = [match["path"] for match in query_result["matches"]]
+        assert "initiatives/NewTopic" in paths
+        assert ctx.request_context.lifespan_context.area_index is not before
+
 
 # ---------------------------------------------------------------------------
 # Remove File
@@ -474,6 +507,20 @@ class TestBrainSyncRemove:
         result = brain_sync_remove(ctx, source="confluence:12345")
         assert result["status"] == "ok"
         assert result["canonical_id"] == "confluence:12345"
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+
+    @patch("brain_sync.interfaces.mcp.server.remove_source", return_value=SAMPLE_REMOVE_RESULT)
+    def test_remove_with_delete_files_invalidates_index_even_if_no_owned_files_were_deleted(
+        self, mock_remove, _dummy_root
+    ):
+        from brain_sync.interfaces.mcp.server import brain_sync_remove
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_remove(ctx, source="confluence:12345", delete_files=True)
+
+        assert result["status"] == "ok"
+        mock_remove.assert_called_once()
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch(
         "brain_sync.interfaces.mcp.server.remove_source",
@@ -487,6 +534,32 @@ class TestBrainSyncRemove:
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
         assert result["source"] == "confluence:99999"
+
+    def test_remove_delete_files_drops_unsynced_empty_area_from_future_queries(self, tmp_path):
+        from brain_sync.application.sources import add_source
+        from brain_sync.interfaces.mcp.server import brain_sync_query, brain_sync_remove
+
+        root = tmp_path / "brain"
+        init_brain(root)
+        add_source(
+            root=root,
+            url="https://example.atlassian.net/wiki/spaces/TEAM/pages/99999/Unsynced-Area",
+            target_path="initiatives/UnsyncedArea",
+        )
+
+        ctx = _make_ctx(root)
+        before = brain_sync_query(ctx, query="UnsyncedArea")
+        assert any(match["path"] == "initiatives/UnsyncedArea" for match in before["matches"])
+
+        removed = brain_sync_remove(
+            ctx,
+            source="https://example.atlassian.net/wiki/spaces/TEAM/pages/99999/Unsynced-Area",
+            delete_files=True,
+        )
+        assert removed["status"] == "ok"
+
+        after = brain_sync_query(ctx, query="UnsyncedArea")
+        assert all(match["path"] != "initiatives/UnsyncedArea" for match in after["matches"])
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +577,7 @@ class TestBrainSyncMove:
         assert result["status"] == "ok"
         assert result["new_path"] == "initiatives/moved"
         assert result["files_moved"] is True
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch(
         "brain_sync.interfaces.mcp.server.move_source",
@@ -516,6 +590,19 @@ class TestBrainSyncMove:
         result = brain_sync_move(ctx, source="confluence:99999", to_path="x")
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
+
+
+class TestBrainSyncUpdate:
+    @patch("brain_sync.interfaces.mcp.server.update_source", return_value=SAMPLE_UPDATE_RESULT)
+    def test_update_does_not_invalidate_area_index_for_runtime_only_changes(self, mock_update, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_update
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_update(ctx, source="confluence:12345", fetch_children=True)
+
+        assert result["status"] == "ok"
+        mock_update.assert_called_once()
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +640,7 @@ class TestBrainSyncReconcile:
         assert result["not_found"] == ["confluence:99999"]
         assert result["unchanged"] == 3
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch(
         "brain_sync.interfaces.mcp.server.reconcile_brain",
@@ -568,6 +656,7 @@ class TestBrainSyncReconcile:
         assert result["not_found"] == []
         assert result["unchanged"] == 5
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
 
 # ---------------------------------------------------------------------------
@@ -1311,7 +1400,6 @@ class TestBrainSyncUsage:
         _connect(brain_root).close()
 
         record_token_event(
-            root=brain_root,
             session_id="mcp-test-sess",
             operation_type=OP_REGEN,
             resource_type="knowledge",

@@ -24,6 +24,7 @@ from brain_sync.application import (
     move_source,
     reconcile_sources,
     remove_source,
+    resolve_active_root,
     resolve_root,
     update_skill,
     update_source,
@@ -58,6 +59,18 @@ def brain(tmp_path: Path) -> Path:
 
 
 class TestResolveRoot:
+    def test_reads_active_root_from_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        brain_root = tmp_path / "my-brain"
+        brain_root.mkdir()
+        (brain_root / "knowledge").mkdir()
+        _write_brain_manifest(brain_root)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"brains": [str(brain_root)]}), encoding="utf-8")
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
+
+        assert resolve_active_root() == brain_root
+
     def test_reads_from_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         brain_root = tmp_path / "my-brain"
         brain_root.mkdir()
@@ -70,10 +83,31 @@ class TestResolveRoot:
 
         assert resolve_root() == brain_root
 
+    def test_active_root_uses_first_registered_brain_even_if_later_entries_exist(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        active = tmp_path / "active"
+        active.mkdir()
+        (active / "knowledge").mkdir()
+        _write_brain_manifest(active)
+
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "knowledge").mkdir()
+        _write_brain_manifest(other)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"brains": [str(active), str(other)]}), encoding="utf-8")
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
+
+        assert resolve_active_root() == active
+
     def test_raises_when_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", tmp_path / "missing" / "config.json")
         with pytest.raises(BrainNotFoundError):
-            resolve_root()
+            resolve_active_root()
 
     def test_explicit_root_overrides_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         explicit = tmp_path / "explicit"
@@ -110,7 +144,27 @@ class TestValidateBrainRoot:
         monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
 
         with pytest.raises(InvalidBrainRootError):
-            resolve_root()
+            resolve_active_root()
+
+    def test_active_root_rejects_invalid_first_entry_even_if_later_entry_is_valid(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        invalid = tmp_path / "invalid"
+        invalid.mkdir()
+
+        valid = tmp_path / "valid"
+        valid.mkdir()
+        (valid / "knowledge").mkdir()
+        _write_brain_manifest(valid)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"brains": [str(invalid), str(valid)]}), encoding="utf-8")
+        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
+
+        with pytest.raises(InvalidBrainRootError):
+            resolve_active_root()
 
 
 class TestAddAndExists:

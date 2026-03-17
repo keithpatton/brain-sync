@@ -74,7 +74,7 @@ async def run(root: Path) -> None:
 
     reconcile_result = reconcile_sources(root)
     tree_result = reconcile_knowledge_tree(root)
-    write_daemon_status(root, pid, "starting")
+    write_daemon_status(pid, "starting")
 
     if reconcile_result.updated:
         for entry in reconcile_result.updated:
@@ -88,7 +88,7 @@ async def run(root: Path) -> None:
     # Prune old telemetry rows on startup
     from brain_sync.runtime.token_tracking import load_retention_days, prune_token_events
 
-    prune_token_events(root, load_retention_days())
+    prune_token_events(load_retention_days())
 
     state = load_state(root)
     scheduler = Scheduler()
@@ -121,7 +121,7 @@ async def run(root: Path) -> None:
 
         # Start watcher after reconcile + enqueue to avoid spurious events
         watcher.start()
-        write_daemon_status(root, pid, "ready")
+        write_daemon_status(pid, "ready")
 
         async with httpx.AsyncClient() as http_client:
             try:
@@ -309,7 +309,7 @@ async def run(root: Path) -> None:
                 except Exception:
                     log.warning("Failed shutdown reconcile", exc_info=True)
                 try:
-                    write_daemon_status(root, pid, "stopped")
+                    write_daemon_status(pid, "stopped")
                 except Exception:
                     log.warning("Failed to write daemon stopped status", exc_info=True)
                 try:

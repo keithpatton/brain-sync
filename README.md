@@ -155,7 +155,7 @@ practical placement rules.
 Register the MCP server once:
 
 ```bash
-claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.mcp
+claude mcp add --transport stdio --scope user brain-sync -- python -m brain_sync.interfaces.mcp.server
 ```
 
 Then restart Claude Code and invoke `/brain-sync` or mention your brain in the
@@ -171,7 +171,7 @@ conversation.
   "mcpServers": {
     "brain-sync": {
       "command": "python",
-      "args": ["-m", "brain_sync.mcp"]
+      "args": ["-m", "brain_sync.interfaces.mcp.server"]
     }
   }
 }
@@ -247,7 +247,7 @@ Primary tools:
 Run manually:
 
 ```bash
-python -m brain_sync.mcp
+python -m brain_sync.interfaces.mcp.server
 ```
 
 ## CLI Reference

@@ -7,10 +7,16 @@ from pathlib import Path
 import brain_sync.runtime.config as _config
 from brain_sync.brain.fileops import path_is_dir, path_is_file
 from brain_sync.brain.layout import brain_manifest_path, knowledge_root
-from brain_sync.runtime.config import load_config
+from brain_sync.runtime.config import active_brain_root, load_config
 
 # Re-export for backwards compatibility during migration
-__all__ = ["BrainNotFoundError", "InvalidBrainRootError", "resolve_root", "validate_brain_root"]
+__all__ = [
+    "BrainNotFoundError",
+    "InvalidBrainRootError",
+    "resolve_active_root",
+    "resolve_root",
+    "validate_brain_root",
+]
 
 
 class BrainNotFoundError(Exception):
@@ -36,10 +42,13 @@ def validate_brain_root(root: Path) -> None:
         )
 
 
-def resolve_root() -> Path:
-    """Read brain root from ~/.brain-sync/config.json.
+def resolve_active_root() -> Path:
+    """Read the active brain root from ~/.brain-sync/config.json.
 
-    Returns the first registered brain root.
+    The runtime is intentionally single-brain per config directory. If the
+    config file still carries multiple registered roots, only the first entry
+    is treated as active runtime state in this architecture stage.
+
     Raises BrainNotFoundError if no brain is configured.
     Raises InvalidBrainRootError if the root lacks expected structure.
     """
@@ -48,12 +57,16 @@ def resolve_root() -> Path:
     data = load_config()
     if not data:
         raise BrainNotFoundError(f"Cannot read {_config.CONFIG_FILE}")
-    brains = data.get("brains", [])
-    if not brains:
-        raise BrainNotFoundError("No brain roots registered in config")
-    root = Path(brains[0]).expanduser()
+    root = active_brain_root(data)
+    if root is None:
+        raise BrainNotFoundError("No active brain root registered in config")
     validate_brain_root(root)
     return root
+
+
+def resolve_root() -> Path:
+    """Compatibility alias for the active-root resolver."""
+    return resolve_active_root()
 
 
 def _require_root(root: Path | None) -> Path:
@@ -62,4 +75,4 @@ def _require_root(root: Path | None) -> Path:
         resolved = root.resolve()
         validate_brain_root(resolved)
         return resolved
-    return resolve_root()
+    return resolve_active_root()

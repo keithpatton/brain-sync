@@ -1,4 +1,4 @@
-"""Canonical config module — single source for CONFIG_DIR, CONFIG_FILE, load/save.
+"""Canonical config module for the config-dir-scoped runtime.
 
 All modules that need ~/.brain-sync/config.json must import from here,
 never construct the path themselves.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 from brain_sync.runtime.paths import brain_sync_user_dir, daemon_status_path, runtime_db_path
@@ -35,6 +36,23 @@ def load_config() -> dict:
             return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
+
+
+def active_brain_root(config: Mapping[str, object] | None = None) -> Path | None:
+    """Return the single active brain root for this config directory.
+
+    The runtime is currently single-brain per config directory. `config.json`
+    still stores a `brains` array for compatibility, but only the first entry
+    is treated as active runtime state for this stage.
+    """
+    data = load_config() if config is None else config
+    brains = data.get("brains")
+    if not isinstance(brains, list) or not brains:
+        return None
+    active = brains[0]
+    if not isinstance(active, str) or not active.strip():
+        return None
+    return Path(active).expanduser()
 
 
 def save_config(config: dict) -> None:

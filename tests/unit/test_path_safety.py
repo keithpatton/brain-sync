@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.application.browse import _safe_resolve
 from brain_sync.brain.tree import is_readable_file, normalize_path
-from brain_sync.interfaces.mcp.server import _safe_resolve
 
 pytestmark = pytest.mark.unit
 

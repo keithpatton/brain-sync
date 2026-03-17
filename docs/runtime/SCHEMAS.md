@@ -11,6 +11,10 @@ Supported runtime schema versions should migrate in place during normal app
 upgrades. Rebuild is the fallback for missing, corrupt, or unsupported runtime
 state.
 
+The current runtime architecture is single-brain per config directory. Runtime
+artifacts under `~/.brain-sync/` belong to the active brain for that config
+directory, not to an arbitrary caller-supplied root.
+
 Implementation references in this document point at canonical package owners,
 not compatibility shims.
 
@@ -51,7 +55,7 @@ The file is currently versionless. Unknown keys are implementation-defined.
 
 | Key | Type | Description |
 |---|---|---|
-| `brains` | array of string | Registered brain root paths |
+| `brains` | array of string | Registered brain root paths; the first entry is the active brain for this config directory |
 | `regen` | object | Regen-related runtime options |
 | `confluence` | object | Confluence credentials |
 | `google` | object | Google OAuth token payload |
@@ -63,6 +67,10 @@ The file is currently versionless. Unknown keys are implementation-defined.
 | Field | Type | Description |
 |---|---|---|
 | `<item>` | string | Absolute or user-expandable path to a registered brain root |
+
+Only the first array entry is active in the current single-brain runtime
+architecture. Additional entries may still appear as compatibility leftovers,
+but they are not concurrent runtime-isolation boundaries.
 
 ### `regen`
 

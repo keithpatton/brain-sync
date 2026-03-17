@@ -42,7 +42,7 @@ def _resolve_cli_root() -> Path:
     1. current working directory if it is a valid brain root
     2. configured root from runtime config
     """
-    from brain_sync.application.roots import resolve_root, validate_brain_root
+    from brain_sync.application.roots import resolve_active_root, validate_brain_root
 
     cwd = Path.cwd().resolve()
     try:
@@ -51,7 +51,7 @@ def _resolve_cli_root() -> Path:
     except InvalidBrainRootError:
         pass
 
-    return resolve_root()
+    return resolve_active_root()
 
 
 def handle_init(args) -> None:
@@ -541,13 +541,16 @@ def handle_status(args) -> None:
         parts = [f"{status}={count}" for status, count in sorted(summary.insight_states_by_status.items())]
         log.info("Insight states: %s", ", ".join(parts) if parts else "none")
         usage = summary.usage
-        log.info(
-            "Token usage (7d): %d invocations, %d input, %d output, %d total",
-            usage.total_invocations,
-            usage.total_input,
-            usage.total_output,
-            usage.total_tokens,
-        )
+        if summary.usage_available:
+            log.info(
+                "Token usage (7d): %d invocations, %d input, %d output, %d total",
+                usage.total_invocations,
+                usage.total_input,
+                usage.total_output,
+                usage.total_tokens,
+            )
+        else:
+            log.info("Token usage (7d): unavailable for a non-active brain root")
     except Exception:
         log.exception("Failed to load status")
 
@@ -556,9 +559,9 @@ def handle_regen(args) -> None:
     root = _get_root(args)
     if root is None:
         try:
-            from brain_sync.application.roots import resolve_root
+            from brain_sync.application.roots import resolve_active_root
 
-            root = resolve_root()
+            root = resolve_active_root()
         except BrainNotFoundError as e:
             log.error("Cannot resolve brain root: %s", e)
             sys.exit(1)

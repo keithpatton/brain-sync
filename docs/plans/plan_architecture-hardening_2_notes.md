@@ -1,5 +1,9 @@
 # Plan architecture-hardening.2 Implementation Notes
 
+2026-03-18T09:55:07+13:00
+Note: Phase 5 now makes the config-dir runtime semantics explicit in code: `runtime.config.active_brain_root()` and `application.roots.resolve_active_root()` select only the first configured root, while token telemetry and daemon-status helpers are config-dir scoped and no longer accept unused `root` parameters.
+Why it matters: The remaining root-parameter cleanup is concentrated in broader `runtime.repository` DB entrypoints. Those APIs are still threaded widely through sync and regen callers, so the next slice should treat them as a dedicated seam cleanup rather than mixing them into unrelated workflow changes.
+
 2026-03-17T21:45:00+13:00
 Note: Child-discovery intent is now runtime-only request state in `child_discovery_requests`, not durable manifest or `SourceState` data.
 Why it matters: Any future work that reads manifests to infer `fetch_children` / `child_path` is reintroducing the exact split-brain model this plan removed. Treat child discovery as machine-local, one-shot daemon handoff state only.

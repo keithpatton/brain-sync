@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from pathlib import Path
 
@@ -32,7 +33,6 @@ def _runtime_conn() -> sqlite3.Connection:
 class TestRecordTokenEvent:
     def test_insert_all_fields(self, brain: Path) -> None:
         record_token_event(
-            root=brain,
             session_id="sess-1",
             operation_type=OP_REGEN,
             resource_type="knowledge",
@@ -62,7 +62,6 @@ class TestRecordTokenEvent:
 
     def test_created_utc_timezone_aware(self, brain: Path) -> None:
         record_token_event(
-            root=brain,
             session_id="sess-tz",
             operation_type=OP_REGEN,
             resource_type=None,
@@ -93,12 +92,14 @@ class TestRecordTokenEvent:
             )
         conn.close()
 
+    def test_signature_is_config_dir_scoped_not_root_scoped(self) -> None:
+        assert "root" not in inspect.signature(record_token_event).parameters
+
 
 class TestGetUsageSummary:
     def test_session_grouping(self, brain: Path) -> None:
         for i in range(3):
             record_token_event(
-                root=brain,
                 session_id="sess-group",
                 operation_type=OP_REGEN,
                 resource_type="knowledge",
@@ -112,7 +113,7 @@ class TestGetUsageSummary:
                 success=True,
             )
 
-        summary = get_usage_summary(brain, days=7)
+        summary = get_usage_summary(days=7)
 
         assert summary["total_invocations"] == 3
         assert summary["total_input"] == 300
@@ -121,7 +122,6 @@ class TestGetUsageSummary:
 
     def test_by_operation_breakdown(self, brain: Path) -> None:
         record_token_event(
-            root=brain,
             session_id="s1",
             operation_type=OP_REGEN,
             resource_type=None,
@@ -135,7 +135,6 @@ class TestGetUsageSummary:
             success=True,
         )
         record_token_event(
-            root=brain,
             session_id="s2",
             operation_type=OP_QUERY,
             resource_type=None,
@@ -149,7 +148,6 @@ class TestGetUsageSummary:
             success=True,
         )
         record_token_event(
-            root=brain,
             session_id="s3",
             operation_type=OP_CLASSIFY,
             resource_type="document",
@@ -163,7 +161,7 @@ class TestGetUsageSummary:
             success=True,
         )
 
-        summary = get_usage_summary(brain, days=7)
+        summary = get_usage_summary(days=7)
         ops = {row["operation"]: row for row in summary["by_operation"]}
 
         assert ops["regen"]["invocations"] == 1
@@ -171,7 +169,7 @@ class TestGetUsageSummary:
         assert ops["classify"]["total_tokens"] == 60
 
     def test_empty_db(self, brain: Path) -> None:
-        summary = get_usage_summary(brain, days=7)
+        summary = get_usage_summary(days=7)
 
         assert summary["total_invocations"] == 0
         assert summary["by_operation"] == []
@@ -189,13 +187,12 @@ class TestPruneTokenEvents:
         conn.commit()
         conn.close()
 
-        deleted = prune_token_events(brain, retention_days=90)
+        deleted = prune_token_events(retention_days=90)
 
         assert deleted == 1
 
     def test_keeps_recent_rows(self, brain: Path) -> None:
         record_token_event(
-            root=brain,
             session_id="recent",
             operation_type=OP_REGEN,
             resource_type=None,
@@ -209,10 +206,13 @@ class TestPruneTokenEvents:
             success=True,
         )
 
-        deleted = prune_token_events(brain, retention_days=90)
+        deleted = prune_token_events(retention_days=90)
 
         assert deleted == 0
         conn = _runtime_conn()
         remaining = conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0]
         conn.close()
         assert remaining == 1
+
+    def test_prune_signature_is_config_dir_scoped_not_root_scoped(self) -> None:
+        assert "root" not in inspect.signature(prune_token_events).parameters

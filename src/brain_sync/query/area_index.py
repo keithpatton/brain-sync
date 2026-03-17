@@ -69,6 +69,7 @@ class AreaIndex:
     def __init__(self) -> None:
         self.entries: list[AreaIndexEntry] = []
         self._max_mtime: float = 0.0
+        self._marked_stale = False
 
     @classmethod
     def build(cls, root: Path) -> AreaIndex:
@@ -130,8 +131,14 @@ class AreaIndex:
         log.debug("AreaIndex built: %d entries, max_mtime=%.1f", len(index.entries), max_mtime)
         return index
 
+    def mark_stale(self) -> None:
+        """Force the next lifecycle check to rebuild this cached index."""
+        self._marked_stale = True
+
     def is_stale(self, root: Path) -> bool:
         """Check if the index needs rebuilding by scanning managed summary mtimes."""
+        if self._marked_stale:
+            return True
         knowledge_root = root / "knowledge"
         if not path_is_dir(knowledge_root):
             return bool(self.entries)

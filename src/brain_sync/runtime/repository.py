@@ -1272,8 +1272,8 @@ def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
 # --- daemon_status helpers ---
 
 
-def write_daemon_status(root: Path, pid: int, status: str) -> None:
-    """Write daemon lifecycle state to ~/.brain-sync/daemon.json."""
+def write_daemon_status(pid: int, status: str) -> None:
+    """Write daemon lifecycle state to the config-dir-scoped daemon.json."""
     from datetime import UTC, datetime
 
     DAEMON_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1291,8 +1291,8 @@ def write_daemon_status(root: Path, pid: int, status: str) -> None:
     DAEMON_STATUS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def read_daemon_status(root: Path) -> dict | None:
-    """Read daemon lifecycle state from ~/.brain-sync/daemon.json."""
+def read_daemon_status() -> dict | None:
+    """Read daemon lifecycle state from the config-dir-scoped daemon.json."""
     if not DAEMON_STATUS_FILE.exists():
         return None
     try:

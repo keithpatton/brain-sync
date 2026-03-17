@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
-from brain_sync.runtime.config import load_config, save_config
+from brain_sync.runtime.config import active_brain_root, load_config, save_config
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +36,15 @@ class TestLoadConfig:
         cfg_file.write_text("", encoding="utf-8")
         monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", cfg_file)
         assert load_config() == {}
+
+
+class TestActiveBrainRoot:
+    def test_returns_none_when_no_registered_brains(self):
+        assert active_brain_root({}) is None
+
+    def test_returns_first_registered_brain_for_single_brain_runtime(self):
+        root = active_brain_root({"brains": ["/brains/alpha", "/brains/beta"]})
+        assert root == Path("/brains/alpha")
 
 
 class TestSaveConfig:

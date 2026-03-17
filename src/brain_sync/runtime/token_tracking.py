@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import UTC, datetime
-from pathlib import Path
 
 from brain_sync.runtime.config import RUNTIME_DB_FILE, load_config
 
@@ -26,12 +25,7 @@ TOKEN_RETENTION_DAYS = 90
 _failure_logged = False
 
 
-def _db_path(root: Path) -> Path:
-    return RUNTIME_DB_FILE
-
-
 def record_token_event(
-    root: Path,
     session_id: str,
     operation_type: str,
     resource_type: str | None,
@@ -44,14 +38,14 @@ def record_token_event(
     num_turns: int | None,
     success: bool,
 ) -> None:
-    """Record a single LLM invocation event. Never raises."""
+    """Record a single LLM invocation event in the config-dir runtime DB."""
     global _failure_logged
     try:
         created_utc = datetime.now(UTC).isoformat(timespec="seconds")
         success_int = 1 if success else 0
         total_tokens = (input_tokens or 0) + (output_tokens or 0)
 
-        conn = sqlite3.connect(str(_db_path(root)), timeout=5)
+        conn = sqlite3.connect(str(RUNTIME_DB_FILE), timeout=5)
         try:
             conn.execute(
                 "INSERT INTO token_events "
@@ -85,13 +79,13 @@ def record_token_event(
             _failure_logged = True
 
 
-def get_usage_summary(root: Path, days: int = 7) -> dict:
+def get_usage_summary(days: int = 7) -> dict:
     """Aggregate token usage over the last N days.
 
     Returns: total_input, total_output, total_tokens, total_invocations,
     by_operation (list of dicts), by_day (list of dicts).
     """
-    conn = sqlite3.connect(str(_db_path(root)), timeout=5)
+    conn = sqlite3.connect(str(RUNTIME_DB_FILE), timeout=5)
     try:
         cutoff = f"-{days} days"
 
@@ -171,7 +165,7 @@ def load_retention_days() -> int:
     return cfg.get("token_events", {}).get("retention_days", TOKEN_RETENTION_DAYS)
 
 
-def prune_token_events(root: Path, retention_days: int = TOKEN_RETENTION_DAYS) -> int:
+def prune_token_events(retention_days: int = TOKEN_RETENTION_DAYS) -> int:
     """Delete token_events rows older than *retention_days*. Never raises.
 
     Returns the number of rows deleted (0 on failure).
@@ -179,7 +173,7 @@ def prune_token_events(root: Path, retention_days: int = TOKEN_RETENTION_DAYS) -
     global _failure_logged
     try:
         cutoff = f"-{retention_days} days"
-        conn = sqlite3.connect(str(_db_path(root)), timeout=5)
+        conn = sqlite3.connect(str(RUNTIME_DB_FILE), timeout=5)
         try:
             cursor = conn.execute(
                 "DELETE FROM token_events WHERE created_utc < datetime('now', ?)",

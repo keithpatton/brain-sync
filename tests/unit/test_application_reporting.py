@@ -77,6 +77,7 @@ def test_build_status_summary_returns_typed_usage_summary(tmp_path):
         patch("brain_sync.application.status.list_sources", return_value=["a", "b"]),
         patch("brain_sync.application.status.load_all_insight_states", return_value=insight_states),
         patch("brain_sync.application.status.load_usage_summary", return_value=raw_usage),
+        patch("brain_sync.application.status.active_brain_root", return_value=tmp_path),
     ):
         from brain_sync.application.status import build_status_summary
 
@@ -88,3 +89,51 @@ def test_build_status_summary_returns_typed_usage_summary(tmp_path):
     assert summary.usage.total_invocations == 3
     assert summary.usage.total_tokens == 140
     assert summary.usage.by_operation[0]["operation"] == "regen"
+    assert summary.usage_available is True
+
+
+def test_build_status_summary_marks_usage_unavailable_for_non_active_root(tmp_path):
+    raw_usage = {
+        "total_input": 500,
+        "total_output": 100,
+        "total_tokens": 600,
+        "total_invocations": 4,
+        "by_operation": [{"operation": "regen", "input_tokens": 500, "output_tokens": 100, "total_tokens": 600}],
+        "by_day": [{"day": "2026-03-18", "input_tokens": 500, "output_tokens": 100, "total_tokens": 600}],
+    }
+
+    with (
+        patch("brain_sync.application.status.list_sources", return_value=[]),
+        patch("brain_sync.application.status.load_all_insight_states", return_value=[]),
+        patch("brain_sync.application.status.load_usage_summary", return_value=raw_usage),
+        patch("brain_sync.application.status.active_brain_root", return_value=tmp_path / "active"),
+    ):
+        from brain_sync.application.status import build_status_summary
+
+        summary = build_status_summary(tmp_path / "other", usage_days=7)
+
+    assert summary.usage_available is False
+    assert summary.usage.total_invocations == 0
+    assert summary.usage.by_operation == []
+
+
+def test_get_usage_summary_accepts_legacy_root_argument(tmp_path):
+    raw_usage = {
+        "total_input": 10,
+        "total_output": 5,
+        "total_tokens": 15,
+        "total_invocations": 1,
+        "by_operation": [{"operation": "regen", "input_tokens": 10, "output_tokens": 5, "total_tokens": 15}],
+        "by_day": [{"day": "2026-03-18", "input_tokens": 10, "output_tokens": 5, "total_tokens": 15}],
+    }
+
+    with (
+        patch("brain_sync.application.status.load_usage_summary", return_value=raw_usage),
+        patch("brain_sync.application.status.active_brain_root", return_value=tmp_path),
+    ):
+        from brain_sync.application.status import get_usage_summary
+
+        summary = get_usage_summary(tmp_path, days=7)
+
+    assert summary.total_invocations == 1
+    assert summary.total_tokens == 15

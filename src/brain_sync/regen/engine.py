@@ -865,7 +865,6 @@ async def invoke_claude(
     if session_id and operation_type:
         _record_telemetry(
             result,
-            cwd=cwd,
             session_id=session_id,
             operation_type=operation_type,
             resource_type=resource_type,
@@ -880,7 +879,6 @@ async def invoke_claude(
 def _record_telemetry(
     result: LlmResult,
     *,
-    cwd: Path,
     session_id: str,
     operation_type: str,
     resource_type: str | None,
@@ -892,7 +890,6 @@ def _record_telemetry(
     from brain_sync.runtime.token_tracking import record_token_event
 
     record_token_event(
-        root=cwd,
         session_id=session_id,
         operation_type=operation_type,
         resource_type=resource_type,
@@ -1504,7 +1501,6 @@ async def regen_single_folder(
                     if session_id:
                         _record_telemetry(
                             chunk_result,
-                            cwd=root,
                             session_id=session_id,
                             operation_type=OP_REGEN,
                             resource_type="knowledge",
@@ -1566,7 +1562,6 @@ async def regen_single_folder(
         if session_id:
             _record_telemetry(
                 result,
-                cwd=root,
                 session_id=session_id,
                 operation_type=OP_REGEN,
                 resource_type="knowledge",

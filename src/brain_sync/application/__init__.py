@@ -5,7 +5,7 @@ Does not own durable persistence primitives or transport-specific handling.
 
 Usage:
     from brain_sync.application import add_source, list_sources
-    sources = list_sources()  # auto-discovers brain root from config
+    sources = list_sources()  # auto-discovers the active brain root from config
 """
 
 from brain_sync.application.browse import (
@@ -60,7 +60,7 @@ from brain_sync.application.placement import (
     extract_file_excerpt,
     suggest_document_placement,
 )
-from brain_sync.application.query_index import AreaIndex, load_area_index
+from brain_sync.application.query_index import AreaIndex, invalidate_area_index, load_area_index
 from brain_sync.application.reconcile import (
     ReconcileReport,
     TreeReconcileResult,
@@ -68,7 +68,13 @@ from brain_sync.application.reconcile import (
     reconcile_knowledge_tree,
 )
 from brain_sync.application.regen import RegenFailed, classify_folder_change, invalidate_global_context_cache, run_regen
-from brain_sync.application.roots import BrainNotFoundError, InvalidBrainRootError, resolve_root, validate_brain_root
+from brain_sync.application.roots import (
+    BrainNotFoundError,
+    InvalidBrainRootError,
+    resolve_active_root,
+    resolve_root,
+    validate_brain_root,
+)
 from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.application.sources import (
     AddResult,
@@ -161,6 +167,7 @@ __all__ = [
     "get_brain_context",
     "get_usage_summary",
     "init_brain",
+    "invalidate_area_index",
     "invalidate_global_context_cache",
     "list_sources",
     "load_all_insight_states",
@@ -178,6 +185,7 @@ __all__ = [
     "reconcile_sources",
     "remove_local_file",
     "remove_source",
+    "resolve_active_root",
     "resolve_root",
     "run_regen",
     "save_insight_state",

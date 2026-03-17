@@ -10,6 +10,10 @@ When a supported runtime schema migration exists, normal upgrades should
 preserve machine-local state in place. Deletion and rebuild are recovery paths,
 not the default upgrade strategy.
 
+For the current architecture stage, one runtime config directory owns one
+active brain. If `config.json` still contains multiple registered roots, only
+the first entry is treated as active runtime state.
+
 ## Reference Set
 
 | Document | Purpose |

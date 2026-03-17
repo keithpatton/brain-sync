@@ -86,8 +86,12 @@ the fitness test should change together.
 
 ## 2.1. Responsibilities And Flows
 
-**Runtime helpers** are split between `runtime/config.py`, which owns config
-file access, and `runtime/paths.py`, which owns machine-local runtime paths.
+**Runtime helpers** are split between `runtime/config.py`, which owns
+config-dir-scoped config access and active-brain selection, and
+`runtime/paths.py`, which owns machine-local runtime paths. The current
+runtime architecture is single-brain per config directory: `config.json` may
+still carry a `brains` array for compatibility, but only the first entry is
+the active brain for that runtime directory.
 
 **Core modules** implement sync, reconciliation, and regeneration. `sync/`
 owns the daemon loop, polling scheduler, watcher, reconcile path, and source
@@ -348,6 +352,8 @@ The runtime DB and daemon status are intentionally outside the brain root:
 ```
 
 That separation is what keeps the brain root fully portable and safe to commit.
+For this architecture stage, that runtime directory is shared by the single
+active brain configured in `config.json`.
 
 ### DB Table Justifications
 
@@ -397,7 +403,7 @@ performance hint rather than a full correctness proof.
 | View | Source of truth | Owner | Refresh trigger | Correctness role |
 |---|---|---|---|---|
 | Global context cache | `knowledge/_core/` | `regen/engine.py` | invalidated on `_core` changes | Correctness-critical |
-| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `BrainRuntime` | staleness check before queries | Performance-only |
+| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `application/query_index.py` with transport-owned cached instances | explicit invalidation after known knowledge-tree mutations plus staleness check before queries | Performance-only |
 
 ### Resolved (2026-03)
 
