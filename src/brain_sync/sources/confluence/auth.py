@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from brain_sync.confluence_rest import ConfluenceAuth, get_confluence_auth
+from brain_sync.sources.confluence.rest import ConfluenceAuth, get_confluence_auth
 
 
 class ConfluenceAuthProvider:

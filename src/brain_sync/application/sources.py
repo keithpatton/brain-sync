@@ -530,7 +530,7 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
     Handles both legacy _sync-context/ dirs and bare-ID _attachments/{bare_id}/ dirs.
     Also cleans up stale _sync-context/ directories under knowledge/.
     """
-    from brain_sync.attachments import LEGACY_CONTEXT_DIR, migrate_legacy_context
+    from brain_sync.sync.attachments import LEGACY_CONTEXT_DIR, migrate_legacy_context
 
     root = _require_root(root)
     repository = BrainRepository(root)

@@ -1,4 +1,7 @@
-"""brain-sync application API.
+"""Interface-neutral application operations for user-visible workflows.
+
+Owns orchestration that is shared across CLI and MCP surfaces.
+Does not own durable persistence primitives or transport-specific handling.
 
 Usage:
     from brain_sync.application import add_source, list_sources

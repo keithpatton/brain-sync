@@ -201,8 +201,11 @@ class TestGoogleAttachmentHandling:
 
         with (
             patch("brain_sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.attachments.process_attachments", new_callable=AsyncMock) as mock_attachments,
-            patch("brain_sync.attachments.process_inline_images", new_callable=AsyncMock) as mock_inline,
+            patch(
+                "brain_sync.sources.confluence.attachments.process_attachments",
+                new_callable=AsyncMock,
+            ) as mock_attachments,
+            patch("brain_sync.sync.attachments.process_inline_images", new_callable=AsyncMock) as mock_inline,
         ):
             mock_inline.return_value = {}
             changed, children = await process_source(source_state, AsyncMock(), root=root)

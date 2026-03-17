@@ -133,7 +133,7 @@ def init_brain(
 
     # Install skill to Claude skill directory (MCP tools handle all context)
     _copy_resource(
-        "brain_sync.skills.brain_sync",
+        "brain_sync.interfaces.mcp.resources.brain_sync",
         "SKILL.md",
         SKILL_INSTALL_DIR / "SKILL.md",
         dry_run,
@@ -151,7 +151,7 @@ def update_skill() -> list[Path]:
     """
     updated: list[Path] = []
     _copy_resource(
-        "brain_sync.skills.brain_sync",
+        "brain_sync.interfaces.mcp.resources.brain_sync",
         "SKILL.md",
         SKILL_INSTALL_DIR / "SKILL.md",
     )

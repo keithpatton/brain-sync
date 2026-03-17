@@ -46,7 +46,6 @@ from brain_sync.brain.tree import (
     normalize_path,
 )
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
-from brain_sync.retry import async_retry, claude_breaker
 from brain_sync.runtime.config import CONFIG_FILE
 from brain_sync.runtime.repository import (
     RegenLock,
@@ -56,6 +55,7 @@ from brain_sync.runtime.repository import (
     save_regen_lock,
 )
 from brain_sync.runtime.token_tracking import OP_REGEN
+from brain_sync.util.retry import async_retry, claude_breaker
 
 
 @dataclass

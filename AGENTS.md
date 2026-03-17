@@ -41,6 +41,11 @@ explanation: module responsibilities, rationale, tradeoffs, and technical
 debt. When architecture needs to mention a rule, summarize it briefly and link
 to the authoritative rule rather than restating the full constraint.
 
+Package `__init__.py` docstrings should be concise summaries of the owning
+subsystem's role: responsibility, what belongs, and what does not. They should
+help readers classify code locally, but they are not the authoritative home
+for the full package ontology or dependency matrix.
+
 ## Plan Approval Workflow
 
 When using the `docs/plans/` workflow, agents must preserve separate planner,
@@ -272,21 +277,20 @@ portable brain is used on Windows machines with longer checkout paths.
 
 ## Module Dependency Rule
 
-Core and library modules must not import from CLI, interface adapters, or
-entrypoint modules.
+Follow the package dependency direction defined in
+`docs/architecture/ARCHITECTURE.md`.
 
-Allowed direction:
-
-`interfaces / cli -> application`
-
-`application -> brain / runtime / sync / regen / query / sources / llm / util`
-
-`entrypoints -> application / interfaces / sync`
-
-If shared behavior is needed, move it to a neutral module.
+In general, lower-level domain packages must not import upward into
+`application`, `interfaces`, or entrypoint code. If shared behavior is needed,
+move it to the owning lower-level package or to a truly neutral helper.
 
 Legacy root modules and `commands/` may remain only as compatibility shims once
-their package homes exist. New logic must live under the owning package.
+their package homes exist. New logic must live under the owning package, not
+under a shim path.
+
+Architecture boundary tests should enforce these seams where practical. Do not
+weaken an existing boundary test to accommodate a new import without updating
+the architecture contract intentionally.
 
 ## Source Adapter Architecture
 

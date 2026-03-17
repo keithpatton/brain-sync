@@ -26,7 +26,6 @@ from brain_sync.brain.fileops import content_hash, path_exists, rediscover_local
 from brain_sync.brain.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.brain.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
 from brain_sync.brain.repository import BrainRepository
-from brain_sync.converter import format_comments
 from brain_sync.runtime.repository import SourceState
 from brain_sync.sources import (
     canonical_filename,
@@ -35,6 +34,7 @@ from brain_sync.sources import (
     extract_id,
 )
 from brain_sync.sources.base import UpdateCheckResult, UpdateStatus
+from brain_sync.sources.conversion import format_comments
 from brain_sync.sources.registry import get_adapter
 
 __all__ = [
@@ -155,7 +155,7 @@ async def process_source(
     if source_state.fetch_children and caps.supports_children and root is not None:
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
-            from brain_sync.attachments import discover_children
+            from brain_sync.sources.confluence.attachments import discover_children
 
             page_id = primary_cid.split(":", 1)[1]
             children = await discover_children(page_id, auth, http_client)  # pyright: ignore[reportArgumentType]
@@ -186,7 +186,7 @@ async def process_source(
     ):
         primary_cid = canonical_id(source_type, source_state.source_url)
         try:
-            from brain_sync.attachments import process_attachments
+            from brain_sync.sources.confluence.attachments import process_attachments
 
             att_title_to_path = await process_attachments(
                 target_dir=target_dir,
@@ -202,7 +202,7 @@ async def process_source(
     # Process inline images from adapter (source-agnostic)
     if result.inline_images and source_state.sync_attachments and root is not None:
         try:
-            from brain_sync.attachments import process_inline_images
+            from brain_sync.sync.attachments import process_inline_images
 
             inline_paths = await process_inline_images(
                 images=result.inline_images,

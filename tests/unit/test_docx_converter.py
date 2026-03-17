@@ -8,7 +8,7 @@ import pytest
 from docx import Document
 from lxml import etree
 
-from brain_sync.docx_converter import (
+from brain_sync.sources.docx import (
     append_comments_to_markdown,
     docx_to_markdown,
     extract_comments,

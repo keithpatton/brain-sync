@@ -1,4 +1,8 @@
-"""Compatibility exports for the regen subsystem package."""
+"""Regeneration subsystem exports and compatibility surface.
+
+Owns regeneration engine entrypoints, lifecycle, and queue-facing helpers.
+Does not own source sync mechanics or interface transport handling.
+"""
 
 from brain_sync.regen.engine import (
     _PROPAGATES_UP,

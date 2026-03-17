@@ -1,3 +1,9 @@
+"""External source adapters and source-format normalization helpers.
+
+Owns provider detection, provider-specific integrations, and ingest-oriented
+conversion helpers. Does not own portable-brain persistence semantics.
+"""
+
 from __future__ import annotations
 
 import re

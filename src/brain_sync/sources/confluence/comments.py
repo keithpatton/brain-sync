@@ -6,8 +6,8 @@ import logging
 
 import httpx
 
-from brain_sync.confluence_rest import ConfluenceAuth, _request
 from brain_sync.sources.base import Comment
+from brain_sync.sources.confluence.rest import ConfluenceAuth, _request
 
 log = logging.getLogger(__name__)
 

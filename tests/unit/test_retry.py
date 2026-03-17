@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from brain_sync.retry import (
+from brain_sync.util.retry import (
     CircuitBreaker,
     CircuitOpenError,
     async_retry,
@@ -116,7 +116,7 @@ class TestAsyncRetry:
     def test_retries_on_failure(self):
         fn = AsyncMock(side_effect=[10, 20, 30])
 
-        with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+        with patch("brain_sync.util.retry.asyncio.sleep", new_callable=AsyncMock):
             result = asyncio.run(
                 async_retry(
                     fn,
@@ -131,7 +131,7 @@ class TestAsyncRetry:
     def test_raises_after_exhaustion(self):
         fn = AsyncMock(return_value="bad")
 
-        with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+        with patch("brain_sync.util.retry.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match="Retry attempts exhausted"):
                 asyncio.run(
                     async_retry(
@@ -180,7 +180,7 @@ class TestAsyncRetry:
         cb = CircuitBreaker(failure_threshold=1)
         # First call will fail → breaker opens → second attempt raises CircuitOpenError
 
-        with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+        with patch("brain_sync.util.retry.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(CircuitOpenError):
                 asyncio.run(
                     async_retry(
@@ -208,7 +208,7 @@ class TestAsyncRetry:
     def test_exception_in_fn_is_treated_as_failure(self):
         fn = AsyncMock(side_effect=[ValueError("boom"), 42])
 
-        with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+        with patch("brain_sync.util.retry.asyncio.sleep", new_callable=AsyncMock):
             result = asyncio.run(
                 async_retry(
                     fn,
@@ -232,7 +232,7 @@ class TestAsyncRetry:
                 return "done"
             return "fast"
 
-        with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+        with patch("brain_sync.util.retry.asyncio.sleep", new_callable=AsyncMock):
             result = asyncio.run(
                 async_retry(
                     fn,
@@ -253,7 +253,7 @@ class TestAsyncRetry:
         async def track_sleep(delay):
             sleep_delays.append(delay)
 
-        with patch("brain_sync.retry.asyncio.sleep", side_effect=track_sleep):
+        with patch("brain_sync.util.retry.asyncio.sleep", side_effect=track_sleep):
             with pytest.raises(RuntimeError):
                 asyncio.run(
                     async_retry(

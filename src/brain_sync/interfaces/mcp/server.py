@@ -905,8 +905,8 @@ def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
 
 
 if __name__ == "__main__":
-    from brain_sync.logging_config import setup_logging
     from brain_sync.runtime.config import load_config
+    from brain_sync.util.logging import setup_logging
 
     log_level = load_config().get("log_level", "INFO")
     setup_logging(log_level)

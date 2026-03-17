@@ -46,7 +46,6 @@ from brain_sync.regen import (
     regen_single_folder,
     text_similarity,
 )
-from brain_sync.retry import claude_breaker
 from brain_sync.state import (
     InsightState,
     _connect,
@@ -54,6 +53,7 @@ from brain_sync.state import (
     load_insight_state,
     save_insight_state,
 )
+from brain_sync.util.retry import claude_breaker
 
 pytestmark = pytest.mark.unit
 
@@ -78,7 +78,7 @@ def _reset_breaker():
 @pytest.fixture(autouse=True)
 def _skip_retry_sleep():
     """Skip retry backoff sleeps in tests."""
-    with patch("brain_sync.retry.asyncio.sleep", new_callable=AsyncMock):
+    with patch("brain_sync.util.retry.asyncio.sleep", new_callable=AsyncMock):
         yield
 
 

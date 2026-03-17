@@ -1,4 +1,7 @@
-"""LLM backend abstraction layer.
+"""LLM backend abstraction and backend resolution.
+
+Owns the model/backend protocol and concrete backend selection.
+Does not own regen policy, prompt semantics, or telemetry persistence.
 
 Usage::
 

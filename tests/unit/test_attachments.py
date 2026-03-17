@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.attachments import (
+from brain_sync.sync.attachments import (
     SafetyError,
     attachment_local_path,
     ensure_attachment_dir,

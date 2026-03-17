@@ -601,7 +601,7 @@ def handle_convert(args) -> None:
             log.error("Comments file not found: %s", docx_path)
             sys.exit(1)
 
-        from brain_sync.docx_converter import append_comments_to_markdown
+        from brain_sync.sources.docx import append_comments_to_markdown
 
         output_path = args.output or file_path
         if output_path != file_path:
@@ -622,7 +622,7 @@ def handle_convert(args) -> None:
             log.error("Expected .docx file, or use --comments-from with a .md file")
             sys.exit(1)
 
-        from brain_sync.docx_converter import docx_to_markdown
+        from brain_sync.sources.docx import docx_to_markdown
 
         output_path = args.output or file_path.with_suffix(".md")
         markdown = docx_to_markdown(file_path)

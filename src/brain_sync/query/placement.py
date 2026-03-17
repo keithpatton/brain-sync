@@ -75,7 +75,7 @@ def extract_file_excerpt(path: Path, limit: int = 500) -> str:
         if suffix in {".md", ".txt"}:
             return path.read_text(encoding="utf-8", errors="ignore")[:limit]
         if suffix == ".docx":
-            from brain_sync.docx_converter import docx_to_markdown
+            from brain_sync.sources.docx import docx_to_markdown
 
             return docx_to_markdown(path)[:limit]
     except Exception:

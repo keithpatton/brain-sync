@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from brain_sync.converter import html_to_markdown
 from brain_sync.pipeline import process_source
 from brain_sync.scheduler import compute_interval
 from brain_sync.sources import canonical_id, detect_source_type
@@ -30,6 +29,7 @@ from brain_sync.sources.base import (
     UpdateCheckResult,
     UpdateStatus,
 )
+from brain_sync.sources.conversion import html_to_markdown
 from brain_sync.state import (
     SourceState,
     SyncState,

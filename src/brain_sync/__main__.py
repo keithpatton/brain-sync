@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from brain_sync.logging_config import setup_logging
+from brain_sync.util.logging import setup_logging
 
 
 def main() -> None:

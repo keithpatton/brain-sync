@@ -4,8 +4,7 @@ This document explains the current brain-sync system architecture.
 
 Use it for design intent, module responsibilities, state models, rationale,
 and technical debt. For the normative portable contract, see
-`docs/brain/` and the shared reference docs under `docs/`. Dependency
-direction rules are defined in `AGENTS.md`.
+`docs/brain/` and the shared reference docs under `docs/`.
 
 This document is explanatory, not the normative home for invariants or schema
 detail. Exact guarantees, precedence rules, and contract-level constraints
@@ -26,12 +25,11 @@ All source lives under `src/brain_sync/`.
 | Runtime plane | `runtime/`, legacy root shims such as `state`, `config`, `token_tracking`, `layout` | Machine-local config, DB, daemon status, and telemetry |
 | Sync subsystem | `sync/`, legacy root shims such as `pipeline`, `reconcile`, `watcher`, `scheduler` | Daemon loop, polling, filesystem watching, and source materialization |
 | Query subsystem | `query/`, legacy root shims such as `area_index` and `application/placement` | Read-model indexing and placement/search helpers over portable brain structure |
-| Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/` | Per-source fetch logic behind the adapter protocol |
-| REST clients | `confluence_rest` | Confluence REST API wrapper used by adapters and attachment flows |
+| Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/`, `sources/conversion`, `sources/docx` | Per-source fetch logic, provider REST/auth flows, and source-format normalization |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
 | Regen subsystem | `regen/`, legacy root shims such as `regen_lifecycle`, `regen_queue` | Regeneration engine, lifecycle, queueing, and packaged prompt resources |
-| Attachments | `attachments` | Attachment storage and sync-adjacent materialization helpers |
-| Utilities | `logging_config`, `retry` | Shared helpers with no domain coupling |
+| Attachments | `sync/attachments`, `sources/confluence/attachments`, legacy `attachments` shim | Sync-owned attachment materialization plus provider-specific attachment discovery |
+| Utilities | `util/`, legacy `logging_config` and `retry` shims | Shared helpers with no domain coupling |
 
 ---
 
@@ -54,7 +52,8 @@ owns the CLI parser/handlers and the MCP transport surface. The legacy
 `commands/`, `cli/`, and `mcp.py` paths remain as compatibility shims. The
 watcher provides online change detection as an edge observer with direct
 filesystem contact; reconciliation provides the equivalent correction path for
-offline changes.
+offline changes. Interface-owned packaged resources such as the installed
+brain-sync skill now live under `interfaces/mcp/resources/`.
 
 **Query helpers** live under `query/`. `query/area_index.py` owns the
 read-optimized area index used by placement and MCP search, and
@@ -65,6 +64,48 @@ classification helpers.
 bootstrap surface while `sync/daemon.py` owns the long-running daemon loop.
 `interfaces/mcp/server.py` exposes repository-safe tool access over stdio, with
 `mcp.py` retained as a compatibility shim.
+
+### Package Identity Docstrings
+
+Canonical subsystem packages should carry a short `__init__.py` docstring that
+states:
+
+- the package's responsibility
+- what kinds of code belong inside
+- what kinds of code do not belong inside
+
+Those docstrings are intentionally local and concise. They should help readers
+and agents classify code at the package boundary without duplicating the fuller
+explanatory material in this document or the repository workflow rules in
+`AGENTS.md`.
+
+### Dependency Direction
+
+The package ontology is directional. The intended flow is:
+
+- `interfaces -> application`
+- `application -> brain / runtime / sync / regen / query / sources / llm / util`
+- `sync -> brain / runtime / sources / util`
+- `regen -> brain / runtime / llm / util`
+- `query -> brain / util`
+- `sources -> util`
+- `llm -> util`
+- `brain -> util`
+- `runtime -> util`
+
+Entry points may depend on `application`, `interfaces`, and `sync` for process
+bootstrap, but lower-level packages must not import upward into entrypoints.
+
+The inverse directions are architecturally invalid. In particular:
+
+- `brain`, `runtime`, and `util` must not import upward into application or interface layers
+- `sources` must not own portable-brain or runtime persistence semantics
+- `query` must remain read-oriented rather than orchestrating sync or regen
+- `regen` and `sync` are peer subsystems and should not collapse back into each other
+
+When code needs to be shared, move it to the owning lower-level package or to
+a truly neutral helper rather than introducing upward imports or vague
+catch-all modules.
 
 ### Startup Reconcile Lifecycle
 
@@ -186,6 +227,14 @@ Key abstractions:
 
 This lets shared modules materialize, place, reconcile, and remove sources
 without branching on provider-specific behavior.
+
+Provider-owned helpers now live with their provider or source-format package:
+Confluence REST and attachment discovery live under `sources/confluence/`,
+while generic markdown/docx conversion lives under `sources/conversion.py` and
+`sources/docx.py`. Source-agnostic attachment materialization helpers live
+under `sync/attachments.py`, with the root `attachments.py`,
+`confluence_rest.py`, `converter.py`, and `docx_converter.py` paths retained
+only as compatibility shims.
 
 ---
 
@@ -332,6 +381,9 @@ performance hint rather than a full correctness proof.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.
 - `AreaIndex` and placement logic now live under the `query/` subsystem.
+- Confluence REST, conversion, docx conversion, and MCP skill resources now
+  live under their owning `sources/` and `interfaces/` packages rather than
+  root-level convenience locations.
 - Public state APIs replaced several direct command-layer uses of private DB helpers.
 - Deterministic `FakeBackend` support reduced subprocess overhead in tests.
 
@@ -374,7 +426,7 @@ Planned future work:
 |---|---|---|
 | `scheduler._scheduled_keys` | `sync/daemon.py` | Attribute access, not import |
 | `application.roots._require_root` | `application/sources.py` | Intra-package use |
-| `confluence_rest._request` | `sources/confluence/comments.py` | Reuses retry behavior |
+| `sources.confluence.rest._request` | `sources/confluence/comments.py` | Reuses retry behavior |
 
 ### Test code
 

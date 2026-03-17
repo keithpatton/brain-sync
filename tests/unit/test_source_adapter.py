@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from brain_sync.converter import _escape_md, format_comments
 from brain_sync.sources import SourceType, extract_id
 from brain_sync.sources.base import (
     AuthProvider,
@@ -14,6 +13,7 @@ from brain_sync.sources.base import (
     UpdateStatus,
 )
 from brain_sync.sources.confluence import ConfluenceAdapter
+from brain_sync.sources.conversion import _escape_md, format_comments
 from brain_sync.sources.registry import get_adapter, reset_registry
 
 pytestmark = pytest.mark.unit
