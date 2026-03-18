@@ -455,6 +455,16 @@ long-lived caches, but further performance tuning may still be worthwhile.
 cross-process lock identity. They serve different purposes even when their
 lifetimes often align.
 
+### Regen Portable-Write Seam
+
+Regen-owned portable mutations should be approached as one seam, not as
+independent summary and sidecar writes. `brain.repository` owns that portable
+write seam, while `regen_locks` remains runtime-only coordination.
+
+When regen is acting on behalf of a session, ownership for the target
+`knowledge_path` must be claimed before any portable mutation path, including
+regenerate, structure-only rename updates, and hash backfill paths.
+
 Telemetry is workflow-agnostic via `resource_type` and `resource_id`.
 
 ---
