@@ -10,6 +10,7 @@ Use:
 
 - [`TEMPLATE.md`](./TEMPLATE.md) for a rerunnable, evidence-based review rubric
 - [`2026-03-17-baseline.md`](./2026-03-17-baseline.md) for the first baseline assessment after the package refactor
+- [`2026-03-18-review-2.md`](./2026-03-18-review-2.md) for the second review rerun after `plan_architecture-hardening_2`
 
 These reviews are explanatory artifacts. They assess the current implementation
 against the documented architecture, refactor goals, and operational risks.

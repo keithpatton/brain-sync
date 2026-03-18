@@ -109,6 +109,15 @@ The planner may:
 - create revised plans `plan_<id>_<iteration>_<date>.md`
 - incorporate review feedback into a new revision
 
+Role scope rule:
+
+- unless the user explicitly assigns additional roles for the same task, an
+  agent acting as the planner must stop after creating the plan artifact
+- a planner-only task must not also create review or approval artifacts
+- preserving the planner, reviewer, and approver trail means keeping those
+  artifacts separate, not having the planner generate the later-role artifacts
+  by default
+
 The planner must never:
 
 - overwrite a previous plan revision
