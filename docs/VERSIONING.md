@@ -10,11 +10,13 @@ can reason about them cleanly.
 
 brain-sync uses three distinct version domains:
 
-| Domain | Purpose | Example |
-|---|---|---|
-| Brain Format version | Portable filesystem contract for a brain | `1.0` |
-| Runtime DB schema version | Machine-local cache/runtime schema | `v25` |
-| App version | Version of the brain-sync application | `0.6.0` |
+
+| Domain                    | Purpose                                  | Example |
+| ------------------------- | ---------------------------------------- | ------- |
+| Brain Format version      | Portable filesystem contract for a brain | `1.0`   |
+| Runtime DB schema version | Machine-local cache/runtime schema       | `v25`   |
+| App version               | Version of the brain-sync application    | `0.6.0` |
+
 
 These versions must not be conflated.
 
@@ -23,7 +25,7 @@ These versions must not be conflated.
 ## Brain Format Version
 
 The **Brain Format version** is the version of the portable on-disk
-brain structure defined by [`docs/brain/`](brain/README.md) together with the
+brain structure defined by `[docs/brain/](brain/README.md)` together with the
 shared contract docs in this directory.
 
 It governs:
@@ -66,7 +68,7 @@ Do not bump the Brain Format version for:
 - runtime DB schema changes only
 - changes to retry logic, scheduling, or batching defaults
 - implementation-only prompt/template updates that do not alter durable
-  filesystem state
+filesystem state
 
 ---
 
@@ -117,16 +119,16 @@ For the current supported release, that value is `0.6.0`.
 Use app-version increments to communicate user-visible compatibility impact:
 
 - increment **major** for intentional breaking changes to supported public
-  contracts such as the Brain Format, supported CLI/MCP behavior, or other
-  documented compatibility surfaces that require users to change how they
-  upgrade or operate brain-sync
+contracts such as the Brain Format, supported CLI/MCP behavior, or other
+documented compatibility surfaces that require users to change how they
+upgrade or operate brain-sync
 - increment **minor** for backward-compatible feature and architecture changes
-  that materially extend the product, including new supported compatibility
-  rows such as a runtime DB schema upgrade that preserves user continuity
-  across releases
+that materially extend the product, including new supported compatibility
+rows such as a runtime DB schema upgrade that preserves user continuity
+across releases
 - increment **patch** for backward-compatible bug fixes, doc-only updates,
-  small internal refactors, and other changes that do not introduce a new
-  supported compatibility row or materially change expected user behavior
+small internal refactors, and other changes that do not introduce a new
+supported compatibility row or materially change expected user behavior
 
 If a future packaging tool requires a four-part installer version such as
 `0.6.0.0`, treat that as a packaging-derived form of the canonical app
@@ -151,7 +153,7 @@ This means:
 - repair/rebuild flows apply to Brain Format 1.0 brains
 - runtime DB state for that release uses the v25 schema
 - provisional pre-narrowing local `v25` DBs that still contain reverted
-  tables are unsupported and are rebuilt before normal use
+tables are unsupported and are rebuilt before normal use
 
 Compatibility details live in [COMPATIBILITY.md](COMPATIBILITY.md).
 
