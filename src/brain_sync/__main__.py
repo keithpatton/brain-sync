@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from brain_sync.util.logging import setup_logging
 
@@ -27,6 +28,7 @@ def main() -> None:
         handle_update_skill,
     )
     from brain_sync.runtime.config import load_config
+    from brain_sync.runtime.paths import UnsafeMachineLocalRuntimeError, ensure_safe_temp_root_runtime
 
     parser = build_parser()
     args = parser.parse_args()
@@ -34,6 +36,14 @@ def main() -> None:
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    explicit_root = getattr(args, "root", None)
+    if explicit_root is not None:
+        try:
+            ensure_safe_temp_root_runtime(Path(explicit_root), operation=args.command)
+        except UnsafeMachineLocalRuntimeError as exc:
+            print(f"brain-sync: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     log_level = args.log_level
     if log_level is None:

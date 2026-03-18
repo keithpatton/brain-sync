@@ -20,6 +20,7 @@ from brain_sync.application.sync_events import apply_folder_move, enqueue_regen_
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen.lifecycle import regen_session
 from brain_sync.regen.queue import RegenQueue
+from brain_sync.runtime.paths import ensure_safe_temp_root_runtime
 from brain_sync.runtime.repository import (
     load_child_discovery_request,
     prune_token_events,
@@ -65,6 +66,7 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 
 
 async def run(root: Path) -> None:
+    ensure_safe_temp_root_runtime(root, operation="run daemon")
     log.info("brain-sync starting, root: %s", root)
 
     # Reconcile target_paths with filesystem before loading state for sync.

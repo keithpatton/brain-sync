@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -37,6 +40,34 @@ class TestInit:
         assert r1.returncode == 0
         r2 = cli.run("init", str(brain_root))
         assert r2.returncode == 0
+
+    def test_rejects_temp_root_with_machine_local_runtime(self, tmp_path: Path):
+        """Init fails closed when a temp root would use the default ~/.brain-sync runtime."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        root = tmp_path / "brain"
+        repo_root = Path(__file__).resolve().parents[2]
+        env = os.environ.copy()
+        env.pop("BRAIN_SYNC_CONFIG_DIR", None)
+        env["HOME"] = str(home_dir)
+        env["USERPROFILE"] = str(home_dir)
+        env["APPDATA"] = str(home_dir / "AppData" / "Roaming")
+        env["LOCALAPPDATA"] = str(home_dir / "AppData" / "Local")
+        env["PYTHONPATH"] = str(repo_root / "src") + os.pathsep + env.get("PYTHONPATH", "")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "brain_sync", "init", str(root)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=env,
+            timeout=30,
+        )
+
+        assert result.returncode != 0
+        assert "Refusing to init" in result.stderr
+        assert not root.exists()
+        assert not (home_dir / ".brain-sync" / "config.json").exists()
 
 
 # ---------------------------------------------------------------------------

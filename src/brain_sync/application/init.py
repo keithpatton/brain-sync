@@ -13,6 +13,7 @@ from pathlib import Path
 from brain_sync.brain.fileops import atomic_write_bytes, path_exists
 from brain_sync.brain.layout import BRAIN_MANIFEST_VERSION, brain_manifest_path, source_manifests_dir
 from brain_sync.runtime.config import CONFIG_FILE, load_config, save_config
+from brain_sync.runtime.paths import ensure_safe_temp_root_runtime
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ def init_brain(
 ) -> InitResult:
     """Initialise a brain at the given root directory."""
     root = root.resolve()
+    ensure_safe_temp_root_runtime(root, operation="initialise brain")
 
     if root.name == "knowledge" and path_exists(root.parent / ".brain-sync" / "brain.json"):
         raise ValueError(

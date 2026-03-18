@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import ClassVar, Protocol
 
 from brain_sync.runtime.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
-from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
+from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION, ensure_safe_temp_root_runtime
 
 log = logging.getLogger(__name__)
 
@@ -951,6 +951,7 @@ def _migrate(conn: sqlite3.Connection, from_version: int, root: Path | None = No
 
 
 def _connect(root: Path) -> sqlite3.Connection:
+    ensure_safe_temp_root_runtime(root, operation="access runtime DB")
     db = _db_path(root)
     db.parent.mkdir(parents=True, exist_ok=True)
     while True:
