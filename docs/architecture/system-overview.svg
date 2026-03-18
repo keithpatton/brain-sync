@@ -1,0 +1,380 @@
+<!--
+  brain-sync system architecture overview
+  ========================================
+  Maintainer: agent-updatable. All sections are wrapped in <g> elements
+  with semantic id= attributes. To add/remove/rename a package, find
+  its group by id and edit the text and coordinates in place.
+
+  LAYOUT CONVENTIONS
+  ==================
+  ViewBox: 0 0 680 720  (680px wide, height adjusts to content)
+  Safe area: x=40..640, y=20..700
+
+  Vertical bands (approximate y ranges):
+    Entry points:       y=26..120    (3 boxes: CLI, MCP, Daemon)
+    Application layer:  y=135..185   (full-width bar)
+    Core engines:       y=212..342   (sync left, query centre, regen right)
+    Support packages:   y=368..440   (sources under sync, llm under regen)
+    Persistence layer:  y=470..530   (full-width bar: brain package)
+    State stores:       y=558..680   (portable left, runtime right)
+
+  Horizontal columns:
+    sync engine:     x=40..220    → sources aligns below
+    Engine gap 1:    x=221..237   (app→sources bypass trunk)
+    query engine:    x=238..388   → query→brain vertical at x=313
+    Engine gap 2:    x=389..404   (app→brain bypass trunk at x=397)
+    regen engine:    x=405..605   → llm aligns below
+    Util sidebar:    x=618..666   (cross-cutting, right margin)
+
+  COLOUR ASSIGNMENTS (light-mode baked, hex from Anthropic palette)
+  =================================================================
+    Entry points:
+      CLI      = gray   (fill #F1EFE8, stroke #5F5E5A)  — one-shot
+      MCP      = teal   (fill #E1F5EE, stroke #0F6E56)  — semi-stateful
+      Daemon   = coral  (fill #FAECE7, stroke #993C1D)  — long-running
+
+    Orchestration:
+      application = purple (fill #EEEDFE, stroke #534AB7)
+      brain       = purple (same — shared persistence seam)
+
+    Engines:
+      sync  = blue  (fill #E6F1FB, stroke #185FA5) — write engine
+      query = teal  (fill #E1F5EE, stroke #0F6E56) — read engine
+      regen = green (fill #EAF3DE, stroke #3B6D11) — compute engine
+
+    Support:
+      sources = amber (fill #FAEEDA, stroke #854F0B)
+      llm     = pink  (fill #FBEAF0, stroke #993556)
+
+    Cross-cutting:
+      util    = gray  (fill #F1EFE8, stroke #5F5E5A) — sidebar
+
+    State:
+      Portable brain = amber (matches sources — filesystem-owned)
+      Runtime state  = coral (matches daemon — machine-local)
+
+    Inner sub-boxes = gray (#F1EFE8 / #5F5E5A) universally
+
+  TEXT STYLES
+  ===========
+    .th  = 14px medium (500) — box titles
+    .ts  = 12px regular (400) — subtitles, descriptions
+    Title fill uses 800-stop from the parent ramp.
+    Subtitle fill uses 600-stop from the parent ramp.
+    Inner sub-box text uses gray 800 (#444441).
+
+  ARROW CONVENTIONS
+  =================
+    Solid arrows: primary dependency flow (caller → callee) through the
+      layered architecture. Stroke: #888780, 1.5px, open chevron marker.
+    Dashed arrows: direct "bypass" dependencies where application calls
+      support packages or persistence directly (not mediated by an engine).
+      Route through engine-gap corridors to avoid crossing boxes.
+      Stroke: #B4B2A9, 1px, dasharray 4 3, same chevron marker.
+    Util ticks: short horizontal dashes from each layer to the util
+      sidebar, indicating cross-cutting usage. No arrowheads.
+
+  PACKAGES → SOURCE MAPPING (for agent cross-referencing)
+  =======================================================
+    application  → src/brain_sync/application/
+    interfaces   → src/brain_sync/interfaces/ (cli/, mcp/)
+    sync         → src/brain_sync/sync/ (daemon, pipeline, scheduler, watcher)
+    query        → src/brain_sync/query/ (area_index, placement)
+    regen        → src/brain_sync/regen/ (engine, lifecycle, topology, queue)
+    brain        → src/brain_sync/brain/ (repository, layout, manifest, sidecar, tree, fileops, managed_markdown)
+    runtime      → src/brain_sync/runtime/ (config, repository, paths, token_tracking)
+    sources      → src/brain_sync/sources/ (confluence/, googledocs/, registry, conversion, docx)
+    llm          → src/brain_sync/llm/ (base, claude_cli, fake)
+    util         → src/brain_sync/util/ (logging, retry, text, urls)
+
+  DIRECT DEPENDENCIES (application bypass — not mediated by engines)
+  ==================================================================
+    application → sources  (application.sources → sources.registry,
+                            sources.base, sources.canonical_id etc.)
+                            Routed through gap 1 (x=229)
+    application → brain    (application uses BrainRepository throughout
+                            for durable writes, manifest reads, etc.)
+                            Routed through gap 2 (x=397)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="680" viewBox="0 0 680 720">
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .th { font-size: 14px; font-weight: 500; }
+  .ts { font-size: 12px; font-weight: 400; }
+  .arr { stroke: #888780; stroke-width: 1.5; }
+  .arr-bypass { stroke: #B4B2A9; stroke-width: 1; stroke-dasharray: 4 3; }
+  .util-tick { stroke: #B4B2A9; stroke-width: 0.75; stroke-dasharray: 3 3; }
+  .label { font-size: 12px; font-weight: 400; fill: #5F5E5A; }
+  .label-it { font-size: 12px; font-weight: 400; fill: #888780; font-style: italic; }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<!-- ============================================================ -->
+<!-- ENTRY POINTS (y=26..120)                                     -->
+<!-- ============================================================ -->
+<text class="label" x="40" y="26" id="label-entry-points">Entry points</text>
+
+<!-- CLI: one-shot commands -->
+<g id="entry-cli">
+  <rect x="40" y="38" width="170" height="60" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text class="th" x="125" y="56" text-anchor="middle" dominant-baseline="central" fill="#444441">CLI</text>
+  <text class="ts" x="125" y="76" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">One-shot commands</text>
+  <text class="label-it" x="125" y="114" text-anchor="middle">init, add, regen, doctor...</text>
+</g>
+
+<!-- MCP server: semi-stateful session -->
+<g id="entry-mcp">
+  <rect x="225" y="38" width="170" height="60" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text class="th" x="310" y="56" text-anchor="middle" dominant-baseline="central" fill="#085041">MCP server</text>
+  <text class="ts" x="310" y="76" text-anchor="middle" dominant-baseline="central" fill="#0F6E56">Semi-stateful session</text>
+  <text class="label-it" x="310" y="114" text-anchor="middle">BrainRuntime lifespan</text>
+</g>
+
+<!-- Daemon: long-running process (brain-sync run) -->
+<g id="entry-daemon">
+  <rect x="410" y="38" width="195" height="60" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text class="th" x="508" y="56" text-anchor="middle" dominant-baseline="central" fill="#712B13">Daemon</text>
+  <text class="ts" x="508" y="76" text-anchor="middle" dominant-baseline="central" fill="#993C1D">Long-running process</text>
+  <text class="label-it" x="508" y="114" text-anchor="middle">brain-sync run</text>
+</g>
+
+<!-- Arrows: entry points → application layer -->
+<g id="arrows-entry-to-app">
+  <line x1="125" y1="98" x2="125" y2="133" class="arr" marker-end="url(#arrow)"/>
+  <line x1="310" y1="98" x2="310" y2="133" class="arr" marker-end="url(#arrow)"/>
+  <line x1="508" y1="98" x2="508" y2="133" class="arr" marker-end="url(#arrow)"/>
+</g>
+
+<!-- ============================================================ -->
+<!-- APPLICATION LAYER (y=135..185)                               -->
+<!-- src/brain_sync/application/                                  -->
+<!-- ============================================================ -->
+<g id="pkg-application">
+  <rect x="40" y="135" width="565" height="50" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="323" y="152" text-anchor="middle" dominant-baseline="central" fill="#3C3489">application</text>
+  <text class="ts" x="323" y="170" text-anchor="middle" dominant-baseline="central" fill="#534AB7">sources, browse, regen, reconcile, doctor, placement, local_files</text>
+</g>
+
+<!-- Arrows: application → all three engines (solid, primary flow) -->
+<g id="arrows-app-to-engines">
+  <line x1="130" y1="185" x2="130" y2="210" class="arr" marker-end="url(#arrow)"/>
+  <line x1="313" y1="185" x2="313" y2="210" class="arr" marker-end="url(#arrow)"/>
+  <line x1="505" y1="185" x2="505" y2="210" class="arr" marker-end="url(#arrow)"/>
+</g>
+
+<!-- Dashed bypass: app → sources (gap 1, x=229)                   -->
+<g id="arrows-app-to-sources-bypass">
+  <line x1="229" y1="185" x2="229" y2="358" class="arr-bypass"/>
+  <path d="M229 358 L160 378" fill="none" class="arr-bypass" marker-end="url(#arrow)"/>
+</g>
+
+<!-- Dashed bypass: app → brain (gap 2, x=397, straight down)      -->
+<g id="arrows-app-to-brain-bypass">
+  <line x1="397" y1="185" x2="397" y2="478" class="arr-bypass" marker-end="url(#arrow)"/>
+</g>
+
+<!-- ============================================================ -->
+<!-- SYNC ENGINE (y=212..342, left)                               -->
+<!-- src/brain_sync/sync/ — write engine                          -->
+<!-- ============================================================ -->
+<g id="pkg-sync">
+  <rect x="40" y="212" width="180" height="130" rx="12" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="130" y="234" text-anchor="middle" dominant-baseline="central" fill="#0C447C">sync</text>
+
+  <g id="pkg-sync-daemon">
+    <rect x="52" y="250" width="76" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="90" y="268" text-anchor="middle" dominant-baseline="central" fill="#444441">daemon</text>
+  </g>
+  <g id="pkg-sync-pipeline">
+    <rect x="136" y="250" width="76" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="174" y="268" text-anchor="middle" dominant-baseline="central" fill="#444441">pipeline</text>
+  </g>
+  <g id="pkg-sync-scheduler">
+    <rect x="52" y="296" width="76" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="90" y="314" text-anchor="middle" dominant-baseline="central" fill="#444441">scheduler</text>
+  </g>
+  <g id="pkg-sync-watcher">
+    <rect x="136" y="296" width="76" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="174" y="314" text-anchor="middle" dominant-baseline="central" fill="#444441">watcher</text>
+  </g>
+</g>
+
+<!-- ============================================================ -->
+<!-- QUERY ENGINE (y=212..342, centre)                            -->
+<!-- src/brain_sync/query/ — read engine                          -->
+<!-- ============================================================ -->
+<g id="pkg-query">
+  <rect x="238" y="212" width="150" height="130" rx="12" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text class="th" x="313" y="234" text-anchor="middle" dominant-baseline="central" fill="#085041">query</text>
+
+  <g id="pkg-query-area-index">
+    <rect x="250" y="258" width="126" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="313" y="276" text-anchor="middle" dominant-baseline="central" fill="#444441">area_index</text>
+  </g>
+  <g id="pkg-query-placement">
+    <rect x="250" y="302" width="126" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="313" y="320" text-anchor="middle" dominant-baseline="central" fill="#444441">placement</text>
+  </g>
+</g>
+
+<!-- ============================================================ -->
+<!-- REGEN ENGINE (y=212..342, right)                             -->
+<!-- src/brain_sync/regen/ — compute engine                       -->
+<!-- ============================================================ -->
+<g id="pkg-regen">
+  <rect x="405" y="212" width="200" height="130" rx="12" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+  <text class="th" x="505" y="234" text-anchor="middle" dominant-baseline="central" fill="#27500A">regen</text>
+
+  <g id="pkg-regen-engine">
+    <rect x="415" y="250" width="86" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="458" y="268" text-anchor="middle" dominant-baseline="central" fill="#444441">engine</text>
+  </g>
+  <g id="pkg-regen-lifecycle">
+    <rect x="509" y="250" width="86" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="552" y="268" text-anchor="middle" dominant-baseline="central" fill="#444441">lifecycle</text>
+  </g>
+  <g id="pkg-regen-topology">
+    <rect x="415" y="296" width="86" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="458" y="314" text-anchor="middle" dominant-baseline="central" fill="#444441">topology</text>
+  </g>
+  <g id="pkg-regen-queue">
+    <rect x="509" y="296" width="86" height="36" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="552" y="314" text-anchor="middle" dominant-baseline="central" fill="#444441">queue</text>
+  </g>
+</g>
+
+<!-- ============================================================ -->
+<!-- SUPPORT PACKAGES (y=368..440)                                -->
+<!-- sources under sync; llm under regen                          -->
+<!-- ============================================================ -->
+<text class="label" x="40" y="368" id="label-support">Support packages</text>
+
+<!-- src/brain_sync/sources/ (under sync, same width) -->
+<g id="pkg-sources">
+  <rect x="40" y="380" width="180" height="60" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+  <text class="th" x="130" y="396" text-anchor="middle" dominant-baseline="central" fill="#633806">sources</text>
+  <text class="ts" x="130" y="414" text-anchor="middle" dominant-baseline="central" fill="#854F0B">confluence, googledocs</text>
+  <text class="ts" x="130" y="430" text-anchor="middle" dominant-baseline="central" fill="#854F0B">registry, conversion</text>
+</g>
+
+<!-- src/brain_sync/llm/ (under regen, same x and width) -->
+<g id="pkg-llm">
+  <rect x="405" y="380" width="200" height="60" rx="8" fill="#FBEAF0" stroke="#993556" stroke-width="0.5"/>
+  <text class="th" x="505" y="398" text-anchor="middle" dominant-baseline="central" fill="#72243E">llm</text>
+  <text class="ts" x="505" y="418" text-anchor="middle" dominant-baseline="central" fill="#993556">claude_cli, fake backend</text>
+</g>
+
+<!-- Arrows: sync → sources (straight down), regen → llm (straight down) -->
+<g id="arrows-engines-to-support">
+  <line x1="130" y1="342" x2="130" y2="378" class="arr" marker-end="url(#arrow)"/>
+  <line x1="505" y1="342" x2="505" y2="378" class="arr" marker-end="url(#arrow)"/>
+</g>
+
+<!-- Arrow: query → brain (straight down, uninterrupted at x=313) -->
+<g id="arrow-query-to-brain">
+  <line x1="313" y1="342" x2="313" y2="478" class="arr" marker-end="url(#arrow)"/>
+</g>
+
+<!-- ============================================================ -->
+<!-- PERSISTENCE LAYER (y=470..530)                               -->
+<!-- src/brain_sync/brain/                                        -->
+<!-- ============================================================ -->
+<text class="label" x="40" y="470" id="label-persistence">Persistence layer</text>
+
+<g id="pkg-brain">
+  <rect x="40" y="480" width="565" height="50" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="323" y="497" text-anchor="middle" dominant-baseline="central" fill="#3C3489">brain</text>
+  <text class="ts" x="323" y="515" text-anchor="middle" dominant-baseline="central" fill="#534AB7">repository, layout, manifest, sidecar, tree, fileops, managed_markdown</text>
+</g>
+
+<!-- Arrow: sources → brain -->
+<g id="arrow-sources-to-brain">
+  <line x1="130" y1="440" x2="130" y2="478" class="arr" marker-end="url(#arrow)"/>
+</g>
+
+<!-- ============================================================ -->
+<!-- UTIL SIDEBAR (x=618..666, cross-cutting)                     -->
+<!-- src/brain_sync/util/ (logging, retry, text, urls)            -->
+<!-- ============================================================ -->
+<g id="pkg-util">
+  <rect x="618" y="135" width="48" height="395" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text class="th" x="642" y="160" text-anchor="middle" dominant-baseline="central" fill="#444441">util</text>
+  <text class="ts" x="642" y="178" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">retry</text>
+  <text class="ts" x="642" y="194" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">logging</text>
+  <text class="ts" x="642" y="210" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">text</text>
+  <text class="ts" x="642" y="226" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">urls</text>
+
+  <!-- Horizontal ticks connecting to each layer -->
+  <line x1="605" y1="160" x2="616" y2="160" class="util-tick"/>
+  <line x1="605" y1="277" x2="616" y2="277" class="util-tick"/>
+  <line x1="605" y1="290" x2="616" y2="290" class="util-tick"/>
+  <line x1="605" y1="303" x2="616" y2="303" class="util-tick"/>
+  <line x1="605" y1="400" x2="616" y2="400" class="util-tick"/>
+  <line x1="605" y1="416" x2="616" y2="416" class="util-tick"/>
+  <line x1="605" y1="505" x2="616" y2="505" class="util-tick"/>
+</g>
+
+<!-- ============================================================ -->
+<!-- STATE STORES (y=558..680)                                    -->
+<!-- ============================================================ -->
+<text class="label" x="40" y="558" id="label-state">State</text>
+
+<!-- Portable brain state (filesystem, left half) -->
+<g id="state-portable-brain">
+  <rect x="40" y="568" width="295" height="110" rx="12" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+  <text class="th" x="188" y="590" text-anchor="middle" dominant-baseline="central" fill="#633806">Portable brain (filesystem)</text>
+
+  <g id="state-portable-knowledge">
+    <rect x="55" y="602" width="125" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="118" y="617" text-anchor="middle" dominant-baseline="central" fill="#444441">knowledge/</text>
+  </g>
+  <g id="state-portable-brainsync">
+    <rect x="195" y="602" width="125" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="258" y="617" text-anchor="middle" dominant-baseline="central" fill="#444441">.brain-sync/</text>
+  </g>
+  <g id="state-portable-manifests">
+    <rect x="55" y="640" width="125" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="118" y="655" text-anchor="middle" dominant-baseline="central" fill="#444441">manifests</text>
+  </g>
+  <g id="state-portable-sidecars">
+    <rect x="195" y="640" width="125" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="258" y="655" text-anchor="middle" dominant-baseline="central" fill="#444441">sidecars + journals</text>
+  </g>
+</g>
+
+<!-- Runtime state (~/.brain-sync/, right half) -->
+<g id="state-runtime">
+  <rect x="350" y="568" width="290" height="110" rx="12" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text class="th" x="495" y="590" text-anchor="middle" dominant-baseline="central" fill="#712B13">Runtime state (~/.brain-sync/)</text>
+
+  <g id="state-runtime-config">
+    <rect x="365" y="602" width="120" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="425" y="617" text-anchor="middle" dominant-baseline="central" fill="#444441">config.json</text>
+  </g>
+  <g id="state-runtime-db">
+    <rect x="500" y="602" width="125" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="563" y="617" text-anchor="middle" dominant-baseline="central" fill="#444441">SQLite DB</text>
+  </g>
+  <g id="state-runtime-daemon-status">
+    <rect x="365" y="640" width="120" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="425" y="655" text-anchor="middle" dominant-baseline="central" fill="#444441">daemon.json</text>
+  </g>
+  <g id="state-runtime-tables">
+    <rect x="500" y="640" width="125" height="30" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+    <text class="ts" x="563" y="655" text-anchor="middle" dominant-baseline="central" fill="#444441">sync_cache, regen_locks</text>
+  </g>
+</g>
+
+<!-- Arrows: brain → state stores -->
+<g id="arrows-brain-to-state">
+  <line x1="188" y1="530" x2="188" y2="566" class="arr" marker-end="url(#arrow)"/>
+  <line x1="495" y1="530" x2="495" y2="566" class="arr" marker-end="url(#arrow)"/>
+</g>
+
+<!-- Footer -->
+<text class="label-it" x="40" y="704" id="footer">Solid = primary flow. Dashed = bypass / cross-layer. Ticks = cross-cutting util usage.</text>
+</svg>
