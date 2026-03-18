@@ -124,8 +124,7 @@ def test_supported_v23_runtime_db_is_migrated_to_v25_in_place(tmp_path: Path) ->
         token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
         runtime_tables = migrated.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-            "('child_discovery_requests', 'dirty_knowledge_paths', 'path_observations', "
-            "'invalidation_tokens', 'operational_events') ORDER BY name"
+            "('child_discovery_requests', 'operational_events') ORDER BY name"
         ).fetchall()
     finally:
         migrated.close()
@@ -134,10 +133,7 @@ def test_supported_v23_runtime_db_is_migrated_to_v25_in_place(tmp_path: Path) ->
     assert token_rows == (1,)
     assert runtime_tables == [
         ("child_discovery_requests",),
-        ("dirty_knowledge_paths",),
-        ("invalidation_tokens",),
         ("operational_events",),
-        ("path_observations",),
     ]
 
 

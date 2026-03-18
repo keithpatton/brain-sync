@@ -11,7 +11,6 @@ from brain_sync.application.regen import classify_folder_change, invalidate_glob
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.repository import (
-    mark_knowledge_paths_dirty,
     record_operational_event,
     rename_knowledge_path_prefix,
 )
@@ -52,7 +51,6 @@ def enqueue_regen_path(
     canonical_id: str | None = None,
 ) -> None:
     enqueue(knowledge_path)
-    mark_knowledge_paths_dirty(root, [knowledge_path], reason=reason)
     invalidate_area_index(root, knowledge_paths=[knowledge_path], reason=reason)
     _touch_core_context(knowledge_path)
     record_operational_event(

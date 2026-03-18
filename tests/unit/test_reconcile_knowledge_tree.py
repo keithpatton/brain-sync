@@ -7,8 +7,7 @@ import pytest
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
 from brain_sync.application.reconcile import reconcile_knowledge_tree
 from brain_sync.application.regen import classify_folder_change
-from brain_sync.runtime.repository import _connect, mark_knowledge_paths_dirty, save_path_observations
-from brain_sync.sync.reconcile import scan_knowledge_tree
+from brain_sync.runtime.repository import _connect
 
 pytestmark = pytest.mark.unit
 
@@ -145,7 +144,7 @@ class TestUntrackedFolderEnqueue:
 
 
 class TestHashDriftDetection:
-    def test_offline_file_edit_detected_with_saved_observations(self, brain: Path) -> None:
+    def test_offline_file_edit_detected_from_portable_state_and_filesystem(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area/doc.md", "# Version 1\n\nOriginal")
 
         _, content_hash, structure_hash = classify_folder_change(brain, "area")
@@ -158,8 +157,6 @@ class TestHashDriftDetection:
                 regen_status="idle",
             ),
         )
-        scan = scan_knowledge_tree(brain, tracked_paths={"area"})
-        save_path_observations(brain, scan.observed_mtimes, active_paths=scan.active_paths)
         area_dir = brain / "knowledge" / "area"
         (area_dir / "doc.md").write_text("# Version 2\n\nChanged", encoding="utf-8")
 
@@ -206,8 +203,8 @@ class TestHashDriftDetection:
         assert "" in result.content_changed
 
 
-class TestCandidateNarrowing:
-    def test_startup_reconcile_classifies_only_candidate_paths(self, brain: Path) -> None:
+class TestCandidateClassification:
+    def test_startup_reconcile_classifies_all_tracked_paths_without_runtime_narrowing(self, brain: Path) -> None:
         _write_knowledge_file(brain, "tracked-a/doc.md")
         _write_knowledge_file(brain, "tracked-b/doc.md")
 
@@ -231,10 +228,6 @@ class TestCandidateNarrowing:
                 regen_status="idle",
             ),
         )
-        scan = scan_knowledge_tree(brain, tracked_paths={"tracked-a", "tracked-b"})
-        save_path_observations(brain, scan.observed_mtimes, active_paths=scan.active_paths)
-
-        mark_knowledge_paths_dirty(brain, ["tracked-b"], reason="test")
 
         seen: list[str] = []
         original = classify_folder_change
@@ -248,4 +241,4 @@ class TestCandidateNarrowing:
             result = reconcile_knowledge_tree(brain)
 
         assert result.content_changed == []
-        assert seen == ["tracked-b"]
+        assert seen == ["tracked-a", "tracked-b"]

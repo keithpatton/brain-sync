@@ -99,6 +99,7 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
             "brain_sync.interfaces.cli",
             "brain_sync.interfaces.cli.handlers",
             "brain_sync.runtime.config",
+            "brain_sync.runtime.paths",
             "brain_sync.util.logging",
         }
     ),

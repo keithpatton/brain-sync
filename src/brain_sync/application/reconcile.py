@@ -9,12 +9,7 @@ from brain_sync.application.insights import load_all_insight_states
 from brain_sync.application.query_index import invalidate_area_index
 from brain_sync.application.regen import classify_folder_change
 from brain_sync.application.sources import ReconcileEntry, reconcile_sources
-from brain_sync.runtime.repository import (
-    clear_dirty_knowledge_paths,
-    load_dirty_knowledge_paths,
-    record_operational_event,
-    save_path_observations,
-)
+from brain_sync.runtime.repository import record_operational_event
 from brain_sync.sync.reconcile import KnowledgeTreeScanResult, scan_knowledge_tree
 
 __all__ = ["ReconcileReport", "TreeReconcileResult", "reconcile_brain", "reconcile_knowledge_tree"]
@@ -50,17 +45,13 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     """Reconcile the knowledge tree using application-owned cross-plane state views."""
     tracked_paths = {state.knowledge_path for state in load_all_insight_states(root)}
     scan_result: KnowledgeTreeScanResult = scan_knowledge_tree(root, tracked_paths=tracked_paths)
-    dirty_paths = load_dirty_knowledge_paths(root)
-    candidate_paths = set(scan_result.candidate_paths) | dirty_paths
+    candidate_paths = set(scan_result.candidate_paths)
 
     content_changed: list[str] = []
     for path in sorted(candidate_paths):
         change, _, _ = classify_folder_change(root, path)
         if change.change_type != "none":
             content_changed.append(path)
-
-    clear_dirty_knowledge_paths(root, candidate_paths)
-    save_path_observations(root, scan_result.observed_mtimes, active_paths=scan_result.active_paths)
 
     for orphan in scan_result.orphans_cleaned:
         record_operational_event(

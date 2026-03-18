@@ -27,6 +27,12 @@ Transition statement:
 
 `brain-sync 0.6.0 must accept supported Brain Format 1.0 brains carrying runtime DB schema v23 and migrate that runtime state to v25 in place`
 
+Narrowing note:
+
+`brain-sync 0.6.0` treats pre-release local `v25` runtime DBs that still carry
+`dirty_knowledge_paths`, `path_observations`, or `invalidation_tokens` as
+unsupported provisional state and rebuilds them before normal use.
+
 If a packaging layer later emits a four-part installer version such as
 `0.6.0.0`, that installer build still maps to the same canonical app
 version `0.6.0` unless the packaging policy says otherwise.
@@ -56,6 +62,8 @@ and rebuild flows
 - opening Brain Format `1.0` brains whose machine-local runtime DB is still on
 supported upgrade-source schemas such as `v23`
 - migrating supported runtime DB versions in place during app upgrades
+- rebuilding provisional pre-narrowing local `v25` runtime DBs before normal
+use
 - recovering by rebuilding runtime DB state when it is missing, corrupt,
 or on an unsupported schema without changing portable brain state
 
@@ -100,6 +108,7 @@ For the current supported rows, this means tests should cover:
 - fresh Brain Format `1.0` conformance
 - Brain Format `1.0` drift repair
 - runtime DB `v23` to `v25` in-place migration
+- provisional pre-narrowing `v25` runtime DB reset
 - Brain Format `1.0` runtime rebuild
 - unsupported pre-Brain Format `1.0` legacy detection / re-init guidance
 

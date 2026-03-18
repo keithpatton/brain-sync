@@ -434,7 +434,7 @@ class TestBrainSyncAddFile:
 
         after_mutation = ctx.request_context.lifespan_context.area_index
         assert after_mutation is before
-        assert after_mutation.is_stale(0)
+        assert after_mutation.is_stale(brain_root)
 
         query_result = brain_sync_query(ctx, query="NewTopic")
 
@@ -508,7 +508,7 @@ class TestBrainSyncRemove:
         result = brain_sync_remove(ctx, source="confluence:12345")
         assert result["status"] == "ok"
         assert result["canonical_id"] == "confluence:12345"
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(0)
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch("brain_sync.interfaces.mcp.server.remove_source", return_value=SAMPLE_REMOVE_RESULT)
     def test_remove_with_delete_files_invalidates_index_even_if_no_owned_files_were_deleted(
@@ -521,7 +521,7 @@ class TestBrainSyncRemove:
 
         assert result["status"] == "ok"
         mock_remove.assert_called_once()
-        assert ctx.request_context.lifespan_context.area_index.is_stale(0)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch(
         "brain_sync.interfaces.mcp.server.remove_source",
@@ -578,7 +578,7 @@ class TestBrainSyncMove:
         assert result["status"] == "ok"
         assert result["new_path"] == "initiatives/moved"
         assert result["files_moved"] is True
-        assert ctx.request_context.lifespan_context.area_index.is_stale(0)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch(
         "brain_sync.interfaces.mcp.server.move_source",
@@ -603,7 +603,7 @@ class TestBrainSyncUpdate:
 
         assert result["status"] == "ok"
         mock_update.assert_called_once()
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(0)
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +641,7 @@ class TestBrainSyncReconcile:
         assert result["not_found"] == ["confluence:99999"]
         assert result["unchanged"] == 3
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
-        assert ctx.request_context.lifespan_context.area_index.is_stale(0)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch(
         "brain_sync.interfaces.mcp.server.reconcile_brain",
@@ -657,7 +657,7 @@ class TestBrainSyncReconcile:
         assert result["not_found"] == []
         assert result["unchanged"] == 5
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(0)
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
 
 # ---------------------------------------------------------------------------
@@ -1146,15 +1146,15 @@ class TestAreaIndex:
         assert not any("journal" in p for p in paths)
 
     def test_staleness_detection(self, brain_root):
-        """Index staleness follows explicit invalidation, not summary rescans."""
+        """Index staleness follows mark_stale or portable-state changes."""
         from brain_sync.query.area_index import AreaIndex
 
         index = AreaIndex.build(brain_root)
-        assert not index.is_stale(0)
+        assert not index.is_stale(brain_root)
 
         index.mark_stale()
 
-        assert index.is_stale(0)
+        assert index.is_stale(brain_root)
 
 
 # ---------------------------------------------------------------------------

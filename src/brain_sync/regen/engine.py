@@ -36,7 +36,7 @@ from brain_sync.brain.fileops import (
     rglob_paths,
 )
 from brain_sync.brain.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
-from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.repository import BrainRepository, PortableBrainLockError
 from brain_sync.brain.sidecar import load_regen_hashes, read_all_regen_meta
 from brain_sync.brain.tree import (
     find_all_content_paths,
@@ -50,6 +50,7 @@ from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
 from brain_sync.runtime.config import CONFIG_FILE
 from brain_sync.runtime.repository import (
     RegenLock,
+    acquire_regen_ownership,
     delete_regen_lock,
     load_all_regen_locks,
     load_regen_lock,
@@ -57,9 +58,6 @@ from brain_sync.runtime.repository import (
     record_token_event,
     release_regen_ownership,
     save_regen_lock,
-)
-from brain_sync.runtime.repository import (
-    invalidate_area_index as invalidate_area_index_runtime,
 )
 from brain_sync.util.retry import async_retry, claude_breaker
 
@@ -326,13 +324,22 @@ def _save_area_state(
     error_reason: str | None = None,
 ) -> None:
     """Persist portable insight hashes through the repository and lifecycle in runtime state."""
-    repository.save_portable_insight_state(
-        knowledge_path,
-        content_hash=content_hash,
-        summary_hash=summary_hash,
-        structure_hash=structure_hash,
-        last_regen_utc=last_regen_utc,
-    )
+    try:
+        repository.save_portable_insight_state(
+            knowledge_path,
+            content_hash=content_hash,
+            summary_hash=summary_hash,
+            structure_hash=structure_hash,
+            last_regen_utc=last_regen_utc,
+        )
+    except PortableBrainLockError:
+        raise
+    except Exception:
+        log.warning(
+            "Failed to persist portable insight-state for %s; keeping runtime lifecycle only",
+            knowledge_path or "(root)",
+            exc_info=True,
+        )
     if release_owner_id is not None:
         released = release_regen_ownership(
             root,
@@ -356,7 +363,12 @@ def _save_area_state(
                 error_reason=error_reason,
             ),
         )
-    invalidate_area_index_runtime(root, [knowledge_path], reason="summary_written")
+    record_operational_event(
+        event_type="query.index.invalidated",
+        knowledge_path=knowledge_path,
+        outcome="summary_written",
+        details={"knowledge_paths": [knowledge_path]},
+    )
 
 
 def _save_terminal_regen_lock(
@@ -397,7 +409,12 @@ def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: 
     """Delete portable insight state and runtime lifecycle rows for one area."""
     repository.delete_portable_insight_state(knowledge_path)
     delete_regen_lock(root, knowledge_path)
-    invalidate_area_index_runtime(root, [knowledge_path], reason="summary_deleted")
+    record_operational_event(
+        event_type="query.index.invalidated",
+        knowledge_path=knowledge_path,
+        outcome="summary_deleted",
+        details={"knowledge_paths": [knowledge_path]},
+    )
 
 
 def _split_markdown_chunks(
@@ -1564,6 +1581,8 @@ async def regen_single_folder(
     insights_dir.mkdir(parents=True, exist_ok=True)
 
     # Mark as running — keep old hash so crashes/failures don't block retries
+    if owner_id is not None and not acquire_regen_ownership(root, current_path, owner_id):
+        raise RegenFailed(current_path or "(root)", f"regen already owned for '{current_path or '(root)'}'")
     started = datetime.now(UTC).isoformat()
     save_regen_lock(
         root,

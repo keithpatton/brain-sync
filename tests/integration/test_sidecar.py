@@ -145,6 +145,25 @@ class TestSidecarAfterRegen:
         # Sidecar should NOT exist (write was blocked)
         assert not (_insights_dir(brain, "project") / SIDECAR_FILENAME).exists()
 
+    async def test_regen_with_owner_id_claims_and_releases_runtime_slot(self, brain: Path) -> None:
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
+
+        result = await regen_single_folder(
+            brain,
+            "project",
+            config=_config(),
+            backend=FakeBackend(mode="stable"),
+            owner_id="session-owner",
+        )
+
+        assert result.action == "regenerated"
+        state = load_insight_state(brain, "project")
+        assert state is not None
+        assert state.regen_status == "idle"
+        assert state.owner_id is None
+
     async def test_backfill_writes_sidecar(self, brain: Path) -> None:
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)

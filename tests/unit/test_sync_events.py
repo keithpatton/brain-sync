@@ -11,13 +11,7 @@ from brain_sync.application.regen import classify_folder_change
 from brain_sync.application.sources import add_source
 from brain_sync.application.sync_events import apply_folder_move, handle_watcher_folder_change
 from brain_sync.brain.manifest import read_source_manifest
-from brain_sync.runtime.repository import (
-    load_dirty_knowledge_paths,
-    load_invalidation_token,
-    load_operational_events,
-    load_path_observations,
-    save_path_observations,
-)
+from brain_sync.runtime.repository import load_operational_events
 from brain_sync.sync.watcher import FolderMove
 
 pytestmark = pytest.mark.unit
@@ -57,21 +51,18 @@ def test_handle_watcher_folder_change_enqueues_structure_only_change_for_walk_up
 
     assert outcome.action == "structure_enqueued"
     assert enqueued == ["area"]
-    assert "area" in load_dirty_knowledge_paths(brain)
-    assert load_invalidation_token(brain, "area_index").dirty is True
     assert load_insight_state(brain, "area") is not None
 
-    events = load_operational_events(brain, event_type="watcher.structure_observed")
-    assert len(events) == 1
-    assert events[0].knowledge_path == "area"
-    assert events[0].outcome == "enqueued"
+    event_types = [event.event_type for event in load_operational_events(brain)]
+    assert "watcher.structure_observed" in event_types
+    assert "query.index.invalidated" in event_types
 
 
 def test_apply_folder_move_updates_runtime_state_and_emits_events(brain: Path) -> None:
     result = add_source(root=brain, url="test://doc/source-1", target_path="old-dir")
     old_dir = brain / "knowledge" / "old-dir"
     old_dir.mkdir(parents=True, exist_ok=True)
-    save_path_observations(brain, {"old-dir": 123}, active_paths={"old-dir"})
+    save_insight_state(brain, InsightState(knowledge_path="old-dir", content_hash="abc", regen_status="idle"))
 
     new_dir = brain / "knowledge" / "new-dir"
     shutil.move(str(old_dir), str(new_dir))
@@ -81,7 +72,9 @@ def test_apply_folder_move_updates_runtime_state_and_emits_events(brain: Path) -
     manifest = read_source_manifest(brain, result.canonical_id)
     assert manifest is not None
     assert manifest.target_path == "new-dir"
-    assert load_path_observations(brain) == {"new-dir": 123}
+    moved_state = load_insight_state(brain, "new-dir")
+    assert moved_state is not None
+    assert load_insight_state(brain, "old-dir") is None
 
     event_types = [event.event_type for event in load_operational_events(brain)]
     assert "watcher.move_observed" in event_types

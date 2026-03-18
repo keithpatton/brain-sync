@@ -138,7 +138,7 @@ the normal sync loop:
 
 ```text
 reconcile_sources()        -> manifest-driven file resolution and missing-source handling
-reconcile_knowledge_tree() -> runtime-observation cleanup, narrowed offline change detection, invalidation updates
+reconcile_knowledge_tree() -> portable/filesystem cleanup and offline change detection
 load_state()               -> manifest-authoritative merge with runtime progress cache
 regen_session()            -> acquire regen ownership
 RegenQueue()               -> enqueue reconciled paths
@@ -146,12 +146,12 @@ watcher.start()            -> begin filesystem monitoring
 sync loop                  -> normal operation
 ```
 
-`reconcile_knowledge_tree()` now combines filesystem truth with
-runtime-owned invalidation state:
+`reconcile_knowledge_tree()` now combines portable insight state with live
+filesystem truth:
 
 1. prune rows for deleted areas
-2. use `path_observations` plus dirty knowledge paths to narrow which tracked
-   areas need classification
+2. classify tracked areas directly from portable state plus current filesystem
+   content
 3. enqueue newly relevant areas when filesystem state implies regen work
 
 Because Brain Format `1.0` co-locates managed area state under `knowledge/<area>/.brain-sync/`,
@@ -282,7 +282,7 @@ The system uses a tiered authority model:
 | Source registration intent | `.brain-sync/sources/*.json` | Yes | No |
 | Source sync freshness hint | manifest `sync_hint` plus `sync_cache` | Hint yes, DB no | Yes |
 | Child-discovery requests | `child_discovery_requests` | No | Yes |
-| Query/index invalidation state | `dirty_knowledge_paths`, `path_observations`, `invalidation_tokens` | No | Yes |
+| Query/index freshness | `knowledge/` structure plus `knowledge/**/.brain-sync/insights/summary.md` | Yes | Yes |
 | Insight hashes | `knowledge/**/.brain-sync/insights/insight-state.json` | Yes | Yes |
 | Regen lifecycle | `regen_locks` | No | Yes |
 | Operational event trail | `operational_events` | No | Loss accepted |
@@ -377,9 +377,6 @@ Current runtime DB tables:
 | `meta` | Runtime schema marker | Recreated |
 | `sync_cache` | Polling schedule and sync progress cache | Rebuilt from manifests and sync hints |
 | `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
-| `dirty_knowledge_paths` | Explicit invalidation set for knowledge areas | Rebuilt from future mutations or startup scan |
-| `path_observations` | Startup reconcile candidate narrowing | Rebuilt from future scans |
-| `invalidation_tokens` | Read-model invalidation generations | Rebuilt from future mutations |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
 | `operational_events` | Append-only local operational event trail | History lost only |
 | `token_events` | Local telemetry history | History lost only |
@@ -400,15 +397,16 @@ events still need hardening.
 **Regen complexity**: `regen/engine.py` remains one of the largest modules and is a
 candidate for further decomposition.
 
-**AreaIndex staleness model**: `AreaIndex.is_stale()` is still a best-effort
-performance hint rather than a full correctness proof.
+**AreaIndex cost model**: `AreaIndex.is_stale()` now rechecks portable
+structure and portable summaries on every load. This restores correctness for
+long-lived caches, but further performance tuning may still be worthwhile.
 
 ### Derived State Inventory
 
 | View | Source of truth | Owner | Refresh trigger | Correctness role |
 |---|---|---|---|---|
 | Global context cache | `knowledge/_core/` | `regen/engine.py` | invalidated on `_core` changes | Correctness-critical |
-| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `application/query_index.py` with transport-owned cached instances | explicit invalidation tokens after known knowledge-tree mutations; startup and query load reuse cached indexes until invalidated | Performance-only |
+| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `application/query_index.py` with transport-owned cached instances | every load rechecks portable structure and summaries; `mark_stale()` can force an earlier rebuild | Performance-only cache over portable truth |
 
 ### Resolved (2026-03)
 

@@ -7,12 +7,13 @@ dependency rule.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.brain.fileops import iterdir_paths, path_is_dir, path_is_file, read_text
+from brain_sync.brain.fileops import iterdir_paths, path_is_dir, path_is_file, read_bytes, read_text
 from brain_sync.brain.layout import area_summary_path
 from brain_sync.brain.tree import get_child_dirs, is_content_dir
 
@@ -68,11 +69,11 @@ class AreaIndex:
 
     def __init__(self) -> None:
         self.entries: list[AreaIndexEntry] = []
-        self._generation = 0
+        self._snapshot: tuple[tuple[str, tuple[str, ...], str | None], ...] = ()
         self._marked_stale = False
 
     @classmethod
-    def build(cls, root: Path, *, generation: int = 0) -> AreaIndex:
+    def build(cls, root: Path) -> AreaIndex:
         """Build a fresh index by walking knowledge/ for structure and co-located summaries."""
         index = cls()
         knowledge_root = root / "knowledge"
@@ -118,17 +119,50 @@ class AreaIndex:
                 _walk(child, child_rel)
 
         _walk(knowledge_root, "")
-        index._generation = generation
-        log.debug("AreaIndex built: %d entries, generation=%d", len(index.entries), generation)
+        index._snapshot = cls.capture_snapshot(root)
+        log.debug("AreaIndex built: %d entries", len(index.entries))
         return index
 
     def mark_stale(self) -> None:
         """Force the next lifecycle check to rebuild this cached index."""
         self._marked_stale = True
 
-    def is_stale(self, generation: int, *, dirty: bool = False) -> bool:
-        """Check staleness from explicit runtime invalidation state only."""
-        return self._marked_stale or dirty or self._generation != generation
+    @classmethod
+    def capture_snapshot(cls, root: Path) -> tuple[tuple[str, tuple[str, ...], str | None], ...]:
+        """Capture the portable structure and summary state used by the index."""
+        snapshot: list[tuple[str, tuple[str, ...], str | None]] = []
+        knowledge_root = root / "knowledge"
+
+        if not path_is_dir(knowledge_root):
+            return ()
+
+        def _walk(directory: Path, prefix: str) -> None:
+            for child in sorted(iterdir_paths(directory), key=lambda value: value.name):
+                if not is_content_dir(child):
+                    continue
+                if child.name == "_core":
+                    continue
+
+                child_rel = prefix + "/" + child.name if prefix else child.name
+                child_dirs = tuple(sorted(d.name for d in get_child_dirs(child)))
+                summary_hash: str | None = None
+                summary_path = area_summary_path(root, child_rel)
+                if path_is_file(summary_path):
+                    try:
+                        summary_hash = hashlib.sha256(read_bytes(summary_path)).hexdigest()
+                    except OSError as exc:
+                        log.debug("Failed to snapshot %s: %s", summary_path, exc)
+                        summary_hash = "<unreadable>"
+
+                snapshot.append((child_rel, child_dirs, summary_hash))
+                _walk(child, child_rel)
+
+        _walk(knowledge_root, "")
+        return tuple(snapshot)
+
+    def is_stale(self, root: Path) -> bool:
+        """Check staleness from portable structure and summary state."""
+        return self._marked_stale or self.capture_snapshot(root) != self._snapshot
 
     def search(self, query: str, max_results: int = 5) -> list[dict]:
         """Search the index, returning scored results."""

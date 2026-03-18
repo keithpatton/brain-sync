@@ -6,29 +6,19 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from brain_sync.query.area_index import AreaIndex
-from brain_sync.runtime.repository import (
-    clear_invalidation_token,
-    load_invalidation_token,
-    record_operational_event,
-)
-from brain_sync.runtime.repository import (
-    invalidate_area_index as invalidate_area_index_runtime,
-)
+from brain_sync.runtime.repository import record_operational_event
 
 __all__ = ["AreaIndex", "invalidate_area_index", "load_area_index"]
 
 
 def load_area_index(root: Path, current: AreaIndex | None = None) -> AreaIndex:
-    """Return a usable area index, rebuilding only when needed."""
-    token = load_invalidation_token(root, "area_index")
-    if current is not None and not current.is_stale(token.generation, dirty=token.dirty):
+    """Return a usable area index, rebuilding when portable state changed."""
+    if current is not None and not current.is_stale(root):
         return current
-    rebuilt = AreaIndex.build(root, generation=token.generation)
-    clear_invalidation_token(root, "area_index")
+    rebuilt = AreaIndex.build(root)
     record_operational_event(
         event_type="query.index.rebuilt",
         outcome="rebuilt",
-        details={"generation": token.generation},
     )
     return rebuilt
 
@@ -40,8 +30,15 @@ def invalidate_area_index(
     knowledge_paths: Iterable[str] = (),
     reason: str = "knowledge_changed",
 ) -> AreaIndex | None:
-    """Mark the runtime area-index token dirty after a known knowledge-tree mutation."""
-    invalidate_area_index_runtime(root, knowledge_paths, reason=reason)
+    """Mark the current in-memory area index stale and record an event."""
+    normalized_paths = [str(path).replace("\\", "/").rstrip("/") for path in knowledge_paths]
+    normalized_paths = ["" if path == "." else path for path in normalized_paths]
+    record_operational_event(
+        event_type="query.index.invalidated",
+        knowledge_path=normalized_paths[0] if len(normalized_paths) == 1 else None,
+        outcome=reason,
+        details={"knowledge_paths": normalized_paths},
+    )
     if current is not None:
         current.mark_stale()
     return current

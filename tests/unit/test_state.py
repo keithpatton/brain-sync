@@ -151,8 +151,7 @@ class TestRuntimeState:
             token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
             runtime_tables = migrated.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('child_discovery_requests', 'dirty_knowledge_paths', 'path_observations', "
-                "'invalidation_tokens', 'operational_events') ORDER BY name"
+                "('child_discovery_requests', 'operational_events') ORDER BY name"
             ).fetchall()
         finally:
             migrated.close()
@@ -162,11 +161,55 @@ class TestRuntimeState:
         assert token_rows == (1,)
         assert runtime_tables == [
             ("child_discovery_requests",),
-            ("dirty_knowledge_paths",),
-            ("invalidation_tokens",),
             ("operational_events",),
-            ("path_observations",),
         ]
+
+    def test_provisional_pre_narrowing_v25_runtime_db_is_rebuilt(self, tmp_path: Path) -> None:
+        db_path = state_module.RUNTIME_DB_FILE
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '25')")
+            conn.execute(
+                "CREATE TABLE dirty_knowledge_paths (knowledge_path TEXT PRIMARY KEY, reason TEXT, updated_utc TEXT)"
+            )
+            conn.execute("CREATE TABLE sync_cache (canonical_id TEXT PRIMARY KEY)")
+            conn.execute("CREATE TABLE regen_locks (knowledge_path TEXT PRIMARY KEY, regen_status TEXT NOT NULL)")
+            conn.execute(
+                "CREATE TABLE token_events ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "session_id TEXT NOT NULL, "
+                "operation_type TEXT NOT NULL, "
+                "success INTEGER NOT NULL, "
+                "created_utc TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO token_events (session_id, operation_type, success, created_utc) "
+                "VALUES ('sess-1', 'regen', 1, '2026-03-18T00:00:00+00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rebuilt = state_module._connect(tmp_path)
+        try:
+            runtime_tables = rebuilt.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('sqlite_sequence') ORDER BY name"
+            ).fetchall()
+            token_rows = rebuilt.execute("SELECT COUNT(*) FROM token_events").fetchone()
+        finally:
+            rebuilt.close()
+
+        assert runtime_tables == [
+            ("child_discovery_requests",),
+            ("meta",),
+            ("operational_events",),
+            ("regen_locks",),
+            ("sync_cache",),
+            ("token_events",),
+        ]
+        assert token_rows == (0,)
 
     def test_fresh_runtime_db_excludes_legacy_documents_table(self, tmp_path: Path) -> None:
         conn = state_module._connect(tmp_path)

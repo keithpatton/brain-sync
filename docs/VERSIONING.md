@@ -85,9 +85,6 @@ This runtime schema governs:
 
 - `sync_cache`
 - `child_discovery_requests`
-- `dirty_knowledge_paths`
-- `path_observations`
-- `invalidation_tokens`
 - `regen_locks`
 - `operational_events`
 - `token_events`
@@ -153,6 +150,8 @@ This means:
 - the app can create and operate on Brain Format 1.0 brains
 - repair/rebuild flows apply to Brain Format 1.0 brains
 - runtime DB state for that release uses the v25 schema
+- provisional pre-narrowing local `v25` DBs that still contain reverted
+  tables are unsupported and are rebuilt before normal use
 
 Compatibility details live in [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -169,6 +168,7 @@ Recommended test language:
 - "drifted Brain Format v1.0 brain"
 - "unsupported pre-v1 legacy brain"
 - "runtime DB schema v25 rebuild"
+- "provisional pre-narrowing v25 runtime DB reset"
 
 This lets the suite distinguish:
 
@@ -194,4 +194,7 @@ legacy internal layouts, not supported portable versions.
 established the current portable format baseline. During the current
 transition, that row remains a supported upgrade source. `0.6.0` with runtime
 DB schema `v25` continues that portable baseline while treating in-place
-runtime DB migration as the default expectation for supported upgrades.
+runtime DB migration as the default expectation for supported upgrades from
+supported earlier schemas such as `v23`. Developer/tester local `v25` DBs from
+the pre-narrowing branch shape are not part of that supported continuity path
+and are rebuilt.
