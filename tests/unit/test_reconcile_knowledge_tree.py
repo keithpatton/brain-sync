@@ -6,7 +6,9 @@ import pytest
 
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
 from brain_sync.application.reconcile import reconcile_knowledge_tree
-from brain_sync.runtime.repository import _connect
+from brain_sync.application.regen import classify_folder_change
+from brain_sync.runtime.repository import _connect, mark_knowledge_paths_dirty, save_path_observations
+from brain_sync.sync.reconcile import scan_knowledge_tree
 
 pytestmark = pytest.mark.unit
 
@@ -38,7 +40,6 @@ def _write_summary(root: Path, knowledge_path: str, content: str = "summary") ->
 class TestNoChanges:
     def test_no_changes(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area/doc.md")
-        from brain_sync.regen import classify_folder_change
 
         _, content_hash, structure_hash = classify_folder_change(brain, "area")
         save_insight_state(
@@ -85,10 +86,17 @@ class TestOrphanStateCleanup:
 
 
 class TestUntrackedFolderEnqueue:
+    def test_untracked_root_area_with_root_level_content_is_enqueued(self, brain: Path) -> None:
+        _write_knowledge_file(brain, "root-note.md")
+
+        result = reconcile_knowledge_tree(brain)
+
+        assert result.content_changed == []
+        assert result.enqueued_paths == [""]
+
     def test_untracked_folder_without_managed_evidence_is_enqueued(self, brain: Path) -> None:
         _write_knowledge_file(brain, "tracked/doc.md")
         _write_knowledge_file(brain, "untracked/doc.md")
-        from brain_sync.regen import classify_folder_change
 
         _, content_hash, structure_hash = classify_folder_change(brain, "tracked")
         save_insight_state(
@@ -116,7 +124,6 @@ class TestUntrackedFolderEnqueue:
     def test_nested_untracked_folders_enqueue_only_deepest_paths(self, brain: Path) -> None:
         _write_knowledge_file(brain, "_core/me/profile.md")
         _write_knowledge_file(brain, "_core/organisation/org-chart.md")
-        from brain_sync.regen import classify_folder_change
 
         _write_knowledge_file(brain, "_core/taxonomy.md")
         _, content_hash, structure_hash = classify_folder_change(brain, "_core")
@@ -138,9 +145,30 @@ class TestUntrackedFolderEnqueue:
 
 
 class TestHashDriftDetection:
+    def test_offline_file_edit_detected_with_saved_observations(self, brain: Path) -> None:
+        _write_knowledge_file(brain, "area/doc.md", "# Version 1\n\nOriginal")
+
+        _, content_hash, structure_hash = classify_folder_change(brain, "area")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area",
+                content_hash=content_hash,
+                structure_hash=structure_hash,
+                regen_status="idle",
+            ),
+        )
+        scan = scan_knowledge_tree(brain, tracked_paths={"area"})
+        save_path_observations(brain, scan.observed_mtimes, active_paths=scan.active_paths)
+        area_dir = brain / "knowledge" / "area"
+        (area_dir / "doc.md").write_text("# Version 2\n\nChanged", encoding="utf-8")
+
+        result = reconcile_knowledge_tree(brain)
+
+        assert "area" in result.content_changed
+
     def test_offline_file_addition_detected(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area/existing.md")
-        from brain_sync.regen import classify_folder_change
 
         _, content_hash, structure_hash = classify_folder_change(brain, "area")
         save_insight_state(
@@ -160,7 +188,6 @@ class TestHashDriftDetection:
 
     def test_root_level_file_addition_detected(self, brain: Path) -> None:
         _write_knowledge_file(brain, "root-doc.md")
-        from brain_sync.regen import classify_folder_change
 
         _, content_hash, structure_hash = classify_folder_change(brain, "")
         save_insight_state(
@@ -177,3 +204,48 @@ class TestHashDriftDetection:
         result = reconcile_knowledge_tree(brain)
 
         assert "" in result.content_changed
+
+
+class TestCandidateNarrowing:
+    def test_startup_reconcile_classifies_only_candidate_paths(self, brain: Path) -> None:
+        _write_knowledge_file(brain, "tracked-a/doc.md")
+        _write_knowledge_file(brain, "tracked-b/doc.md")
+
+        _, content_hash_a, structure_hash_a = classify_folder_change(brain, "tracked-a")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="tracked-a",
+                content_hash=content_hash_a,
+                structure_hash=structure_hash_a,
+                regen_status="idle",
+            ),
+        )
+        _, content_hash_b, structure_hash_b = classify_folder_change(brain, "tracked-b")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="tracked-b",
+                content_hash=content_hash_b,
+                structure_hash=structure_hash_b,
+                regen_status="idle",
+            ),
+        )
+        scan = scan_knowledge_tree(brain, tracked_paths={"tracked-a", "tracked-b"})
+        save_path_observations(brain, scan.observed_mtimes, active_paths=scan.active_paths)
+
+        mark_knowledge_paths_dirty(brain, ["tracked-b"], reason="test")
+
+        seen: list[str] = []
+        original = classify_folder_change
+
+        def _track(root: Path, knowledge_path: str):
+            seen.append(knowledge_path)
+            return original(root, knowledge_path)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("brain_sync.application.reconcile.classify_folder_change", _track)
+            result = reconcile_knowledge_tree(brain)
+
+        assert result.content_changed == []
+        assert seen == ["tracked-b"]

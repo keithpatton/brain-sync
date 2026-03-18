@@ -46,16 +46,23 @@ from brain_sync.brain.tree import (
     normalize_path,
 )
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
+from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
 from brain_sync.runtime.config import CONFIG_FILE
 from brain_sync.runtime.repository import (
     RegenLock,
     delete_regen_lock,
     load_all_regen_locks,
     load_regen_lock,
+    record_operational_event,
+    record_token_event,
     save_regen_lock,
 )
-from brain_sync.runtime.token_tracking import OP_REGEN
+from brain_sync.runtime.repository import (
+    invalidate_area_index as invalidate_area_index_runtime,
+)
 from brain_sync.util.retry import async_retry, claude_breaker
+
+OP_REGEN = "regen"
 
 
 @dataclass
@@ -334,12 +341,14 @@ def _save_area_state(
             error_reason=error_reason,
         ),
     )
+    invalidate_area_index_runtime(root, [knowledge_path], reason="summary_written")
 
 
 def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: str) -> None:
     """Delete portable insight state and runtime lifecycle rows for one area."""
     repository.delete_portable_insight_state(knowledge_path)
     delete_regen_lock(root, knowledge_path)
+    invalidate_area_index_runtime(root, [knowledge_path], reason="summary_deleted")
 
 
 def _split_markdown_chunks(
@@ -887,8 +896,6 @@ def _record_telemetry(
     model: str,
 ) -> None:
     """Record a token_events row for telemetry."""
-    from brain_sync.runtime.token_tracking import record_token_event
-
     record_token_event(
         session_id=session_id,
         operation_type=operation_type,
@@ -901,6 +908,27 @@ def _record_telemetry(
         duration_ms=result.duration_ms,
         num_turns=result.num_turns,
         success=result.success,
+    )
+
+
+def _record_regen_event(
+    *,
+    event_type: str,
+    knowledge_path: str,
+    session_id: str | None,
+    owner_id: str | None,
+    outcome: str,
+    duration_ms: int | None = None,
+    details: dict[str, object] | None = None,
+) -> None:
+    record_operational_event(
+        event_type=event_type,
+        session_id=session_id,
+        owner_id=owner_id,
+        knowledge_path=knowledge_path,
+        outcome=outcome,
+        duration_ms=duration_ms,
+        details=details,
     )
 
 
@@ -1275,17 +1303,6 @@ class SingleFolderResult:
 
 
 # Actions that propagate dirtiness to parent in wave mode
-_PROPAGATES_UP = frozenset(
-    {
-        "regenerated",  # summary changed on disk → parent content hash differs
-        "skipped_no_content",  # empty folder may have had stale insights cleaned → parent re-evaluates
-        "cleaned_up",  # folder gone, artifacts deleted → parent content hash differs
-        "skipped_rename",  # child dir name changed → parent's local child-dir name set changed,
-        #   so parent must re-evaluate its own structure_hash even though
-        #   no Claude call is expected at the child level
-    }
-)
-
 # Actions that do NOT propagate:
 # - skipped_unchanged:  nothing changed, ancestors stable
 # - skipped_similarity: summary unchanged on disk, ancestors stable
@@ -1333,6 +1350,13 @@ async def regen_single_folder(
             repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
         delete_regen_lock(root, current_path)
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="cleaned_up",
+        )
         return SingleFolderResult(action="cleaned_up", knowledge_path=current_path)
 
     # Collect inputs
@@ -1350,6 +1374,13 @@ async def regen_single_folder(
             repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
         delete_regen_lock(root, current_path)
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="skipped_no_content",
+        )
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
 
     # Load regen hashes from sidecar (authoritative), DB fallback
@@ -1362,6 +1393,13 @@ async def regen_single_folder(
 
     if not child_summaries and not has_direct_files:
         log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="skipped_no_content",
+        )
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
 
     new_content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
@@ -1394,6 +1432,13 @@ async def regen_single_folder(
             owner_id=lock.owner_id if lock else None,
             error_reason=lock.error_reason if lock else None,
         )
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="skipped_backfill",
+        )
         return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
 
     if event.change_type == "none":
@@ -1402,6 +1447,13 @@ async def regen_single_folder(
             regen_id,
             current_path or "(root)",
             new_content_hash[:12],
+        )
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="skipped_unchanged",
         )
         return SingleFolderResult(action="skipped_unchanged", knowledge_path=current_path)
 
@@ -1423,6 +1475,13 @@ async def regen_single_folder(
             last_regen_utc=meta.last_regen_utc if meta else None,
             regen_status=lock.regen_status if lock else "idle",
             owner_id=lock.owner_id if lock else None,
+        )
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="skipped_rename",
         )
         return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
 
@@ -1465,6 +1524,13 @@ async def regen_single_folder(
             regen_status="running",
             owner_id=owner_id,
         ),
+    )
+    _record_regen_event(
+        event_type="regen.started",
+        knowledge_path=current_path,
+        session_id=session_id,
+        owner_id=owner_id,
+        outcome="started",
     )
 
     # Chunk-and-merge + final invoke — unified exception handler
@@ -1584,6 +1650,14 @@ async def regen_single_folder(
             )
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+        _record_regen_event(
+            event_type="regen.failed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="failed",
+            details={"error": str(e)},
+        )
         raise RegenFailed(current_path or "(root)", str(e)) from e
     now = datetime.now(UTC).isoformat()
 
@@ -1613,6 +1687,14 @@ async def regen_single_folder(
             )
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+        _record_regen_event(
+            event_type="regen.failed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="failed",
+            details={"error": err_msg},
+        )
         raise RegenFailed(current_path or "(root)", err_msg)
 
     # Similarity guard
@@ -1639,6 +1721,13 @@ async def regen_single_folder(
         # Journal is independent of summary similarity — temporal events matter
         if journal_text:
             _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
+        _record_regen_event(
+            event_type="regen.completed",
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="skipped_similarity",
+        )
         return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
 
     # Summary changed — repository owns durable summary persistence.
@@ -1666,6 +1755,13 @@ async def regen_single_folder(
         result.input_tokens,
         result.output_tokens,
         result.num_turns,
+    )
+    _record_regen_event(
+        event_type="regen.completed",
+        knowledge_path=current_path,
+        session_id=session_id,
+        owner_id=owner_id,
+        outcome="regenerated",
     )
     return SingleFolderResult(action="regenerated", knowledge_path=current_path)
 
@@ -1746,36 +1842,6 @@ async def regen_path(
     return regen_count
 
 
-def _parent_path(path: str) -> str:
-    """Return the parent of a knowledge path, or "" for root-level paths."""
-    if not path:
-        return ""
-    parts = path.rsplit("/", 1)
-    return parts[0] if len(parts) > 1 else ""
-
-
-def compute_waves(paths: list[str]) -> list[list[str]]:
-    """Compute depth-ordered waves from leaf paths including all ancestors.
-
-    Returns waves deepest-first. Each wave is sorted for determinism.
-    Root ("") is always included if any paths are provided.
-    """
-    if not paths:
-        return []
-
-    by_depth: dict[int, set[str]] = {}
-    for path in paths:
-        p = path
-        while True:
-            depth = 0 if not p else len(p.split("/"))
-            by_depth.setdefault(depth, set()).add(p)
-            if not p:
-                break
-            parts = p.rsplit("/", 1)
-            p = parts[0] if len(parts) > 1 else ""
-    return [sorted(by_depth[d]) for d in sorted(by_depth, reverse=True)]
-
-
 async def regen_all(
     root: Path,
     *,
@@ -1838,8 +1904,8 @@ async def regen_all(
                 )
                 if result.action == "regenerated":
                     total += 1
-                if result.action in _PROPAGATES_UP and path:
-                    dirty.add(_parent_path(path))
+                if result.action in PROPAGATES_UP and path:
+                    dirty.add(parent_path(path))
                 # else: don't propagate — parent stays clean
             except KeyboardInterrupt:
                 log.info("Interrupted during regen of %s, stopping batch", path or "(root)")

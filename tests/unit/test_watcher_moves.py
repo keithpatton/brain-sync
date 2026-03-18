@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 from watchdog.events import DirMovedEvent
 
+from brain_sync.application.init import init_brain
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
+from brain_sync.application.sync_events import apply_folder_move
 from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
@@ -15,8 +17,7 @@ from brain_sync.brain.manifest import (
     read_source_manifest,
     write_source_manifest,
 )
-from brain_sync.runtime.repository import _connect
-from brain_sync.sync.watcher import FolderMove, KnowledgeEventHandler, mirror_folder_move
+from brain_sync.sync.watcher import FolderMove, KnowledgeEventHandler
 
 pytestmark = pytest.mark.unit
 
@@ -24,15 +25,11 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def brain(tmp_path: Path) -> Path:
     root = tmp_path / "brain"
-    (root / "knowledge").mkdir(parents=True)
-    (root / ".brain-sync" / "brain.json").parent.mkdir(parents=True, exist_ok=True)
-    (root / ".brain-sync" / "brain.json").write_text('{"version": 1}\n', encoding="utf-8")
-    conn = _connect(root)
-    conn.close()
+    init_brain(root)
     return root
 
 
-class TestMirrorFolderMove:
+class TestApplyFolderMove:
     def test_updates_colocated_summary_paths_by_real_fs_move(self, brain: Path) -> None:
         old_dir = brain / "knowledge" / "old-name"
         old_dir.mkdir(parents=True)
@@ -42,7 +39,7 @@ class TestMirrorFolderMove:
         new_dir = brain / "knowledge" / "new-name"
         shutil.move(str(old_dir), str(new_dir))
 
-        mirror_folder_move(brain, FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
+        apply_folder_move(brain, move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
 
         assert not (brain / "knowledge" / "old-name").exists()
         assert (brain / "knowledge" / "new-name" / ".brain-sync" / "insights" / "summary.md").exists()
@@ -56,7 +53,7 @@ class TestMirrorFolderMove:
         new_dir = brain / "knowledge" / "new-name"
         shutil.move(str(old_dir), str(new_dir))
 
-        mirror_folder_move(brain, FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
+        apply_folder_move(brain, move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
 
         assert load_insight_state(brain, "old-name") is None
         assert load_insight_state(brain, "new-name") is not None
@@ -86,7 +83,7 @@ class TestMirrorFolderMove:
         new_dir = brain / "knowledge" / "new-name"
         shutil.move(str(old_dir), str(new_dir))
 
-        mirror_folder_move(brain, FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
+        apply_folder_move(brain, move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
 
         m1 = read_source_manifest(brain, "confluence:123")
         m2 = read_source_manifest(brain, "confluence:456")
@@ -99,7 +96,7 @@ class TestMirrorFolderMove:
         outside_dest = brain.parent / "outside-new"
         outside_src.mkdir()
 
-        mirror_folder_move(brain, FolderMove(src=outside_src.resolve(), dest=outside_dest.resolve()))
+        apply_folder_move(brain, move=FolderMove(src=outside_src.resolve(), dest=outside_dest.resolve()))
 
         assert outside_src.exists()
 

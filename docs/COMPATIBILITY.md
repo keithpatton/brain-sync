@@ -16,16 +16,16 @@ The current supported rows are:
 | App version | Brain Format | Runtime DB schema | Support status              |
 | ----------- | ------------ | ----------------- | --------------------------- |
 | `0.5.0`     | `1.0`        | `v23`             | Supported as upgrade source |
-| `0.6.0`     | `1.0`        | `v24`             | Supported                   |
+| `0.6.0`     | `1.0`        | `v25`             | Supported                   |
 
 
 Canonical compatibility statement:
 
-`brain-sync 0.6.0 supports Brain Format 1.0 with runtime DB schema v24`
+`brain-sync 0.6.0 supports Brain Format 1.0 with runtime DB schema v25`
 
 Transition statement:
 
-`brain-sync 0.6.0 must accept supported Brain Format 1.0 brains carrying runtime DB schema v23 and migrate that runtime state to v24 in place`
+`brain-sync 0.6.0 must accept supported Brain Format 1.0 brains carrying runtime DB schema v23 and migrate that runtime state to v25 in place`
 
 If a packaging layer later emits a four-part installer version such as
 `0.6.0.0`, that installer build still maps to the same canonical app
@@ -99,7 +99,7 @@ For the current supported rows, this means tests should cover:
 
 - fresh Brain Format `1.0` conformance
 - Brain Format `1.0` drift repair
-- runtime DB `v23` to `v24` in-place migration
+- runtime DB `v23` to `v25` in-place migration
 - Brain Format `1.0` runtime rebuild
 - unsupported pre-Brain Format `1.0` legacy detection / re-init guidance
 
@@ -155,4 +155,3 @@ At that point, compatibility tests should expand to include:
 - explicit policy for deprecated or read-only legacy formats
 
 ---
-

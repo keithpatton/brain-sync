@@ -84,11 +84,12 @@ SAMPLE_UPDATE_RESULT = UpdateResult(
 
 def _make_ctx(root: Path) -> MagicMock:
     """Create a mock Context whose request_context.lifespan_context is a BrainRuntime."""
-    from brain_sync.interfaces.mcp.server import AreaIndex, BrainRuntime
+    from brain_sync.application.query_index import load_area_index
+    from brain_sync.interfaces.mcp.server import BrainRuntime
 
     rt = BrainRuntime(
         root=root,
-        area_index=AreaIndex.build(root),
+        area_index=load_area_index(root),
         regen_lock=asyncio.Lock(),
     )
     ctx = MagicMock()
@@ -433,7 +434,7 @@ class TestBrainSyncAddFile:
 
         after_mutation = ctx.request_context.lifespan_context.area_index
         assert after_mutation is before
-        assert after_mutation.is_stale(brain_root)
+        assert after_mutation.is_stale(0)
 
         query_result = brain_sync_query(ctx, query="NewTopic")
 
@@ -507,7 +508,7 @@ class TestBrainSyncRemove:
         result = brain_sync_remove(ctx, source="confluence:12345")
         assert result["status"] == "ok"
         assert result["canonical_id"] == "confluence:12345"
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(0)
 
     @patch("brain_sync.interfaces.mcp.server.remove_source", return_value=SAMPLE_REMOVE_RESULT)
     def test_remove_with_delete_files_invalidates_index_even_if_no_owned_files_were_deleted(
@@ -520,7 +521,7 @@ class TestBrainSyncRemove:
 
         assert result["status"] == "ok"
         mock_remove.assert_called_once()
-        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(0)
 
     @patch(
         "brain_sync.interfaces.mcp.server.remove_source",
@@ -577,7 +578,7 @@ class TestBrainSyncMove:
         assert result["status"] == "ok"
         assert result["new_path"] == "initiatives/moved"
         assert result["files_moved"] is True
-        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(0)
 
     @patch(
         "brain_sync.interfaces.mcp.server.move_source",
@@ -602,7 +603,7 @@ class TestBrainSyncUpdate:
 
         assert result["status"] == "ok"
         mock_update.assert_called_once()
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(0)
 
 
 # ---------------------------------------------------------------------------
@@ -640,7 +641,7 @@ class TestBrainSyncReconcile:
         assert result["not_found"] == ["confluence:99999"]
         assert result["unchanged"] == 3
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
-        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(0)
 
     @patch(
         "brain_sync.interfaces.mcp.server.reconcile_brain",
@@ -656,7 +657,7 @@ class TestBrainSyncReconcile:
         assert result["not_found"] == []
         assert result["unchanged"] == 5
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(0)
 
 
 # ---------------------------------------------------------------------------
@@ -1090,7 +1091,7 @@ class TestBrainSyncOpenFile:
 
 class TestAreaIndex:
     def test_build_and_search(self, brain_root):
-        from brain_sync.interfaces.mcp.server import AreaIndex
+        from brain_sync.query.area_index import AreaIndex
 
         index = AreaIndex.build(brain_root)
         assert len(index.entries) > 0
@@ -1101,7 +1102,7 @@ class TestAreaIndex:
 
     def test_search_deterministic_ordering(self, brain_root):
         """Two searches with same query produce identical results."""
-        from brain_sync.interfaces.mcp.server import AreaIndex
+        from brain_sync.query.area_index import AreaIndex
 
         index = AreaIndex.build(brain_root)
         r1 = index.search("initiatives")
@@ -1110,7 +1111,7 @@ class TestAreaIndex:
 
     def test_missing_summary(self, tmp_path):
         """Areas without summary.md are indexed with empty fields."""
-        from brain_sync.interfaces.mcp.server import AreaIndex
+        from brain_sync.query.area_index import AreaIndex
 
         root = tmp_path / "brain"
         init_brain(root)
@@ -1125,7 +1126,7 @@ class TestAreaIndex:
 
     def test_journal_dirs_excluded(self, tmp_path):
         """Journal directories (insights-only) are not indexed since AreaIndex walks knowledge/."""
-        from brain_sync.interfaces.mcp.server import AreaIndex
+        from brain_sync.query.area_index import AreaIndex
 
         root = tmp_path / "brain"
         init_brain(root)
@@ -1145,20 +1146,15 @@ class TestAreaIndex:
         assert not any("journal" in p for p in paths)
 
     def test_staleness_detection(self, brain_root):
-        """Index detects when summaries change."""
-        from brain_sync.interfaces.mcp.server import AreaIndex
+        """Index staleness follows explicit invalidation, not summary rescans."""
+        from brain_sync.query.area_index import AreaIndex
 
         index = AreaIndex.build(brain_root)
-        assert not index.is_stale(brain_root)
+        assert not index.is_stale(0)
 
-        # Modify a summary
-        summary = _managed_insights(brain_root, "initiatives/AAA") / "summary.md"
-        import time
+        index.mark_stale()
 
-        time.sleep(0.05)  # ensure mtime changes
-        summary.write_text("# Updated\nNew content.", encoding="utf-8")
-
-        assert index.is_stale(brain_root)
+        assert index.is_stale(0)
 
 
 # ---------------------------------------------------------------------------

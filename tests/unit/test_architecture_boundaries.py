@@ -117,12 +117,11 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
     ),
     "src/brain_sync/sync/daemon.py": frozenset(
         {
-            "brain_sync.application.insights",
-            "brain_sync.application.sources",
+            "brain_sync.application.child_discovery",
             "brain_sync.application.reconcile",
-            "brain_sync.application.regen",
             "brain_sync.application.source_state",
-            "brain_sync.regen",
+            "brain_sync.application.sources",
+            "brain_sync.application.sync_events",
             "brain_sync.regen.lifecycle",
             "brain_sync.regen.queue",
         }
@@ -144,11 +143,7 @@ _RULE_EXCEPTION_IMPORTS = {
     "src/brain_sync/sources/test/__init__.py": frozenset({"brain_sync.runtime.config"}),
 }
 
-# Transitional debt documented in docs/architecture/ARCHITECTURE.md.
-_TRANSITIONAL_DEBT_IMPORTS = {
-    "src/brain_sync/sync/reconcile.py": frozenset({"brain_sync.regen"}),
-    "src/brain_sync/sync/watcher.py": frozenset({"brain_sync.regen"}),
-}
+_TRANSITIONAL_DEBT_IMPORTS: dict[str, frozenset[str]] = {}
 
 
 def _iter_python_files() -> list[Path]:
@@ -178,6 +173,50 @@ def _imported_modules(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("brain_sync."):
             modules.add(node.module)
     return modules
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        if base is None:
+            return None
+        return f"{base}.{node.attr}"
+    return None
+
+
+def _import_alias_map(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name != "brain_sync" and not alias.name.startswith("brain_sync."):
+                    continue
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and (node.module == "brain_sync" or node.module.startswith("brain_sync."))
+        ):
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _resolve_import_alias(dotted: str, aliases: dict[str, str]) -> str:
+    parts = dotted.split(".")
+    for size in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:size])
+        target = aliases.get(prefix)
+        if target is None:
+            continue
+        suffix = ".".join(parts[size:])
+        return target if not suffix else f"{target}.{suffix}"
+    return dotted
 
 
 def _module_package(module: str) -> str | None:
@@ -218,8 +257,11 @@ def _assert_exact_allowlist(
             stale.append(rel_path)
             continue
         unexpected = sorted(module for module in actual if module not in allowed_modules)
+        missing = sorted(module for module in allowed_modules if module not in actual)
         if unexpected:
             violations.append(f"{rel_path}: {', '.join(unexpected)}")
+        if missing:
+            stale.append(f"{rel_path}: {', '.join(missing)}")
 
     if violations or stale:
         message_parts = [f"{label} must stay closed and exact."]
@@ -281,6 +323,150 @@ def test_application_barrel_reexports_only_application_submodules() -> None:
         violations
     )
     assert violations == [], message
+
+
+def test_runtime_persistence_owner_is_the_only_production_sqlite_surface() -> None:
+    violations: list[str] = []
+
+    for path in _iter_python_files():
+        rel = _root_relative(path)
+        if rel == "src/brain_sync/runtime/repository.py":
+            continue
+
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        import_aliases = _import_alias_map(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                if any(alias.name == "sqlite3" for alias in node.names):
+                    violations.append(f"{rel}: imports sqlite3 directly")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "sqlite3":
+                    violations.append(f"{rel}: imports from sqlite3 directly")
+                if node.module == "brain_sync.runtime.repository":
+                    private_runtime_helpers = sorted(alias.name for alias in node.names if alias.name.startswith("_"))
+                    if private_runtime_helpers:
+                        violations.append(
+                            f"{rel}: imports private runtime.repository helper(s): {', '.join(private_runtime_helpers)}"
+                        )
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sqlite3"
+                and node.func.attr == "connect"
+            ):
+                violations.append(f"{rel}: calls sqlite3.connect() directly")
+            elif isinstance(node, ast.Attribute):
+                dotted = _dotted_name(node)
+                if dotted is None:
+                    continue
+                resolved = _resolve_import_alias(dotted, import_aliases)
+                if resolved.startswith("brain_sync.runtime.repository._"):
+                    violations.append(f"{rel}: accesses private runtime.repository helper via alias: {dotted}")
+
+    message = "Runtime persistence must stay behind brain_sync.runtime.repository:\n" + "\n".join(violations)
+    assert violations == [], message
+
+
+def test_area_index_build_stays_behind_application_query_index() -> None:
+    violations: list[str] = []
+    allowed_callers = {
+        "src/brain_sync/application/query_index.py",
+        "src/brain_sync/query/area_index.py",
+    }
+
+    for path in _iter_python_files():
+        rel = _root_relative(path)
+        if rel in allowed_callers:
+            continue
+
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        import_aliases = _import_alias_map(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            dotted = _dotted_name(node.func)
+            if dotted is None:
+                continue
+            resolved = _resolve_import_alias(dotted, import_aliases)
+            if resolved in {
+                "brain_sync.application.query_index.AreaIndex.build",
+                "brain_sync.query.area_index.AreaIndex.build",
+            }:
+                violations.append(f"{rel}: calls {dotted} directly")
+
+    message = "AreaIndex lifecycle must stay behind brain_sync.application.query_index:\n" + "\n".join(violations)
+    assert violations == [], message
+
+
+def test_import_alias_resolution_catches_parent_package_runtime_chain() -> None:
+    tree = ast.parse(
+        "import brain_sync.runtime as rt\nimport brain_sync.runtime.repository\nrt.repository._connect_runtime()\n"
+    )
+
+    aliases = _import_alias_map(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    dotted = _dotted_name(call.func)
+
+    assert dotted == "rt.repository._connect_runtime"
+    assert _resolve_import_alias(dotted, aliases) == "brain_sync.runtime.repository._connect_runtime"
+
+
+def test_import_alias_resolution_catches_parent_package_query_chain() -> None:
+    tree = ast.parse(
+        "import brain_sync.query as q\nimport brain_sync.query.area_index\nq.area_index.AreaIndex.build(root)\n"
+    )
+
+    aliases = _import_alias_map(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    dotted = _dotted_name(call.func)
+
+    assert dotted == "q.area_index.AreaIndex.build"
+    assert _resolve_import_alias(dotted, aliases) == "brain_sync.query.area_index.AreaIndex.build"
+
+
+def test_import_alias_resolution_catches_root_package_runtime_chain() -> None:
+    tree = ast.parse("import brain_sync as bs\nbs.runtime.repository._connect_runtime()\n")
+
+    aliases = _import_alias_map(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    dotted = _dotted_name(call.func)
+
+    assert dotted == "bs.runtime.repository._connect_runtime"
+    assert _resolve_import_alias(dotted, aliases) == "brain_sync.runtime.repository._connect_runtime"
+
+
+def test_import_alias_resolution_catches_root_from_import_runtime_chain() -> None:
+    tree = ast.parse("from brain_sync import runtime as rt\nrt.repository._connect_runtime()\n")
+
+    aliases = _import_alias_map(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    dotted = _dotted_name(call.func)
+
+    assert dotted == "rt.repository._connect_runtime"
+    assert _resolve_import_alias(dotted, aliases) == "brain_sync.runtime.repository._connect_runtime"
+
+
+def test_import_alias_resolution_catches_root_package_query_chain() -> None:
+    tree = ast.parse("import brain_sync as bs\nbs.query.area_index.AreaIndex.build(root)\n")
+
+    aliases = _import_alias_map(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    dotted = _dotted_name(call.func)
+
+    assert dotted == "bs.query.area_index.AreaIndex.build"
+    assert _resolve_import_alias(dotted, aliases) == "brain_sync.query.area_index.AreaIndex.build"
+
+
+def test_import_alias_resolution_catches_root_from_import_query_chain() -> None:
+    tree = ast.parse("from brain_sync import query as q\nq.area_index.AreaIndex.build(root)\n")
+
+    aliases = _import_alias_map(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    dotted = _dotted_name(call.func)
+
+    assert dotted == "q.area_index.AreaIndex.build"
+    assert _resolve_import_alias(dotted, aliases) == "brain_sync.query.area_index.AreaIndex.build"
 
 
 def test_no_undocumented_off_graph_imports_exist() -> None:

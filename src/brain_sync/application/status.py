@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from brain_sync.application.insights import load_all_insight_states
 from brain_sync.application.sources import list_sources
 from brain_sync.runtime.config import active_brain_root
-from brain_sync.runtime.token_tracking import get_usage_summary as load_usage_summary
+from brain_sync.runtime.repository import get_usage_summary as load_usage_summary
 
 __all__ = ["StatusSummary", "UsageSummary", "build_status_summary", "get_usage_summary"]
 
@@ -82,10 +83,10 @@ def get_usage_summary(root: Path | None = None, *, days: int = 7) -> UsageSummar
     raw = load_usage_summary(days=days)
     return UsageSummary(
         days=days,
-        total_input=raw["total_input"],
-        total_output=raw["total_output"],
-        total_tokens=raw["total_tokens"],
-        total_invocations=raw["total_invocations"],
-        by_operation=raw["by_operation"],
-        by_day=raw["by_day"],
+        total_input=cast(int, raw["total_input"]),
+        total_output=cast(int, raw["total_output"]),
+        total_tokens=cast(int, raw["total_tokens"]),
+        total_invocations=cast(int, raw["total_invocations"]),
+        by_operation=cast(list[UsageRow], raw["by_operation"]),
+        by_day=cast(list[UsageRow], raw["by_day"]),
     )

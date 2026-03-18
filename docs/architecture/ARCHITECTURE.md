@@ -138,7 +138,7 @@ the normal sync loop:
 
 ```text
 reconcile_sources()        -> manifest-driven file resolution and missing-source handling
-reconcile_knowledge_tree() -> regen-state cleanup and offline content-change detection
+reconcile_knowledge_tree() -> runtime-observation cleanup, narrowed offline change detection, invalidation updates
 load_state()               -> manifest-authoritative merge with runtime progress cache
 regen_session()            -> acquire regen ownership
 RegenQueue()               -> enqueue reconciled paths
@@ -146,17 +146,28 @@ watcher.start()            -> begin filesystem monitoring
 sync loop                  -> normal operation
 ```
 
-`reconcile_knowledge_tree()` compares the live `knowledge/` tree with
-per-area insight state and `regen_locks` rows:
+`reconcile_knowledge_tree()` now combines filesystem truth with
+runtime-owned invalidation state:
 
 1. prune rows for deleted areas
-2. detect offline content changes for tracked areas
+2. use `path_observations` plus dirty knowledge paths to narrow which tracked
+   areas need classification
 3. enqueue newly relevant areas when filesystem state implies regen work
 
 Because Brain Format `1.0` co-locates managed area state under `knowledge/<area>/.brain-sync/`,
 folder moves carry summaries and attachment directories with them
 automatically. The system repairs manifests and runtime state, but no longer
 maintains a separate top-level insight mirror.
+
+Watcher policy and child-discovery policy now live under `application/`:
+
+- `application/sync_events.py` owns watcher move handling, watcher change to
+  regen-enqueue policy, and structure-only repair policy
+- `application/child_discovery.py` owns one-shot child placement and
+  registration policy
+
+`sync/watcher.py` remains an edge observer only, and `sync/daemon.py` remains
+a coordinator that delegates those policies instead of owning them inline.
 
 ### Ownership Model
 
@@ -271,8 +282,10 @@ The system uses a tiered authority model:
 | Source registration intent | `.brain-sync/sources/*.json` | Yes | No |
 | Source sync freshness hint | manifest `sync_hint` plus `sync_cache` | Hint yes, DB no | Yes |
 | Child-discovery requests | `child_discovery_requests` | No | Yes |
+| Query/index invalidation state | `dirty_knowledge_paths`, `path_observations`, `invalidation_tokens` | No | Yes |
 | Insight hashes | `knowledge/**/.brain-sync/insights/insight-state.json` | Yes | Yes |
 | Regen lifecycle | `regen_locks` | No | Yes |
+| Operational event trail | `operational_events` | No | Loss accepted |
 | Token telemetry | `token_events` | No | Loss accepted |
 | Runtime DB schema marker | `meta` | No | Yes |
 
@@ -364,7 +377,11 @@ Current runtime DB tables:
 | `meta` | Runtime schema marker | Recreated |
 | `sync_cache` | Polling schedule and sync progress cache | Rebuilt from manifests and sync hints |
 | `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
+| `dirty_knowledge_paths` | Explicit invalidation set for knowledge areas | Rebuilt from future mutations or startup scan |
+| `path_observations` | Startup reconcile candidate narrowing | Rebuilt from future scans |
+| `invalidation_tokens` | Read-model invalidation generations | Rebuilt from future mutations |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
+| `operational_events` | Append-only local operational event trail | History lost only |
 | `token_events` | Local telemetry history | History lost only |
 
 ### Startup Tree Walk
@@ -376,18 +393,6 @@ offline changes.
 ---
 
 ## 3. Known Technical Debt
-
-### Transitional Boundary Debt
-
-Some seams are still tolerated as transitional debt rather than part of the
-normative package graph:
-
-- `sync/reconcile.py` and `sync/watcher.py` still reach into `regen/` for
-  folder classification and cache invalidation helpers. This is not a general
-  `sync -> regen` allowance; it is a bounded transitional seam.
-
-These seams are ratcheted by the architecture fitness tests so they cannot
-quietly spread to new files or wider imports without review.
 
 **Watcher edge cases**: Windows symlink handling and rapid sequential move
 events still need hardening.
@@ -403,7 +408,7 @@ performance hint rather than a full correctness proof.
 | View | Source of truth | Owner | Refresh trigger | Correctness role |
 |---|---|---|---|---|
 | Global context cache | `knowledge/_core/` | `regen/engine.py` | invalidated on `_core` changes | Correctness-critical |
-| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `application/query_index.py` with transport-owned cached instances | explicit invalidation after known knowledge-tree mutations plus staleness check before queries | Performance-only |
+| AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `application/query_index.py` with transport-owned cached instances | explicit invalidation tokens after known knowledge-tree mutations; startup and query load reuse cached indexes until invalidated | Performance-only |
 
 ### Resolved (2026-03)
 
@@ -416,7 +421,7 @@ performance hint rather than a full correctness proof.
   replacing `__main__.py` as the owner of the daemon loop.
 - regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
-- `0.6.0` / `v24` keeps Brain Format `1.0` stable while shifting normal
+- `0.6.0` / `v25` keeps Brain Format `1.0` stable while shifting normal
   runtime-schema evolution toward in-place migration for supported upgrades.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a

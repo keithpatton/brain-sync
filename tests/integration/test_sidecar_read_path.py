@@ -20,7 +20,8 @@ from brain_sync.brain.sidecar import (
     write_regen_meta,
 )
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen import RegenConfig, classify_folder_change, regen_single_folder
+from brain_sync.regen import classify_folder_change
+from brain_sync.regen.engine import RegenConfig, regen_single_folder
 
 pytestmark = pytest.mark.integration
 

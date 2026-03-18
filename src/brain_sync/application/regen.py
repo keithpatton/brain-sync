@@ -5,15 +5,26 @@ from __future__ import annotations
 from pathlib import Path
 
 from brain_sync.brain.tree import normalize_path
-from brain_sync.regen import RegenFailed, classify_folder_change, invalidate_global_context_cache, regen_all, regen_path
+from brain_sync.regen import RegenFailed, classify_folder_change, regen_all, regen_path
+from brain_sync.regen.engine import invalidate_global_context_cache as _invalidate_global_context_cache
 from brain_sync.regen.lifecycle import regen_session
 
 __all__ = [
     "RegenFailed",
     "classify_folder_change",
-    "invalidate_global_context_cache",
     "run_regen",
 ]
+
+
+def invalidate_global_context_cache() -> None:
+    """Invalidate the cached `_core` regen context."""
+    _invalidate_global_context_cache()
+
+
+def compute_folder_hashes(root: Path, knowledge_path: str) -> tuple[str, str]:
+    """Compute current REGEN hashes for one knowledge path."""
+    _, content_hash, structure_hash = classify_folder_change(root, knowledge_path)
+    return content_hash, structure_hash
 
 
 async def run_regen(root: Path, knowledge_path: str | None = None) -> int:

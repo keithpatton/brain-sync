@@ -62,7 +62,7 @@ from brain_sync.application.local_files import (
     remove_local_file,
 )
 from brain_sync.application.placement import DocumentTitleRequiredError, suggest_document_placement
-from brain_sync.application.query_index import AreaIndex, invalidate_area_index
+from brain_sync.application.query_index import AreaIndex, load_area_index
 from brain_sync.application.reconcile import reconcile_brain
 from brain_sync.application.regen import RegenFailed, run_regen
 from brain_sync.application.roots import resolve_active_root
@@ -109,7 +109,7 @@ class BrainRuntime:
 @asynccontextmanager
 async def _brain_lifespan(_app: FastMCP) -> AsyncIterator[BrainRuntime]:
     root = resolve_active_root()
-    area_index = AreaIndex.build(root)
+    area_index = load_area_index(root)
     regen_lock = asyncio.Lock()
     log.info("brain-sync MCP started, root=%s", root)
     yield BrainRuntime(root=root, area_index=area_index, regen_lock=regen_lock)
@@ -124,8 +124,14 @@ def _runtime(ctx: Context) -> BrainRuntime:
 
 
 def _get_index(rt: BrainRuntime) -> AreaIndex:
-    """Return the MCP-cached area index."""
+    """Return the MCP-cached area index through the application lifecycle seam."""
+    rt.area_index = load_area_index(rt.root, current=rt.area_index)
     return rt.area_index
+
+
+def _mark_cached_index_stale(rt: BrainRuntime) -> None:
+    """Invalidate the in-process MCP cache after a known mutation."""
+    rt.area_index.mark_stale()
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +195,7 @@ def brain_sync_add(
             sync_attachments=sync_attachments,
             child_path=child_path,
         )
-        invalidate_area_index(rt.area_index)
+        _mark_cached_index_stale(rt)
         return {"status": "ok", **asdict(result)}
     except SourceAlreadyExistsError as e:
         return {
@@ -224,7 +230,7 @@ def brain_sync_add_file(
     rt = _runtime(ctx)
     try:
         result = add_local_file(rt.root, source=Path(source), target_path=target_path, copy=copy)
-        invalidate_area_index(rt.area_index)
+        _mark_cached_index_stale(rt)
         return {"status": "ok", **asdict(result)}
     except LocalFileNotFoundError:
         return {"status": "error", "error": "file_not_found", "source": source}
@@ -250,7 +256,7 @@ def brain_sync_remove_file(ctx: Context, path: str) -> dict:
     rt = _runtime(ctx)
     try:
         result = remove_local_file(rt.root, path=path)
-        invalidate_area_index(rt.area_index)
+        _mark_cached_index_stale(rt)
         return {"status": "ok", **asdict(result)}
     except KnowledgePathIsDirectoryError:
         return {"status": "error", "error": "not_a_file", "path": path}
@@ -276,7 +282,7 @@ def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> 
             delete_files=delete_files,
         )
         if delete_files:
-            invalidate_area_index(rt.area_index)
+            _mark_cached_index_stale(rt)
         return {"status": "ok", **asdict(result)}
     except SourceNotFoundError:
         return {
@@ -337,7 +343,7 @@ def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
             to_path=to_path,
         )
         if result.files_moved:
-            invalidate_area_index(rt.area_index)
+            _mark_cached_index_stale(rt)
         return {"status": "ok", **asdict(result)}
     except SourceNotFoundError:
         return {
@@ -360,7 +366,7 @@ def brain_sync_reconcile(ctx: Context) -> dict:
     rt = _runtime(ctx)
     result = reconcile_brain(rt.root)
     if result.has_changes:
-        invalidate_area_index(rt.area_index)
+        _mark_cached_index_stale(rt)
     return {
         "status": "ok",
         "updated": [asdict(entry) for entry in result.updated],
@@ -383,7 +389,7 @@ async def brain_sync_regen(ctx: Context, path: str | None = None) -> dict:
     async with rt.regen_lock:
         try:
             count = await run_regen(rt.root, path)
-            invalidate_area_index(rt.area_index)
+            _mark_cached_index_stale(rt)
             return {
                 "status": "ok",
                 "summaries_regenerated": count,

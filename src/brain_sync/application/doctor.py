@@ -12,7 +12,6 @@ from brain_sync.application.insights import InsightState, load_all_insight_state
 from brain_sync.application.roots import InvalidBrainRootError, _require_root
 from brain_sync.application.source_state import SyncState, save_state, seed_source_state_from_hint
 from brain_sync.brain.fileops import (
-    iterdir_paths,
     path_exists,
     path_is_dir,
     path_is_file,
@@ -39,11 +38,12 @@ from brain_sync.brain.sidecar import read_all_regen_meta, read_regen_meta
 from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.repository import (
     RegenLock,
-    _connect,
     delete_regen_lock,
     delete_source,
     ensure_db,
+    load_all_regen_locks,
     load_sync_progress,
+    reset_runtime_db,
     save_regen_lock,
 )
 
@@ -410,7 +410,7 @@ def check_stale_summaries(root: Path) -> list[Finding]:
 
 
 def check_regen_change_detection(root: Path) -> list[Finding]:
-    from brain_sync.regen import classify_folder_change
+    from brain_sync.application.regen import classify_folder_change
 
     findings: list[Finding] = []
     for state in load_all_insight_states(root):
@@ -472,11 +472,7 @@ def check_missing_sidecars(root: Path) -> list[Finding]:
 def check_sidecar_integrity(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     sidecars = read_all_regen_meta(knowledge_root(root))
-    conn = _connect(root)
-    try:
-        lock_paths = {row[0] for row in conn.execute("SELECT knowledge_path FROM regen_locks").fetchall()}
-    finally:
-        conn.close()
+    lock_paths = {lock.knowledge_path for lock in load_all_regen_locks(root)}
     for knowledge_path in sidecars:
         if knowledge_path not in lock_paths:
             findings.append(
@@ -618,19 +614,12 @@ def _apply_fixes(
 
 
 def rebuild_db(root: Path | None = None) -> DoctorResult:
-    from brain_sync.runtime.repository import _db_path
-
     root = _resolve_doctor_root(root)
     if _legacy_layout_findings(root):
         return DoctorResult(findings=_legacy_layout_findings(root), fix_mode=True)
 
     exported_states = load_all_insight_states(root)
-    db = _db_path(root)
-    for suffix in ("", "-wal", "-shm"):
-        candidate = db.parent / f"{db.name}{suffix}"
-        if path_exists(candidate):
-            candidate.unlink()
-
+    reset_runtime_db(root)
     ensure_db(root)
 
     for state in exported_states:
@@ -680,19 +669,14 @@ def deregister_missing(root: Path | None = None) -> DoctorResult:
 def adopt_baseline(root: Path | None = None) -> DoctorResult:
     import hashlib
 
-    from brain_sync.brain.tree import get_child_dirs, is_readable_file
-    from brain_sync.regen import collect_child_summaries, compute_content_hash, compute_structure_hash
+    from brain_sync.application.regen import compute_folder_hashes
 
     root = _resolve_doctor_root(root)
     if _legacy_layout_findings(root):
         return DoctorResult(findings=_legacy_layout_findings(root), fix_mode=True)
 
     findings: list[Finding] = []
-    conn = _connect(root)
-    try:
-        existing_locks = {row[0] for row in conn.execute("SELECT knowledge_path FROM regen_locks").fetchall()}
-    finally:
-        conn.close()
+    existing_locks = {lock.knowledge_path for lock in load_all_regen_locks(root)}
 
     for knowledge_path, summary_path in _iter_summary_paths(root):
         area_path = summary_path.parents[2]
@@ -719,11 +703,7 @@ def adopt_baseline(root: Path | None = None) -> DoctorResult:
             )
             continue
 
-        child_dirs = get_child_dirs(area_path)
-        has_direct_files = any(is_readable_file(path) for path in iterdir_paths(area_path))
-        child_summaries = collect_child_summaries(root, knowledge_path, child_dirs)
-        content_hash = compute_content_hash(child_summaries, area_path, has_direct_files)
-        structure_hash = compute_structure_hash(child_dirs, area_path, has_direct_files)
+        content_hash, structure_hash = compute_folder_hashes(root, knowledge_path)
         summary_hash = hashlib.sha256(read_text(summary_path, encoding="utf-8").encode("utf-8")).hexdigest()
 
         _save_portable_and_runtime_insight_state(

@@ -16,6 +16,13 @@ from brain_sync.brain.layout import area_insights_dir, area_summary_path, brain_
 from brain_sync.brain.tree import find_all_content_paths as _find_all_content_paths
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen import (
+    RegenFailed,
+    classify_folder_change,
+    regen_all,
+    regen_path,
+)
+from brain_sync.regen.engine import (
+    _REGEN_INSTRUCTIONS,
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
     MAX_PROMPT_TOKENS,
@@ -23,7 +30,6 @@ from brain_sync.regen import (
     ClaudeResult,
     PromptResult,
     RegenConfig,
-    RegenFailed,
     _build_chunk_prompt,
     _build_prompt,
     _collect_child_summaries,
@@ -39,14 +45,11 @@ from brain_sync.regen import (
     _split_markdown_chunks,
     _write_journal_entry,
     classify_change,
-    classify_folder_change,
-    compute_waves,
     invalidate_global_context_cache,
-    regen_all,
-    regen_path,
     regen_single_folder,
     text_similarity,
 )
+from brain_sync.regen.topology import compute_waves
 from brain_sync.runtime.repository import _connect
 from brain_sync.util.retry import claude_breaker
 
@@ -1542,8 +1545,6 @@ class TestJournalOptIn:
 class TestPromptVersionAndContent:
     def test_prompt_version_in_instructions(self):
         """INSIGHT_INSTRUCTIONS.md contains the version marker."""
-        from brain_sync.regen import _REGEN_INSTRUCTIONS
-
         assert "insight-v2" in _REGEN_INSTRUCTIONS
 
     def test_prompt_version_constant(self):

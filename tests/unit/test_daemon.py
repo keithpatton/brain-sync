@@ -104,7 +104,7 @@ async def _run_daemon_once(root: Path, fetch_children_flags: list[bool]) -> None
 
     with (
         patch(
-            "brain_sync.application.sources.reconcile_sources",
+            "brain_sync.sync.daemon.reconcile_sources",
             return_value=_FakeSourceReconcileResult(updated=[], not_found=[]),
         ),
         patch(

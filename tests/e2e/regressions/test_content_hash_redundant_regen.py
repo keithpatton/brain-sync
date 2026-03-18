@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen import RegenConfig, regen_single_folder
+from brain_sync.regen.engine import RegenConfig, regen_single_folder
 
 pytestmark = [pytest.mark.e2e, pytest.mark.regression]
 

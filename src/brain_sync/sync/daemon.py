@@ -8,21 +8,23 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.application.insights import load_insight_state
+from brain_sync.application.child_discovery import process_discovered_children
 from brain_sync.application.reconcile import reconcile_knowledge_tree
 from brain_sync.application.source_state import SyncState, load_state, save_state
-from brain_sync.brain.repository import BrainRepository
+from brain_sync.application.sources import reconcile_sources
+from brain_sync.application.sync_events import apply_folder_move, enqueue_regen_path, handle_watcher_folder_change
 from brain_sync.brain.tree import normalize_path
+from brain_sync.regen.lifecycle import regen_session
 from brain_sync.regen.queue import RegenQueue
-from brain_sync.runtime.child_requests import clear_child_discovery_request, load_child_discovery_request
 from brain_sync.runtime.repository import (
-    RegenLock,
-    save_regen_lock,
+    load_child_discovery_request,
+    prune_token_events,
     write_daemon_status,
 )
+from brain_sync.runtime.token_tracking import load_retention_days
 from brain_sync.sync.pipeline import process_source
 from brain_sync.sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
-from brain_sync.sync.watcher import KnowledgeWatcher, mirror_folder_move
+from brain_sync.sync.watcher import KnowledgeWatcher
 
 log = logging.getLogger(__name__)
 
@@ -60,18 +62,12 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
 async def run(root: Path) -> None:
     log.info("brain-sync starting, root: %s", root)
 
-    from brain_sync.application.regen import classify_folder_change, invalidate_global_context_cache
-    from brain_sync.application.sources import reconcile_sources
-    from brain_sync.regen.lifecycle import regen_session
-
     # Reconcile target_paths with filesystem before loading state for sync.
     # This handles files moved while the daemon was not running.
     # INVARIANT: reconcile must run before _ensure_source_states() because
     # reconcile repairs manifest-backed placement before the scheduler loads
     # source state for the sync loop.
     pid = os.getpid()
-    repository = BrainRepository(root)
-
     reconcile_result = reconcile_sources(root)
     tree_result = reconcile_knowledge_tree(root)
     write_daemon_status(pid, "starting")
@@ -85,10 +81,7 @@ async def run(root: Path) -> None:
                 entry.new_path,
             )
 
-    # Prune old telemetry rows on startup
-    from brain_sync.runtime.token_tracking import load_retention_days, prune_token_events
-
-    prune_token_events(load_retention_days())
+    prune_token_events(retention_days=load_retention_days())
 
     state = load_state(root)
     scheduler = Scheduler()
@@ -106,18 +99,13 @@ async def run(root: Path) -> None:
         # automatically after offline moves.
         if reconcile_result.updated:
             for entry in reconcile_result.updated:
-                regen_queue.enqueue(entry.new_path)
-                # Invalidate the _core-derived global context cache if _core/ is involved.
-                for path in (entry.old_path, entry.new_path):
-                    if path == "_core" or path.startswith("_core/"):
-                        invalidate_global_context_cache()
-                        break
+                enqueue_regen_path(root, knowledge_path=entry.new_path, enqueue=regen_queue.enqueue, reason="reconcile")
 
         # Enqueue tree reconcile paths for regen (offline structural changes)
         for path in tree_result.content_changed:
-            regen_queue.enqueue(path)
+            enqueue_regen_path(root, knowledge_path=path, enqueue=regen_queue.enqueue, reason="reconcile")
         for path in tree_result.enqueued_paths:
-            regen_queue.enqueue(path)
+            enqueue_regen_path(root, knowledge_path=path, enqueue=regen_queue.enqueue, reason="reconcile")
 
         # Start watcher after reconcile + enqueue to avoid spurious events
         watcher.start()
@@ -128,46 +116,24 @@ async def run(root: Path) -> None:
                 while True:
                     # 1a. Handle folder moves (co-located managed state moves with the folder)
                     for move in watcher.drain_moves():
-                        mirror_folder_move(root, move)
+                        apply_folder_move(root, move=move, enqueue=regen_queue.enqueue)
 
                     # 1b. Handle watcher events (knowledge/ changes)
                     changed_paths = watcher.drain_events()
                     if changed_paths:
                         for folder in changed_paths:
                             rel = _knowledge_rel_path(root, folder)
-                            change, _, new_structure_hash = classify_folder_change(root, rel)
-                            if change.change_type == "none":
-                                log.debug("Watcher event for %s ignored (content hash unchanged)", rel or "(root)")
-                                continue
-                            if change.structural:
-                                # Rename only — persist updated structure_hash, no regen
-                                log.info(
-                                    "Watcher event for %s: structure-only change (rename), skipping regen",
-                                    rel or "(root)",
-                                )
-                                istate = load_insight_state(root, rel)
-                                if istate:
-                                    if istate.content_hash:
-                                        repository.save_portable_insight_state(
-                                            rel,
-                                            content_hash=istate.content_hash,
-                                            summary_hash=istate.summary_hash,
-                                            structure_hash=new_structure_hash,
-                                            last_regen_utc=istate.last_regen_utc,
-                                        )
-                                    save_regen_lock(
-                                        root,
-                                        RegenLock(
-                                            knowledge_path=rel,
-                                            regen_status=istate.regen_status,
-                                            regen_started_utc=istate.regen_started_utc,
-                                            owner_id=istate.owner_id,
-                                            error_reason=istate.error_reason,
-                                        ),
-                                    )
-                                continue
-                            log.info("Knowledge change detected: %s", rel or "(root)")
-                            regen_queue.enqueue(rel)
+                            outcome = handle_watcher_folder_change(
+                                root,
+                                knowledge_path=rel,
+                                enqueue=regen_queue.enqueue,
+                            )
+                            if outcome.action == "enqueued":
+                                log.info("Knowledge change detected: %s", rel or "(root)")
+                            elif outcome.action == "structure_enqueued":
+                                log.info("Watcher structure-only change enqueued for %s", rel or "(root)")
+                            else:
+                                log.debug("Watcher event for %s ignored", rel or "(root)")
 
                     # 2. Periodic state reload (pick up sources added via CLI)
                     now = time.monotonic()
@@ -198,59 +164,25 @@ async def run(root: Path) -> None:
                             ss.current_interval_secs = interval
                             # Enqueue regen if content changed
                             if changed and ss.target_path:
-                                regen_queue.enqueue(ss.target_path)
-                                # Invalidate the _core-derived global context cache if the source targets _core/.
-                                if ss.target_path == "_core" or ss.target_path.startswith("_core/"):
-                                    invalidate_global_context_cache()
+                                enqueue_regen_path(
+                                    root,
+                                    knowledge_path=ss.target_path,
+                                    enqueue=regen_queue.enqueue,
+                                    reason="source_changed",
+                                    canonical_id=key,
+                                )
 
-                            # Process discovered children (one-shot pattern)
-                            if child_request is not None and child_request.fetch_children and discovered_children:
-                                from brain_sync.application.sources import SourceAlreadyExistsError, add_source
-                                from brain_sync.sources import slugify
-
-                                parent_target = ss.target_path
-
-                                # Compute child target path
-                                if child_request.child_path == ".":
-                                    child_target_base = parent_target
-                                elif child_request.child_path:
-                                    child_target_base = (
-                                        f"{parent_target}/{child_request.child_path}"
-                                        if parent_target
-                                        else child_request.child_path
-                                    )
-                                else:
-                                    # Default: {parent_target}/{parent_canonical_slug}/
-                                    parent_id = key.split(":", 1)[1]
-                                    slug = slugify(ss.source_url.rstrip("/").split("/")[-1] or parent_id)
-                                    suffix = f"c{parent_id}-{slug}"
-                                    child_target_base = f"{parent_target}/{suffix}" if parent_target else suffix
-
-                                for child in discovered_children:
-                                    try:
-                                        child_result = add_source(
-                                            root=root,
-                                            url=child.url,
-                                            target_path=child_target_base,
-                                            sync_attachments=ss.sync_attachments,
-                                        )
-                                        # Update in-memory state and schedule immediate sync
-                                        child_ss = load_state(root).sources.get(child_result.canonical_id)
-                                        if child_ss:
-                                            state.sources[child_result.canonical_id] = child_ss
-                                        scheduler.schedule_immediate(child_result.canonical_id)
-                                        log.info(
-                                            "Added child source %s → knowledge/%s",
-                                            child_result.canonical_id,
-                                            child_result.target_path,
-                                        )
-                                    except SourceAlreadyExistsError:
-                                        log.debug("Child %s already registered, skipping", child.canonical_id)
-                                    except Exception as child_err:
-                                        log.warning("Failed to add child %s: %s", child.canonical_id, child_err)
-
-                            if child_request is not None and child_request.fetch_children:
-                                clear_child_discovery_request(root, key)
+                            state = process_discovered_children(
+                                root,
+                                parent_canonical_id=key,
+                                parent_source_url=ss.source_url,
+                                parent_target=ss.target_path,
+                                sync_attachments=ss.sync_attachments,
+                                request=child_request,
+                                discovered_children=discovered_children,
+                                schedule_immediate=scheduler.schedule_immediate,
+                                state=state,
+                            )
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)
                             ss.current_interval_secs = min(
@@ -291,14 +223,14 @@ async def run(root: Path) -> None:
                     # main loop is asleep and the filesystem move has already
                     # happened on disk.
                     for move in watcher.drain_moves():
-                        mirror_folder_move(root, move)
+                        apply_folder_move(root, move=move, enqueue=regen_queue.enqueue)
                 except Exception:
                     log.warning("Failed to flush pending watcher moves on shutdown", exc_info=True)
 
                 watcher.stop()
                 try:
                     for move in watcher.drain_moves():
-                        mirror_folder_move(root, move)
+                        apply_folder_move(root, move=move, enqueue=regen_queue.enqueue)
                 except Exception:
                     log.warning("Failed to flush watcher moves after stop", exc_info=True)
                 try:

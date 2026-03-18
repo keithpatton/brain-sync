@@ -18,14 +18,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.regen import (
-    _PROPAGATES_UP,
-    _parent_path,
-    compute_waves,
-    regen_path,
-    regen_single_folder,
+from brain_sync.regen.engine import regen_path, regen_single_folder
+from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
+from brain_sync.runtime.repository import (
+    RegenLock,
+    acquire_regen_ownership,
+    load_regen_lock,
+    save_regen_lock,
 )
-from brain_sync.runtime.repository import RegenLock, acquire_regen_ownership, load_regen_lock, save_regen_lock
 
 log = logging.getLogger(__name__)
 
@@ -181,8 +181,8 @@ class RegenQueue:
                     )
                     if result.action == "regenerated":
                         total += 1
-                    if result.action in _PROPAGATES_UP and path:
-                        dirty.add(_parent_path(path))
+                    if result.action in PROPAGATES_UP and path:
+                        dirty.add(parent_path(path))
 
                     # Cooldown/rate tracking only for directly-enqueued paths
                     if path in ready_set:

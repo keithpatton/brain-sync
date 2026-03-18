@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-RUNTIME_DB_SCHEMA_VERSION = 24
+RUNTIME_DB_SCHEMA_VERSION = 25
 RUNTIME_DB_DIRNAME = "db"
 RUNTIME_DB_FILENAME = "brain-sync.sqlite"
 DAEMON_STATUS_FILENAME = "daemon.json"

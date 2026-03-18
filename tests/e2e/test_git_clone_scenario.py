@@ -78,7 +78,7 @@ class TestGitCloneScenario:
         import asyncio
 
         from brain_sync.llm.fake import FakeBackend
-        from brain_sync.regen import RegenConfig, regen_single_folder
+        from brain_sync.regen.engine import RegenConfig, regen_single_folder
 
         backend = FakeBackend(mode="stable")
         regen_config = RegenConfig(model="fake-model", effort="low", timeout=30)

@@ -5,9 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from brain_sync.application.reconcile import reconcile_brain
+from brain_sync.application.reconcile import TreeReconcileResult, reconcile_brain
 from brain_sync.application.sources import ReconcileEntry, ReconcileResult
-from brain_sync.sync.reconcile import TreeReconcileResult
 
 pytestmark = pytest.mark.unit
 

@@ -19,7 +19,7 @@ def test_invalidated_area_index_rebuilds_on_next_load(tmp_path: Path) -> None:
     current = load_area_index(root)
     assert any(entry.path == "initiatives/alpha" for entry in current.entries)
 
-    invalidate_area_index(current)
+    invalidate_area_index(root, current, knowledge_paths=["initiatives/alpha"], reason="test")
     (root / "knowledge" / "initiatives" / "beta" / "notes.md").parent.mkdir(parents=True)
     (root / "knowledge" / "initiatives" / "beta" / "notes.md").write_text("beta", encoding="utf-8")
 
@@ -27,3 +27,22 @@ def test_invalidated_area_index_rebuilds_on_next_load(tmp_path: Path) -> None:
 
     assert rebuilt is not current
     assert any(entry.path == "initiatives/beta" for entry in rebuilt.entries)
+
+
+def test_area_index_freshness_does_not_rescan_without_invalidation(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    init_brain(root)
+    alpha = root / "knowledge" / "initiatives" / "alpha"
+    alpha.mkdir(parents=True)
+    (alpha / "notes.md").write_text("alpha", encoding="utf-8")
+
+    current = load_area_index(root)
+
+    beta = root / "knowledge" / "initiatives" / "beta"
+    beta.mkdir(parents=True)
+    (beta / "notes.md").write_text("beta", encoding="utf-8")
+
+    unchanged = load_area_index(root, current=current)
+
+    assert unchanged is current
+    assert not any(entry.path == "initiatives/beta" for entry in unchanged.entries)

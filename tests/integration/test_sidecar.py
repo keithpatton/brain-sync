@@ -10,7 +10,7 @@ from brain_sync.application.insights import load_insight_state
 from brain_sync.brain.layout import area_insights_dir, area_summary_path
 from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen import RegenConfig, regen_single_folder
+from brain_sync.regen.engine import RegenConfig, regen_single_folder
 
 pytestmark = pytest.mark.integration
 

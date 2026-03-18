@@ -9,7 +9,7 @@ import pytest
 from brain_sync.application.reconcile import reconcile_knowledge_tree
 from brain_sync.brain.layout import area_insights_dir
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen import RegenConfig, regen_single_folder
+from brain_sync.regen.engine import RegenConfig, regen_single_folder
 
 pytestmark = pytest.mark.integration
 

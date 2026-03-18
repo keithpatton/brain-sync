@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
 from typing import ClassVar, Protocol
@@ -22,7 +23,19 @@ from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = RUNTIME_DB_SCHEMA_VERSION
-_ALLOWED_RUNTIME_TABLES = frozenset({"meta", "sync_cache", "regen_locks", "token_events", "child_discovery_requests"})
+_ALLOWED_RUNTIME_TABLES = frozenset(
+    {
+        "meta",
+        "sync_cache",
+        "regen_locks",
+        "token_events",
+        "child_discovery_requests",
+        "dirty_knowledge_paths",
+        "path_observations",
+        "invalidation_tokens",
+        "operational_events",
+    }
+)
 
 _TOKEN_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS token_events (
@@ -116,6 +129,55 @@ CREATE TABLE IF NOT EXISTS child_discovery_requests (
 );
 """
 
+_DIRTY_KNOWLEDGE_PATHS_DDL = """
+CREATE TABLE IF NOT EXISTS dirty_knowledge_paths (
+    knowledge_path TEXT PRIMARY KEY,
+    reason TEXT,
+    updated_utc TEXT NOT NULL
+);
+"""
+
+_PATH_OBSERVATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS path_observations (
+    knowledge_path TEXT PRIMARY KEY,
+    observed_mtime_ns INTEGER NOT NULL,
+    observed_utc TEXT NOT NULL
+);
+"""
+
+_INVALIDATION_TOKENS_DDL = """
+CREATE TABLE IF NOT EXISTS invalidation_tokens (
+    scope TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 0,
+    dirty INTEGER NOT NULL DEFAULT 0 CHECK(dirty IN (0,1)),
+    updated_utc TEXT NOT NULL
+);
+"""
+
+_OPERATIONAL_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS operational_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    created_utc TEXT NOT NULL,
+    session_id TEXT,
+    owner_id TEXT,
+    canonical_id TEXT,
+    knowledge_path TEXT,
+    outcome TEXT,
+    duration_ms INTEGER,
+    details_json TEXT
+);
+
+CREATE INDEX idx_operational_events_created ON operational_events(created_utc);
+CREATE INDEX idx_operational_events_type ON operational_events(event_type, created_utc);
+CREATE INDEX idx_operational_events_canonical ON operational_events(canonical_id, created_utc)
+    WHERE canonical_id IS NOT NULL;
+CREATE INDEX idx_operational_events_knowledge_path ON operational_events(knowledge_path, created_utc)
+    WHERE knowledge_path IS NOT NULL;
+CREATE INDEX idx_operational_events_session ON operational_events(session_id, created_utc)
+    WHERE session_id IS NOT NULL;
+"""
+
 # Legacy migration placeholders. Supported runtime upgrades are handled by
 # _migrate_runtime_db(); the older deep-history migration path is retained only
 # as a guard rail with an explicit failure mode for unsupported schemas.
@@ -182,6 +244,35 @@ class RegenLock(_PathNormalized):
     error_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class ChildDiscoveryRequest:
+    canonical_id: str
+    fetch_children: bool = False
+    child_path: str | None = None
+    updated_utc: str | None = None
+
+
+@dataclass(frozen=True)
+class InvalidationToken:
+    scope: str
+    generation: int
+    dirty: bool
+    updated_utc: str
+
+
+@dataclass(frozen=True)
+class OperationalEvent:
+    event_type: str
+    created_utc: str
+    session_id: str | None = None
+    owner_id: str | None = None
+    canonical_id: str | None = None
+    knowledge_path: str | None = None
+    outcome: str | None = None
+    duration_ms: int | None = None
+    details_json: str | None = None
+
+
 def _db_path(root: Path) -> Path:
     return RUNTIME_DB_FILE
 
@@ -199,6 +290,10 @@ def _initialize_runtime_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_REGEN_LOCKS_DDL)
     conn.executescript(_TOKEN_EVENTS_DDL)
     conn.executescript(_CHILD_DISCOVERY_REQUESTS_DDL)
+    conn.executescript(_DIRTY_KNOWLEDGE_PATHS_DDL)
+    conn.executescript(_PATH_OBSERVATIONS_DDL)
+    conn.executescript(_INVALIDATION_TOKENS_DDL)
+    conn.executescript(_OPERATIONAL_EVENTS_DDL)
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
@@ -214,10 +309,23 @@ def _migrate_runtime_db(conn: sqlite3.Connection, from_version: int) -> int:
         conn.executescript(_CHILD_DISCOVERY_REQUESTS_DDL)
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            ("24",),
+        )
+        conn.commit()
+        log.info("Migrated runtime DB schema from v23 to v24")
+        version = 24
+
+    if version == 24:
+        conn.executescript(_DIRTY_KNOWLEDGE_PATHS_DDL)
+        conn.executescript(_PATH_OBSERVATIONS_DDL)
+        conn.executescript(_INVALIDATION_TOKENS_DDL)
+        conn.executescript(_OPERATIONAL_EVENTS_DDL)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
-        log.info("Migrated runtime DB schema from v23 to v%d", SCHEMA_VERSION)
+        log.info("Migrated runtime DB schema from v24 to v%d", SCHEMA_VERSION)
         version = SCHEMA_VERSION
 
     return version
@@ -869,6 +977,24 @@ def _connect(root: Path) -> sqlite3.Connection:
         _reset_runtime_db(db)
 
 
+def _connect_runtime() -> sqlite3.Connection:
+    """Open the config-dir-scoped runtime DB without a brain-root dependency."""
+    return _connect(Path("."))
+
+
+def _utc_now(*, timespec: str = "seconds") -> str:
+    return datetime.now(UTC).isoformat(timespec=timespec)
+
+
+_event_failure_logged = False
+
+
+def _serialize_details(details: Mapping[str, object] | str | None) -> str | None:
+    if details is None or isinstance(details, str):
+        return details
+    return json.dumps(details, sort_keys=True)
+
+
 def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
     """Read all sync_cache rows from the DB as runtime-only progress records."""
     try:
@@ -981,6 +1107,11 @@ def ensure_db(root: Path) -> None:
     conn.close()
 
 
+def reset_runtime_db(root: Path) -> None:
+    """Delete runtime DB files so the next open recreates the current schema."""
+    _reset_runtime_db(_db_path(root))
+
+
 def prune_db(root: Path, active_keys: set[str]) -> None:
     """Remove rows from the DB that are no longer active."""
     conn = _connect(root)
@@ -994,6 +1125,491 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
             conn.commit()
     finally:
         conn.close()
+
+
+def load_child_discovery_request(root: Path, canonical_id: str) -> ChildDiscoveryRequest | None:
+    conn = _connect(root)
+    try:
+        row = conn.execute(
+            "SELECT canonical_id, fetch_children, child_path, updated_utc "
+            "FROM child_discovery_requests WHERE canonical_id = ?",
+            (canonical_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    return ChildDiscoveryRequest(
+        canonical_id=row[0],
+        fetch_children=bool(row[1]),
+        child_path=row[2],
+        updated_utc=row[3],
+    )
+
+
+def load_all_child_discovery_requests(root: Path) -> dict[str, ChildDiscoveryRequest]:
+    conn = _connect(root)
+    try:
+        rows = conn.execute(
+            "SELECT canonical_id, fetch_children, child_path, updated_utc FROM child_discovery_requests"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        row[0]: ChildDiscoveryRequest(
+            canonical_id=row[0],
+            fetch_children=bool(row[1]),
+            child_path=row[2],
+            updated_utc=row[3],
+        )
+        for row in rows
+    }
+
+
+def save_child_discovery_request(
+    root: Path,
+    canonical_id: str,
+    *,
+    fetch_children: bool,
+    child_path: str | None,
+) -> None:
+    if not fetch_children:
+        clear_child_discovery_request(root, canonical_id)
+        return
+
+    updated_utc = _utc_now()
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "INSERT INTO child_discovery_requests "
+            "(canonical_id, fetch_children, child_path, updated_utc) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(canonical_id) DO UPDATE SET "
+            "fetch_children=excluded.fetch_children, "
+            "child_path=excluded.child_path, "
+            "updated_utc=excluded.updated_utc",
+            (canonical_id, int(fetch_children), child_path, updated_utc),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    record_operational_event(
+        event_type="source.child_request.saved",
+        canonical_id=canonical_id,
+        outcome="saved",
+        details={"fetch_children": fetch_children, "child_path": child_path},
+    )
+
+
+def clear_child_discovery_request(root: Path, canonical_id: str) -> None:
+    conn = _connect(root)
+    try:
+        conn.execute("DELETE FROM child_discovery_requests WHERE canonical_id = ?", (canonical_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    record_operational_event(
+        event_type="source.child_request.cleared",
+        canonical_id=canonical_id,
+        outcome="cleared",
+    )
+
+
+def record_token_event(
+    *,
+    session_id: str,
+    operation_type: str,
+    resource_type: str | None,
+    resource_id: str | None,
+    is_chunk: bool,
+    model: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    duration_ms: int | None,
+    num_turns: int | None,
+    success: bool,
+) -> None:
+    global _event_failure_logged
+
+    try:
+        created_utc = _utc_now()
+        success_int = 1 if success else 0
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+
+        conn = _connect_runtime()
+        try:
+            conn.execute(
+                "INSERT INTO token_events "
+                "(session_id, operation_type, resource_type, resource_id, "
+                "is_chunk, model, input_tokens, output_tokens, total_tokens, "
+                "duration_ms, num_turns, success, created_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    operation_type,
+                    resource_type,
+                    resource_id,
+                    int(is_chunk),
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    duration_ms,
+                    num_turns,
+                    success_int,
+                    created_utc,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        if not _event_failure_logged:
+            log.warning("Failed to record token event", exc_info=True)
+            _event_failure_logged = True
+    else:
+        _event_failure_logged = False
+
+
+def get_usage_summary(*, days: int = 7) -> dict[str, object]:
+    conn = _connect_runtime()
+    try:
+        cutoff = f"-{days} days"
+
+        row = conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0), "
+            "COALESCE(SUM(output_tokens), 0), "
+            "COALESCE(SUM(total_tokens), 0), "
+            "COUNT(*) "
+            "FROM token_events "
+            "WHERE created_utc >= datetime('now', ?)",
+            (cutoff,),
+        ).fetchone()
+        total_input, total_output, total_tokens, total_invocations = row
+
+        by_op_rows = conn.execute(
+            "SELECT operation_type, "
+            "COALESCE(SUM(input_tokens), 0), "
+            "COALESCE(SUM(output_tokens), 0), "
+            "COALESCE(SUM(total_tokens), 0), "
+            "COUNT(*) "
+            "FROM token_events "
+            "WHERE created_utc >= datetime('now', ?) "
+            "GROUP BY operation_type ORDER BY operation_type",
+            (cutoff,),
+        ).fetchall()
+        by_operation = [
+            {
+                "operation": row[0],
+                "input_tokens": row[1],
+                "output_tokens": row[2],
+                "total_tokens": row[3],
+                "invocations": row[4],
+            }
+            for row in by_op_rows
+        ]
+
+        by_day_rows = conn.execute(
+            "SELECT DATE(created_utc) as day, "
+            "COALESCE(SUM(input_tokens), 0), "
+            "COALESCE(SUM(output_tokens), 0), "
+            "COALESCE(SUM(total_tokens), 0), "
+            "COUNT(*) "
+            "FROM token_events "
+            "WHERE created_utc >= datetime('now', ?) "
+            "GROUP BY day ORDER BY day",
+            (cutoff,),
+        ).fetchall()
+        by_day = [
+            {
+                "day": row[0],
+                "input_tokens": row[1],
+                "output_tokens": row[2],
+                "total_tokens": row[3],
+                "invocations": row[4],
+            }
+            for row in by_day_rows
+        ]
+
+        return {
+            "total_input": total_input,
+            "total_output": total_output,
+            "total_tokens": total_tokens,
+            "total_invocations": total_invocations,
+            "by_operation": by_operation,
+            "by_day": by_day,
+        }
+    finally:
+        conn.close()
+
+
+def prune_token_events(*, retention_days: int) -> int:
+    try:
+        cutoff = f"-{retention_days} days"
+        conn = _connect_runtime()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM token_events WHERE created_utc < datetime('now', ?)",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if deleted:
+            log.info("Pruned %d token_events rows older than %d days", deleted, retention_days)
+        return deleted
+    except Exception:
+        global _event_failure_logged
+        if not _event_failure_logged:
+            log.warning("Failed to prune token events", exc_info=True)
+            _event_failure_logged = True
+        return 0
+
+
+def mark_knowledge_paths_dirty(root: Path, knowledge_paths: Iterable[str], *, reason: str | None = None) -> None:
+    rows = [(_normalize_runtime_path(path), reason, _utc_now()) for path in knowledge_paths]
+    if not rows:
+        return
+    conn = _connect(root)
+    try:
+        conn.executemany(
+            "INSERT INTO dirty_knowledge_paths (knowledge_path, reason, updated_utc) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(knowledge_path) DO UPDATE SET "
+            "reason=excluded.reason, updated_utc=excluded.updated_utc",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_dirty_knowledge_paths(root: Path) -> set[str]:
+    conn = _connect(root)
+    try:
+        rows = conn.execute("SELECT knowledge_path FROM dirty_knowledge_paths").fetchall()
+    finally:
+        conn.close()
+    return {row[0] for row in rows}
+
+
+def clear_dirty_knowledge_paths(root: Path, knowledge_paths: Iterable[str]) -> None:
+    rows = [(_normalize_runtime_path(path),) for path in knowledge_paths]
+    if not rows:
+        return
+    conn = _connect(root)
+    try:
+        conn.executemany("DELETE FROM dirty_knowledge_paths WHERE knowledge_path = ?", rows)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_path_observations(root: Path) -> dict[str, int]:
+    conn = _connect(root)
+    try:
+        rows = conn.execute("SELECT knowledge_path, observed_mtime_ns FROM path_observations").fetchall()
+    finally:
+        conn.close()
+    return {row[0]: row[1] for row in rows}
+
+
+def save_path_observations(
+    root: Path,
+    observations: Mapping[str, int],
+    *,
+    active_paths: set[str] | None = None,
+) -> None:
+    now = _utc_now()
+    conn = _connect(root)
+    try:
+        conn.executemany(
+            "INSERT INTO path_observations (knowledge_path, observed_mtime_ns, observed_utc) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(knowledge_path) DO UPDATE SET "
+            "observed_mtime_ns=excluded.observed_mtime_ns, observed_utc=excluded.observed_utc",
+            [(_normalize_runtime_path(path), mtime, now) for path, mtime in observations.items()],
+        )
+        if active_paths is not None:
+            if active_paths:
+                placeholders = ", ".join("?" for _ in active_paths)
+                conn.execute(
+                    f"DELETE FROM path_observations WHERE knowledge_path NOT IN ({placeholders})",
+                    tuple(sorted(active_paths)),
+                )
+            else:
+                conn.execute("DELETE FROM path_observations")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_invalidation_token(root: Path, scope: str) -> InvalidationToken:
+    conn = _connect(root)
+    try:
+        row = conn.execute(
+            "SELECT scope, generation, dirty, updated_utc FROM invalidation_tokens WHERE scope = ?",
+            (scope,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return InvalidationToken(scope=scope, generation=0, dirty=False, updated_utc="")
+
+    return InvalidationToken(scope=row[0], generation=row[1], dirty=bool(row[2]), updated_utc=row[3])
+
+
+def advance_invalidation_token(root: Path, scope: str) -> InvalidationToken:
+    updated_utc = _utc_now()
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "INSERT INTO invalidation_tokens (scope, generation, dirty, updated_utc) "
+            "VALUES (?, 1, 1, ?) "
+            "ON CONFLICT(scope) DO UPDATE SET "
+            "generation=generation + 1, dirty=1, updated_utc=excluded.updated_utc",
+            (scope, updated_utc),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return load_invalidation_token(root, scope)
+
+
+def clear_invalidation_token(root: Path, scope: str) -> InvalidationToken:
+    updated_utc = _utc_now()
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "INSERT INTO invalidation_tokens (scope, generation, dirty, updated_utc) "
+            "VALUES (?, 0, 0, ?) "
+            "ON CONFLICT(scope) DO UPDATE SET dirty=0, updated_utc=excluded.updated_utc",
+            (scope, updated_utc),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return load_invalidation_token(root, scope)
+
+
+def invalidate_area_index(root: Path, knowledge_paths: Iterable[str], *, reason: str) -> InvalidationToken:
+    normalized_paths = [_normalize_runtime_path(path) for path in knowledge_paths]
+    mark_knowledge_paths_dirty(root, normalized_paths, reason=reason)
+    token = advance_invalidation_token(root, "area_index")
+    record_operational_event(
+        event_type="query.index.invalidated",
+        knowledge_path=normalized_paths[0] if len(normalized_paths) == 1 else None,
+        outcome=reason,
+        details={"knowledge_paths": normalized_paths},
+    )
+    return token
+
+
+def rename_knowledge_path_prefix(root: Path, old_prefix: str, new_prefix: str) -> None:
+    old_prefix = _normalize_runtime_path(old_prefix)
+    new_prefix = _normalize_runtime_path(new_prefix)
+    if not old_prefix or not new_prefix:
+        return
+
+    conn = _connect(root)
+    try:
+        for table in ("regen_locks", "dirty_knowledge_paths", "path_observations"):
+            rows = conn.execute(f"SELECT knowledge_path FROM {table}").fetchall()
+            for (knowledge_path,) in rows:
+                if knowledge_path == old_prefix or knowledge_path.startswith(old_prefix + "/"):
+                    replacement = new_prefix + knowledge_path[len(old_prefix) :]
+                    conn.execute(
+                        f"UPDATE OR REPLACE {table} SET knowledge_path = ? WHERE knowledge_path = ?",
+                        (replacement, knowledge_path),
+                    )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_operational_event(
+    *,
+    event_type: str,
+    session_id: str | None = None,
+    owner_id: str | None = None,
+    canonical_id: str | None = None,
+    knowledge_path: str | None = None,
+    outcome: str | None = None,
+    duration_ms: int | None = None,
+    details: Mapping[str, object] | str | None = None,
+) -> None:
+    global _event_failure_logged
+
+    try:
+        conn = _connect_runtime()
+        try:
+            conn.execute(
+                "INSERT INTO operational_events "
+                "(event_type, created_utc, session_id, owner_id, canonical_id, "
+                "knowledge_path, outcome, duration_ms, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_type,
+                    _utc_now(),
+                    session_id,
+                    owner_id,
+                    canonical_id,
+                    _normalize_runtime_path(knowledge_path) if knowledge_path is not None else None,
+                    outcome,
+                    duration_ms,
+                    _serialize_details(details),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _event_failure_logged = False
+    except Exception:
+        if not _event_failure_logged:
+            log.warning("Failed to record operational event", exc_info=True)
+            _event_failure_logged = True
+
+
+def load_operational_events(root: Path, *, event_type: str | None = None) -> list[OperationalEvent]:
+    conn = _connect(root)
+    try:
+        if event_type is None:
+            rows = conn.execute(
+                "SELECT event_type, created_utc, session_id, owner_id, canonical_id, "
+                "knowledge_path, outcome, duration_ms, details_json "
+                "FROM operational_events ORDER BY id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT event_type, created_utc, session_id, owner_id, canonical_id, "
+                "knowledge_path, outcome, duration_ms, details_json "
+                "FROM operational_events WHERE event_type = ? ORDER BY id",
+                (event_type,),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        OperationalEvent(
+            event_type=row[0],
+            created_utc=row[1],
+            session_id=row[2],
+            owner_id=row[3],
+            canonical_id=row[4],
+            knowledge_path=row[5],
+            outcome=row[6],
+            duration_ms=row[7],
+            details_json=row[8],
+        )
+        for row in rows
+    ]
 
 
 # --- Runtime lifecycle state operations ---

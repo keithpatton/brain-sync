@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 def test_supported_compatibility_row_constants() -> None:
     assert APP_VERSION == "0.6.0"
     assert BRAIN_FORMAT_VERSION == "1.0"
-    assert RUNTIME_DB_SCHEMA_VERSION == 24
+    assert RUNTIME_DB_SCHEMA_VERSION == 25
 
 
 def test_pyproject_version_matches_app_version() -> None:
@@ -59,7 +59,7 @@ def test_runtime_db_can_be_rebuilt_without_invalidating_brain(tmp_path: Path) ->
     assert not (root / ".sync-state.sqlite").exists()
 
 
-def test_supported_v23_runtime_db_is_migrated_to_v24_in_place(tmp_path: Path) -> None:
+def test_supported_v23_runtime_db_is_migrated_to_v25_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -122,15 +122,23 @@ def test_supported_v23_runtime_db_is_migrated_to_v24_in_place(tmp_path: Path) ->
     try:
         schema_version = migrated.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
-        child_request_tables = migrated.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='child_discovery_requests'"
+        runtime_tables = migrated.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('child_discovery_requests', 'dirty_knowledge_paths', 'path_observations', "
+            "'invalidation_tokens', 'operational_events') ORDER BY name"
         ).fetchall()
     finally:
         migrated.close()
 
     assert schema_version == (str(RUNTIME_DB_SCHEMA_VERSION),)
     assert token_rows == (1,)
-    assert child_request_tables == [("child_discovery_requests",)]
+    assert runtime_tables == [
+        ("child_discovery_requests",),
+        ("dirty_knowledge_paths",),
+        ("invalidation_tokens",),
+        ("operational_events",),
+        ("path_observations",),
+    ]
 
 
 def test_doctor_rejects_unsupported_legacy_layout(tmp_path: Path) -> None:

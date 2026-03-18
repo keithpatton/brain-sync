@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from brain_sync.application.query_index import invalidate_area_index
 from brain_sync.application.roots import _require_root
 from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.brain.fileops import (
@@ -22,17 +23,18 @@ from brain_sync.brain.manifest import (
 )
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import normalize_path
-from brain_sync.runtime.child_requests import (
+from brain_sync.runtime.repository import (
     ChildDiscoveryRequest,
     clear_child_discovery_request,
     load_all_child_discovery_requests,
     load_child_discovery_request,
+    load_sync_progress,
+    record_operational_event,
     save_child_discovery_request,
 )
 from brain_sync.runtime.repository import (
     delete_source as db_delete_source,
 )
-from brain_sync.runtime.repository import load_sync_progress
 from brain_sync.sources import UnsupportedSourceError, canonical_id, detect_source_type
 
 log = logging.getLogger(__name__)
@@ -211,6 +213,14 @@ def add_source(
     )
     save_state(root, state)
     repository.ensure_knowledge_dir(target_path)
+    invalidate_area_index(root, knowledge_paths=[target_path], reason="source_registered")
+    record_operational_event(
+        event_type="source.registered",
+        canonical_id=cid,
+        knowledge_path=target_path,
+        outcome="registered",
+        details={"source_url": url, "sync_attachments": sync_attachments, "fetch_children": fetch_children},
+    )
 
     return AddResult(
         canonical_id=cid,
@@ -277,6 +287,14 @@ def remove_source(
 
     # Phase 1: delete manifest (bypasses two-stage — explicit remove is immediate)
     repository.delete_source_registration(cid)
+    invalidate_area_index(root, knowledge_paths=[target_path], reason="source_removed")
+    record_operational_event(
+        event_type="source.removed",
+        canonical_id=cid,
+        knowledge_path=target_path,
+        outcome="removed",
+        details={"delete_files": delete_files, "files_deleted": files_deleted},
+    )
 
     return RemoveResult(
         canonical_id=cid,
@@ -357,6 +375,14 @@ def move_source(
             repository.sync_manifest_to_found_path(cid, found)
         else:
             repository.set_source_target_path(cid, to_path, clear_materialized_path=True)
+    invalidate_area_index(root, knowledge_paths=[old_path, to_path], reason="source_moved")
+    record_operational_event(
+        event_type="source.moved",
+        canonical_id=cid,
+        knowledge_path=to_path,
+        outcome="moved",
+        details={"old_path": old_path, "new_path": to_path, "files_moved": files_moved},
+    )
 
     return MoveResult(
         canonical_id=cid,
@@ -430,6 +456,17 @@ def update_source(
         cid,
         fetch_children=next_fetch_children,
         child_path=next_child_path,
+    )
+    record_operational_event(
+        event_type="source.updated",
+        canonical_id=cid,
+        knowledge_path=ss.target_path,
+        outcome="updated",
+        details={
+            "fetch_children": next_fetch_children,
+            "sync_attachments": ss.sync_attachments,
+            "child_path": next_child_path,
+        },
     )
 
     return UpdateResult(
@@ -513,11 +550,24 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
                 repository.clear_source_missing(cid)
                 repository.sync_manifest_to_found_path(cid, found)
                 reappeared.append(cid)
+                record_operational_event(
+                    event_type="reconcile.path_updated",
+                    canonical_id=cid,
+                    knowledge_path=normalize_path(found.parent.relative_to(knowledge_root)),
+                    outcome="reappeared",
+                )
             else:
                 # Second-stage: still missing → delete manifest + DB row
                 repository.delete_source_registration(cid)
                 db_delete_source(root, cid)
                 deleted.append(cid)
+                invalidate_area_index(root, knowledge_paths=[m.target_path], reason="source_deleted")
+                record_operational_event(
+                    event_type="reconcile.deleted",
+                    canonical_id=cid,
+                    knowledge_path=m.target_path,
+                    outcome="deleted",
+                )
             continue
 
         # Active manifest with materialized_path
@@ -532,6 +582,14 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
 
             if new_target != old_target:
                 updated.append(ReconcileEntry(canonical_id=cid, old_path=old_target, new_path=new_target))
+                invalidate_area_index(root, knowledge_paths=[old_target, new_target], reason="reconcile_path_updated")
+                record_operational_event(
+                    event_type="reconcile.path_updated",
+                    canonical_id=cid,
+                    knowledge_path=new_target,
+                    outcome="updated",
+                    details={"old_path": old_target, "new_path": new_target},
+                )
             else:
                 unchanged_count += 1
         else:
@@ -539,6 +597,12 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
             repository.mark_source_missing(cid, utc_now)
             marked_missing.append(cid)
             not_found.append(cid)
+            record_operational_event(
+                event_type="reconcile.missing_marked",
+                canonical_id=cid,
+                knowledge_path=m.target_path,
+                outcome="missing",
+            )
 
     # Orphan DB row pruning: delete DB rows with no corresponding manifest
     manifest_dir = root / ".brain-sync" / "sources"

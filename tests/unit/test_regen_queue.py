@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain_sync.regen.engine import ClaudeResult
 from brain_sync.regen.queue import (
     MAX_RETRIES,
     RegenQueue,
@@ -196,8 +197,6 @@ class TestWaveProcessing:
 
     def test_process_ready_wave_deduplicates(self, brain):
         """Multiple siblings processed via waves: parent gets 1 call, not N."""
-        from brain_sync.regen import ClaudeResult
-
         # Create sibling knowledge dirs
         for name in ("area/sub1", "area/sub2", "area/sub3"):
             kdir = brain / "knowledge" / name
@@ -232,8 +231,6 @@ class TestWaveProcessing:
 
     def test_process_ready_ancestor_ownership_required(self, brain):
         """If ancestor ownership fails in wave mode, skip it and don't propagate."""
-        from brain_sync.regen import ClaudeResult
-
         # Need 2+ paths to trigger wave mode (single path uses regen_path fast path)
         for name in ("area/sub1", "area/sub2"):
             kdir = brain / "knowledge" / name

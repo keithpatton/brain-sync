@@ -13,7 +13,7 @@ brain-sync uses three distinct version domains:
 | Domain | Purpose | Example |
 |---|---|---|
 | Brain Format version | Portable filesystem contract for a brain | `1.0` |
-| Runtime DB schema version | Machine-local cache/runtime schema | `v24` |
+| Runtime DB schema version | Machine-local cache/runtime schema | `v25` |
 | App version | Version of the brain-sync application | `0.6.0` |
 
 These versions must not be conflated.
@@ -78,14 +78,18 @@ contract.
 
 For the current supported release:
 
-- runtime schema label: `v24`
-- runtime schema integer in code / `meta.schema_version`: `24`
+- runtime schema label: `v25`
+- runtime schema integer in code / `meta.schema_version`: `25`
 
 This runtime schema governs:
 
 - `sync_cache`
 - `child_discovery_requests`
+- `dirty_knowledge_paths`
+- `path_observations`
+- `invalidation_tokens`
 - `regen_locks`
+- `operational_events`
 - `token_events`
 - DB-local metadata used to create or rebuild those tables
 
@@ -142,13 +146,13 @@ Compatibility should always be stated in the form:
 
 For the current supported release:
 
-`brain-sync 0.6.0 supports Brain Format 1.0 with runtime DB schema v24`
+`brain-sync 0.6.0 supports Brain Format 1.0 with runtime DB schema v25`
 
 This means:
 
 - the app can create and operate on Brain Format 1.0 brains
 - repair/rebuild flows apply to Brain Format 1.0 brains
-- runtime DB state for that release uses the v24 schema
+- runtime DB state for that release uses the v25 schema
 
 Compatibility details live in [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -164,7 +168,7 @@ Recommended test language:
 - "valid Brain Format v1.0 brain"
 - "drifted Brain Format v1.0 brain"
 - "unsupported pre-v1 legacy brain"
-- "runtime DB schema v24 rebuild"
+- "runtime DB schema v25 rebuild"
 
 This lets the suite distinguish:
 
@@ -180,7 +184,7 @@ This lets the suite distinguish:
 The current baseline is:
 
 - Brain Format: `1.0`
-- Runtime DB schema: `v24`
+- Runtime DB schema: `v25`
 - App version: `0.6.0`
 
 Pre-Brain Format `1.0` development layouts are not part of Brain Format `1.0`. They are
@@ -189,5 +193,5 @@ legacy internal layouts, not supported portable versions.
 `0.5.0` with runtime DB schema `v23` was the clean-break release that
 established the current portable format baseline. During the current
 transition, that row remains a supported upgrade source. `0.6.0` with runtime
-DB schema `v24` continues that portable baseline while treating in-place
+DB schema `v25` continues that portable baseline while treating in-place
 runtime DB migration as the default expectation for supported upgrades.

@@ -146,8 +146,10 @@ class TestRuntimeState:
         try:
             schema_version = migrated.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
             token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
-            child_request_tables = migrated.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='child_discovery_requests'"
+            runtime_tables = migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('child_discovery_requests', 'dirty_knowledge_paths', 'path_observations', "
+                "'invalidation_tokens', 'operational_events') ORDER BY name"
             ).fetchall()
         finally:
             migrated.close()
@@ -155,7 +157,13 @@ class TestRuntimeState:
         assert schema_version is not None
         assert schema_version[0] == str(RUNTIME_DB_SCHEMA_VERSION)
         assert token_rows == (1,)
-        assert child_request_tables == [("child_discovery_requests",)]
+        assert runtime_tables == [
+            ("child_discovery_requests",),
+            ("dirty_knowledge_paths",),
+            ("invalidation_tokens",),
+            ("operational_events",),
+            ("path_observations",),
+        ]
 
 
 class TestInsightStatePaths:

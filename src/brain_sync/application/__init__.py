@@ -67,7 +67,7 @@ from brain_sync.application.reconcile import (
     reconcile_brain,
     reconcile_knowledge_tree,
 )
-from brain_sync.application.regen import RegenFailed, classify_folder_change, invalidate_global_context_cache, run_regen
+from brain_sync.application.regen import RegenFailed, classify_folder_change, run_regen
 from brain_sync.application.roots import (
     BrainNotFoundError,
     InvalidBrainRootError,
@@ -168,7 +168,6 @@ __all__ = [
     "get_usage_summary",
     "init_brain",
     "invalidate_area_index",
-    "invalidate_global_context_cache",
     "list_sources",
     "load_all_insight_states",
     "load_area_index",

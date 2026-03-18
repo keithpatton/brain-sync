@@ -774,14 +774,18 @@ Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
 [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory),
 **not** inside the brain root)
 
-The runtime database contains 5 tables:
+The runtime database contains 9 tables:
 
 | Table | Purpose | Authoritative |
 |---|---|---|
 | `meta` | Schema version tracking | Yes (for DB migrations) |
 | `sync_cache` | Machine-local polling schedule and sync progress | No — rebuildable from manifests |
 | `child_discovery_requests` | Machine-local one-shot child-discovery request state | No — machine-local daemon handoff state |
+| `dirty_knowledge_paths` | Explicit invalidation set for areas needing reconcile or downstream refresh | No — rebuildable from filesystem truth |
+| `path_observations` | Machine-local filesystem observations used to narrow startup reconcile work | No — rebuildable from filesystem truth |
+| `invalidation_tokens` | Explicit invalidation generations for cached query/index state | No — rebuildable coordination state |
 | `regen_locks` | Cross-process regen coordination | No — transient per daemon session |
+| `operational_events` | Append-only machine-local operational trail for ownership and lifecycle events | No — local observability only |
 | `token_events` | Append-only LLM cost telemetry | No — machine-local observability, persisted for local inspection only |
 
 When a supported runtime schema upgrade exists, normal upgrades should migrate

@@ -12,8 +12,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.brain.fileops import iterdir_paths, path_is_dir, path_is_file, read_text, rglob_paths
-from brain_sync.brain.layout import MANAGED_DIRNAME, SUMMARY_FILENAME, area_summary_path
+from brain_sync.brain.fileops import iterdir_paths, path_is_dir, path_is_file, read_text
+from brain_sync.brain.layout import area_summary_path
 from brain_sync.brain.tree import get_child_dirs, is_content_dir
 
 log = logging.getLogger(__name__)
@@ -68,11 +68,11 @@ class AreaIndex:
 
     def __init__(self) -> None:
         self.entries: list[AreaIndexEntry] = []
-        self._max_mtime: float = 0.0
+        self._generation = 0
         self._marked_stale = False
 
     @classmethod
-    def build(cls, root: Path) -> AreaIndex:
+    def build(cls, root: Path, *, generation: int = 0) -> AreaIndex:
         """Build a fresh index by walking knowledge/ for structure and co-located summaries."""
         index = cls()
         knowledge_root = root / "knowledge"
@@ -80,10 +80,7 @@ class AreaIndex:
         if not path_is_dir(knowledge_root):
             return index
 
-        max_mtime = 0.0
-
         def _walk(directory: Path, prefix: str) -> None:
-            nonlocal max_mtime
             for child in iterdir_paths(directory):
                 if not is_content_dir(child):
                     continue
@@ -102,12 +99,6 @@ class AreaIndex:
                 summary_path = area_summary_path(root, child_rel)
                 if path_is_file(summary_path):
                     entry.has_summary = True
-                    try:
-                        mtime = summary_path.stat().st_mtime
-                        if mtime > max_mtime:
-                            max_mtime = mtime
-                    except OSError:
-                        pass
                     text = _read_file_safe(summary_path, SUMMARY_INDEX_CHARS)
                     if text:
                         entry.summary_body = text
@@ -127,31 +118,17 @@ class AreaIndex:
                 _walk(child, child_rel)
 
         _walk(knowledge_root, "")
-        index._max_mtime = max_mtime
-        log.debug("AreaIndex built: %d entries, max_mtime=%.1f", len(index.entries), max_mtime)
+        index._generation = generation
+        log.debug("AreaIndex built: %d entries, generation=%d", len(index.entries), generation)
         return index
 
     def mark_stale(self) -> None:
         """Force the next lifecycle check to rebuild this cached index."""
         self._marked_stale = True
 
-    def is_stale(self, root: Path) -> bool:
-        """Check if the index needs rebuilding by scanning managed summary mtimes."""
-        if self._marked_stale:
-            return True
-        knowledge_root = root / "knowledge"
-        if not path_is_dir(knowledge_root):
-            return bool(self.entries)
-        max_mtime = 0.0
-        for p in rglob_paths(knowledge_root, SUMMARY_FILENAME):
-            if path_is_file(p) and MANAGED_DIRNAME in p.parts:
-                try:
-                    mtime = p.stat().st_mtime
-                    if mtime > max_mtime:
-                        max_mtime = mtime
-                except OSError:
-                    pass
-        return max_mtime != self._max_mtime
+    def is_stale(self, generation: int, *, dirty: bool = False) -> bool:
+        """Check staleness from explicit runtime invalidation state only."""
+        return self._marked_stale or dirty or self._generation != generation
 
     def search(self, query: str, max_results: int = 5) -> list[dict]:
         """Search the index, returning scored results."""

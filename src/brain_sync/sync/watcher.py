@@ -16,8 +16,6 @@ from watchdog.events import (
 from watchdog.observers import Observer
 
 from brain_sync.brain.fileops import EXCLUDED_DIRS, path_exists
-from brain_sync.brain.repository import BrainRepository
-from brain_sync.brain.tree import normalize_path
 
 log = logging.getLogger(__name__)
 
@@ -72,15 +70,6 @@ class KnowledgeEventHandler(FileSystemEventHandler):
         path = Path(str(event.src_path))
         if _should_ignore(path, self._knowledge_root):
             return
-        # Invalidate the _core-derived global context cache if a change lands in _core/.
-        try:
-            rel = path.relative_to(self._knowledge_root)
-            if rel.parts and rel.parts[0] == "_core":
-                from brain_sync.regen import invalidate_global_context_cache
-
-                invalidate_global_context_cache()
-        except ValueError:
-            pass
         self._queue.put(path.resolve())
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -105,40 +94,6 @@ class KnowledgeEventHandler(FileSystemEventHandler):
             dest = Path(str(event.dest_path))
             if not _should_ignore(dest, self._knowledge_root):
                 self._queue.put(dest.resolve())
-
-
-def mirror_folder_move(root: Path, move: FolderMove) -> None:
-    """Update runtime and manifest paths after a knowledge/ folder rename."""
-    knowledge_root = root / "knowledge"
-    repository = BrainRepository(root)
-
-    try:
-        src_rel = move.src.relative_to(knowledge_root)
-        dest_rel = move.dest.relative_to(knowledge_root)
-    except ValueError:
-        log.debug("Move not within knowledge/: %s -> %s", move.src, move.dest)
-        return
-
-    src_rel_str = normalize_path(src_rel)
-    dest_rel_str = normalize_path(dest_rel)
-
-    # Update insight_state paths in DB
-    try:
-        from brain_sync.runtime.repository import load_all_regen_locks, update_insight_path
-
-        for lock in load_all_regen_locks(root):
-            if lock.knowledge_path == src_rel_str or lock.knowledge_path.startswith(src_rel_str + "/"):
-                new_path = dest_rel_str + lock.knowledge_path[len(src_rel_str) :]
-                update_insight_path(root, lock.knowledge_path, new_path)
-                log.debug("Updated insight_state: %s -> %s", lock.knowledge_path, new_path)
-    except Exception as e:
-        log.warning("Failed to update insight_state after move: %s", e)
-
-    # Update manifests: portable source intent/reality move with the folder.
-    try:
-        repository.apply_folder_move_to_manifests(src_rel_str, dest_rel_str)
-    except Exception as e:
-        log.warning("Failed to update manifests after move: %s", e)
 
 
 class KnowledgeWatcher:

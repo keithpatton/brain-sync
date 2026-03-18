@@ -181,7 +181,7 @@ state.
 ```
 
 The runtime DB schema version is recorded in the `meta` table as
-`schema_version`. The current schema version is `24`.
+`schema_version`. The current schema version is `25`.
 
 ### `meta`
 
@@ -254,5 +254,63 @@ Append-only LLM invocation telemetry.
 | `created_utc` | text | UTC timestamp of event creation |
 
 **Current implementation**:
-[runtime/repository.py](../../src/brain_sync/runtime/repository.py),
-[runtime/token_tracking.py](../../src/brain_sync/runtime/token_tracking.py)
+[runtime/repository.py](../../src/brain_sync/runtime/repository.py)
+
+### `dirty_knowledge_paths`
+
+Runtime-owned invalidation set for knowledge areas that need reclassification
+or downstream refresh.
+
+| Field | Type | Description |
+|---|---|---|
+| `knowledge_path` | text | Knowledge path; primary key |
+| `reason` | text or null | Last invalidation reason |
+| `updated_utc` | text | UTC timestamp of the latest invalidation |
+
+### `path_observations`
+
+Runtime snapshot of observed directory mtimes used to narrow startup
+reconcile classification candidates without classifying every tracked area.
+
+| Field | Type | Description |
+|---|---|---|
+| `knowledge_path` | text | Knowledge path; primary key |
+| `observed_mtime_ns` | integer | Last observed directory mtime in nanoseconds |
+| `observed_utc` | text | UTC timestamp of when the observation was recorded |
+
+### `invalidation_tokens`
+
+Runtime-owned invalidation generations for derived read models.
+
+| Field | Type | Description |
+|---|---|---|
+| `scope` | text | Invalidated view name; primary key |
+| `generation` | integer | Monotonic generation counter |
+| `dirty` | integer | Boolean flag encoded as `0` or `1` |
+| `updated_utc` | text | UTC timestamp of the latest invalidation change |
+
+Current scope used by the implementation:
+
+- `area_index`
+
+### `operational_events`
+
+Append-only machine-local operational event trail for ownership transitions,
+reconcile outcomes, watcher move handling, regen lifecycle, and query/index
+lifecycle.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | integer | Row ID; primary key |
+| `event_type` | text | Stable event family/type |
+| `created_utc` | text | UTC timestamp of event creation |
+| `session_id` | text or null | Runtime session identifier |
+| `owner_id` | text or null | Ownership/session lock identifier |
+| `canonical_id` | text or null | Source canonical ID when applicable |
+| `knowledge_path` | text or null | Knowledge path when applicable |
+| `outcome` | text or null | Stable outcome label |
+| `duration_ms` | integer or null | Optional duration in milliseconds |
+| `details_json` | text or null | Optional JSON payload for machine-local details |
+
+Writes are append-only and non-fatal. Event persistence failure must not abort
+the user-visible operation that emitted the event.

@@ -14,6 +14,7 @@ from brain_sync.application.sources import (
     list_sources,
     reconcile_sources,
 )
+from brain_sync.application.sync_events import apply_folder_move
 from brain_sync.brain.fileops import atomic_write_bytes
 from brain_sync.brain.manifest import (
     SyncHint,
@@ -23,7 +24,7 @@ from brain_sync.brain.manifest import (
 )
 from brain_sync.brain.tree import normalize_path
 from brain_sync.sync.pipeline import prepend_managed_header
-from brain_sync.sync.watcher import FolderMove, mirror_folder_move
+from brain_sync.sync.watcher import FolderMove
 
 pytestmark = pytest.mark.integration
 
@@ -299,9 +300,9 @@ class TestReconcileManifestReadPath:
         assert len(sources) == 0
 
 
-class TestMirrorFolderMoveManifests:
+class TestApplyFolderMoveManifests:
     def test_skips_unmaterialized(self, brain: Path):
-        """mirror_folder_move skips manifests with empty materialized_path."""
+        """apply_folder_move skips manifests with empty materialized_path."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-dir")
         # manifest has materialized_path=""
 
@@ -310,7 +311,7 @@ class TestMirrorFolderMoveManifests:
         k_new = brain / "knowledge" / "new-dir"
 
         move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
-        mirror_folder_move(brain, move)
+        apply_folder_move(brain, move=move)
 
         m = read_source_manifest(brain, CONFLUENCE_CID)
         assert m is not None
@@ -320,7 +321,7 @@ class TestMirrorFolderMoveManifests:
         assert m.materialized_path == ""
 
     def test_updates_materialized_and_target(self, brain: Path):
-        """mirror_folder_move updates both manifest fields when file is materialized."""
+        """apply_folder_move updates both manifest fields when file is materialized."""
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-dir")
         _create_synced_file(brain, CONFLUENCE_CID, "old-dir", "c12345-test-page.md")
         m = read_source_manifest(brain, CONFLUENCE_CID)
@@ -335,7 +336,7 @@ class TestMirrorFolderMoveManifests:
         shutil.move(str(k_old), str(k_new))
 
         move = FolderMove(src=k_old, dest=k_new.resolve())
-        mirror_folder_move(brain, move)
+        apply_folder_move(brain, move=move)
 
         m2 = read_source_manifest(brain, CONFLUENCE_CID)
         assert m2 is not None
