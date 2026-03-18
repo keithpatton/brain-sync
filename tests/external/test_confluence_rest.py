@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sources.confluence.rest import (
     ConfluenceAuth,
     download_attachment,
@@ -50,13 +51,23 @@ class TestFetchPageVersion:
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
+        resp = _mock_response({}, status_code=500)
+        resp.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError("boom", request=resp.request, response=resp),
+        )
+        client = _mock_client(resp)
+        result = await fetch_page_version("123", AUTH, client)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_raises_missing_on_404(self):
         resp = _mock_response({}, status_code=404)
         resp.raise_for_status = MagicMock(
             side_effect=httpx.HTTPStatusError("not found", request=resp.request, response=resp),
         )
         client = _mock_client(resp)
-        result = await fetch_page_version("123", AUTH, client)
-        assert result is None
+        with pytest.raises(RemoteSourceMissingError):
+            await fetch_page_version("123", AUTH, client)
 
 
 class TestFetchPageBody:
@@ -74,6 +85,16 @@ class TestFetchPageBody:
         assert html == "<p>Hello</p>"
         assert title == "My Page"
         assert version == 5
+
+    @pytest.mark.asyncio
+    async def test_raises_missing_on_404(self):
+        resp = _mock_response({}, status_code=404)
+        resp.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError("not found", request=resp.request, response=resp),
+        )
+        client = _mock_client(resp)
+        with pytest.raises(RemoteSourceMissingError):
+            await fetch_page_body("123", AUTH, client)
 
 
 class TestFetchChildPages:

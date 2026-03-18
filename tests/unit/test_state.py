@@ -21,7 +21,10 @@ from brain_sync.brain.manifest import SourceManifest, write_source_manifest
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
 from brain_sync.runtime.repository import (
     RegenLock,
+    RegenOwnershipError,
+    acquire_regen_ownership,
     read_daemon_status,
+    release_regen_ownership,
     save_regen_lock,
     write_daemon_status,
 )
@@ -165,6 +168,15 @@ class TestRuntimeState:
             ("path_observations",),
         ]
 
+    def test_fresh_runtime_db_excludes_legacy_documents_table(self, tmp_path: Path) -> None:
+        conn = state_module._connect(tmp_path)
+        try:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        finally:
+            conn.close()
+
+        assert "documents" not in tables
+
 
 class TestInsightStatePaths:
     def test_save_and_load_uses_colocated_insight_state_path(self, tmp_path: Path) -> None:
@@ -226,6 +238,14 @@ class TestInsightStatePaths:
             "brain_sync.brain.sidecar.write_regen_meta",
             side_effect=AssertionError("portable state should not be rewritten"),
         ):
+            save_regen_lock(
+                tmp_path,
+                RegenLock(
+                    knowledge_path="area",
+                    regen_status="idle",
+                ),
+            )
+            assert acquire_regen_ownership(tmp_path, "area", "owner-1")
             save_regen_lock(
                 tmp_path,
                 RegenLock(
@@ -310,11 +330,15 @@ class TestApplicationInsightProjection:
         )
         save_regen_lock(
             tmp_path,
+            RegenLock(knowledge_path="lock-only", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "lock-only", "owner-1")
+        save_regen_lock(
+            tmp_path,
             RegenLock(
                 knowledge_path="lock-only",
                 regen_status="running",
                 regen_started_utc="2026-03-17T01:00:00Z",
-                owner_id="owner-1",
             ),
         )
 
@@ -325,3 +349,118 @@ class TestApplicationInsightProjection:
         assert states["lock-only"].content_hash is None
         assert states["lock-only"].regen_status == "running"
         assert states["lock-only"].owner_id == "owner-1"
+
+
+class TestRegenLockOwnership:
+    def test_same_owner_update_is_allowed(self, tmp_path: Path) -> None:
+        save_regen_lock(
+            tmp_path,
+            RegenLock(knowledge_path="area", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "area", "owner-1")
+
+        save_regen_lock(
+            tmp_path,
+            RegenLock(
+                knowledge_path="area",
+                regen_status="failed",
+                regen_started_utc="2026-03-18T00:00:00+00:00",
+                owner_id="owner-1",
+                error_reason="same owner update",
+            ),
+        )
+
+        loaded = load_insight_state(tmp_path, "area")
+        assert loaded is not None
+        assert loaded.owner_id == "owner-1"
+        assert loaded.regen_status == "failed"
+
+    def test_owner_preserving_write_keeps_existing_owner(self, tmp_path: Path) -> None:
+        save_regen_lock(
+            tmp_path,
+            RegenLock(knowledge_path="area", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "area", "owner-1")
+
+        save_regen_lock(
+            tmp_path,
+            RegenLock(
+                knowledge_path="area",
+                regen_status="failed",
+                error_reason="owner preserved",
+            ),
+        )
+
+        loaded = load_insight_state(tmp_path, "area")
+        assert loaded is not None
+        assert loaded.owner_id == "owner-1"
+        assert loaded.regen_status == "failed"
+
+    def test_terminal_release_clears_owner_and_allows_reacquire(self, tmp_path: Path) -> None:
+        save_regen_lock(
+            tmp_path,
+            RegenLock(knowledge_path="area", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "area", "owner-1")
+
+        assert release_regen_ownership(
+            tmp_path,
+            "area",
+            "owner-1",
+            regen_status="idle",
+            error_reason=None,
+        )
+
+        loaded = load_insight_state(tmp_path, "area")
+        assert loaded is not None
+        assert loaded.owner_id is None
+        assert loaded.regen_status == "idle"
+        assert acquire_regen_ownership(tmp_path, "area", "owner-2")
+
+    def test_terminal_release_is_owner_guarded(self, tmp_path: Path) -> None:
+        save_regen_lock(
+            tmp_path,
+            RegenLock(knowledge_path="area", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "area", "owner-1")
+
+        assert not release_regen_ownership(
+            tmp_path,
+            "area",
+            "owner-2",
+            regen_status="failed",
+            error_reason="should not release",
+        )
+
+        loaded = load_insight_state(tmp_path, "area")
+        assert loaded is not None
+        assert loaded.owner_id == "owner-1"
+        assert loaded.regen_status == "running"
+
+    def test_conflicting_owner_update_is_rejected(self, tmp_path: Path) -> None:
+        save_regen_lock(
+            tmp_path,
+            RegenLock(knowledge_path="area", regen_status="idle"),
+        )
+        assert acquire_regen_ownership(tmp_path, "area", "owner-1")
+
+        with pytest.raises(RegenOwnershipError, match="cannot transfer ownership"):
+            save_regen_lock(
+                tmp_path,
+                RegenLock(
+                    knowledge_path="area",
+                    regen_status="running",
+                    owner_id="owner-2",
+                ),
+            )
+
+    def test_new_owner_claim_requires_acquire_path(self, tmp_path: Path) -> None:
+        with pytest.raises(RegenOwnershipError, match="cannot claim ownership"):
+            save_regen_lock(
+                tmp_path,
+                RegenLock(
+                    knowledge_path="area",
+                    regen_status="running",
+                    owner_id="owner-1",
+                ),
+            )

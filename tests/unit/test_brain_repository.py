@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
-from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
+from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError, PortableBrainLockError
 
 pytestmark = pytest.mark.unit
 
@@ -204,3 +205,71 @@ class TestAttachmentCleanup:
         orphans = repository.iter_orphan_attachment_dirs({"confluence:12345": registered})
 
         assert orphans == [orphan_dir]
+
+
+class TestFilesystemLockContention:
+    def test_write_summary_raises_classified_lock_error_without_changing_file(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        summary_path = brain / "knowledge" / "area" / ".brain-sync" / "insights" / "summary.md"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text("existing summary", encoding="utf-8")
+
+        error = PermissionError(13, "Access is denied", str(summary_path))
+        error.winerror = 5  # type: ignore[attr-defined]
+
+        with patch("brain_sync.brain.repository.atomic_write_bytes", side_effect=error):
+            with pytest.raises(PortableBrainLockError, match="write_summary blocked by filesystem lock"):
+                repository.write_summary("area", "new summary")
+
+        assert summary_path.read_text(encoding="utf-8") == "existing summary"
+
+    def test_save_portable_insight_state_raises_classified_lock_error(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        sidecar_path = brain / "knowledge" / "area" / ".brain-sync" / "insights" / "insight-state.json"
+
+        error = PermissionError(13, "Access is denied", str(sidecar_path))
+        error.winerror = 5  # type: ignore[attr-defined]
+
+        with patch("brain_sync.brain.repository.sidecar_store.write_regen_meta", side_effect=error):
+            with pytest.raises(PortableBrainLockError, match="save_portable_insight_state blocked by filesystem lock"):
+                repository.save_portable_insight_state("area", content_hash="abc123")
+
+        assert not sidecar_path.exists()
+
+    def test_materialize_markdown_keeps_success_when_duplicate_cleanup_hits_lock(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        canonical_id = "confluence:12345"
+        write_source_manifest(brain, _manifest(canonical_id))
+
+        target_dir = brain / "knowledge" / "area"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        duplicate = target_dir / "duplicate.md"
+        duplicate.write_text(prepend_managed_header(canonical_id, "Old body"), encoding="utf-8")
+
+        original_unlink = Path.unlink
+        error = PermissionError(13, "Access is denied", str(duplicate))
+        error.winerror = 5  # type: ignore[attr-defined]
+
+        def blocked_duplicate_unlink(path: Path, *args, **kwargs):
+            if path == duplicate:
+                raise error
+            return original_unlink(path, *args, **kwargs)
+
+        with patch("pathlib.Path.unlink", new=blocked_duplicate_unlink):
+            result = repository.materialize_markdown(
+                knowledge_path="area",
+                filename="fresh.md",
+                canonical_id=canonical_id,
+                markdown="New body",
+                source_type="confluence",
+                source_url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345",
+                content_hash="abc123",
+                last_synced_utc="2026-03-18T00:00:00+00:00",
+            )
+
+        target = target_dir / "fresh.md"
+        assert target.exists()
+        assert "New body" in target.read_text(encoding="utf-8")
+        assert duplicate.exists()
+        assert result.changed is True
+        assert result.duplicate_files_removed == ()

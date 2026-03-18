@@ -169,8 +169,18 @@ class TestDoctorRebuildDbLifecycleReset:
             InsightState(
                 knowledge_path="project",
                 content_hash="abc",
+                regen_status="idle",
+            ),
+        )
+        from brain_sync.runtime.repository import acquire_regen_ownership
+
+        assert acquire_regen_ownership(brain, "project", "test-owner")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="project",
+                content_hash="abc",
                 regen_status="running",
-                owner_id="test-owner",
                 regen_started_utc="2026-03-10T00:00:00",
                 error_reason="test error",
             ),

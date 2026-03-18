@@ -478,6 +478,24 @@ def update_source(
     )
 
 
+def mark_source_missing(root: Path, *, canonical_id: str, missing_since_utc: str, outcome: str) -> bool:
+    """Route an upstream-missing source into the existing manifest missing lifecycle."""
+    repository = BrainRepository(root)
+    manifest = read_source_manifest(root, canonical_id)
+    if manifest is None:
+        return False
+
+    repository.mark_source_missing(canonical_id, missing_since_utc)
+    record_operational_event(
+        event_type="source.missing_marked",
+        canonical_id=canonical_id,
+        knowledge_path=manifest.target_path,
+        outcome=outcome,
+        details={"source_url": manifest.source_url},
+    )
+    return True
+
+
 @dataclass
 class ReconcileEntry:
     canonical_id: str

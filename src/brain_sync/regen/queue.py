@@ -24,6 +24,8 @@ from brain_sync.runtime.repository import (
     RegenLock,
     acquire_regen_ownership,
     load_regen_lock,
+    record_operational_event,
+    release_regen_ownership,
     save_regen_lock,
 )
 
@@ -34,6 +36,29 @@ DEFAULT_COOLDOWN_SECS = 300.0  # 5 minutes post-regen cooldown per path
 DEFAULT_MAX_REGENS_PER_HOUR = 20
 MAX_RETRIES = 3
 RETRY_BACKOFFS = [30.0, 60.0, 120.0]
+
+
+def _iter_exception_chain(error: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _is_lock_contention(error: BaseException) -> bool:
+    for exc in _iter_exception_chain(error):
+        if isinstance(exc, PermissionError) and getattr(exc, "winerror", None) == 5:
+            return True
+        if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 5:
+            return True
+        message = str(exc)
+        if "WinError 5" in message or "Access is denied" in message:
+            return True
+    return False
 
 
 @dataclass
@@ -203,32 +228,73 @@ class RegenQueue:
     def _handle_failure(self, knowledge_path: str, error: Exception) -> None:
         """Handle a regen failure with retry/backoff or exhaustion."""
         retry = self._retry_counts.get(knowledge_path, 0)
+        lock_contention = _is_lock_contention(error)
         if retry < MAX_RETRIES:
             backoff = RETRY_BACKOFFS[min(retry, len(RETRY_BACKOFFS) - 1)]
+            if lock_contention:
+                log.warning(
+                    "Filesystem lock contention for %s; deferring retry %d/%d for %.0fs: %s",
+                    knowledge_path,
+                    retry + 1,
+                    MAX_RETRIES,
+                    backoff,
+                    error,
+                )
             self._pending[knowledge_path] = _PendingRegen(
                 knowledge_path=knowledge_path,
                 fire_at=time.monotonic() + backoff,
                 retry_count=retry + 1,
             )
         else:
+            outcome = "lock_contention_deferred" if lock_contention else "retries_exhausted"
+            reason = (
+                f"Deferred after filesystem lock contention ({MAX_RETRIES} retries): {error}"
+                if lock_contention
+                else f"Retries exhausted ({MAX_RETRIES}): {error}"
+            )
             log.error(
                 "Regen retries exhausted for %s after %d attempts: %s",
                 knowledge_path,
                 MAX_RETRIES,
                 error,
             )
+            record_operational_event(
+                event_type="regen.failed",
+                session_id=self.session_id,
+                owner_id=self.owner_id,
+                knowledge_path=knowledge_path,
+                outcome=outcome,
+                details={"error": str(error), "retries": MAX_RETRIES},
+            )
             try:
                 current_lock = load_regen_lock(self.root, knowledge_path)
-                save_regen_lock(
-                    self.root,
-                    RegenLock(
-                        knowledge_path=knowledge_path,
-                        regen_started_utc=current_lock.regen_started_utc if current_lock else None,
+                if current_lock is None or current_lock.owner_id is None:
+                    save_regen_lock(
+                        self.root,
+                        RegenLock(
+                            knowledge_path=knowledge_path,
+                            regen_started_utc=current_lock.regen_started_utc if current_lock else None,
+                            regen_status="failed",
+                            error_reason=reason,
+                        ),
+                    )
+                elif current_lock.owner_id == self.owner_id:
+                    assert self.owner_id is not None
+                    released = release_regen_ownership(
+                        self.root,
+                        knowledge_path,
+                        self.owner_id,
                         regen_status="failed",
-                        error_reason=f"Retries exhausted ({MAX_RETRIES}): {error}",
-                        owner_id=self.owner_id,
-                    ),
-                )
+                        error_reason=reason,
+                    )
+                    if not released:
+                        raise RuntimeError(
+                            f"failed to release regen ownership for '{knowledge_path}' owned by '{self.owner_id}'"
+                        )
+                else:
+                    raise RuntimeError(
+                        f"cannot persist failed regen state for '{knowledge_path}' owned by '{current_lock.owner_id}'"
+                    )
             except Exception as db_err:
                 log.error(
                     "Failed to persist 'failed' state for %s: %s (original: %s)",

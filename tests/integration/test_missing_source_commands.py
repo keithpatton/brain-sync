@@ -11,10 +11,13 @@ from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import (
     add_source,
     list_sources,
+    mark_source_missing,
+    reconcile_sources,
     remove_source,
     update_source,
 )
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest
+from brain_sync.sync.pipeline import prepend_managed_header
 
 pytestmark = pytest.mark.integration
 
@@ -74,3 +77,31 @@ class TestMissingSourceCommands:
 
         state = load_state(brain)
         assert CONFLUENCE_CID not in state.sources
+
+    def test_remote_missing_reappears_through_existing_reconcile_lifecycle(self, brain: Path):
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+        materialized = brain / "knowledge" / "area" / "c12345-test-page.md"
+        materialized.parent.mkdir(parents=True, exist_ok=True)
+        materialized.write_text(prepend_managed_header(CONFLUENCE_CID, "Body"), encoding="utf-8")
+
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.materialized_path = "area/c12345-test-page.md"
+        from brain_sync.brain.manifest import write_source_manifest
+
+        write_source_manifest(brain, manifest)
+
+        assert mark_source_missing(
+            brain,
+            canonical_id=CONFLUENCE_CID,
+            missing_since_utc="2026-03-18T00:00:00+00:00",
+            outcome="remote_missing",
+        )
+
+        result = reconcile_sources(brain)
+
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.status == "active"
+        assert result.reappeared == [CONFLUENCE_CID]
+        assert CONFLUENCE_CID in load_state(brain).sources

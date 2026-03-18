@@ -11,8 +11,11 @@ from unittest.mock import patch
 import pytest
 
 from brain_sync.application.init import init_brain
+from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import add_source
+from brain_sync.brain.manifest import read_source_manifest
 from brain_sync.runtime.child_requests import load_child_discovery_request
+from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.daemon import run
 
 pytestmark = pytest.mark.unit
@@ -94,9 +97,11 @@ async def _fake_regen_session(_root: Path, reclaim_stale: bool = True):
     yield SimpleNamespace(owner_id="owner-1", session_id="session-1")
 
 
-async def _run_daemon_once(root: Path, fetch_children_flags: list[bool]) -> None:
+async def _run_daemon_once(root: Path, fetch_children_flags: list[bool], *, missing: bool = False) -> None:
     async def _fake_process_source(_source_state, _http_client, root=None, *, fetch_children=False):
         fetch_children_flags.append(fetch_children)
+        if missing:
+            raise RemoteSourceMissingError(source_type="confluence", source_id="12345", details="404")
         return False, []
 
     async def _stop_after_tick(_seconds: float) -> None:
@@ -144,3 +149,25 @@ async def test_daemon_consumes_and_clears_child_discovery_request_once(tmp_path:
 
     await _run_daemon_once(root, observed_flags)
     assert observed_flags == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_daemon_routes_upstream_404_into_missing_lifecycle(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    result = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Page",
+        target_path="area",
+    )
+
+    observed_flags: list[bool] = []
+
+    await _run_daemon_once(root, observed_flags, missing=True)
+
+    manifest = read_source_manifest(root, result.canonical_id)
+    assert manifest is not None
+    assert manifest.status == "missing"
+    assert result.canonical_id not in load_state(root).sources

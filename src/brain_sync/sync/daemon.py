@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -11,6 +12,9 @@ import httpx
 from brain_sync.application.child_discovery import process_discovered_children
 from brain_sync.application.reconcile import reconcile_knowledge_tree
 from brain_sync.application.source_state import SyncState, load_state, save_state
+from brain_sync.application.sources import (
+    mark_source_missing as mark_source_missing_lifecycle,
+)
 from brain_sync.application.sources import reconcile_sources
 from brain_sync.application.sync_events import apply_folder_move, enqueue_regen_path, handle_watcher_folder_change
 from brain_sync.brain.tree import normalize_path
@@ -22,6 +26,7 @@ from brain_sync.runtime.repository import (
     write_daemon_status,
 )
 from brain_sync.runtime.token_tracking import load_retention_days
+from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.pipeline import process_source
 from brain_sync.sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
 from brain_sync.sync.watcher import KnowledgeWatcher
@@ -183,6 +188,20 @@ async def run(root: Path) -> None:
                                 schedule_immediate=scheduler.schedule_immediate,
                                 state=state,
                             )
+                        except RemoteSourceMissingError as e:
+                            marked = mark_source_missing_lifecycle(
+                                root,
+                                canonical_id=key,
+                                missing_since_utc=datetime.now(UTC).isoformat(),
+                                outcome="remote_missing",
+                            )
+                            scheduler.remove(key)
+                            state.sources.pop(key, None)
+                            if marked:
+                                log.warning("Marked %s as missing after upstream 404: %s", key, e)
+                            else:
+                                log.warning("Upstream 404 for unregistered source %s: %s", key, e)
+                            continue
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)
                             ss.current_interval_secs = min(

@@ -9,6 +9,7 @@ import pytest
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
 from brain_sync.application.source_state import SyncState, save_state
 from brain_sync.regen.lifecycle import regen_session
+from brain_sync.runtime.repository import acquire_regen_ownership
 
 pytestmark = pytest.mark.unit
 
@@ -40,8 +41,15 @@ class TestRegenSession:
                 brain,
                 InsightState(
                     knowledge_path="area/foo",
+                    regen_status="idle",
+                ),
+            )
+            assert acquire_regen_ownership(brain, "area/foo", session.owner_id)
+            save_insight_state(
+                brain,
+                InsightState(
+                    knowledge_path="area/foo",
                     regen_status="running",
-                    owner_id=session.owner_id,
                 ),
             )
 
@@ -55,8 +63,15 @@ class TestRegenSession:
             brain,
             InsightState(
                 knowledge_path="area/bar",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/bar", "other-owner-id")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/bar",
                 regen_status="running",
-                owner_id="other-owner-id",
             ),
         )
 
@@ -79,9 +94,16 @@ class TestReclaim:
             brain,
             InsightState(
                 knowledge_path="area/stale",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/stale", "crashed-owner")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/stale",
                 regen_status="running",
                 regen_started_utc=stale_time,
-                owner_id="crashed-owner",
             ),
         )
 
@@ -98,9 +120,16 @@ class TestReclaim:
             brain,
             InsightState(
                 knowledge_path="area/active",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/active", "active-owner")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/active",
                 regen_status="running",
                 regen_started_utc=recent_time,
-                owner_id="active-owner",
             ),
         )
 
@@ -118,8 +147,15 @@ class TestCleanupOnException:
                     brain,
                     InsightState(
                         knowledge_path="area/err",
+                        regen_status="idle",
+                    ),
+                )
+                assert acquire_regen_ownership(brain, "area/err", session.owner_id)
+                save_insight_state(
+                    brain,
+                    InsightState(
+                        knowledge_path="area/err",
                         regen_status="running",
-                        owner_id=session.owner_id,
                     ),
                 )
                 raise ValueError("test error")
@@ -138,8 +174,15 @@ class TestCleanupOnException:
                     brain,
                     InsightState(
                         knowledge_path="area/cancel",
+                        regen_status="idle",
+                    ),
+                )
+                assert acquire_regen_ownership(brain, "area/cancel", session.owner_id)
+                save_insight_state(
+                    brain,
+                    InsightState(
+                        knowledge_path="area/cancel",
                         regen_status="running",
-                        owner_id=session.owner_id,
                     ),
                 )
                 await asyncio.sleep(100)  # will be cancelled

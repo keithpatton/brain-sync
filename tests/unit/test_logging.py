@@ -79,3 +79,40 @@ def test_setup_logging_falls_back_when_rollover_is_blocked(
     contents = fallback_log.read_text(encoding="utf-8")
     assert "written after fallback" in contents
     assert "shared log rotation was blocked" in capsys.readouterr().err
+
+
+def test_setup_logging_emits_one_fallback_warning_with_run_correlated_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_file = log_dir / "brain-sync.log"
+
+    monkeypatch.setattr(logging_utils, "LOG_DIR", log_dir)
+    monkeypatch.setattr(logging_utils, "LOG_FILE", log_file)
+    monkeypatch.setattr(
+        logging_utils,
+        "uuid4",
+        lambda: SimpleNamespace(hex="abc123deadbeef"),
+    )
+
+    logging_utils.setup_logging("INFO")
+    root = logging.getLogger()
+    file_handler = next(
+        handler for handler in root.handlers if isinstance(handler, logging_utils.ResilientRotatingFileHandler)
+    )
+
+    monkeypatch.setattr(file_handler, "shouldRollover", lambda record: True)
+
+    def _raise_permission_error() -> None:
+        raise PermissionError("used by another process")
+
+    monkeypatch.setattr(file_handler, "doRollover", _raise_permission_error)
+
+    logging.getLogger("test").info("first record")
+    logging.getLogger("test").info("second record")
+
+    stderr = capsys.readouterr().err
+    assert stderr.count("shared log rotation was blocked") == 1
+    assert f"brain-sync-{logging_utils.os.getpid()}-abc123.log" in stderr

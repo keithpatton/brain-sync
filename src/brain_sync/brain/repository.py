@@ -140,6 +140,22 @@ class BrainRepositoryInvariantError(RuntimeError):
     """Raised when a strict repository mutation receives invalid input."""
 
 
+class PortableBrainLockError(RuntimeError):
+    """Raised when a managed portable-brain write is blocked by filesystem locking."""
+
+    def __init__(self, operation: str, target: Path, original_error: PermissionError) -> None:
+        self.operation = operation
+        self.target = target
+        self.original_error = original_error
+        super().__init__(f"{operation} blocked by filesystem lock at '{target}': {original_error}")
+
+
+def _raise_if_lock_contention(operation: str, target: Path, exc: PermissionError) -> None:
+    if getattr(exc, "winerror", None) == 5:
+        raise PortableBrainLockError(operation, target, exc) from exc
+    raise exc
+
+
 class BrainRepository:
     """Portable-brain persistence mediator rooted at one brain."""
 
@@ -360,16 +376,28 @@ class BrainRepository:
             source_type=source_type,
             source_url=source_url,
         )
-        changed = write_if_changed(target, target_markdown)
+        try:
+            changed = write_if_changed(target, target_markdown)
 
-        duplicate_files_removed: list[str] = []
-        for candidate in iterdir_paths(target_dir):
-            if candidate == target or candidate.suffix.lower() != ".md" or not path_is_file(candidate):
-                continue
-            if extract_source_id(candidate) != canonical_id:
-                continue
-            candidate.unlink()
-            duplicate_files_removed.append(candidate.name)
+            duplicate_files_removed: list[str] = []
+            for candidate in iterdir_paths(target_dir):
+                if candidate == target or candidate.suffix.lower() != ".md" or not path_is_file(candidate):
+                    continue
+                if extract_source_id(candidate) != canonical_id:
+                    continue
+                try:
+                    candidate.unlink()
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) == 5:
+                        log.warning(
+                            "materialize_markdown left duplicate managed file in place after successful write: %s",
+                            candidate,
+                        )
+                        continue
+                    raise
+                duplicate_files_removed.append(candidate.name)
+        except PermissionError as exc:
+            _raise_if_lock_contention("materialize_markdown", target, exc)
 
         materialized_path = normalize_path(target.relative_to(self._knowledge_root))
         target_path = normalize_path(target.parent.relative_to(self._knowledge_root))
@@ -501,7 +529,11 @@ class BrainRepository:
         target = safe_target_dir / Path(rel_path)
         self._require_under_knowledge_root(target, operation="write_attachment_bytes")
         target.parent.mkdir(parents=True, exist_ok=True)
-        return write_bytes_if_changed(target, data)
+        try:
+            return write_bytes_if_changed(target, data)
+        except PermissionError as exc:
+            _raise_if_lock_contention("write_attachment_bytes", target, exc)
+            raise AssertionError("unreachable") from exc
 
     def migrate_legacy_attachment_context(self, target_dir: Path, *, source_dir: str, primary_canonical_id: str) -> int:
         """Best-effort migration from legacy attachment locations into .brain-sync/."""
@@ -549,7 +581,10 @@ class BrainRepository:
         normalized = self._normalize_relative_knowledge_path(knowledge_path, operation="write_summary")
         summary_path = area_summary_path(self.root, normalized)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(summary_path, summary_text.encode("utf-8"))
+        try:
+            atomic_write_bytes(summary_path, summary_text.encode("utf-8"))
+        except PermissionError as exc:
+            _raise_if_lock_contention("write_summary", summary_path, exc)
         return summary_path
 
     def save_portable_insight_state(
@@ -576,9 +611,17 @@ class BrainRepository:
                     last_regen_utc=last_regen_utc,
                 ),
             )
+        except PermissionError as exc:
+            _raise_if_lock_contention(
+                "save_portable_insight_state",
+                area_insight_state_path(self.root, normalized),
+                exc,
+            )
+            raise AssertionError("unreachable") from exc
         except Exception:
             log.warning("Failed to write sidecar for %s", normalized, exc_info=True)
-            return False
+            raise
+            raise
 
     def delete_portable_insight_state(self, knowledge_path: str) -> bool:
         """Delete the durable insight-state sidecar for one knowledge area."""

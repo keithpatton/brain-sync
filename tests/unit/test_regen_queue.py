@@ -9,12 +9,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain_sync.application.insights import load_insight_state
 from brain_sync.regen.engine import ClaudeResult
 from brain_sync.regen.queue import (
     MAX_RETRIES,
     RegenQueue,
 )
-from brain_sync.runtime.repository import _connect
+from brain_sync.runtime.repository import RegenLock, _connect, acquire_regen_ownership, save_regen_lock
 
 pytestmark = pytest.mark.unit
 
@@ -177,6 +178,31 @@ class TestProcessReady:
         # Should be re-enqueued with retry_count=1
         assert q.has_pending()
         assert q._pending["project"].retry_count == 1
+
+    def test_lock_contention_exhaustion_records_classified_failure(self, brain):
+        q = RegenQueue(root=brain, owner_id="owner-1", session_id="session-1", debounce_secs=0.0, cooldown_secs=0.0)
+        save_regen_lock(brain, RegenLock(knowledge_path="project", regen_status="idle"))
+        q.enqueue("project")
+
+        error = PermissionError(13, "Access is denied", "project")
+        error.winerror = 5  # type: ignore[attr-defined]
+
+        async def fail(*args, **kwargs):
+            raise error
+
+        with patch("brain_sync.regen.queue.regen_path", side_effect=fail):
+            for _ in range(MAX_RETRIES + 1):
+                if "project" in q._pending:
+                    q._pending["project"].fire_at = 0
+                asyncio.run(q.process_ready())
+
+        state = load_insight_state(brain, "project")
+        assert state is not None
+        assert state.regen_status == "failed"
+        assert state.owner_id is None
+        assert state.error_reason is not None
+        assert "lock contention" in state.error_reason.lower()
+        assert acquire_regen_ownership(brain, "project", "owner-2")
 
 
 class TestNextFireIn:

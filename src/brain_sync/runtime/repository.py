@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS documents (
     mime_type TEXT
 );
 """
+# Legacy-only compatibility table retained for historic migrations and fixtures.
+# Fresh runtime DBs do not create or own this table in Brain Format 1.0.
 
 _RELATIONSHIPS_DDL = """
 CREATE TABLE IF NOT EXISTS relationships (
@@ -242,6 +244,14 @@ class RegenLock(_PathNormalized):
     regen_started_utc: str | None = None
     owner_id: str | None = None
     error_reason: str | None = None
+
+
+class RegenOwnershipError(RuntimeError):
+    """Raised when a lifecycle write would bypass guarded regen ownership."""
+
+    def __init__(self, knowledge_path: str, message: str) -> None:
+        self.knowledge_path = knowledge_path
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -1654,6 +1664,52 @@ def load_regen_lock(root: Path, knowledge_path: str) -> RegenLock | None:
     )
 
 
+def _resolve_regen_owner(existing_owner: str | None, incoming_owner: str | None, *, knowledge_path: str) -> str | None:
+    """Preserve guarded ownership semantics for lifecycle-only regen writes."""
+    if existing_owner is None:
+        if incoming_owner is None:
+            return None
+        raise RegenOwnershipError(
+            knowledge_path,
+            f"save_regen_lock() cannot claim ownership for '{knowledge_path}'; use acquire_regen_ownership()",
+        )
+
+    if incoming_owner is None:
+        return existing_owner
+
+    if incoming_owner == existing_owner:
+        return incoming_owner
+
+    raise RegenOwnershipError(
+        knowledge_path,
+        f"save_regen_lock() cannot transfer ownership for '{knowledge_path}' from '{existing_owner}' "
+        f"to '{incoming_owner}'",
+    )
+
+
+def release_regen_ownership(
+    root: Path, knowledge_path: str, owner_id: str, *, regen_status: str, error_reason: str | None
+) -> bool:
+    """Release one owned regen slot while persisting the terminal lifecycle state."""
+    kp = _normalize_runtime_path(knowledge_path)
+    conn = _connect(root)
+    try:
+        cur = conn.execute(
+            "UPDATE regen_locks SET regen_status = ?, owner_id = NULL, error_reason = ? "
+            "WHERE knowledge_path = ? AND owner_id = ?",
+            (
+                regen_status,
+                _clamp_error_reason(error_reason),
+                kp,
+                owner_id,
+            ),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
 def save_regen_lock(root: Path, lock: RegenLock) -> None:
     """Persist runtime lifecycle fields to regen_locks only."""
     kp = _normalize_runtime_path(lock.knowledge_path)
@@ -1661,24 +1717,45 @@ def save_regen_lock(root: Path, lock: RegenLock) -> None:
 
     conn = _connect(root)
     try:
-        conn.execute(
-            "INSERT INTO regen_locks "
-            "(knowledge_path, regen_status, regen_started_utc, "
-            "owner_id, error_reason) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(knowledge_path) DO UPDATE SET "
-            "regen_status=excluded.regen_status, "
-            "regen_started_utc=excluded.regen_started_utc, "
-            "owner_id=excluded.owner_id, "
-            "error_reason=excluded.error_reason",
-            (
-                kp,
-                lock.regen_status,
-                lock.regen_started_utc,
-                lock.owner_id,
-                error_reason,
-            ),
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT owner_id FROM regen_locks WHERE knowledge_path = ?",
+            (kp,),
+        ).fetchone()
+        owner_id = _resolve_regen_owner(
+            row[0] if row is not None else None,
+            lock.owner_id,
+            knowledge_path=kp,
         )
+        if row is None:
+            conn.execute(
+                "INSERT INTO regen_locks "
+                "(knowledge_path, regen_status, regen_started_utc, owner_id, error_reason) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    kp,
+                    lock.regen_status,
+                    lock.regen_started_utc,
+                    owner_id,
+                    error_reason,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE regen_locks SET "
+                "regen_status = ?, "
+                "regen_started_utc = ?, "
+                "owner_id = ?, "
+                "error_reason = ? "
+                "WHERE knowledge_path = ?",
+                (
+                    lock.regen_status,
+                    lock.regen_started_utc,
+                    owner_id,
+                    error_reason,
+                    kp,
+                ),
+            )
         conn.commit()
     finally:
         conn.close()

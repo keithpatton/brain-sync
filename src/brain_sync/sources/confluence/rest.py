@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 from brain_sync.runtime.config import CONFIG_FILE
+from brain_sync.sources.base import RemoteSourceMissingError
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +139,15 @@ async def fetch_page_version(page_id: str, auth: ConfluenceAuth, client: httpx.A
         resp = await _request(client, auth, "GET", f"/content/{page_id}", params={"expand": "version"})
         data = resp.json()
         return data.get("version", {}).get("number")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise RemoteSourceMissingError(
+                source_type="confluence",
+                source_id=page_id,
+                details=f"Confluence page {page_id} returned 404 during version check",
+            ) from exc
+        log.debug("Version check failed for page %s: %s", page_id, exc)
+        return None
     except Exception as exc:
         log.debug("Version check failed for page %s: %s", page_id, exc)
         return None
@@ -149,13 +159,22 @@ async def fetch_page_body(
     client: httpx.AsyncClient,
 ) -> tuple[str, str | None, int | None]:
     """Fetch page body, title, and version in one call."""
-    resp = await _request(
-        client,
-        auth,
-        "GET",
-        f"/content/{page_id}",
-        params={"expand": "body.storage,version,title"},
-    )
+    try:
+        resp = await _request(
+            client,
+            auth,
+            "GET",
+            f"/content/{page_id}",
+            params={"expand": "body.storage,version,title"},
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise RemoteSourceMissingError(
+                source_type="confluence",
+                source_id=page_id,
+                details=f"Confluence page {page_id} returned 404 during body fetch",
+            ) from exc
+        raise
     data = resp.json()
     html = data.get("body", {}).get("storage", {}).get("value", "")
     title = data.get("title")

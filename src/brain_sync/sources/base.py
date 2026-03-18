@@ -31,6 +31,16 @@ class UpdateStatus(Enum):
     UNKNOWN = auto()
 
 
+class RemoteSourceMissingError(RuntimeError):
+    """Raised when the upstream source reports the document no longer exists."""
+
+    def __init__(self, *, source_type: str, source_id: str, details: str | None = None) -> None:
+        self.source_type = source_type
+        self.source_id = source_id
+        message = details or f"{source_type}:{source_id} is missing upstream"
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class SourceCapabilities:
     supports_version_check: bool = True

@@ -55,6 +55,7 @@ from brain_sync.runtime.repository import (
     load_regen_lock,
     record_operational_event,
     record_token_event,
+    release_regen_ownership,
     save_regen_lock,
 )
 from brain_sync.runtime.repository import (
@@ -321,6 +322,7 @@ def _save_area_state(
     last_regen_utc: str | None = None,
     regen_status: str = "idle",
     owner_id: str | None = None,
+    release_owner_id: str | None = None,
     error_reason: str | None = None,
 ) -> None:
     """Persist portable insight hashes through the repository and lifecycle in runtime state."""
@@ -331,17 +333,64 @@ def _save_area_state(
         structure_hash=structure_hash,
         last_regen_utc=last_regen_utc,
     )
-    save_regen_lock(
-        root,
-        RegenLock(
-            knowledge_path=knowledge_path,
+    if release_owner_id is not None:
+        released = release_regen_ownership(
+            root,
+            knowledge_path,
+            release_owner_id,
             regen_status=regen_status,
-            regen_started_utc=regen_started_utc,
-            owner_id=owner_id,
             error_reason=error_reason,
-        ),
-    )
+        )
+        if not released:
+            raise RuntimeError(
+                f"failed to release regen ownership for '{knowledge_path}' owned by '{release_owner_id}'"
+            )
+    else:
+        save_regen_lock(
+            root,
+            RegenLock(
+                knowledge_path=knowledge_path,
+                regen_status=regen_status,
+                regen_started_utc=regen_started_utc,
+                owner_id=owner_id,
+                error_reason=error_reason,
+            ),
+        )
     invalidate_area_index_runtime(root, [knowledge_path], reason="summary_written")
+
+
+def _save_terminal_regen_lock(
+    root: Path,
+    *,
+    knowledge_path: str,
+    owner_id: str | None,
+    regen_status: str,
+    regen_started_utc: str | None,
+    error_reason: str | None = None,
+) -> None:
+    """Persist a terminal runtime state while explicitly releasing ownership."""
+    if owner_id is None:
+        save_regen_lock(
+            root,
+            RegenLock(
+                knowledge_path=knowledge_path,
+                regen_started_utc=regen_started_utc,
+                regen_status=regen_status,
+                owner_id=None,
+                error_reason=error_reason,
+            ),
+        )
+        return
+
+    released = release_regen_ownership(
+        root,
+        knowledge_path,
+        owner_id,
+        regen_status=regen_status,
+        error_reason=error_reason,
+    )
+    if not released:
+        raise RuntimeError(f"failed to release regen ownership for '{knowledge_path}' owned by '{owner_id}'")
 
 
 def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: str) -> None:
@@ -1638,15 +1687,13 @@ async def regen_single_folder(
     except Exception as e:
         log.error("Regen failed for %s: %s", current_path or "(root)", e, exc_info=True)
         try:
-            save_regen_lock(
+            _save_terminal_regen_lock(
                 root,
-                RegenLock(
-                    knowledge_path=current_path,
-                    regen_started_utc=started,
-                    regen_status="failed",
-                    owner_id=owner_id,
-                    error_reason=str(e),
-                ),
+                knowledge_path=current_path,
+                owner_id=owner_id,
+                regen_started_utc=started,
+                regen_status="failed",
+                error_reason=str(e),
             )
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
@@ -1675,15 +1722,13 @@ async def regen_single_folder(
         )
         err_msg = "Claude returned empty or suspiciously small output"
         try:
-            save_regen_lock(
+            _save_terminal_regen_lock(
                 root,
-                RegenLock(
-                    knowledge_path=current_path,
-                    regen_started_utc=started,
-                    regen_status="failed",
-                    owner_id=owner_id,
-                    error_reason=err_msg,
-                ),
+                knowledge_path=current_path,
+                owner_id=owner_id,
+                regen_started_utc=started,
+                regen_status="failed",
+                error_reason=err_msg,
             )
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
@@ -1716,7 +1761,7 @@ async def regen_single_folder(
             regen_started_utc=started,
             last_regen_utc=now,
             regen_status="idle",
-            owner_id=None,
+            release_owner_id=owner_id,
         )
         # Journal is independent of summary similarity — temporal events matter
         if journal_text:
@@ -1745,7 +1790,7 @@ async def regen_single_folder(
         regen_started_utc=started,
         last_regen_utc=now,
         regen_status="idle",
-        owner_id=None,
+        release_owner_id=owner_id,
     )
     log.info(
         "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",

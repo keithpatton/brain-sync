@@ -13,6 +13,7 @@ from brain_sync.application.insights import InsightState, save_insight_state
 from brain_sync.runtime.repository import (
     SCHEMA_VERSION,
     _connect,
+    acquire_regen_ownership,
     reclaim_stale_running_states,
     release_owned_running_states,
 )
@@ -80,9 +81,16 @@ class TestReclaimStaleRunningStates:
             brain,
             InsightState(
                 knowledge_path="area/topic",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/topic", "old-session")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/topic",
                 regen_status="running",
                 regen_started_utc=old_time,
-                owner_id="old-session",
             ),
         )
 
@@ -106,9 +114,16 @@ class TestReclaimStaleRunningStates:
             brain,
             InsightState(
                 knowledge_path="area/fresh",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/fresh", "active-session")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/fresh",
                 regen_status="running",
                 regen_started_utc=now,
-                owner_id="active-session",
             ),
         )
 
@@ -120,9 +135,16 @@ class TestReclaimStaleRunningStates:
             brain,
             InsightState(
                 knowledge_path="area/bad-ts",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/bad-ts", "broken-session")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/bad-ts",
                 regen_status="running",
                 regen_started_utc="not-a-date",
-                owner_id="broken-session",
             ),
         )
 
@@ -139,18 +161,32 @@ class TestReleaseOwnedRunningStates:
             brain,
             InsightState(
                 knowledge_path="area/mine",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/mine", "session-A")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/mine",
                 regen_status="running",
                 regen_started_utc=datetime.now(UTC).isoformat(),
-                owner_id="session-A",
             ),
         )
         save_insight_state(
             brain,
             InsightState(
                 knowledge_path="area/theirs",
+                regen_status="idle",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "area/theirs", "session-B")
+        save_insight_state(
+            brain,
+            InsightState(
+                knowledge_path="area/theirs",
                 regen_status="running",
                 regen_started_utc=datetime.now(UTC).isoformat(),
-                owner_id="session-B",
             ),
         )
 
