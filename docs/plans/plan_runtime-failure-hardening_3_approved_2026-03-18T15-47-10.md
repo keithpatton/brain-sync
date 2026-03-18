@@ -4,6 +4,7 @@ Approved: 2026-03-18T15-47-10
 Approved by: codex-gpt-5
 
 Notes:
+
 - no unresolved reviewer findings remain
 - plan is ready for implementation handoff
 
@@ -107,7 +108,7 @@ The `documents.url` evidence must therefore be treated as one of:
 - a live caller outside the currently obvious seams that must be identified
 - a migration or legacy path that still needs a narrow fix
 - or a stale or obsolete work item that should be reduced to a guardrail rather
-  than expanded into a new runtime write surface
+than expanded into a new runtime write surface
 
 ### 4. Missing-source lifecycle already exists
 
@@ -210,14 +211,14 @@ This is the primary remote-missing case for this plan revision.
 In scope for the implementation stage:
 
 - validating the existing Windows log-rollover fallback and closing any
-  residual observability gaps
+residual observability gaps
 - defining and enforcing explicit conflict contracts for:
   - `regen_locks.knowledge_path`
   - `documents.url`
 - adding a concrete bounded retry and defer policy for WinError 5 filesystem
-  contention in regen and adjacent write flows
+contention in regen and adjacent write flows
 - classifying Confluence `404` responses into the existing missing-source
-  lifecycle
+lifecycle
 - focused tests and observability improvements needed to prove each contract
 
 Out of scope:
@@ -227,9 +228,9 @@ Out of scope:
 - no new parallel missing-source state model
 - no silent ownership reassignment for conflicting document identity
 - no broadening of blind `save_regen_lock()` semantics into a generic ownership
-  transfer mechanism
+transfer mechanism
 - no expansion of `documents` into a new normal-path write owner unless a live
-  caller is first identified and justified
+caller is first identified and justified
 - no change to portable brain contract unless a later design review requires it
 
 ## Fixed Design Decisions
@@ -269,7 +270,7 @@ The plan distinguishes between:
 
 - idempotent replay of the same logical row
 - and an identity collision where two incompatible logical owners claim the
-  same unique key
+same unique key
 
 Only the first class may auto-resolve.
 
@@ -287,23 +288,23 @@ just because they target the same normalized `knowledge_path`.
 Goals:
 
 - validate that the current `ResilientRotatingFileHandler` already covers the
-  Windows rollover failure mode observed on `2026-03-18`
+Windows rollover failure mode observed on `2026-03-18`
 - close any remaining evidence or observability gaps without replacing the
-  current strategy unnecessarily
+current strategy unnecessarily
 
 Implementation requirements:
 
 - confirm the handler is used by the CLI, daemon, and MCP entrypoints that
-  share the runtime log
+share the runtime log
 - validate the current fallback against the `run_id=720ebb` evidence window and
-  a targeted reproduced rollover-failure test
+a targeted reproduced rollover-failure test
 - decide whether any residual gap remains in:
   - triggering-record preservation
   - fallback-file naming
   - run correlation
   - stderr/shared-log diagnostics
 - if the current implementation is sufficient, explicitly close the workstream
-  with no handler replacement
+with no handler replacement
 
 Primary modules:
 
@@ -317,9 +318,9 @@ Acceptance targets:
 - Windows rollover-block conditions do not emit a logging traceback
 - the triggering record is preserved in either the shared log or fallback file
 - the fallback diagnostic is correlated to a run ID or fallback filename in a
-  way future investigators can recover
+way future investigators can recover
 - if no code change is needed, the validation result and residual-gap decision
-  are still documented in implementation notes or tests
+are still documented in implementation notes or tests
 
 ### Workstream 2: Runtime Identity and Conflict Discipline
 
@@ -337,16 +338,16 @@ Logical identity:
 Ownership terms:
 
 - "same-owner update" means the incoming write carries the same `owner_id` as
-  the existing row, or the row is unowned and the write does not claim a new
-  owner
+the existing row, or the row is unowned and the write does not claim a new
+owner
 - "non-ownership lifecycle write" means a write that does not change `owner_id`
 - "guarded ownership transfer" means transfer through the existing ownership
-  paths:
+paths:
   - `acquire_regen_ownership()`
   - release by the current owner
   - stale reclaim
 - "conflicting live-owner write" means an attempted `owner_id` change while a
-  non-stale row is still owned by a different live owner
+non-stale row is still owned by a different live owner
 
 Conflict policy:
 
@@ -354,47 +355,47 @@ Conflict policy:
   - same-owner updates
   - non-ownership lifecycle writes that preserve the existing `owner_id`
 - runtime lifecycle state may be updated in place via upsert only when that
-  upsert does not bypass guarded ownership semantics
+upsert does not bypass guarded ownership semantics
 - `regen_status`, `regen_started_utc`, and `error_reason` may be updated by
-  same-owner or owner-preserving lifecycle writes
+same-owner or owner-preserving lifecycle writes
 - `owner_id` may change only through guarded ownership transfer paths
 - a conflicting live-owner write is **not** replay-safe and must be rejected or
-  surfaced as an ownership invariant violation, not treated as last-writer-wins
+surfaced as an ownership invariant violation, not treated as last-writer-wins
 - `save_regen_lock()` may remain the generic lifecycle persistence helper only
-  for same-owner or owner-preserving writes; it must not silently become a
-  second ownership transfer path
+for same-owner or owner-preserving writes; it must not silently become a
+second ownership transfer path
 
 Invariant-violation boundary:
 
 - if duplicate discovery reveals that two different logical areas normalize to
-  the same runtime path after a portable write decision, the implementation
-  must classify and surface that as a bug rather than silently masking it
+the same runtime path after a portable write decision, the implementation
+must classify and surface that as a bug rather than silently masking it
 - if a second live owner attempts to claim an actively owned, non-stale row
-  outside guarded ownership transfer, that attempt must be rejected or
-  classified as an ownership invariant violation
+outside guarded ownership transfer, that attempt must be rejected or
+classified as an ownership invariant violation
 
 Disk-before-DB rule:
 
 - portable insight state writes remain first
 - runtime lifecycle upsert happens only after the portable write path has
-  succeeded or when the operation is lifecycle-only
+succeeded or when the operation is lifecycle-only
 - if the portable write fails, runtime may record failure state, but must not
-  record successful completion
+record successful completion
 
 Acceptance targets:
 
 - repeated writes to the same normalized `knowledge_path` do not fail with a
-  uniqueness error
+uniqueness error
 - tests cover replay of the same path with changed lifecycle fields by the same
-  owner
+owner
 - tests prove a non-ownership lifecycle write cannot silently change
-  `owner_id`
+`owner_id`
 - tests prove a second live owner cannot silently overwrite `owner_id` for an
-  actively owned, non-stale `knowledge_path`
+actively owned, non-stale `knowledge_path`
 - tests prove ownership transfer still works through guarded paths only:
-  acquire, release, and stale reclaim
+acquire, release, and stale reclaim
 - tests prove a portable-write failure does not produce a false runtime-success
-  state
+state
 
 #### Contract B: `documents.url`
 
@@ -402,35 +403,35 @@ Logical identity:
 
 - canonical document ownership is `canonical_id`
 - `url` is a secondary unique identity claim that must remain consistent with
-  the owning `canonical_id`
+the owning `canonical_id`
 
 Conflict policy:
 
 - replay of the same `(canonical_id, url)` pair is replay-safe and may update
-  mutable columns in place
+mutable columns in place
 - if a row already exists for `url` and it points at the same `canonical_id`,
-  update-in-place is allowed
+update-in-place is allowed
 - if a row already exists for `url` and it points at a different
-  `canonical_id`, that is an invariant violation, not a winner-selection case
+`canonical_id`, that is an invariant violation, not a winner-selection case
 - the implementation must not silently reassign a URL from one canonical owner
-  to another
+to another
 
 Scope gate:
 
 - before code changes, identify the live caller that still writes
-  `documents.url`, or prove the evidence comes from a legacy or migration-only
-  path
+`documents.url`, or prove the evidence comes from a legacy or migration-only
+path
 - if the failure is legacy-only, land a narrow fix at that path and do not
-  reintroduce `documents` as a normal sync or regen write surface
+reintroduce `documents` as a normal sync or regen write surface
 
 Acceptance targets:
 
 - same-owner replay on `documents.url` is deterministic and non-failing
 - conflicting-owner duplicates raise a classified invariant violation with
-  clear diagnostics
+clear diagnostics
 - the chosen fix names the table owner and caller explicitly
 - no implementation invents a new normal-path `documents` write flow just to
-  satisfy the test
+satisfy the test
 
 Primary modules:
 
@@ -447,33 +448,35 @@ Goals:
 
 Concrete policy:
 
-| Operation class | First owner | Immediate retry policy | Exhaustion policy | Deferred owner |
-|---|---|---|---|---|
-| queue-driven regen of one `knowledge_path` | `regen/queue.py` | max 3 retries in the same queue lifetime, using existing 30s / 60s / 120s backoff for classified WinError 5 lock contention | stop retrying in the active queue, record classified failure state, do not keep hot-looping | next watcher event, explicit regen invocation, or next startup reconcile or session |
-| portable-brain file replacement or delete during regen | `brain/repository.py` called by regen | no inner unbounded retry loop inside repository; raise a classified lock error to queue or orchestrator | leave portable state unchanged, allow caller to record failure or defer state | queue or orchestrator |
-| sync attachment or materialization filesystem write | sync workflow | one local attempt only unless the workflow already owns a bounded retry loop | classify and surface as lock contention; do not spin | next normal sync cycle |
+
+| Operation class                                        | First owner                           | Immediate retry policy                                                                                                      | Exhaustion policy                                                                           | Deferred owner                                                                      |
+| ------------------------------------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| queue-driven regen of one `knowledge_path`             | `regen/queue.py`                      | max 3 retries in the same queue lifetime, using existing 30s / 60s / 120s backoff for classified WinError 5 lock contention | stop retrying in the active queue, record classified failure state, do not keep hot-looping | next watcher event, explicit regen invocation, or next startup reconcile or session |
+| portable-brain file replacement or delete during regen | `brain/repository.py` called by regen | no inner unbounded retry loop inside repository; raise a classified lock error to queue or orchestrator                     | leave portable state unchanged, allow caller to record failure or defer state               | queue or orchestrator                                                               |
+| sync attachment or materialization filesystem write    | sync workflow                         | one local attempt only unless the workflow already owns a bounded retry loop                                                | classify and surface as lock contention; do not spin                                        | next normal sync cycle                                                              |
+
 
 Implementation requirements:
 
 - classify WinError 5 or `PermissionError` lock pressure separately from
-  generic logic failures
+generic logic failures
 - keep the existing queue retry budget bounded to 3 attempts for the same
-  `knowledge_path` within one active queue lifetime
+`knowledge_path` within one active queue lifetime
 - after exhaustion, record a durable runtime classification that indicates
-  lock contention rather than generic repeated failure
+lock contention rather than generic repeated failure
 - do not mark portable writes successful when the filesystem mutation did not
-  durably complete
+durably complete
 - ensure later processing is deferred to a new event or new run rather than
-  immediately re-entering the same locked subtree indefinitely
+immediately re-entering the same locked subtree indefinitely
 
 Evidence to prove no partial-success drift:
 
 - repository-level tests that simulate filesystem failure and assert managed
-  files are unchanged after failure
+files are unchanged after failure
 - queue or integration tests that show no more than three attempts for one path
-  in a single active run
+in a single active run
 - runtime-state assertions that exhausted lock contention is recorded as failed
-  or deferred, not successful
+or deferred, not successful
 
 Primary modules:
 
@@ -485,7 +488,7 @@ Primary modules:
 Acceptance targets:
 
 - the `run_id=0eaaed` class of repeated lock failure no longer produces
-  unbounded retry noise
+unbounded retry noise
 - one logical path receives at most three queue-owned retries before deferral
 - portable files are unchanged when the failed operation never completed
 - logs or operational events distinguish lock contention from logic failure
@@ -501,23 +504,23 @@ Scope for this revision:
 
 - Confluence is in scope
 - Google Docs is out of scope except for non-regression of its current
-  adapter-local `404` handling
+adapter-local `404` handling
 
 Ownership model:
 
 - adapter layer owns first classification of a remote response as "missing"
 - sync or application layer owns translation of that classification into
-  durable source lifecycle changes
+durable source lifecycle changes
 - persistent missing state must reuse the existing manifest or reconcile
-  missing path rather than inventing a second state machine
+missing path rather than inventing a second state machine
 
 Implementation requirements:
 
 - add or reuse a typed missing-content classification for Confluence version
-  checks and body fetches
+checks and body fetches
 - ensure the durable action reuses the existing missing-source machinery
-  (`mark missing`, `reappear`, grace-period delete) instead of a parallel
-  source-specific branch
+(`mark missing`, `reappear`, grace-period delete) instead of a parallel
+source-specific branch
 - include canonical ID in diagnostics and operational events
 - define what remains out of scope for Google Docs and any other adapters
 
@@ -532,22 +535,22 @@ Primary modules:
 Acceptance targets:
 
 - the `run_id=a8192e` Confluence `404` case is classified as missing rather
-  than surfacing only as an opaque fetch error
+than surfacing only as an opaque fetch error
 - durable missing state reuses the existing two-stage lifecycle
 - repeated runs do not emit the same unstructured warning forever
 - Google Docs keeps its current `404` behavior unless intentionally revised in a
-  separate plan
+separate plan
 
 ## Proposed Sequencing
 
 1. Validate Workstream 1 first, because it may close with no code change and it
-   sharpens the evidence story for the remaining work.
+  sharpens the evidence story for the remaining work.
 2. Resolve Workstream 2 next, because conflict contracts affect what counts as
-   replay-safe versus bug-shaped behavior elsewhere.
+  replay-safe versus bug-shaped behavior elsewhere.
 3. Implement Workstream 3 after conflict contracts are explicit, so lock or
-   defer handling does not accidentally mask identity or ownership bugs.
+  defer handling does not accidentally mask identity or ownership bugs.
 4. Implement Workstream 4 after the above, unless a narrow shared
-   classification abstraction is required earlier.
+  classification abstraction is required earlier.
 
 ## Validation Strategy
 
@@ -555,17 +558,17 @@ The implementation stage should include:
 
 - unit validation of the current resilient logging fallback
 - tests that exercise `regen_locks.knowledge_path` replay behavior against the
-  current owner
+current owner
 - tests that explicitly separate same-owner updates from conflicting
-  live-owner overwrite attempts
+live-owner overwrite attempts
 - a scope-validation test or focused diagnostic for the live `documents.url`
-  caller before changing behavior there
+caller before changing behavior there
 - queue or integration tests for bounded WinError 5 retries and deferred
-  re-entry
+re-entry
 - adapter or pipeline tests that prove Confluence `404` classification feeds
-  the existing missing-source lifecycle
+the existing missing-source lifecycle
 - at least one targeted end-to-end-ish runtime-path validation per workstream
-  at the repository or workflow seam, not only helper-level tests
+at the repository or workflow seam, not only helper-level tests
 
 ## Review Focus
 
@@ -573,16 +576,16 @@ Reviewers should pay particular attention to:
 
 - whether Workstream 1 really stays validation-first
 - whether the `knowledge_path` contract targets the current `regen_locks`
-  owner rather than the removed `insight_state` table
+owner rather than the removed `insight_state` table
 - whether the `owner_id` contract preserves guarded ownership transfer and does
-  not widen `save_regen_lock()` into a second acquisition path
+not widen `save_regen_lock()` into a second acquisition path
 - whether the `documents.url` contract avoids inventing a new live write path
 - whether the WinError 5 policy is truly bounded and assigns deferred ownership
-  clearly
+clearly
 - whether `404` handling reuses the existing missing-source lifecycle instead
-  of creating a parallel state path
+of creating a parallel state path
 - whether evidence anchors are recoverable from run IDs plus adjacent message
-  patterns, including the stderr-only logging symptom
+patterns, including the stderr-only logging symptom
 
 ## Exit Criteria
 
@@ -591,10 +594,11 @@ properties:
 
 - reflects current code reality for logging and `knowledge_path` ownership
 - defines explicit replay-safe versus invariant-violation behavior for
-  `regen_locks.knowledge_path` and `documents.url`
+`regen_locks.knowledge_path` and `documents.url`
 - preserves guarded ownership transfer for `regen_locks.owner_id`
 - states a concrete bounded retry and defer policy for Windows lock handling
 - attaches Confluence `404` handling to the existing missing-source lifecycle
 - tightens evidence anchors with run IDs, adjacent messages, and stderr or
-  shared-log ownership notes
+shared-log ownership notes
 - leaves no material behavior decision to implementer guesswork
+
