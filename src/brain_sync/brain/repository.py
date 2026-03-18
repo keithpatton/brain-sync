@@ -30,6 +30,7 @@ from brain_sync.brain.fileops import (
     path_exists,
     path_is_dir,
     path_is_file,
+    read_bytes,
     read_text,
     rediscover_local_path,
     rglob_paths,
@@ -621,6 +622,56 @@ class BrainRepository:
         except Exception:
             log.warning("Failed to write sidecar for %s", normalized, exc_info=True)
             raise
+
+    def persist_regen_portable_state(
+        self,
+        knowledge_path: str,
+        *,
+        content_hash: str,
+        summary_hash: str | None = None,
+        structure_hash: str | None = None,
+        last_regen_utc: str | None = None,
+        summary_text: str | None = None,
+    ) -> None:
+        """Persist regen-owned portable artifacts through one repository seam.
+
+        If ``summary_text`` is provided, the summary write is rolled back when
+        the authoritative insight-state sidecar cannot be persisted.
+        """
+        normalized = self._normalize_relative_knowledge_path(
+            knowledge_path,
+            operation="persist_regen_portable_state",
+        )
+        summary_path = area_summary_path(self.root, normalized)
+        previous_summary: bytes | None = None
+        summary_existed = False
+
+        if summary_text is not None:
+            summary_existed = path_exists(summary_path)
+            if summary_existed:
+                previous_summary = read_bytes(summary_path)
+            self.write_summary(normalized, summary_text)
+
+        try:
+            self.save_portable_insight_state(
+                normalized,
+                content_hash=content_hash,
+                summary_hash=summary_hash,
+                structure_hash=structure_hash,
+                last_regen_utc=last_regen_utc,
+            )
+        except Exception:
+            if summary_text is not None:
+                try:
+                    if summary_existed and previous_summary is not None:
+                        atomic_write_bytes(summary_path, previous_summary)
+                    elif path_exists(summary_path):
+                        summary_path.unlink()
+                except Exception:
+                    log.exception(
+                        "Failed to restore summary after portable regen persistence failure for %s",
+                        normalized,
+                    )
             raise
 
     def delete_portable_insight_state(self, knowledge_path: str) -> bool:

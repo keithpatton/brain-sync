@@ -10,7 +10,7 @@ from brain_sync.application.insights import load_insight_state
 from brain_sync.brain.layout import area_insights_dir, area_summary_path
 from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen.engine import RegenConfig, regen_single_folder
+from brain_sync.regen.engine import RegenConfig, RegenFailed, regen_single_folder
 
 pytestmark = pytest.mark.integration
 
@@ -115,7 +115,7 @@ class TestSidecarAfterRegen:
         assert result.action == "cleaned_up"
         assert not (_insights_dir(brain, "project") / SIDECAR_FILENAME).exists()
 
-    async def test_sidecar_write_failure_does_not_block_regen(self, brain: Path) -> None:
+    async def test_sidecar_write_failure_fails_regen_and_rolls_back_summary(self, brain: Path) -> None:
         from unittest.mock import patch
 
         kdir = brain / "knowledge" / "project"
@@ -126,23 +126,19 @@ class TestSidecarAfterRegen:
 
         # Patch the durable sidecar write path directly.
         with patch("brain_sync.brain.sidecar.write_regen_meta", side_effect=OSError("disk full")):
-            result = await regen_single_folder(brain, "project", config=config, backend=backend)
+            with pytest.raises(RegenFailed, match="disk full"):
+                await regen_single_folder(brain, "project", config=config, backend=backend)
 
-        assert result.action == "regenerated"
-        # Summary should still exist despite sidecar failure
-        assert area_summary_path(brain, "project").exists()
-        # regen_locks should still be updated (lifecycle persists even when sidecar fails)
+        assert not area_summary_path(brain, "project").exists()
         from brain_sync.runtime.repository import _connect
 
         conn = _connect(brain)
         try:
-            row = conn.execute(
-                "SELECT knowledge_path FROM regen_locks WHERE knowledge_path = ?", ("project",)
-            ).fetchone()
+            row = conn.execute("SELECT regen_status FROM regen_locks WHERE knowledge_path = ?", ("project",)).fetchone()
             assert row is not None
+            assert row[0] == "failed"
         finally:
             conn.close()
-        # Sidecar should NOT exist (write was blocked)
         assert not (_insights_dir(brain, "project") / SIDECAR_FILENAME).exists()
 
     async def test_regen_with_owner_id_claims_and_releases_runtime_slot(self, brain: Path) -> None:
@@ -196,6 +192,43 @@ class TestSidecarAfterRegen:
         assert meta.structure_hash is not None
         assert meta.content_hash is not None
 
+    async def test_backfill_requires_ownership_before_portable_mutation(self, brain: Path) -> None:
+        from brain_sync.runtime.repository import acquire_regen_ownership
+
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
+        summary_path = area_summary_path(brain, "project")
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text("Existing summary", encoding="utf-8")
+        write_regen_meta(
+            _insights_dir(brain, "project"),
+            RegenMeta(
+                content_hash="old-hash",
+                summary_hash="summary-hash",
+                structure_hash=None,
+                last_regen_utc="2026-01-01T00:00:00Z",
+            ),
+        )
+        assert acquire_regen_ownership(brain, "project", "other-owner")
+
+        before = read_regen_meta(_insights_dir(brain, "project"))
+        with pytest.raises(RegenFailed, match="already owned"):
+            await regen_single_folder(
+                brain,
+                "project",
+                config=_config(),
+                backend=FakeBackend(mode="stable"),
+                owner_id="session-owner",
+            )
+
+        after = read_regen_meta(_insights_dir(brain, "project"))
+        state = load_insight_state(brain, "project")
+        assert before == after
+        assert state is not None
+        assert state.owner_id == "other-owner"
+        assert state.regen_status == "running"
+
 
 class TestSidecarPartialMerge:
     """Partial sidecar writes prefer DB values over existing sidecar."""
@@ -239,3 +272,41 @@ class TestSidecarPartialMerge:
         # structure_hash should be updated (different from before)
         assert meta.structure_hash is not None
         assert meta.structure_hash != istate_before.structure_hash
+
+    async def test_skipped_rename_requires_ownership_before_portable_mutation(self, brain: Path) -> None:
+        from brain_sync.runtime.repository import acquire_regen_ownership
+
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
+        child = kdir / "sub"
+        child.mkdir()
+        (child / "notes.md").write_text("# Notes\n\nSome notes.", encoding="utf-8")
+
+        backend = FakeBackend(mode="stable")
+        config = _config()
+
+        await regen_single_folder(brain, "project/sub", config=config, backend=backend)
+        await regen_single_folder(brain, "project", config=config, backend=backend)
+
+        before = read_regen_meta(_insights_dir(brain, "project"))
+        assert before is not None
+
+        child.rename(kdir / "sub-renamed")
+        assert acquire_regen_ownership(brain, "project", "other-owner")
+
+        with pytest.raises(RegenFailed, match="already owned"):
+            await regen_single_folder(
+                brain,
+                "project",
+                config=config,
+                backend=backend,
+                owner_id="session-owner",
+            )
+
+        after = read_regen_meta(_insights_dir(brain, "project"))
+        state = load_insight_state(brain, "project")
+        assert after == before
+        assert state is not None
+        assert state.owner_id == "other-owner"
+        assert state.regen_status == "running"

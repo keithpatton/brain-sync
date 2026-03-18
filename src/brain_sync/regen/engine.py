@@ -36,7 +36,7 @@ from brain_sync.brain.fileops import (
     rglob_paths,
 )
 from brain_sync.brain.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
-from brain_sync.brain.repository import BrainRepository, PortableBrainLockError
+from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.sidecar import load_regen_hashes, read_all_regen_meta
 from brain_sync.brain.tree import (
     find_all_content_paths,
@@ -316,6 +316,7 @@ def _save_area_state(
     content_hash: str,
     summary_hash: str | None = None,
     structure_hash: str | None = None,
+    summary_text: str | None = None,
     regen_started_utc: str | None = None,
     last_regen_utc: str | None = None,
     regen_status: str = "idle",
@@ -324,22 +325,14 @@ def _save_area_state(
     error_reason: str | None = None,
 ) -> None:
     """Persist portable insight hashes through the repository and lifecycle in runtime state."""
-    try:
-        repository.save_portable_insight_state(
-            knowledge_path,
-            content_hash=content_hash,
-            summary_hash=summary_hash,
-            structure_hash=structure_hash,
-            last_regen_utc=last_regen_utc,
-        )
-    except PortableBrainLockError:
-        raise
-    except Exception:
-        log.warning(
-            "Failed to persist portable insight-state for %s; keeping runtime lifecycle only",
-            knowledge_path or "(root)",
-            exc_info=True,
-        )
+    repository.persist_regen_portable_state(
+        knowledge_path,
+        content_hash=content_hash,
+        summary_hash=summary_hash,
+        structure_hash=structure_hash,
+        last_regen_utc=last_regen_utc,
+        summary_text=summary_text,
+    )
     if release_owner_id is not None:
         released = release_regen_ownership(
             root,
@@ -369,6 +362,72 @@ def _save_area_state(
         outcome="summary_written",
         details={"knowledge_paths": [knowledge_path]},
     )
+
+
+def _claim_regen_ownership_or_raise(root: Path, knowledge_path: str, owner_id: str | None) -> None:
+    """Require ownership before mutating portable regen state."""
+    if owner_id is None:
+        return
+    if not acquire_regen_ownership(root, knowledge_path, owner_id):
+        raise RegenFailed(knowledge_path or "(root)", f"regen already owned for '{knowledge_path or '(root)'}'")
+
+
+def _persist_area_state_or_fail(
+    root: Path,
+    repository: BrainRepository,
+    *,
+    knowledge_path: str,
+    session_id: str | None,
+    owner_id: str | None,
+    regen_started_utc: str | None,
+    content_hash: str,
+    summary_hash: str | None = None,
+    structure_hash: str | None = None,
+    summary_text: str | None = None,
+    last_regen_utc: str | None = None,
+    regen_status: str = "idle",
+    release_owner_id: str | None = None,
+    error_reason: str | None = None,
+) -> None:
+    """Persist portable state and convert write failures into regen failures."""
+    try:
+        _save_area_state(
+            root,
+            repository,
+            knowledge_path=knowledge_path,
+            content_hash=content_hash,
+            summary_hash=summary_hash,
+            structure_hash=structure_hash,
+            summary_text=summary_text,
+            regen_started_utc=regen_started_utc,
+            last_regen_utc=last_regen_utc,
+            regen_status=regen_status,
+            owner_id=owner_id,
+            release_owner_id=release_owner_id,
+            error_reason=error_reason,
+        )
+    except Exception as exc:
+        log.error("Failed to persist portable regen state for %s: %s", knowledge_path or "(root)", exc, exc_info=True)
+        try:
+            _save_terminal_regen_lock(
+                root,
+                knowledge_path=knowledge_path,
+                owner_id=owner_id,
+                regen_started_utc=regen_started_utc,
+                regen_status="failed",
+                error_reason=str(exc),
+            )
+        except Exception as db_err:
+            log.error("Failed to persist 'failed' state for %s: %s", knowledge_path or "(root)", db_err)
+        _record_regen_event(
+            event_type="regen.failed",
+            knowledge_path=knowledge_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="failed_portable_state",
+            details={"error": str(exc)},
+        )
+        raise RegenFailed(knowledge_path or "(root)", str(exc)) from exc
 
 
 def _save_terminal_regen_lock(
@@ -1485,17 +1544,22 @@ async def regen_single_folder(
             regen_id,
             current_path or "(root)",
         )
-        _save_area_state(
+        _claim_regen_ownership_or_raise(root, current_path, owner_id)
+        if owner_id is not None:
+            lock = load_regen_lock(root, current_path)
+        _persist_area_state_or_fail(
             root,
             repository,
             knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            regen_started_utc=lock.regen_started_utc if lock else None,
             content_hash=new_content_hash,
             summary_hash=meta.summary_hash,
             structure_hash=new_structure_hash,
-            regen_started_utc=lock.regen_started_utc if lock else None,
             last_regen_utc=meta.last_regen_utc if meta else None,
-            regen_status=lock.regen_status if lock else "idle",
-            owner_id=lock.owner_id if lock else None,
+            regen_status="idle",
+            release_owner_id=owner_id,
             error_reason=lock.error_reason if lock else None,
         )
         _record_regen_event(
@@ -1530,17 +1594,22 @@ async def regen_single_folder(
             regen_id,
             current_path or "(root)",
         )
-        _save_area_state(
+        _claim_regen_ownership_or_raise(root, current_path, owner_id)
+        if owner_id is not None:
+            lock = load_regen_lock(root, current_path)
+        _persist_area_state_or_fail(
             root,
             repository,
             knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            regen_started_utc=lock.regen_started_utc if lock else None,
             content_hash=meta.content_hash or new_content_hash if meta else new_content_hash,
             summary_hash=meta.summary_hash if meta else None,
             structure_hash=new_structure_hash,
-            regen_started_utc=lock.regen_started_utc if lock else None,
             last_regen_utc=meta.last_regen_utc if meta else None,
-            regen_status=lock.regen_status if lock else "idle",
-            owner_id=lock.owner_id if lock else None,
+            regen_status="idle",
+            release_owner_id=owner_id,
         )
         _record_regen_event(
             event_type="regen.completed",
@@ -1581,8 +1650,7 @@ async def regen_single_folder(
     insights_dir.mkdir(parents=True, exist_ok=True)
 
     # Mark as running — keep old hash so crashes/failures don't block retries
-    if owner_id is not None and not acquire_regen_ownership(root, current_path, owner_id):
-        raise RegenFailed(current_path or "(root)", f"regen already owned for '{current_path or '(root)'}'")
+    _claim_regen_ownership_or_raise(root, current_path, owner_id)
     started = datetime.now(UTC).isoformat()
     save_regen_lock(
         root,
@@ -1770,14 +1838,16 @@ async def regen_single_folder(
             similarity_threshold * 100,
         )
         summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
-        _save_area_state(
+        _persist_area_state_or_fail(
             root,
             repository,
             knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            regen_started_utc=started,
             content_hash=new_content_hash,
             summary_hash=summary_hash,
             structure_hash=new_structure_hash,
-            regen_started_utc=started,
             last_regen_utc=now,
             regen_status="idle",
             release_owner_id=owner_id,
@@ -1795,22 +1865,24 @@ async def regen_single_folder(
         return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
 
     # Summary changed — repository owns durable summary persistence.
-    repository.write_summary(current_path, new_summary)
-    if journal_text:
-        _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
     summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
-    _save_area_state(
+    _persist_area_state_or_fail(
         root,
         repository,
         knowledge_path=current_path,
+        session_id=session_id,
+        owner_id=owner_id,
+        regen_started_utc=started,
+        summary_text=new_summary,
         content_hash=new_content_hash,
         summary_hash=summary_hash,
         structure_hash=new_structure_hash,
-        regen_started_utc=started,
         last_regen_utc=now,
         regen_status="idle",
         release_owner_id=owner_id,
     )
+    if journal_text:
+        _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
     log.info(
         "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
         regen_id,
