@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,9 +42,11 @@ from brain_sync.brain.fileops import (
 from brain_sync.brain.layout import (
     ATTACHMENTS_DIRNAME,
     BRAIN_MANIFEST_VERSION,
+    JOURNAL_DIRNAME,
     MANAGED_DIRNAME,
     area_insight_state_path,
     area_insights_dir,
+    area_journal_dir,
     area_summary_path,
     brain_manifest_path,
     knowledge_root,
@@ -63,6 +66,8 @@ from brain_sync.brain.tree import normalize_path
 from brain_sync.util.text import slugify
 
 log = logging.getLogger(__name__)
+
+_JOURNAL_HEADING_RE = re.compile(r"^## \d{2}:\d{2}\s*$", re.MULTILINE)
 
 
 def source_dir_id(canonical_id: str) -> str:
@@ -699,8 +704,9 @@ class BrainRepository:
     ) -> Path:
         """Append to the current journal file without rewriting prior entries."""
         normalized = self._normalize_relative_knowledge_path(knowledge_path, operation="append_journal_entry")
+        self.heal_legacy_journal_layout(normalized)
         now = timestamp or datetime.now()
-        journal_dir = area_insights_dir(self.root, normalized) / "journal" / now.strftime("%Y-%m")
+        journal_dir = area_journal_dir(self.root, normalized) / now.strftime("%Y-%m")
         journal_dir.mkdir(parents=True, exist_ok=True)
         journal_path = journal_dir / f"{now.strftime('%Y-%m-%d')}.md"
         timestamped = f"## {now.strftime('%H:%M')}\n\n{journal_text}"
@@ -711,6 +717,42 @@ class BrainRepository:
         else:
             atomic_write_bytes(journal_path, timestamped.encode("utf-8"))
         return journal_path
+
+    def heal_legacy_journal_layout(self, knowledge_path: str) -> bool:
+        """Heal one area's legacy insights/journal subtree into .brain-sync/journal/."""
+        normalized = self._normalize_relative_knowledge_path(knowledge_path, operation="heal_legacy_journal_layout")
+        legacy_dir = area_insights_dir(self.root, normalized) / JOURNAL_DIRNAME
+        if not path_is_dir(legacy_dir):
+            return False
+
+        target_root = area_journal_dir(self.root, normalized)
+
+        for legacy_path in rglob_paths(legacy_dir, "*.md"):
+            if not path_is_file(legacy_path):
+                continue
+
+            relative_path = legacy_path.relative_to(legacy_dir)
+            target_path = target_root / relative_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            legacy_text = read_text(legacy_path, encoding="utf-8")
+            target_exists = path_exists(target_path)
+            if target_exists and not path_is_file(target_path):
+                raise BrainRepositoryInvariantError(
+                    f"heal_legacy_journal_layout: target '{target_path}' exists but is not a file"
+                )
+
+            merged_text = (
+                _merge_journal_day_text(read_text(target_path, encoding="utf-8"), legacy_text)
+                if target_exists
+                else legacy_text.strip("\n")
+            )
+
+            if not target_exists or read_text(target_path, encoding="utf-8") != merged_text:
+                atomic_write_bytes(target_path, merged_text.encode("utf-8"))
+
+        shutil.rmtree(str(win_long_path(legacy_dir)))
+        return True
 
     def remove_source_owned_files(self, target_path: str, canonical_id: str) -> bool:
         """Delete only the portable files owned by a synced source in one area."""
@@ -804,3 +846,63 @@ class BrainRepository:
 
 def _slug(text: str) -> str:
     return slugify(text)
+
+
+def _split_journal_day(text: str) -> tuple[str, tuple[str, ...]]:
+    normalized = text.strip("\n")
+    if not normalized:
+        return "", ()
+
+    matches = list(_JOURNAL_HEADING_RE.finditer(normalized))
+    if not matches:
+        return normalized, ()
+
+    preamble = normalized[: matches[0].start()].strip("\n")
+    blocks: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
+        block = normalized[start:end].strip("\n")
+        if block:
+            blocks.append(block)
+    return preamble, tuple(blocks)
+
+
+def _split_journal_preamble_sections(text: str) -> tuple[str, ...]:
+    normalized = text.strip("\n")
+    if not normalized:
+        return ()
+    return tuple(section.strip("\n") for section in re.split(r"\n{2,}", normalized) if section.strip("\n"))
+
+
+def _merge_unique_sections(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for section in group:
+            if section in seen:
+                continue
+            merged.append(section)
+            seen.add(section)
+    return tuple(merged)
+
+
+def _journal_block_sort_key(block: str) -> tuple[str, str]:
+    heading = block.splitlines()[0].strip()
+    return heading.removeprefix("## "), block
+
+
+def _merge_journal_day_text(target_text: str, legacy_text: str) -> str:
+    target_preamble, target_blocks_tuple = _split_journal_day(target_text)
+    legacy_preamble, legacy_blocks = _split_journal_day(legacy_text)
+    preamble_sections = _merge_unique_sections(
+        _split_journal_preamble_sections(legacy_preamble),
+        _split_journal_preamble_sections(target_preamble),
+    )
+    merged_blocks = sorted(
+        _merge_unique_sections(legacy_blocks, target_blocks_tuple),
+        key=_journal_block_sort_key,
+    )
+
+    parts = [part for part in ("\n\n".join(preamble_sections), "\n\n".join(merged_blocks)) if part]
+    return "\n\n".join(parts)

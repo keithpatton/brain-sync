@@ -59,6 +59,10 @@ For the supported rows above, brain-sync must support:
 - operating on an existing valid Brain Format `1.0` brain
 - repairing repairable drift in a Brain Format `1.0` brain via doctor
 and rebuild flows
+- repairing legacy misplaced per-area journal trees from
+  `knowledge/<area>/.brain-sync/insights/journal/` into the supported
+  `knowledge/<area>/.brain-sync/journal/` layout without changing Brain
+  Format `1.0`
 - opening Brain Format `1.0` brains whose machine-local runtime DB is still on
 supported upgrade-source schemas such as `v23`
 - migrating supported runtime DB versions in place during app upgrades

@@ -16,7 +16,7 @@ from brain_sync.application.doctor import (
 )
 from brain_sync.application.insights import InsightState, load_all_insight_states, save_insight_state
 from brain_sync.application.sources import add_source
-from brain_sync.brain.layout import area_attachments_root, area_insights_dir, area_summary_path
+from brain_sync.brain.layout import area_attachments_root, area_insights_dir, area_journal_dir, area_summary_path
 from brain_sync.brain.manifest import (
     read_all_source_manifests,
     write_source_manifest,
@@ -307,7 +307,7 @@ class TestDoctorJournalNotOrphan:
     def test_journal_subdir_not_flagged_as_orphan(self, brain: Path) -> None:
         """Co-located journal/ is an artifact dir, not a knowledge mirror."""
         (brain / "knowledge" / "area").mkdir(parents=True)
-        journal = _insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-15.md"
+        journal = area_journal_dir(brain, "area") / "2026-03" / "2026-03-15.md"
         journal.parent.mkdir(parents=True)
         journal.write_text("# Journal Entry\nToday's notes.", encoding="utf-8")
 
@@ -316,6 +316,33 @@ class TestDoctorJournalNotOrphan:
             f for f in result.findings if f.check == "orphan_insights" and "journal" in (f.knowledge_path or "")
         ]
         assert len(orphan_findings) == 0
+
+    def test_legacy_journal_layout_reported_as_drift(self, brain: Path) -> None:
+        (brain / "knowledge" / "area").mkdir(parents=True)
+        legacy = _insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-15.md"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("## 09:00\n\nLegacy entry.", encoding="utf-8")
+
+        result = doctor(brain)
+
+        findings = [f for f in result.findings if f.check == "legacy_journal_layout"]
+        assert len(findings) == 1
+        assert findings[0].severity == Severity.DRIFT
+
+    def test_fix_heals_legacy_journal_layout(self, brain: Path) -> None:
+        (brain / "knowledge" / "area").mkdir(parents=True)
+        legacy = _insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-15.md"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("## 09:00\n\nLegacy entry.", encoding="utf-8")
+
+        result = doctor(brain, fix=True)
+
+        fixed = [f for f in result.findings if f.fix_applied and f.check == "legacy_journal_layout"]
+        assert len(fixed) == 1
+        healed = area_journal_dir(brain, "area") / "2026-03" / "2026-03-15.md"
+        assert healed.exists()
+        assert "Legacy entry." in healed.read_text(encoding="utf-8")
+        assert not legacy.exists()
 
 
 class TestDoctorOrphanInsightsWithNonRegenerableFiles:

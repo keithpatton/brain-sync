@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from brain_sync.brain.layout import area_insights_dir, area_journal_dir
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
 from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError, PortableBrainLockError
@@ -167,7 +168,7 @@ class TestJournalAppend:
 
         journal = repository.append_journal_entry("", "Root entry.", timestamp=datetime(2026, 3, 17, 8, 15))
 
-        assert journal == brain / "knowledge" / ".brain-sync" / "insights" / "journal" / "2026-03" / "2026-03-17.md"
+        assert journal == brain / "knowledge" / ".brain-sync" / "journal" / "2026-03" / "2026-03-17.md"
         assert "Root entry." in journal.read_text(encoding="utf-8")
 
     def test_append_journal_entry_keeps_prior_entries(self, brain: Path) -> None:
@@ -189,6 +190,111 @@ class TestJournalAppend:
         assert "First entry." in content
         assert "Second entry." in content
         assert content.count("## ") == 2
+
+    def test_append_journal_entry_heals_legacy_layout_before_write(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("## 08:00\n\nLegacy entry.", encoding="utf-8")
+
+        journal = repository.append_journal_entry("area", "New entry.", timestamp=datetime(2026, 3, 17, 9, 15))
+
+        assert journal == area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        assert not legacy.exists()
+        content = journal.read_text(encoding="utf-8")
+        assert "Legacy entry." in content
+        assert "New entry." in content
+
+
+class TestLegacyJournalHealing:
+    def test_heal_legacy_journal_layout_merges_unique_blocks_and_removes_legacy_tree(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("## 09:00\n\nTarget entry.", encoding="utf-8")
+        legacy.write_text("## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry.", encoding="utf-8")
+
+        changed = repository.heal_legacy_journal_layout("area")
+
+        assert changed is True
+        assert not (area_insights_dir(brain, "area") / "journal").exists()
+        assert target.read_text(encoding="utf-8") == ("## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry.")
+
+    def test_heal_legacy_journal_layout_keeps_preamble_without_duplicating_first_entry(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("## 09:00\n\nTarget entry.", encoding="utf-8")
+        legacy.write_text(
+            "Legacy preamble.\n\n## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry.",
+            encoding="utf-8",
+        )
+
+        assert repository.heal_legacy_journal_layout("area") is True
+
+        assert target.read_text(encoding="utf-8") == (
+            "Legacy preamble.\n\n## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry."
+        )
+
+    def test_heal_legacy_journal_layout_orders_unique_blocks_by_timestamp(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("## 10:00\n\nTarget entry.", encoding="utf-8")
+        legacy.write_text("## 09:00\n\nLegacy entry.", encoding="utf-8")
+
+        assert repository.heal_legacy_journal_layout("area") is True
+
+        assert target.read_text(encoding="utf-8") == ("## 09:00\n\nLegacy entry.\n\n## 10:00\n\nTarget entry.")
+
+    def test_heal_legacy_journal_layout_keeps_distinct_preambles_from_both_files(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("Target preamble.\n\n## 10:00\n\nTarget entry.", encoding="utf-8")
+        legacy.write_text("Legacy preamble.\n\n## 09:00\n\nLegacy entry.", encoding="utf-8")
+
+        assert repository.heal_legacy_journal_layout("area") is True
+
+        assert target.read_text(encoding="utf-8") == (
+            "Legacy preamble.\n\nTarget preamble.\n\n## 09:00\n\nLegacy entry.\n\n## 10:00\n\nTarget entry."
+        )
+
+    def test_heal_legacy_journal_layout_keeps_distinct_plain_text_when_no_timestamp_blocks(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("Target plain text.", encoding="utf-8")
+        legacy.write_text("Legacy plain text.", encoding="utf-8")
+
+        assert repository.heal_legacy_journal_layout("area") is True
+
+        assert target.read_text(encoding="utf-8") == "Legacy plain text.\n\nTarget plain text."
+
+    def test_heal_legacy_journal_layout_is_idempotent(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
+        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("## 09:00\n\nTarget entry.", encoding="utf-8")
+        legacy.write_text("## 09:00\n\nTarget entry.", encoding="utf-8")
+
+        assert repository.heal_legacy_journal_layout("area") is True
+        healed = target.read_text(encoding="utf-8")
+
+        assert repository.heal_legacy_journal_layout("area") is False
+        assert target.read_text(encoding="utf-8") == healed
 
 
 class TestAttachmentCleanup:

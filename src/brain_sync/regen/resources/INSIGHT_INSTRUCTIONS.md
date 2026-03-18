@@ -33,14 +33,15 @@ brain-root/
       .brain-sync/
         insights/
           summary.md                      <- Area landing page
-          journal/
-            YYYY-MM/YYYY-MM-DD.md         <- Temporal notes when warranted
+        journal/
+          YYYY-MM/YYYY-MM-DD.md           <- Temporal notes when warranted
         attachments/
           <source_dir_id>/
 ```
 
 - `knowledge/` is human-owned. An "area" is a user-managed folder here.
 - Managed summaries are co-located under `knowledge/<area>/.brain-sync/insights/`.
+- Managed journals are co-located under `knowledge/<area>/.brain-sync/journal/`.
 - `_core/` is only valid at the top level of `knowledge/`.
 
 ## Global Context

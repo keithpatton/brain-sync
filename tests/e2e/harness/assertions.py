@@ -8,7 +8,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from brain_sync.brain.fileops import INSIGHT_ARTIFACT_DIRS
+from brain_sync.brain.fileops import (
+    iterdir_paths,
+    path_exists,
+    path_is_dir,
+    read_text,
+    rglob_paths,
+)
 from brain_sync.brain.layout import INSIGHT_STATE_FILENAME, area_summary_path
 
 
@@ -21,8 +27,8 @@ def _runtime_db_path() -> Path:
 def assert_summary_exists(root: Path, knowledge_path: str) -> str:
     """Assert that the co-located summary exists and return its content."""
     summary = area_summary_path(root, knowledge_path)
-    assert summary.exists(), f"Summary not found: {summary}"
-    return summary.read_text(encoding="utf-8")
+    assert path_exists(summary), f"Summary not found: {summary}"
+    return read_text(summary, encoding="utf-8")
 
 
 def assert_db_source(root: Path, canonical_id: str, **expected: object) -> dict:
@@ -52,20 +58,22 @@ def assert_db_regen_lock(root: Path, knowledge_path: str, **expected: object) ->
 
 
 def assert_no_orphan_insights(root: Path) -> None:
-    """Managed insight trees must be co-located and contain no legacy child mirrors."""
-    assert not (root / "insights").exists(), "Legacy top-level insights/ tree should not exist"
+    """Managed insight trees must be co-located and contain no unexpected child mirrors."""
+    assert not path_exists(root / "insights"), "Legacy top-level insights/ tree should not exist"
 
     knowledge_root = root / "knowledge"
-    if not knowledge_root.exists():
+    if not path_exists(knowledge_root):
         return
 
-    for insights_dir in knowledge_root.rglob(".brain-sync/insights"):
-        for child in insights_dir.iterdir():
-            if not child.is_dir():
+    for insights_dir in rglob_paths(knowledge_root, "insights"):
+        if insights_dir.parent.name != ".brain-sync" or not path_is_dir(insights_dir):
+            continue
+        for child in iterdir_paths(insights_dir):
+            if not path_is_dir(child):
                 continue
-            if child.name.startswith("_") or child.name in INSIGHT_ARTIFACT_DIRS:
+            if child.name.startswith("_"):
                 continue
-            assert child.name == "journal", f"Unexpected nested insights dir under {insights_dir}: {child.name}"
+            raise AssertionError(f"Unexpected nested insights dir under {insights_dir}: {child.name}")
 
 
 def assert_no_duplicate_insights(root: Path) -> None:
@@ -105,14 +113,14 @@ def _assert_db_paths_exist_in_knowledge(conn: sqlite3.Connection, knowledge: Pat
     for (kp,) in rows:
         if not kp:
             continue  # root entry
-        assert (knowledge / kp).exists(), f"regen_locks.knowledge_path '{kp}' not found in knowledge/"
+        assert path_exists(knowledge / kp), f"regen_locks.knowledge_path '{kp}' not found in knowledge/"
 
 
 def _assert_summaries_have_db_rows(conn: sqlite3.Connection, insights: Path) -> None:
     """Every co-located summary must have either a regen_locks row or a sidecar."""
-    if not insights.exists():
+    if not path_exists(insights):
         return
-    for summary in insights.rglob("summary.md"):
+    for summary in rglob_paths(insights, "summary.md"):
         rel = summary.relative_to(insights)
         if len(rel.parts) < 4 or rel.parts[-3:] != (".brain-sync", "insights", "summary.md"):
             continue
@@ -124,15 +132,15 @@ def _assert_summaries_have_db_rows(conn: sqlite3.Connection, insights: Path) -> 
         if row is not None:
             continue
         sidecar = summary.parent / INSIGHT_STATE_FILENAME
-        assert sidecar.exists(), (
+        assert path_exists(sidecar), (
             f"knowledge/{rel_str}/.brain-sync/insights/summary.md exists but no regen_locks row and no sidecar"
         )
 
 
 def _assert_no_stale_summaries(knowledge: Path, insights: Path) -> None:
-    if not insights.exists():
+    if not path_exists(insights):
         return
-    for summary in insights.rglob("summary.md"):
+    for summary in rglob_paths(insights, "summary.md"):
         rel = summary.relative_to(insights)
         if len(rel.parts) < 4 or rel.parts[-3:] != (".brain-sync", "insights", "summary.md"):
             continue
@@ -140,7 +148,7 @@ def _assert_no_stale_summaries(knowledge: Path, insights: Path) -> None:
         if any(part.startswith("_") for part in area_parts):
             continue
         rel_path = Path(*area_parts) if area_parts else Path()
-        assert (knowledge / rel_path).is_dir(), (
+        assert path_is_dir(knowledge / rel_path), (
             f"Stale summary: knowledge/{rel_path}/.brain-sync/insights/summary.md has no matching knowledge dir"
         )
 
@@ -160,8 +168,8 @@ def _assert_single_regen_owner_per_path(conn: sqlite3.Connection) -> None:
 
 
 def _assert_insight_tree_mirrors_knowledge(knowledge: Path, insights: Path) -> None:
-    if insights.exists():
-        assert not (insights.parent.parent / "insights").exists(), "Legacy top-level insights/ tree should not exist"
+    if path_exists(insights):
+        assert not path_exists(insights.parent.parent / "insights"), "Legacy top-level insights/ tree should not exist"
 
 
 def _assert_db_paths_normalized(conn: sqlite3.Connection) -> None:
@@ -178,17 +186,22 @@ def _assert_db_paths_normalized(conn: sqlite3.Connection) -> None:
 def _assert_knowledge_path_casing(conn: sqlite3.Connection, knowledge: Path) -> None:
     rows = conn.execute("SELECT knowledge_path FROM regen_locks WHERE knowledge_path != ''").fetchall()
     for (kp,) in rows:
-        actual = knowledge / kp
-        if not actual.exists():
+        resolved_rel_str = _resolve_knowledge_path_casing(knowledge, kp)
+        if resolved_rel_str is None:
             continue  # other check will catch missing paths
-        # Resolve actual casing on case-insensitive filesystems
-        try:
-            resolved = actual.resolve()
-            resolved_rel = resolved.relative_to(knowledge.resolve())
-            resolved_rel_str = str(resolved_rel).replace("\\", "/")
-            assert kp == resolved_rel_str, f"Case mismatch: DB has '{kp}', filesystem has '{resolved_rel_str}'"
-        except (OSError, ValueError):
-            pass
+        assert kp == resolved_rel_str, f"Case mismatch: DB has '{kp}', filesystem has '{resolved_rel_str}'"
+
+
+def _resolve_knowledge_path_casing(knowledge: Path, knowledge_path: str) -> str | None:
+    current = knowledge
+    actual_parts: list[str] = []
+    for part in Path(knowledge_path).parts:
+        match = next((child.name for child in iterdir_paths(current) if child.name.casefold() == part.casefold()), None)
+        if match is None:
+            return None
+        actual_parts.append(match)
+        current = current / match
+    return "/".join(actual_parts)
 
 
 def assert_brain_consistent(root: Path) -> None:
@@ -200,7 +213,7 @@ def assert_brain_consistent(root: Path) -> None:
     insights = knowledge
     db_path = _runtime_db_path()
 
-    if not db_path.exists():
+    if not path_exists(db_path):
         return  # no DB means nothing to check
 
     conn = sqlite3.connect(str(db_path))

@@ -118,8 +118,8 @@ configuration.
 |---|---|---|
 | `version` | integer | Brain schema version |
 
-This is intentionally minimal. Future versions may add brain-level
-configuration (e.g. default regen settings, journal enable/disable).
+This is intentionally minimal. Future versions may add portable brain-level
+metadata, but journaling behavior is not configured through the brain schema.
 
 **Brain manifest example**
 

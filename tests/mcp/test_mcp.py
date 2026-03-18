@@ -28,7 +28,7 @@ from brain_sync.application import (
 )
 from brain_sync.application.init import init_brain
 from brain_sync.application.sources import ReconcileEntry, UnsupportedSourceUrlError
-from brain_sync.brain.layout import area_insights_dir
+from brain_sync.brain.layout import area_insights_dir, area_journal_dir
 
 pytestmark = pytest.mark.mcp
 
@@ -121,8 +121,8 @@ def brain_root(tmp_path: Path) -> Path:
         "# Core Summary\nOverview of the brain.", encoding="utf-8"
     )
     # journal should be excluded
-    (_managed_insights(root, "_core") / "journal" / "2026-03").mkdir(parents=True)
-    (_managed_insights(root, "_core") / "journal" / "2026-03" / "2026-03-08.md").write_text(
+    (area_journal_dir(root, "_core") / "2026-03").mkdir(parents=True)
+    (area_journal_dir(root, "_core") / "2026-03" / "2026-03-08.md").write_text(
         "Journal entry.",
         encoding="utf-8",
     )
@@ -1135,8 +1135,8 @@ class TestAreaIndex:
         (_managed_insights(root, "initiatives/project")).mkdir(parents=True)
         (_managed_insights(root, "initiatives/project") / "summary.md").write_text("# Project", encoding="utf-8")
         # Journal exists only in managed insights (not as a knowledge area)
-        (_managed_insights(root, "initiatives/project") / "journal" / "2026-03").mkdir(parents=True)
-        (_managed_insights(root, "initiatives/project") / "journal" / "2026-03" / "entry.md").write_text(
+        (area_journal_dir(root, "initiatives/project") / "2026-03").mkdir(parents=True)
+        (area_journal_dir(root, "initiatives/project") / "2026-03" / "entry.md").write_text(
             "Journal entry.", encoding="utf-8"
         )
 

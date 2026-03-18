@@ -12,7 +12,7 @@ import pytest
 
 from brain_sync.application.insights import InsightState, delete_insight_state, load_insight_state, save_insight_state
 from brain_sync.brain.fileops import atomic_write_bytes
-from brain_sync.brain.layout import area_insights_dir, area_summary_path, brain_manifest_path
+from brain_sync.brain.layout import area_insights_dir, area_journal_dir, area_summary_path, brain_manifest_path
 from brain_sync.brain.tree import find_all_content_paths as _find_all_content_paths
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen import (
@@ -101,6 +101,10 @@ def managed_insights(root: Path, knowledge_path: str = "") -> Path:
 
 def managed_summary(root: Path, knowledge_path: str = "") -> Path:
     return area_summary_path(root, knowledge_path)
+
+
+def managed_journal(root: Path, knowledge_path: str = "") -> Path:
+    return area_journal_dir(root, knowledge_path)
 
 
 class TestComputeContentHash:
@@ -1369,18 +1373,24 @@ class TestRegenConfigDefaults:
     def test_effort_default(self):
         assert RegenConfig().effort == "low"
 
-    def test_write_journal_default(self):
-        assert RegenConfig().write_journal is False
-
     def test_load_with_new_fields(self, tmp_path):
-        """Config loading handles write_journal field."""
         config_file = tmp_path / "config.json"
-        config_file.write_text('{"regen": {"write_journal": true, "max_turns": 4}}', encoding="utf-8")
+        config_file.write_text('{"regen": {"max_turns": 4}}', encoding="utf-8")
         with patch("brain_sync.regen.engine.CONFIG_FILE", config_file):
             cfg = RegenConfig.load()
-        assert cfg.write_journal is True
         assert cfg.max_turns == 4
         assert cfg.effort == "low"
+
+    def test_load_ignores_removed_journal_fields(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            '{"regen": {"disable_journal": true, "write_journal": false, "max_turns": 4}}',
+            encoding="utf-8",
+        )
+        with patch("brain_sync.regen.engine.CONFIG_FILE", config_file):
+            cfg = RegenConfig.load()
+        assert cfg.max_turns == 4
+        assert not hasattr(cfg, "write_journal")
 
 
 class TestGlobalContext:
@@ -1442,7 +1452,7 @@ class TestGlobalContext:
         icore = managed_insights(brain, "_core")
         icore.mkdir(parents=True)
         (icore / "summary.md").write_text("# Core Summary", encoding="utf-8")
-        journal = icore / "journal" / "2026-03"
+        journal = managed_journal(brain, "_core") / "2026-03"
         journal.mkdir(parents=True)
         (journal / "2026-03-08.md").write_text("# Journal entry", encoding="utf-8")
 
@@ -1511,9 +1521,9 @@ class TestPromptResult:
         assert "diagram.png" in result.text
 
 
-class TestJournalOptIn:
-    def test_journal_absent_by_default(self, brain):
-        """With default config, no XML output directive or journal instructions in prompt."""
+class TestJournalPrompting:
+    def test_journal_present_by_default(self, brain):
+        """Default config includes journal instructions and structured output tags."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1521,13 +1531,13 @@ class TestJournalOptIn:
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
-        result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=False)
-        assert "<summary>" not in result.text
-        assert "<journal>" not in result.text
-        assert "Output the updated summary now." in result.text
+        result = _build_prompt("leaf", kdir, {}, idir, brain)
+        assert "journal entry" in result.text.lower()
+        assert "<summary>" in result.text
+        assert "<journal>" in result.text
 
     def test_journal_instructions_in_prompt(self, brain):
-        """Journal instructions and XML output format are included when write_journal=True."""
+        """Prompt assembly always includes journal instructions and XML output format."""
         kdir = brain / "knowledge" / "leaf"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
@@ -1535,7 +1545,7 @@ class TestJournalOptIn:
         idir.mkdir(parents=True)
 
         invalidate_global_context_cache()
-        result = _build_prompt("leaf", kdir, {}, idir, brain, write_journal=True)
+        result = _build_prompt("leaf", kdir, {}, idir, brain)
         assert "journal entry" in result.text.lower()
         assert "<summary>" in result.text
         assert "<journal>" in result.text
@@ -1613,6 +1623,61 @@ class TestOutputValidation:
         summary_path = managed_summary(brain, "project")
         assert summary_path.exists()
         assert "valid summary" in summary_path.read_text(encoding="utf-8")
+
+    def test_journal_only_xml_raises_regen_failed_without_writing_summary(self, brain):
+        """Malformed structured output must not leak journal XML into summary.md."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        async def malformed_output(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output="<journal>\nOnly journal\n</journal>")
+
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=malformed_output):
+            with pytest.raises(RegenFailed, match="suspiciously small output"):
+                asyncio.run(regen_path(brain, "project"))
+
+        assert not managed_summary(brain, "project").exists()
+        assert not managed_journal(brain, "project").exists()
+
+    def test_broken_journal_tag_raises_regen_failed_without_writing_artifacts(self, brain):
+        """Malformed journal tags must fail safely with no writes."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        async def malformed_output(prompt, cwd, **kwargs):
+            return ClaudeResult(
+                success=True,
+                output="<summary>\nValid enough summary text.\n</summary>\n<journal>\nBroken",
+            )
+
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=malformed_output):
+            with pytest.raises(RegenFailed, match="suspiciously small output"):
+                asyncio.run(regen_path(brain, "project"))
+
+        assert not managed_summary(brain, "project").exists()
+        assert not managed_journal(brain, "project").exists()
+
+    def test_text_outside_xml_envelope_raises_regen_failed_without_writing_artifacts(self, brain):
+        """Extra text outside the XML wrapper must fail safely with no writes."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
+
+        async def malformed_output(prompt, cwd, **kwargs):
+            output = "prefix\n<summary>\nValid enough summary text.\n</summary>\n<journal>\nEntry\n</journal>\nsuffix"
+            return ClaudeResult(
+                success=True,
+                output=output,
+            )
+
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=malformed_output):
+            with pytest.raises(RegenFailed, match="suspiciously small output"):
+                asyncio.run(regen_path(brain, "project"))
+
+        assert not managed_summary(brain, "project").exists()
+        assert not managed_journal(brain, "project").exists()
 
 
 class TestPreprocessing:
@@ -2013,49 +2078,70 @@ class TestParseStructuredOutput:
     def test_both_sections(self):
         """Valid XML with summary + journal returns both."""
         raw = "<summary>\n# Summary\nHello world\n</summary>\n\n<journal>\nMeeting notes added.\n</journal>"
-        summary, journal = _parse_structured_output(raw, write_journal=True)
+        summary, journal = _parse_structured_output(raw)
         assert summary == "# Summary\nHello world"
         assert journal == "Meeting notes added."
 
     def test_empty_journal(self):
         """Empty <journal> tag returns (summary, None)."""
         raw = "<summary>\n# Summary\n</summary>\n\n<journal>\n</journal>"
-        summary, journal = _parse_structured_output(raw, write_journal=True)
+        summary, journal = _parse_structured_output(raw)
         assert summary == "# Summary"
         assert journal is None
 
     def test_whitespace_only_journal(self):
         """Whitespace-only journal returns None."""
         raw = "<summary>\n# Summary\n</summary>\n\n<journal>\n   \n</journal>"
-        summary, journal = _parse_structured_output(raw, write_journal=True)
+        summary, journal = _parse_structured_output(raw)
         assert summary == "# Summary"
         assert journal is None
 
     def test_no_tags_fallback(self):
         """Raw text without XML tags falls back to entire output as summary."""
         raw = "# Summary\nJust plain text"
-        summary, journal = _parse_structured_output(raw, write_journal=True)
+        summary, journal = _parse_structured_output(raw)
         assert summary == raw
         assert journal is None
 
-    def test_journal_disabled(self):
-        """write_journal=False returns (raw, None), no parsing."""
-        raw = "<summary>stuff</summary><journal>entry</journal>"
-        summary, journal = _parse_structured_output(raw, write_journal=False)
-        assert summary == raw
+    def test_journal_only_xml_is_rejected(self):
+        """Malformed structured output without <summary> is rejected."""
+        raw = "<journal>\nOnly journal\n</journal>"
+        summary, journal = _parse_structured_output(raw)
+        assert summary == ""
+        assert journal is None
+
+    def test_malformed_summary_tag_is_rejected(self):
+        """Structured markers without a valid closed <summary> are rejected."""
+        raw = "<summary>\nUnclosed summary\n<journal>\nEntry\n</journal>"
+        summary, journal = _parse_structured_output(raw)
+        assert summary == ""
+        assert journal is None
+
+    def test_malformed_journal_tag_is_rejected(self):
+        """Structured markers without a valid closed <journal> are rejected."""
+        raw = "<summary>\nContent\n</summary>\n<journal>\nBroken"
+        summary, journal = _parse_structured_output(raw)
+        assert summary == ""
+        assert journal is None
+
+    def test_text_outside_xml_envelope_is_rejected(self):
+        """Any text outside the required XML sections is rejected."""
+        raw = "prefix\n<summary>\nContent\n</summary>\n<journal>\nEntry\n</journal>\nsuffix"
+        summary, journal = _parse_structured_output(raw)
+        assert summary == ""
         assert journal is None
 
     def test_leading_whitespace_stripped(self):
         """Leading/trailing whitespace on raw input is stripped before parsing."""
         raw = "\n\n  <summary>\nContent\n</summary>\n\n<journal>\nEntry\n</journal>  \n"
-        summary, journal = _parse_structured_output(raw, write_journal=True)
+        summary, journal = _parse_structured_output(raw)
         assert summary == "Content"
         assert journal == "Entry"
 
 
 class TestJournalWriting:
     def test_journal_written_on_summary_change(self, brain):
-        """Journal file is created when Claude returns structured output with journal."""
+        """Default config writes a journal file when Claude returns journal content."""
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)
         (kdir / "doc.md").write_text("# Meeting Notes\nDecided to use MCP.", encoding="utf-8")
@@ -2068,7 +2154,7 @@ class TestJournalWriting:
         async def mock_invoke(prompt, cwd, **kwargs):
             return ClaudeResult(success=True, output=structured_output)
 
-        config = RegenConfig(write_journal=True)
+        config = RegenConfig()
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
             asyncio.run(regen_path(brain, "project", config=config))
 
@@ -2078,7 +2164,7 @@ class TestJournalWriting:
         assert "MCP decision" in summary_path.read_text(encoding="utf-8")
 
         # Journal written
-        journal_dir = managed_insights(brain, "project") / "journal"
+        journal_dir = managed_journal(brain, "project")
         assert journal_dir.exists()
         journal_files = list(journal_dir.rglob("*.md"))
         assert len(journal_files) == 1
@@ -2103,7 +2189,7 @@ class TestJournalWriting:
         async def mock_invoke(prompt, cwd, **kwargs):
             return ClaudeResult(success=True, output=structured_output)
 
-        config = RegenConfig(write_journal=True, similarity_threshold=0.97)
+        config = RegenConfig(similarity_threshold=0.97)
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
             count = asyncio.run(regen_path(brain, "project", config=config))
 
@@ -2112,7 +2198,7 @@ class TestJournalWriting:
         assert (idir / "summary.md").read_text(encoding="utf-8") == existing
 
         # Journal IS written
-        journal_files = list((idir / "journal").rglob("*.md"))
+        journal_files = list(managed_journal(brain, "project").rglob("*.md"))
         assert len(journal_files) == 1
         assert "Minor context update" in journal_files[0].read_text(encoding="utf-8")
 
@@ -2124,7 +2210,7 @@ class TestJournalWriting:
         _write_journal_entry(insights_dir, "First entry.", "abc123", "area")
         _write_journal_entry(insights_dir, "Second entry.", "def456", "area")
 
-        journal_files = list((insights_dir / "journal").rglob("*.md"))
+        journal_files = list(managed_journal(tmp_path, "area").rglob("*.md"))
         assert len(journal_files) == 1
         content = journal_files[0].read_text(encoding="utf-8")
         assert "First entry." in content
@@ -2143,7 +2229,7 @@ class TestJournalWriting:
         async def mock_invoke(prompt, cwd, **kwargs):
             return ClaudeResult(success=True, output=structured_output)
 
-        config = RegenConfig(write_journal=True)
+        config = RegenConfig()
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
             asyncio.run(regen_path(brain, "project", config=config))
 
@@ -2151,7 +2237,7 @@ class TestJournalWriting:
         assert managed_summary(brain, "project").exists()
 
         # No journal directory created
-        journal_dir = managed_insights(brain, "project") / "journal"
+        journal_dir = managed_journal(brain, "project")
         assert not journal_dir.exists()
 
 

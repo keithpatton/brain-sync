@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.application.init import init_brain
-from brain_sync.brain.layout import INSIGHT_STATE_FILENAME, area_insights_dir
+from brain_sync.brain.layout import INSIGHT_STATE_FILENAME, area_insights_dir, area_journal_dir
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,9 @@ class ManagedInsightsAccessor:
         return area_insights_dir(self.root, self.knowledge_path)
 
     def __truediv__(self, key: str) -> Path | ManagedInsightsAccessor:
-        if key in {"summary.md", INSIGHT_STATE_FILENAME, "journal"}:
+        if key == "journal":
+            return area_journal_dir(self.root, self.knowledge_path)
+        if key in {"summary.md", INSIGHT_STATE_FILENAME}:
             return self._resolved_dir() / key
         next_path = f"{self.knowledge_path}/{key}" if self.knowledge_path else key
         return ManagedInsightsAccessor(self.root, next_path)

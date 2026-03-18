@@ -78,6 +78,8 @@ but they are not concurrent runtime-isolation boundaries.
 |---|---|---|
 | `model` | string | Optional default model selection for regeneration |
 
+Journaling is always on and is not configurable through `config.json`.
+
 ### `confluence`
 
 | Field | Type | Description |

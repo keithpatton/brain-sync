@@ -347,6 +347,29 @@ def check_path_normalization(root: Path, manifests: dict[str, SourceManifest]) -
     return findings
 
 
+def check_legacy_journal_layout(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for journal_dir in rglob_paths(knowledge_root(root), "journal"):
+        if not path_is_dir(journal_dir):
+            continue
+        if journal_dir.parent.name != "insights" or journal_dir.parent.parent.name != MANAGED_DIRNAME:
+            continue
+
+        area_dir = journal_dir.parents[2]
+        rel = area_dir.relative_to(knowledge_root(root))
+        knowledge_path = "" if str(rel) == "." else normalize_path(rel)
+        display_path = knowledge_path or "(root)"
+        findings.append(
+            Finding(
+                check="legacy_journal_layout",
+                severity=Severity.DRIFT,
+                message=f"Legacy journal subtree is repairable drift for '{display_path}'",
+                knowledge_path=knowledge_path,
+            )
+        )
+    return findings
+
+
 def check_orphan_insights(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     legacy_root = root / "insights"
@@ -526,6 +549,7 @@ def doctor(root: Path | None = None, *, fix: bool = False) -> DoctorResult:
     findings.extend(check_unregistered_synced_files(root, manifests, identity_index))
     findings.extend(check_db_source_consistency(root, manifests))
     findings.extend(check_path_normalization(root, manifests))
+    findings.extend(check_legacy_journal_layout(root))
     findings.extend(check_orphan_insight_state_rows(root))
     findings.extend(check_summaries_without_db_rows(root))
     findings.extend(check_stale_summaries(root))
@@ -596,6 +620,10 @@ def _apply_fixes(
                 manifest.target_path = normalize_path(manifest.target_path)
                 repository.save_source_manifest(manifest)
                 finding.fix_applied = True
+
+            elif finding.check == "legacy_journal_layout" and finding.knowledge_path is not None:
+                if repository.heal_legacy_journal_layout(finding.knowledge_path):
+                    finding.fix_applied = True
 
             elif finding.check == "orphan_insight_state_rows" and finding.knowledge_path is not None:
                 repository.delete_portable_insight_state(finding.knowledge_path)

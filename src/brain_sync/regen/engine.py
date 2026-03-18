@@ -107,22 +107,6 @@ def _load_instruction(name: str) -> str:
 PROMPT_VERSION = "insight-v2"
 _REGEN_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
 
-# Journal instructions — conditionally appended when write_journal=True
-_JOURNAL_INSTRUCTIONS = """
-## Journal Entry
-
-After the summary, include a journal entry if this regeneration reflects a
-meaningful event: meeting notes added, decision made, direction changed,
-milestone reached, new risk discovered, or significant status update.
-
-Keep entries concise. Distinguish between facts, interpretations, and open
-questions.
-
-Do NOT write a journal entry for trivial changes (typo fixes, formatting,
-minor wording edits, small clarifications). If nothing meaningful happened,
-leave the journal section empty.
-"""
-
 log = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.97
@@ -230,12 +214,9 @@ def _assemble_prompt(
     children_text: str,
     existing_summary: str,
     display_path: str,
-    *,
-    write_journal: bool = False,
 ) -> str:
     """Assemble the full regen prompt. Single source of truth for template."""
-    if write_journal:
-        output_directive = """Wrap your output in XML tags as shown below.
+    output_directive = """Wrap your output in XML tags as shown below.
 If nothing is journal-worthy, leave the journal section empty.
 Return only the XML sections. Do not include any text outside the tags.
 
@@ -246,8 +227,6 @@ Return only the XML sections. Do not include any text outside the tags.
 <journal>
 …journal entry, or empty if nothing meaningful changed…
 </journal>"""
-    else:
-        output_directive = "Output the updated summary now."
 
     return f"""{instructions}
 
@@ -267,23 +246,28 @@ You are regenerating the insight summary for knowledge area: {display_path}
 # Structured output parsing for journal support
 _SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
 _JOURNAL_RE = re.compile(r"<journal>(.*?)</journal>", re.DOTALL)
+_STRUCTURED_OUTPUT_RE = re.compile(
+    r"\A\s*<summary>(?P<summary>.*?)</summary>\s*<journal>(?P<journal>.*?)</journal>\s*\Z",
+    re.DOTALL,
+)
 
 
-def _parse_structured_output(raw: str, write_journal: bool) -> tuple[str, str | None]:
+def _parse_structured_output(raw: str) -> tuple[str, str | None]:
     """Extract summary and optional journal from Claude's structured output."""
     raw = raw.strip()
-    if not write_journal:
-        return raw, None
 
-    summary_match = _SUMMARY_RE.search(raw)
-    journal_match = _JOURNAL_RE.search(raw)
+    has_structured_markers = any(marker in raw for marker in ("<summary", "</summary>", "<journal", "</journal>"))
+    structured_match = _STRUCTURED_OUTPUT_RE.fullmatch(raw)
 
-    if not summary_match:
+    if not structured_match:
+        if has_structured_markers:
+            log.warning("Structured output is malformed or does not match the required XML envelope")
+            return "", None
         log.warning("Structured output missing <summary> tags, treating entire output as summary")
         return raw, None
 
-    summary = summary_match.group(1).strip()
-    journal = journal_match.group(1).strip() if journal_match else None
+    summary = structured_match.group("summary").strip()
+    journal = structured_match.group("journal").strip()
 
     # Empty journal = no journal
     if not journal:
@@ -562,7 +546,6 @@ class RegenConfig:
     timeout: int = CLAUDE_TIMEOUT
     max_turns: int = 6
     similarity_threshold: float = SIMILARITY_THRESHOLD
-    write_journal: bool = False
 
     @classmethod
     def load(cls) -> RegenConfig:
@@ -572,13 +555,14 @@ class RegenConfig:
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             regen = data.get("regen", {})
+            if not isinstance(regen, dict):
+                regen = {}
             return cls(
                 model=regen.get("model", "claude-sonnet-4-6"),
                 effort=regen.get("effort", "low"),
                 timeout=regen.get("timeout", CLAUDE_TIMEOUT),
                 max_turns=regen.get("max_turns", 6),
                 similarity_threshold=regen.get("similarity_threshold", SIMILARITY_THRESHOLD),
-                write_journal=regen.get("write_journal", False),
             )
         except (json.JSONDecodeError, OSError):
             return cls()
@@ -1099,8 +1083,6 @@ def _build_prompt_from_chunks(
     insights_dir: Path,
     root: Path,
     binary_names: list[str],
-    *,
-    write_journal: bool = False,
 ) -> PromptResult:
     """Build a merge prompt using chunk summaries instead of raw file content.
 
@@ -1109,8 +1091,6 @@ def _build_prompt_from_chunks(
     summary, output instruction. Not a new prompt style.
     """
     instructions = _REGEN_INSTRUCTIONS
-    if write_journal:
-        instructions += _JOURNAL_INSTRUCTIONS
     global_context = _collect_global_context(root, knowledge_path)
 
     # Build files section from chunk summaries (sorted for determinism)
@@ -1168,7 +1148,6 @@ def _build_prompt_from_chunks(
         children_text,
         existing_summary,
         display_path,
-        write_journal=write_journal,
     )
 
     estimated_tokens = len(prompt) // 3
@@ -1187,8 +1166,6 @@ def _build_prompt(
     child_summaries: dict[str, str],
     insights_dir: Path,
     root: Path,
-    *,
-    write_journal: bool = False,
 ) -> PromptResult:
     """Build the prompt for regenerating an insight summary.
 
@@ -1202,10 +1179,8 @@ def _build_prompt(
     Files are packed greedily under a total token budget (MAX_PROMPT_TOKENS).
     Files that don't fit are deferred to chunk-and-merge.
     """
-    # 1. Instructions (conditionally append journal instructions)
+    # 1. Instructions
     instructions = _REGEN_INSTRUCTIONS
-    if write_journal:
-        instructions += _JOURNAL_INSTRUCTIONS
 
     # 2. Global context (inlined by Python, not discovered by agent)
     global_context = _collect_global_context(root, knowledge_path)
@@ -1265,7 +1240,6 @@ def _build_prompt(
             children_text,
             existing_summary,
             display_path,
-            write_journal=write_journal,
         )
     )
     remaining_chars = (MAX_PROMPT_TOKENS * 3) - overhead_chars
@@ -1308,7 +1282,6 @@ def _build_prompt(
         children_text,
         existing_summary,
         display_path,
-        write_journal=write_journal,
     )
 
     # 9. Defensive assertion + instrumentation
@@ -1635,7 +1608,6 @@ async def regen_single_folder(
         child_summaries,
         insights_dir,
         root,
-        write_journal=config.write_journal,
     )
 
     # Prompt fingerprint for forensic tracing
@@ -1736,7 +1708,6 @@ async def regen_single_folder(
                 insights_dir,
                 root,
                 binary_names,
-                write_journal=config.write_journal,
             )
 
         # Invoke Claude in inference mode (minimal system prompt, no tools)
@@ -1796,9 +1767,7 @@ async def regen_single_folder(
     now = datetime.now(UTC).isoformat()
 
     # Parse structured output (summary + optional journal)
-    new_summary, journal_text = _parse_structured_output(
-        result.output.strip() if result.output else "", config.write_journal
-    )
+    new_summary, journal_text = _parse_structured_output(result.output.strip() if result.output else "")
     if len(new_summary) < 20:
         log.warning(
             "[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
