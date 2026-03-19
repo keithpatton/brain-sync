@@ -1,4 +1,4 @@
-"""brain-sync doctor for the Brain Format 1.0 / supported runtime compatibility contract."""
+"""brain-sync doctor for the Brain Format 1.1 / supported runtime compatibility contract."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from pathlib import Path
 
 from brain_sync.application.insights import InsightState, load_all_insight_states, load_insight_state
 from brain_sync.application.roots import InvalidBrainRootError, _require_root
-from brain_sync.application.source_state import SyncState, save_state, seed_source_state_from_hint
+from brain_sync.application.source_state import SyncState, save_state, seed_source_state_from_manifest
+from brain_sync.application.sources import _deregister_source
 from brain_sync.brain.fileops import (
     path_exists,
     path_is_dir,
@@ -39,12 +40,14 @@ from brain_sync.brain.tree import normalize_path
 from brain_sync.runtime.repository import (
     RegenLock,
     delete_regen_lock,
-    delete_source,
     ensure_db,
     load_all_regen_locks,
     load_sync_progress,
     reset_runtime_db,
     save_regen_lock,
+)
+from brain_sync.runtime.repository import (
+    delete_source as delete_runtime_source,
 )
 
 log = logging.getLogger(__name__)
@@ -184,7 +187,7 @@ def check_manifest_file_match(
     repository = BrainRepository(root)
     findings: list[Finding] = []
     for cid, manifest in manifests.items():
-        if manifest.status != "active":
+        if manifest.knowledge_state == "missing":
             continue
         resolution = repository.resolve_source_file(manifest, identity_index=identity_index)
         found = resolution.path
@@ -216,7 +219,7 @@ def check_manifest_file_match(
                     check="manifest_file_match",
                     severity=Severity.DRIFT,
                     message=(
-                        f"File moved: expected '{manifest.materialized_path}', "
+                        f"File moved: expected '{manifest.knowledge_path}', "
                         f"found '{normalize_path(found.relative_to(knowledge_root_path))}'"
                     ),
                     canonical_id=cid,
@@ -228,7 +231,7 @@ def check_manifest_file_match(
             Finding(
                 check="manifest_file_match",
                 severity=Severity.WOULD_TRIGGER_FETCH,
-                message=f"File not found: '{manifest.materialized_path}'",
+                message=f"File not found: '{manifest.knowledge_path}'",
                 canonical_id=cid,
             )
         )
@@ -244,7 +247,7 @@ def check_identity_headers(
     repository = BrainRepository(root)
     findings: list[Finding] = []
     for cid, manifest in manifests.items():
-        if manifest.status != "active" or not manifest.materialized_path:
+        if manifest.knowledge_state not in {"materialized", "stale"}:
             continue
         file_path = repository.resolve_source_file(manifest, identity_index=identity_index).path
         if file_path is None or not path_is_file(file_path):
@@ -331,10 +334,7 @@ def check_db_source_consistency(root: Path, manifests: dict[str, SourceManifest]
 def check_path_normalization(root: Path, manifests: dict[str, SourceManifest]) -> list[Finding]:
     findings: list[Finding] = []
     for cid, manifest in manifests.items():
-        for field_name, value in (
-            ("materialized_path", manifest.materialized_path),
-            ("target_path", manifest.target_path),
-        ):
+        for field_name, value in (("knowledge_path", manifest.knowledge_path),):
             if value and "\\" in value:
                 findings.append(
                     Finding(
@@ -609,15 +609,14 @@ def _apply_fixes(
                     finding.fix_applied = True
 
             elif finding.check == "db_source_consistency" and finding.canonical_id:
-                delete_source(root, finding.canonical_id)
+                delete_runtime_source(root, finding.canonical_id)
                 finding.fix_applied = True
 
             elif finding.check == "path_normalization" and finding.canonical_id:
                 manifest = read_source_manifest(root, finding.canonical_id)
                 if manifest is None:
                     continue
-                manifest.materialized_path = normalize_path(manifest.materialized_path)
-                manifest.target_path = normalize_path(manifest.target_path)
+                manifest.knowledge_path = normalize_path(manifest.knowledge_path)
                 repository.save_source_manifest(manifest)
                 finding.fix_applied = True
 
@@ -662,9 +661,8 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
     manifests = read_all_source_manifests(root)
     state = SyncState()
     for cid, manifest in manifests.items():
-        if manifest.status == "active":
-            target_path = normalize_path(manifest.target_path) if manifest.target_path else ""
-            state.sources[cid] = seed_source_state_from_hint(root, manifest, target_path)
+        if manifest.knowledge_state != "missing":
+            state.sources[cid] = seed_source_state_from_manifest(manifest)
     if state.sources:
         save_state(root, state)
     return doctor(root, fix=False)
@@ -674,10 +672,15 @@ def deregister_missing(root: Path | None = None) -> DoctorResult:
     root = _resolve_doctor_root(root)
     findings: list[Finding] = []
     for cid, manifest in read_all_source_manifests(root).items():
-        if manifest.status != "missing":
+        if manifest.knowledge_state != "missing":
             continue
-        BrainRepository(root).delete_source_registration(cid)
-        delete_source(root, cid)
+        _deregister_source(
+            root,
+            canonical_id=cid,
+            target_path=manifest.target_path,
+            delete_materialized_file=False,
+            delete_attachments=True,
+        )
         findings.append(
             Finding(
                 check="deregister_missing",

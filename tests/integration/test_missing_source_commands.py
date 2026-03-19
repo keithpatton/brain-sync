@@ -1,4 +1,4 @@
-"""Integration tests for managing missing-status sources."""
+"""Integration tests for missing-source lifecycle commands."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from brain_sync.application.sources import (
     remove_source,
     update_source,
 )
-from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest
-from brain_sync.sync.pipeline import prepend_managed_header
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
 
 pytestmark = pytest.mark.integration
 
@@ -33,23 +33,30 @@ def brain(tmp_path: Path) -> Path:
     return root
 
 
+def _materialize_manifest(brain: Path) -> None:
+    manifest = read_source_manifest(brain, CONFLUENCE_CID)
+    assert manifest is not None
+    manifest.knowledge_state = "materialized"
+    manifest.knowledge_path = "area/c12345-test-page.md"
+    manifest.content_hash = "sha256:abc"
+    manifest.remote_fingerprint = "rev-1"
+    manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+    write_source_manifest(brain, manifest)
+
+
 class TestMissingSourceCommands:
-    def test_remove_missing_source(self, brain: Path):
-        """Explicit remove of a missing-status source works (bypasses grace period)."""
+    def test_remove_missing_source(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
-        # Source not in load_state (missing excluded)
         state = load_state(brain)
         assert CONFLUENCE_CID not in state.sources
 
-        # But remove still works via manifest fallback
         result = remove_source(root=brain, source=CONFLUENCE_CID)
         assert result.canonical_id == CONFLUENCE_CID
         assert read_source_manifest(brain, CONFLUENCE_CID) is None
 
-    def test_update_missing_source(self, brain: Path):
-        """Explicit update of a missing-status source works."""
+    def test_update_missing_source(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
@@ -57,39 +64,30 @@ class TestMissingSourceCommands:
         assert result.canonical_id == CONFLUENCE_CID
         assert result.sync_attachments is True
 
-        # Manifest updated
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        assert m.sync_attachments is True
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.sync_attachments is True
 
-    def test_missing_source_not_in_list(self, brain: Path):
-        """Missing-status source excluded from list_sources."""
+    def test_missing_source_not_in_list(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
         sources = list_sources(root=brain)
         assert len(sources) == 0
 
-    def test_missing_source_not_scheduled(self, brain: Path):
-        """Missing-status source not in load_state → daemon can't schedule it."""
+    def test_missing_source_not_scheduled(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
         state = load_state(brain)
         assert CONFLUENCE_CID not in state.sources
 
-    def test_remote_missing_reappears_through_existing_reconcile_lifecycle(self, brain: Path):
+    def test_remote_missing_reappears_through_existing_reconcile_lifecycle(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
         materialized = brain / "knowledge" / "area" / "c12345-test-page.md"
         materialized.parent.mkdir(parents=True, exist_ok=True)
         materialized.write_text(prepend_managed_header(CONFLUENCE_CID, "Body"), encoding="utf-8")
-
-        manifest = read_source_manifest(brain, CONFLUENCE_CID)
-        assert manifest is not None
-        manifest.materialized_path = "area/c12345-test-page.md"
-        from brain_sync.brain.manifest import write_source_manifest
-
-        write_source_manifest(brain, manifest)
+        _materialize_manifest(brain)
 
         assert mark_source_missing(
             brain,
@@ -102,6 +100,6 @@ class TestMissingSourceCommands:
 
         manifest = read_source_manifest(brain, CONFLUENCE_CID)
         assert manifest is not None
-        assert manifest.status == "active"
+        assert manifest.knowledge_state == "stale"
         assert result.reappeared == [CONFLUENCE_CID]
         assert CONFLUENCE_CID in load_state(brain).sources

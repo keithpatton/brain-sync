@@ -26,7 +26,7 @@ SCHEMA_VERSION = RUNTIME_DB_SCHEMA_VERSION
 _ALLOWED_RUNTIME_TABLES = frozenset(
     {
         "meta",
-        "sync_cache",
+        "sync_polling",
         "regen_locks",
         "token_events",
         "child_discovery_requests",
@@ -103,14 +103,11 @@ CREATE TABLE IF NOT EXISTS daemon_status (
 );
 """
 
-_SYNC_CACHE_DDL = """
-CREATE TABLE IF NOT EXISTS sync_cache (
+_SYNC_POLLING_DDL = """
+CREATE TABLE IF NOT EXISTS sync_polling (
     canonical_id TEXT PRIMARY KEY,
     last_checked_utc TEXT,
-    last_changed_utc TEXT,
     current_interval_secs INTEGER NOT NULL DEFAULT 1800,
-    content_hash TEXT,
-    metadata_fingerprint TEXT,
     next_check_utc TEXT,
     interval_seconds INTEGER
 );
@@ -193,10 +190,7 @@ class _PathNormalized:
 class SyncProgress:
     canonical_id: str
     last_checked_utc: str | None = None
-    last_changed_utc: str | None = None
     current_interval_secs: int = 1800
-    content_hash: str | None = None
-    metadata_fingerprint: str | None = None
     next_check_utc: str | None = None
     interval_seconds: int | None = None
 
@@ -204,10 +198,7 @@ class SyncProgress:
 class _SyncProgressLike(Protocol):
     canonical_id: str
     last_checked_utc: str | None
-    last_changed_utc: str | None
     current_interval_secs: int
-    content_hash: str | None
-    metadata_fingerprint: str | None
     next_check_utc: str | None
     interval_seconds: int | None
 
@@ -267,7 +258,7 @@ def _initialize_runtime_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.executescript(_SYNC_CACHE_DDL)
+    conn.executescript(_SYNC_POLLING_DDL)
     conn.executescript(_REGEN_LOCKS_DDL)
     conn.executescript(_TOKEN_EVENTS_DDL)
     conn.executescript(_CHILD_DISCOVERY_REQUESTS_DDL)
@@ -297,10 +288,29 @@ def _migrate_runtime_db(conn: sqlite3.Connection, from_version: int) -> int:
         conn.executescript(_OPERATIONAL_EVENTS_DDL)
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            ("25",),
+        )
+        conn.commit()
+        log.info("Migrated runtime DB schema from v24 to v25")
+        version = 25
+
+    if version == 25:
+        conn.executescript(_SYNC_POLLING_DDL)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "sync_cache" in tables:
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_polling "
+                "(canonical_id, last_checked_utc, current_interval_secs, next_check_utc, interval_seconds) "
+                "SELECT canonical_id, last_checked_utc, current_interval_secs, next_check_utc, interval_seconds "
+                "FROM sync_cache"
+            )
+            conn.execute("DROP TABLE sync_cache")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
-        log.info("Migrated runtime DB schema from v24 to v%d", SCHEMA_VERSION)
+        log.info("Migrated runtime DB schema from v25 to v%d", SCHEMA_VERSION)
         version = SCHEMA_VERSION
 
     return version
@@ -926,7 +936,6 @@ def _connect(root: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA foreign_keys=ON")
 
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        unexpected_tables = tables - _ALLOWED_RUNTIME_TABLES - {"sqlite_sequence"}
 
         if not tables or "meta" not in tables:
             _initialize_runtime_db(conn)
@@ -934,6 +943,10 @@ def _connect(root: Path) -> sqlite3.Connection:
 
         row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         current_version = int(row[0]) if row and str(row[0]).isdigit() else None
+        expected_tables = set(_ALLOWED_RUNTIME_TABLES)
+        if current_version in {23, 24, 25}:
+            expected_tables.add("sync_cache")
+        unexpected_tables = tables - expected_tables - {"sqlite_sequence"}
         provisional_v25_tables = tables & _PROVISIONAL_PRE_NARROWING_V25_TABLES
         if current_version == SCHEMA_VERSION and provisional_v25_tables:
             conn.close()
@@ -984,7 +997,7 @@ def _serialize_details(details: Mapping[str, object] | str | None) -> str | None
 
 
 def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
-    """Read all sync_cache rows from the DB as runtime-only progress records."""
+    """Read all sync_polling rows from the DB as runtime-only polling records."""
     try:
         conn = _connect(root)
     except Exception as e:
@@ -994,21 +1007,18 @@ def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
     result: dict[str, SyncProgress] = {}
     try:
         rows = conn.execute(
-            "SELECT canonical_id, last_checked_utc, last_changed_utc, "
-            "current_interval_secs, content_hash, metadata_fingerprint, "
+            "SELECT canonical_id, last_checked_utc, "
+            "current_interval_secs, "
             "next_check_utc, interval_seconds "
-            "FROM sync_cache"
+            "FROM sync_polling"
         ).fetchall()
         for row in rows:
             result[row[0]] = SyncProgress(
                 canonical_id=row[0],
                 last_checked_utc=row[1],
-                last_changed_utc=row[2],
-                current_interval_secs=row[3],
-                content_hash=row[4],
-                metadata_fingerprint=row[5],
-                next_check_utc=row[6],
-                interval_seconds=row[7],
+                current_interval_secs=row[2],
+                next_check_utc=row[3],
+                interval_seconds=row[4],
             )
     except Exception as e:
         log.warning("Error reading sync state: %s", e)
@@ -1019,13 +1029,8 @@ def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
 
 
 def _has_sync_progress(ss: _SyncProgressLike) -> bool:
-    """Check if a source-like object has any persistable sync progress."""
-    return (
-        ss.last_checked_utc is not None
-        or ss.content_hash is not None
-        or ss.metadata_fingerprint is not None
-        or ss.next_check_utc is not None
-    )
+    """Check if a source-like object has any persistable polling state."""
+    return ss.last_checked_utc is not None or ss.next_check_utc is not None or ss.interval_seconds is not None
 
 
 def _iter_sync_progress_items(state: object) -> list[tuple[str, _SyncProgressLike]]:
@@ -1036,37 +1041,27 @@ def _iter_sync_progress_items(state: object) -> list[tuple[str, _SyncProgressLik
 
 
 def save_sync_progress(root: Path, state: object) -> None:
-    """Save sync progress for all sources to sync_cache.
-
-    sync_cache stores only progress fields (no intent — that's in manifests).
-    Uses UPSERT pattern: INSERT OR REPLACE to keep it simple.
-    """
+    """Save sync polling state for all sources to sync_polling."""
     conn = _connect(root)
     try:
         for key, ss in _iter_sync_progress_items(state):
             if not _has_sync_progress(ss):
                 continue
             conn.execute(
-                "INSERT INTO sync_cache "
-                "(canonical_id, last_checked_utc, last_changed_utc, "
-                "current_interval_secs, content_hash, metadata_fingerprint, "
+                "INSERT INTO sync_polling "
+                "(canonical_id, last_checked_utc, "
+                "current_interval_secs, "
                 "next_check_utc, interval_seconds) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(canonical_id) DO UPDATE SET "
                 "last_checked_utc=excluded.last_checked_utc, "
-                "last_changed_utc=excluded.last_changed_utc, "
                 "current_interval_secs=excluded.current_interval_secs, "
-                "content_hash=excluded.content_hash, "
-                "metadata_fingerprint=excluded.metadata_fingerprint, "
                 "next_check_utc=excluded.next_check_utc, "
                 "interval_seconds=excluded.interval_seconds",
                 (
                     key,
                     ss.last_checked_utc,
-                    ss.last_changed_utc,
                     ss.current_interval_secs,
-                    ss.content_hash,
-                    ss.metadata_fingerprint,
                     ss.next_check_utc,
                     ss.interval_seconds,
                 ),
@@ -1080,10 +1075,10 @@ save_state = save_sync_progress  # deprecated alias
 
 
 def delete_source(root: Path, canonical_id: str) -> None:
-    """Delete a sync_cache row from the DB by canonical ID."""
+    """Delete a sync_polling row from the DB by canonical ID."""
     conn = _connect(root)
     try:
-        conn.execute("DELETE FROM sync_cache WHERE canonical_id = ?", (canonical_id,))
+        conn.execute("DELETE FROM sync_polling WHERE canonical_id = ?", (canonical_id,))
         conn.commit()
     finally:
         conn.close()
@@ -1104,10 +1099,10 @@ def prune_db(root: Path, active_keys: set[str]) -> None:
     """Remove rows from the DB that are no longer active."""
     conn = _connect(root)
     try:
-        existing = {row[0] for row in conn.execute("SELECT canonical_id FROM sync_cache").fetchall()}
+        existing = {row[0] for row in conn.execute("SELECT canonical_id FROM sync_polling").fetchall()}
         stale = existing - active_keys
         for key in stale:
-            conn.execute("DELETE FROM sync_cache WHERE canonical_id = ?", (key,))
+            conn.execute("DELETE FROM sync_polling WHERE canonical_id = ?", (key,))
             log.info("Pruned DB row for removed source: %s", key)
         if stale:
             conn.commit()

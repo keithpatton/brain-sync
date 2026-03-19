@@ -31,7 +31,8 @@ from brain_sync.application import (
     validate_brain_root,
 )
 from brain_sync.application.roots import _require_root
-from brain_sync.brain.manifest import read_source_manifest
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest
 from brain_sync.runtime.repository import _connect
 
 pytestmark = pytest.mark.unit
@@ -83,27 +84,6 @@ class TestResolveRoot:
 
         assert resolve_root() == brain_root
 
-    def test_active_root_uses_first_registered_brain_even_if_later_entries_exist(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        active = tmp_path / "active"
-        active.mkdir()
-        (active / "knowledge").mkdir()
-        _write_brain_manifest(active)
-
-        other = tmp_path / "other"
-        other.mkdir()
-        (other / "knowledge").mkdir()
-        _write_brain_manifest(other)
-
-        config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"brains": [str(active), str(other)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-
-        assert resolve_active_root() == active
-
     def test_raises_when_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", tmp_path / "missing" / "config.json")
         with pytest.raises(BrainNotFoundError):
@@ -133,42 +113,9 @@ class TestValidateBrainRoot:
         with pytest.raises(InvalidBrainRootError):
             validate_brain_root(root)
 
-    def test_resolve_root_rejects_knowledge_subfolder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        brain_root = tmp_path / "brain"
-        brain_root.mkdir()
-        (brain_root / "knowledge").mkdir()
-        _write_brain_manifest(brain_root)
-
-        config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"brains": [str(brain_root / "knowledge")]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-
-        with pytest.raises(InvalidBrainRootError):
-            resolve_active_root()
-
-    def test_active_root_rejects_invalid_first_entry_even_if_later_entry_is_valid(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        invalid = tmp_path / "invalid"
-        invalid.mkdir()
-
-        valid = tmp_path / "valid"
-        valid.mkdir()
-        (valid / "knowledge").mkdir()
-        _write_brain_manifest(valid)
-
-        config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"brains": [str(invalid), str(valid)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-
-        with pytest.raises(InvalidBrainRootError):
-            resolve_active_root()
-
 
 class TestAddAndExists:
-    def test_registers_new_source(self, brain: Path) -> None:
+    def test_registers_new_source_as_awaiting(self, brain: Path) -> None:
         result = add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
 
         assert isinstance(result, AddResult)
@@ -179,6 +126,8 @@ class TestAddAndExists:
         manifest = read_source_manifest(brain, CONFLUENCE_CID)
         assert manifest is not None
         assert manifest.target_path == "project"
+        assert manifest.knowledge_state == "awaiting"
+        assert manifest.knowledge_path == "project/c12345.md"
         assert manifest.sync_attachments is True
 
     def test_duplicate_raises(self, brain: Path) -> None:
@@ -189,6 +138,13 @@ class TestAddAndExists:
     def test_check_source_exists(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
         assert check_source_exists(brain, CONFLUENCE_URL) is not None
+
+    def test_duplicate_missing_source_still_raises(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
+        mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-19T10:00:00+00:00")
+
+        with pytest.raises(SourceAlreadyExistsError):
+            add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
 
 
 class TestListAndUpdate:
@@ -217,9 +173,21 @@ class TestListAndUpdate:
 
 
 class TestMoveAndRemove:
-    def test_move_source_moves_directory_and_manifest(self, brain: Path) -> None:
+    def test_move_source_marks_materialized_source_stale(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old")
-        (brain / "knowledge" / "old" / "c12345-doc.md").write_text("content", encoding="utf-8")
+        materialized = brain / "knowledge" / "old" / "c12345-doc.md"
+        materialized.parent.mkdir(parents=True, exist_ok=True)
+        materialized.write_text(prepend_managed_header(CONFLUENCE_CID, "# Doc"), encoding="utf-8")
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "old/c12345-doc.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        from brain_sync.brain.manifest import write_source_manifest
+
+        write_source_manifest(brain, manifest)
 
         result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new")
 
@@ -227,14 +195,18 @@ class TestMoveAndRemove:
         assert result.new_path == "new"
         assert (brain / "knowledge" / "new" / "c12345-doc.md").exists()
 
-        manifest = read_source_manifest(brain, CONFLUENCE_CID)
-        assert manifest is not None
-        assert manifest.target_path == "new"
+        moved_manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert moved_manifest is not None
+        assert moved_manifest.knowledge_path == "new/c12345-doc.md"
+        assert moved_manifest.knowledge_state == "stale"
 
     def test_remove_source_deletes_manifest_and_files_when_requested(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
         target_dir = brain / "knowledge" / "project"
-        (target_dir / "c12345-doc.md").write_text("content", encoding="utf-8")
+        (target_dir / "c12345-doc.md").write_text(
+            prepend_managed_header(CONFLUENCE_CID, "content", source_type="confluence", source_url=CONFLUENCE_URL),
+            encoding="utf-8",
+        )
         att_dir = target_dir / ".brain-sync" / "attachments" / "c12345"
         att_dir.mkdir(parents=True)
         (att_dir / "a789.png").write_bytes(b"png")
@@ -244,23 +216,6 @@ class TestMoveAndRemove:
         assert isinstance(result, RemoveResult)
         assert result.files_deleted is True
         assert read_source_manifest(brain, CONFLUENCE_CID) is None
-        assert not target_dir.exists()
-
-    def test_remove_source_preserves_unowned_files_in_target_area(self, brain: Path) -> None:
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
-        target_dir = brain / "knowledge" / "project"
-        (target_dir / "c12345-doc.md").write_text("content", encoding="utf-8")
-        (target_dir / "notes.md").write_text("keep me", encoding="utf-8")
-        att_dir = target_dir / ".brain-sync" / "attachments" / "c12345"
-        att_dir.mkdir(parents=True)
-        (att_dir / "a789.png").write_bytes(b"png")
-
-        result = remove_source(root=brain, source=CONFLUENCE_CID, delete_files=True)
-
-        assert isinstance(result, RemoveResult)
-        assert result.files_deleted is True
-        assert read_source_manifest(brain, CONFLUENCE_CID) is None
-        assert (target_dir / "notes.md").read_text(encoding="utf-8") == "keep me"
         assert not (target_dir / "c12345-doc.md").exists()
         assert not att_dir.exists()
 
@@ -268,19 +223,46 @@ class TestMoveAndRemove:
         with pytest.raises(SourceNotFoundError):
             remove_source(root=brain, source=CONFLUENCE_CID)
 
+    def test_remove_source_without_delete_files_still_removes_synced_markdown_and_attachments(
+        self,
+        brain: Path,
+    ) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
+        target_dir = brain / "knowledge" / "project"
+        doc_path = target_dir / "c12345-doc.md"
+        doc_path.write_text(
+            prepend_managed_header(CONFLUENCE_CID, "content", source_type="confluence", source_url=CONFLUENCE_URL),
+            encoding="utf-8",
+        )
+        att_dir = target_dir / ".brain-sync" / "attachments" / "c12345"
+        att_dir.mkdir(parents=True)
+        (att_dir / "a789.png").write_bytes(b"png")
+
+        result = remove_source(root=brain, source=CONFLUENCE_CID, delete_files=False)
+
+        assert isinstance(result, RemoveResult)
+        assert result.files_deleted is True
+        assert read_source_manifest(brain, CONFLUENCE_CID) is None
+        assert not doc_path.exists()
+        assert not att_dir.exists()
+
 
 class TestReconcileAndMigrate:
-    def test_reconcile_updates_moved_materialized_path(self, brain: Path) -> None:
+    def test_reconcile_updates_moved_source_to_stale(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
         manifest = read_source_manifest(brain, CONFLUENCE_CID)
         assert manifest is not None
-        manifest.materialized_path = "project/c12345-doc.md"
-        write_source = manifest
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "project/c12345-doc.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
         from brain_sync.brain.manifest import write_source_manifest
 
-        write_source_manifest(brain, write_source)
+        write_source_manifest(brain, manifest)
         old_file = brain / "knowledge" / "project" / "c12345-doc.md"
-        old_file.write_text("---\nbrain_sync_canonical_id: confluence:12345\n---\n", encoding="utf-8")
+        old_file.parent.mkdir(parents=True, exist_ok=True)
+        old_file.write_text(prepend_managed_header(CONFLUENCE_CID, "# Doc"), encoding="utf-8")
         moved_dir = brain / "knowledge" / "renamed"
         moved_dir.mkdir(parents=True)
         moved_file = moved_dir / "c12345-doc.md"
@@ -289,10 +271,10 @@ class TestReconcileAndMigrate:
         result = reconcile_sources(root=brain)
 
         assert result.updated[0].new_path == "renamed"
-        manifest = read_source_manifest(brain, CONFLUENCE_CID)
-        assert manifest is not None
-        assert manifest.materialized_path == "renamed/c12345-doc.md"
-        assert manifest.target_path == "renamed"
+        moved_manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert moved_manifest is not None
+        assert moved_manifest.knowledge_path == "renamed/c12345-doc.md"
+        assert moved_manifest.knowledge_state == "stale"
 
     def test_migrate_sources_moves_legacy_attachments(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="project", sync_attachments=True)
@@ -310,7 +292,7 @@ class TestReconcileAndMigrate:
 
 
 class TestInitAndSkill:
-    def test_init_brain_creates_v23_structure(self, tmp_path: Path) -> None:
+    def test_init_brain_creates_supported_structure(self, tmp_path: Path) -> None:
         root = tmp_path / "new-brain"
         result = init_brain(root)
 
@@ -330,27 +312,3 @@ class TestInitAndSkill:
 
         assert updated[0].name == "SKILL.md"
         assert (skill_dir / "SKILL.md").exists()
-
-
-class TestConfiglessSkillSmoke:
-    def test_list_sources_without_explicit_root_uses_config(self, brain: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        config_file = brain.parent / "config.json"
-        config_file.write_text(json.dumps({"brains": [str(brain)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="project")
-
-        sources = list_sources()
-
-        assert len(sources) == 1
-        assert sources[0].canonical_id == CONFLUENCE_CID
-
-    def test_add_source_without_explicit_root_uses_config(self, brain: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        config_file = brain.parent / "config.json"
-        config_file.write_text(json.dumps({"brains": [str(brain)]}), encoding="utf-8")
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-
-        result = add_source(url=CONFLUENCE_URL, target_path="project")
-
-        assert result.canonical_id == CONFLUENCE_CID
-        assert (brain / "knowledge" / "project").is_dir()

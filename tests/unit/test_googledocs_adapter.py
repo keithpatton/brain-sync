@@ -189,7 +189,7 @@ class TestFetch:
         assert "World" in result.body_markdown
         assert result.title == "My Doc"
         assert result.comments == []
-        assert result.metadata_fingerprint is None  # no prior_adapter_state
+        assert result.remote_fingerprint is None  # no prior_adapter_state
         assert result.source_html is None
 
     async def test_fetch_returns_semantic_fingerprint(self, adapter, source_state):
@@ -199,7 +199,7 @@ class TestFetch:
                 source_state, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v3:abc123"}
             )
 
-        assert result.metadata_fingerprint == "gdocs:v3:abc123"
+        assert result.remote_fingerprint == "gdocs:v3:abc123"
 
     async def test_fetch_uses_title_from_adapter_state(self, adapter, source_state):
         # tabs_doc.title is None — title should come from prior_adapter_state

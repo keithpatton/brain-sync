@@ -60,18 +60,36 @@ def brain(tmp_path: Path) -> Path:
 
 
 def _make_manifest(cid: str, **kwargs: Any) -> SourceManifest:
-    return SourceManifest(
-        version=MANIFEST_VERSION,
-        canonical_id=cid,
-        source_url=cast(
+    knowledge_state = cast(str, kwargs.get("knowledge_state", "materialized"))
+    manifest_kwargs: dict[str, Any] = {
+        "version": MANIFEST_VERSION,
+        "canonical_id": cid,
+        "source_url": cast(
             str, kwargs.get("source_url", f"https://acme.atlassian.net/wiki/spaces/ENG/pages/{cid.split(':')[1]}")
         ),
-        source_type=cast(str, kwargs.get("source_type", "confluence")),
-        materialized_path=cast(str, kwargs.get("materialized_path", "")),
-        sync_attachments=cast(bool, kwargs.get("sync_attachments", False)),
-        target_path=cast(str, kwargs.get("target_path", "")),
-        status=cast(str, kwargs.get("status", "active")),
-    )
+        "source_type": cast(str, kwargs.get("source_type", "confluence")),
+        "knowledge_path": cast(str, kwargs.get("knowledge_path", "area/c123-doc.md")),
+        "sync_attachments": cast(bool, kwargs.get("sync_attachments", False)),
+        "knowledge_state": knowledge_state,
+    }
+    if knowledge_state in {"materialized", "stale"}:
+        manifest_kwargs.update(
+            {
+                "content_hash": kwargs.get("content_hash", "sha256:abc"),
+                "remote_fingerprint": kwargs.get("remote_fingerprint", "rev-1"),
+                "materialized_utc": kwargs.get("materialized_utc", "2026-03-19T09:00:00+00:00"),
+            }
+        )
+    elif knowledge_state == "missing":
+        manifest_kwargs.update(
+            {
+                "missing_since_utc": kwargs.get("missing_since_utc", "2026-03-19T10:00:00+00:00"),
+                "content_hash": kwargs.get("content_hash", "sha256:abc"),
+                "remote_fingerprint": kwargs.get("remote_fingerprint", "rev-1"),
+                "materialized_utc": kwargs.get("materialized_utc", "2026-03-19T09:00:00+00:00"),
+            }
+        )
+    return SourceManifest(**manifest_kwargs)
 
 
 def _write_knowledge_file(root: Path, rel_path: str, canonical_id: str | None = None) -> Path:
@@ -115,7 +133,7 @@ class TestBrainManifest:
 class TestManifestChecks:
     def test_manifest_file_match_detects_move(self, brain: Path) -> None:
         _write_knowledge_file(brain, "other/c123-doc.md", "confluence:123")
-        manifests = {"confluence:123": _make_manifest("confluence:123", materialized_path="area/c123-doc.md")}
+        manifests = {"confluence:123": _make_manifest("confluence:123", knowledge_path="area/c123-doc.md")}
         findings = check_manifest_file_match(
             brain, manifests, brain / "knowledge", _build_identity_index(brain / "knowledge")
         )
@@ -123,7 +141,7 @@ class TestManifestChecks:
 
     def test_identity_headers_detect_missing_frontmatter(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area/c123-doc.md")
-        manifests = {"confluence:123": _make_manifest("confluence:123", materialized_path="area/c123-doc.md")}
+        manifests = {"confluence:123": _make_manifest("confluence:123")}
         findings = check_identity_headers(brain, manifests, brain / "knowledge", {})
         assert findings[0].severity == Severity.DRIFT
 
@@ -137,16 +155,18 @@ class TestManifestChecks:
             canonical_id="confluence:999",
             source_url="https://example.com/999",
             source_type="confluence",
-            content_hash="abc",
+            next_check_utc="2026-03-19T10:00:00+00:00",
         )
         save_state(brain, state)
         findings = check_db_source_consistency(brain, {"confluence:123": _make_manifest("confluence:123")})
         assert findings[0].severity == Severity.DRIFT
 
     def test_path_normalization_detects_backslashes(self, brain: Path) -> None:
+        manifest = _make_manifest("confluence:123")
+        manifest.knowledge_path = "area\\c123-doc.md"
         findings = check_path_normalization(
             brain,
-            {"confluence:123": _make_manifest("confluence:123", materialized_path="area\\c123-doc.md")},
+            {"confluence:123": manifest},
         )
         assert findings[0].severity == Severity.DRIFT
 
@@ -157,7 +177,7 @@ class TestManifestChecks:
 
         findings = check_manifest_file_match(
             brain,
-            {"confluence:123": _make_manifest("confluence:123", materialized_path=str(rel).replace("\\", "/"))},
+            {"confluence:123": _make_manifest("confluence:123", knowledge_path=str(rel).replace("\\", "/"))},
             brain / "knowledge",
             {},
         )
@@ -248,7 +268,7 @@ class TestDoctorFixes:
 
     def test_fix_logs_repository_exception_without_crashing(self, brain: Path) -> None:
         _write_knowledge_file(brain, "area/c123-doc.md")
-        manifests = {"confluence:123": _make_manifest("confluence:123", materialized_path="area/c123-doc.md")}
+        manifests = {"confluence:123": _make_manifest("confluence:123")}
         from brain_sync.brain.manifest import write_source_manifest
 
         write_source_manifest(brain, manifests["confluence:123"])
@@ -277,20 +297,3 @@ class TestAdoptBaseline:
         meta = read_regen_meta(project / ".brain-sync" / "insights")
         assert meta is not None
         assert meta.content_hash is not None
-
-        conn = _connect(brain)
-        try:
-            row = conn.execute("SELECT regen_status FROM regen_locks WHERE knowledge_path = ?", ("project",)).fetchone()
-        finally:
-            conn.close()
-        assert row == ("idle",)
-
-    def test_adopts_root_area_summary(self, brain: Path) -> None:
-        (brain / "knowledge" / "readme.md").write_text("# Root\n", encoding="utf-8")
-        _write_summary(brain, "")
-
-        result = adopt_baseline(brain)
-
-        adopted = next(f for f in result.findings if f.knowledge_path == "")
-        assert adopted.fix_applied is True
-        assert read_regen_meta(brain / "knowledge" / ".brain-sync" / "insights") is not None

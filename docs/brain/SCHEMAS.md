@@ -1,243 +1,152 @@
 # Brain Schemas
 
-This document describes the schema-defined portable brain documents used by
-brain-sync. Each schema may be instantiated as a
-[manifest](../GLOSSARY.md#manifest) (standalone JSON file) or as
-[frontmatter](../GLOSSARY.md#frontmatter) (YAML embedded in a markdown
-document). See [../GLOSSARY.md](../GLOSSARY.md) for all term definitions.
+This document defines the portable Brain Format `1.1` schema surfaces owned by
+the brain root.
 
-Implementation references in this document point at canonical package owners,
-not compatibility shims.
+Implementation references point at canonical owners, not compatibility shims.
 
 ---
 
-## Synced Source Schema
+## Source Manifest Schema
 
-The synced source schema defines the durable registration record for a
-synced source.
-
-It tells brain-sync:
-
-- what remote source is being tracked
-- what kind of source it is
-- where its local materialized file currently lives
-- how it should be synced
-
-**Path pattern**
+Each synced source has one durable manifest at:
 
 ```text
 .brain-sync/sources/<source_dir_id>.json
 ```
 
-Examples:
+`source_dir_id` is the filesystem-safe derivative of the canonical ID and is
+also reused for per-source attachment directories.
 
-- `.brain-sync/sources/c987654.json`
-- `.brain-sync/sources/g1zo3CY98lXDGsagjHUHRciomGysWHdzgt5BAXfljhzvU.json`
+### Fields
 
-`source_dir_id` is the deterministic filesystem-safe derivative of the
-source's canonical ID. It is normative in Brain Format 1.0 and is used consistently
-for:
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `version` | integer | yes | Source manifest schema version. Current value: `2`. |
+| `canonical_id` | string | yes | Durable provider-specific identity. |
+| `source_url` | string | yes | Canonical source URL. |
+| `source_type` | string | yes | Durable source type (`confluence`, `google_doc`, `test`). |
+| `sync_attachments` | boolean | yes | Durable attachment-sync setting. |
+| `knowledge_path` | string | yes | Durable knowledge-file anchor, relative to `knowledge/`. |
+| `knowledge_state` | string | yes | Durable lifecycle state for the knowledge file. |
+| `missing_since_utc` | string or null | conditional | First missing-detection timestamp. |
+| `content_hash` | string or null | conditional | Last successful materialized content hash. |
+| `remote_fingerprint` | string or null | conditional | Last successful adapter-owned freshness token. |
+| `materialized_utc` | string or null | conditional | UTC time of the last successful full materialization. |
 
-- source manifest filenames
-- per-source attachment directory names
-- repair and rediscovery of source-owned managed artifacts
+Retired fields from Brain Format `1.0` are intentionally absent:
 
-Examples:
+- `materialized_path`
+- `target_path`
+- `status`
+- `sync_hint`
 
-- `confluence:987654` -> `c987654`
-- `gdoc:1zo3CY98lXDGsagjHUHRciomGysWHdzgt5BAXfljhzvU` ->
-  `g1zo3CY98lXDGsagjHUHRciomGysWHdzgt5BAXfljhzvU`
+### `knowledge_state`
 
-**Field definitions**
+Allowed values:
 
-| Field | Type | Description |
-|---|---|---|
-| `version` | integer | Schema version of this manifest file |
-| `canonical_id` | string | Durable provider-specific source identity |
-| `source_url` | string | Canonical remote URL |
-| `source_type` | string | Source provider/type (`confluence`, `google_doc`) |
-| `materialized_path` | string | Relative path from `knowledge/` to the materialized file (empty until first sync) |
-| `sync_attachments` | boolean | Whether attachments should be synced |
-| `target_path` | string | Intended placement area inside `knowledge/` |
-| `status` | string | Lifecycle state (`active`, `missing`) |
-| `missing_since_utc` | string or null | Timestamp when file first detected missing (only when status=`missing`) |
-| `sync_hint` | object or null | Advisory freshness hint (not authoritative) |
+- `awaiting`
+- `materialized`
+- `stale`
+- `missing`
 
-### `sync_hint`
+### State Matrix
 
-| Field | Type | Description |
-|---|---|---|
-| `content_hash` | string | Hash of the last synced source body |
-| `last_synced_utc` | string | UTC time of the last successful sync |
+| `knowledge_state` | File expectation | `missing_since_utc` | `content_hash` | `remote_fingerprint` | `materialized_utc` |
+|---|---|---|---|---|---|
+| `awaiting` | file not yet expected | null | null | null | null |
+| `materialized` | file must exist at `knowledge_path` | null | set | set | set |
+| `stale` | file may exist, but must be rematerialized | null | set | set | set |
+| `missing` | file should not currently be treated as present | set | may stay set | may stay set | may stay set |
 
-`sync_hint` is advisory — used to avoid unnecessary work, not as a source
-of truth.
+### Path Semantics
 
-**Synced source manifest example**
+`knowledge_path` is always the durable anchor for the source's knowledge file:
 
-See [brain-example c987654.json](../../brain-example/.brain-sync/sources/c987654.json)
-for a live instance. Inline:
+- registration writes a deterministic provisional path derived from the
+  requested area plus the source-dir ID
+- successful materialization may replace that provisional filename with the
+  final materialized filename
+- rediscovery or folder moves update `knowledge_path` immediately
+
+The parent of `knowledge_path` is the effective area path.
+
+### Example
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "canonical_id": "confluence:987654",
   "source_url": "https://acme.atlassian.net/wiki/spaces/PT/pages/987654/Attachment+Handling",
   "source_type": "confluence",
-  "materialized_path": "teams/platform/c987654-attachment-handling.md",
   "sync_attachments": true,
-  "target_path": "teams/platform",
-  "status": "active",
-  "sync_hint": {
-    "content_hash": "sha256:9de917e9...",
-    "last_synced_utc": "2026-03-15T08:42:00Z"
-  }
+  "knowledge_path": "teams/platform/c987654-attachment-handling.md",
+  "knowledge_state": "materialized",
+  "content_hash": "sha256:9de917e9...",
+  "remote_fingerprint": "rev-42",
+  "materialized_utc": "2026-03-19T08:42:00+00:00"
 }
 ```
 
-**Current implementation**:
-[brain/manifest.py](../../src/brain_sync/brain/manifest.py),
-[sync/pipeline.py](../../src/brain_sync/sync/pipeline.py)
+Current implementation:
+`src/brain_sync/brain/manifest.py`,
+`src/brain_sync/brain/repository.py`
 
 ---
 
-## Brain Schema
+## Brain Manifest Schema
 
-The brain schema identifies the brain root and carries global brain-level
-configuration.
-
-**Path pattern**
+The portable brain manifest lives at:
 
 ```text
 .brain-sync/brain.json
 ```
 
-**Field definitions**
+Fields:
 
-| Field | Type | Description |
-|---|---|---|
-| `version` | integer | Brain schema version |
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `version` | integer | yes | Portable brain-format major version. Current on-disk value: `1`. |
 
-This is intentionally minimal. Future versions may add portable brain-level
-metadata, but journaling behavior is not configured through the brain schema.
-
-**Brain manifest example**
-
-See [brain-example brain.json](../../brain-example/.brain-sync/brain.json)
-for a live instance. Inline:
-
-```json
-{
-  "version": 1
-}
-```
+Brain Format `1.1` keeps the same on-disk brain manifest number because the
+portable compatibility line is still within major format `1`.
 
 ---
 
 ## Insight State Schema
 
-The insight state schema tracks the regeneration state for a knowledge
-area's insights. It exists to answer:
-
-- what knowledge content hash was last summarized
-- what structural shape was last seen
-- what summary text hash was produced
-- when regeneration last completed
-
-**Path pattern**
+Per-area portable regen state lives at:
 
 ```text
 knowledge/<area>/.brain-sync/insights/insight-state.json
 ```
 
-Examples:
+Fields:
 
-- `knowledge/_core/.brain-sync/insights/insight-state.json`
-- `knowledge/teams/platform/.brain-sync/insights/insight-state.json`
-- `knowledge/.brain-sync/insights/insight-state.json` (root area)
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `version` | integer | yes | Insight-state schema version. |
+| `content_hash` | string | yes | Hash of semantic inputs for the summary. |
+| `structure_hash` | string | yes | Hash of structural layout. |
+| `summary_hash` | string | yes | Hash of generated summary text. |
+| `last_regen_utc` | string | yes | UTC time of the last successful regeneration. |
 
-**Field definitions**
-
-| Field | Type | Description |
-|---|---|---|
-| `version` | integer | Schema version of this manifest file |
-| `content_hash` | string | Hash of the semantic inputs to the area summary |
-| `structure_hash` | string | Hash of the structural layout of the area |
-| `summary_hash` | string | Hash of the generated summary content |
-| `last_regen_utc` | string | UTC time of the last successful regeneration |
-
-**Insight state manifest example**
-
-See [brain-example platform insight-state.json](../../brain-example/knowledge/teams/platform/.brain-sync/insights/insight-state.json)
-for a live instance. Inline:
-
-```json
-{
-  "version": 1,
-  "content_hash": "sha256:445b826d...",
-  "structure_hash": "sha256:5ecbd245...",
-  "summary_hash": "sha256:6041664d...",
-  "last_regen_utc": "2026-03-15T08:46:00Z"
-}
-```
-
-**Current implementation**:
-[brain/sidecar.py](../../src/brain_sync/brain/sidecar.py),
-[regen/engine.py](../../src/brain_sync/regen/engine.py)
+Current implementation:
+`src/brain_sync/brain/sidecar.py`
 
 ---
 
 ## Synced Source Frontmatter Schema
 
-The synced source frontmatter schema embeds durable source identity inside a
-materialized markdown document.
+Materialized synced markdown files embed authoritative identity frontmatter.
 
-This schema is instantiated as **frontmatter** (YAML embedded at the top of
-the markdown file) rather than as a standalone manifest.
+Fields:
 
-It is the **authoritative identity** of a synced markdown document.
-
-**Path pattern**
-
-```text
-knowledge/**/*.md
-```
-
-Only markdown files materialized from synced sources carry this frontmatter.
-Human-authored files do not.
-
-If a materialized markdown file already has YAML frontmatter, brain-sync
-must merge rather than replace it: preserve existing keys and upsert
-only `brain_sync_source`, `brain_sync_canonical_id`, and
-`brain_sync_source_url`.
-
-**Field definitions**
-
-| Field | Type | Description |
+| Field | Type | Meaning |
 |---|---|---|
-| `brain_sync_source` | string | Provider/type name (`confluence`, `google_doc`) |
-| `brain_sync_canonical_id` | string | Authoritative synced-source identity |
-| `brain_sync_source_url` | string | Canonical remote URL |
+| `brain_sync_source` | string | Durable provider/type name. |
+| `brain_sync_canonical_id` | string | Authoritative synced-source identity. |
+| `brain_sync_source_url` | string | Canonical remote URL. |
 
-**Synced source frontmatter example**
-
-See [brain-example c987654-attachment-handling.md](../../brain-example/knowledge/teams/platform/c987654-attachment-handling.md)
-for a live instance. Inline:
-
-```md
----
-brain_sync_source: confluence
-brain_sync_canonical_id: confluence:987654
-brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/PT/pages/987654/Attachment+Handling
----
-
-# Attachment Handling
-```
-
-During transition and repair, readers may still accept legacy HTML
-comment identity markers as a fallback. New writes use YAML
-frontmatter only.
-
-**Current implementation**:
-[sync/pipeline.py](../../src/brain_sync/sync/pipeline.py),
-[brain/fileops.py](../../src/brain_sync/brain/fileops.py)
+New writes use YAML frontmatter only. Readers may still tolerate legacy HTML
+comment markers during repair or migration.

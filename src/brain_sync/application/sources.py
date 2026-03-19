@@ -18,6 +18,7 @@ from brain_sync.brain.fileops import (
 from brain_sync.brain.manifest import (
     MANIFEST_VERSION,
     SourceManifest,
+    derive_provisional_knowledge_path,
     read_all_source_manifests,
     read_source_manifest,
 )
@@ -145,11 +146,39 @@ def check_source_exists(root: Path, url: str) -> SourceAlreadyExistsError | None
     except UnsupportedSourceError as exc:
         raise UnsupportedSourceUrlError(url) from exc
     cid = canonical_id(stype, url)
-    state = load_state(root)
-    if cid in state.sources:
-        existing = state.sources[cid]
-        return SourceAlreadyExistsError(cid, existing.source_url, existing.target_path)
+    manifest = read_source_manifest(root, cid)
+    if manifest is not None:
+        return SourceAlreadyExistsError(cid, manifest.source_url, manifest.target_path)
     return None
+
+
+def _deregister_source(
+    root: Path,
+    *,
+    canonical_id: str,
+    target_path: str,
+    delete_materialized_file: bool,
+    delete_attachments: bool,
+) -> bool:
+    """Remove source registration and any requested source-owned files."""
+    repository = BrainRepository(root)
+    files_deleted = False
+
+    if delete_materialized_file:
+        files_deleted = repository.remove_source_owned_files(target_path, canonical_id)
+
+    if delete_attachments and not delete_materialized_file:
+        files_deleted = repository.remove_source_managed_artifacts(target_path, canonical_id) or files_deleted
+
+    state = load_state(root)
+    if canonical_id in state.sources:
+        state.sources.pop(canonical_id, None)
+        save_state(root, state)
+
+    db_delete_source(root, canonical_id)
+    clear_child_discovery_request(root, canonical_id)
+    repository.delete_source_registration(canonical_id)
+    return files_deleted
 
 
 def add_source(
@@ -184,15 +213,16 @@ def add_source(
     state = load_state(root)
 
     # Phase 1: write manifest first (crash recovery favours disk truth)
+    provisional_knowledge_path = derive_provisional_knowledge_path(target_path, cid)
     repository.save_source_manifest(
         SourceManifest(
             version=MANIFEST_VERSION,
             canonical_id=cid,
             source_url=url,
             source_type=stype.value,
-            materialized_path="",  # unknown until first sync writes the file
             sync_attachments=sync_attachments,
-            target_path=target_path,
+            knowledge_path=provisional_knowledge_path,
+            knowledge_state="awaiting",
         ),
     )
 
@@ -208,7 +238,8 @@ def add_source(
         canonical_id=cid,
         source_url=url,
         source_type=stype.value,
-        target_path=target_path,
+        knowledge_path=provisional_knowledge_path,
+        knowledge_state="awaiting",
         sync_attachments=sync_attachments,
     )
     save_state(root, state)
@@ -243,7 +274,7 @@ def _resolve_source_or_manifest(state: SyncState, root: Path, source: str) -> tu
         ss = state.sources[cid]
         return cid, ss.source_url, ss.target_path
 
-    # Fallback: check manifests directly (covers missing-status sources excluded from state)
+    # Fallback: check manifests directly (covers missing-state sources excluded from state)
     manifest = read_source_manifest(root, source)
     if manifest is not None:
         return manifest.canonical_id, manifest.source_url, manifest.target_path
@@ -269,24 +300,20 @@ def remove_source(
         SourceNotFoundError: If the source is not found.
     """
     root = _require_root(root)
-    repository = BrainRepository(root)
     state = load_state(root)
 
     cid, source_url, target_path = _resolve_source_or_manifest(state, root, source)
 
-    # --- Scoped file deletion (only files owned by this source) ---
-    files_deleted = False
-    if delete_files:
-        files_deleted = repository.remove_source_owned_files(target_path, cid)
-
-    state.sources.pop(cid, None)
-    save_state(root, state)
-
-    db_delete_source(root, cid)
-    clear_child_discovery_request(root, cid)
-
-    # Phase 1: delete manifest (bypasses two-stage — explicit remove is immediate)
-    repository.delete_source_registration(cid)
+    # Explicit remove tears down the source registration and its owned files.
+    # `delete_files` is retained for compatibility, but remove is always
+    # destructive to synced markdown and source-owned attachments.
+    files_deleted = _deregister_source(
+        root,
+        canonical_id=cid,
+        target_path=target_path,
+        delete_materialized_file=True,
+        delete_attachments=True,
+    )
     invalidate_area_index(root, knowledge_paths=[target_path], reason="source_removed")
     record_operational_event(
         event_type="source.removed",
@@ -353,10 +380,6 @@ def move_source(
 
     cid, _url, old_path = _resolve_source_or_manifest(state, root, source)
 
-    if cid in state.sources:
-        state.sources[cid].target_path = to_path
-        save_state(root, state)
-
     files_moved = False
     if old_path != to_path:
         files_moved = repository.move_knowledge_tree(old_path, to_path)
@@ -367,14 +390,14 @@ def move_source(
     if not files_moved:
         repository.move_source_attachment_dir(old_path, to_path, cid)
 
-    # Phase 1: update manifest materialized_path and target_path
+    # Phase 1: update the durable knowledge anchor and mark the source stale.
     manifest = read_source_manifest(root, cid)
     if manifest is not None:
         found = repository.resolve_source_file(manifest).path
         if found is not None:
             repository.sync_manifest_to_found_path(cid, found)
         else:
-            repository.set_source_target_path(cid, to_path, clear_materialized_path=True)
+            repository.set_source_area_path(cid, to_path)
     invalidate_area_index(root, knowledge_paths=[old_path, to_path], reason="source_moved")
     record_operational_event(
         event_type="source.moved",
@@ -426,8 +449,13 @@ def update_source(
             canonical_id=cid,
             source_url=manifest.source_url,
             source_type=manifest.source_type,
-            target_path=manifest.target_path,
+            knowledge_path=manifest.knowledge_path,
+            knowledge_state=manifest.knowledge_state,
             sync_attachments=manifest.sync_attachments,
+            missing_since_utc=manifest.missing_since_utc,
+            content_hash=manifest.content_hash,
+            remote_fingerprint=manifest.remote_fingerprint,
+            materialized_utc=manifest.materialized_utc,
         )
 
     existing_request = load_child_discovery_request(root, cid) or ChildDiscoveryRequest(canonical_id=cid)
@@ -486,6 +514,7 @@ def mark_source_missing(root: Path, *, canonical_id: str, missing_since_utc: str
         return False
 
     repository.mark_source_missing(canonical_id, missing_since_utc)
+    db_delete_source(root, canonical_id)
     record_operational_event(
         event_type="source.missing_marked",
         canonical_id=canonical_id,
@@ -527,15 +556,17 @@ def _find_file_by_identity_header(knowledge_root: Path, canonical_id_str: str) -
     return None
 
 
-def reconcile_sources(root: Path | None = None) -> ReconcileResult:
+def reconcile_sources(root: Path | None = None, *, finalize_missing: bool = True) -> ReconcileResult:
     """Reconcile source registrations against filesystem state.
 
     Iterates manifests (not DB sources). Uses 3-tier file resolution:
-    1. materialized_path — direct file check
+    1. knowledge_path — direct file check
     2. Identity header scan — extract_source_id() on nearby .md files
     3. Prefix glob — rediscover_local_path() (existing)
 
     Implements two-stage missing protocol and orphan DB row pruning.
+    Watcher-driven callers must pass finalize_missing=False so live filesystem
+    churn cannot collapse the missing grace period.
     """
     root = _require_root(root)
 
@@ -562,10 +593,9 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
             unchanged_count += 1
             continue
 
-        if m.status == "missing":
+        if m.knowledge_state == "missing":
             if found is not None:
                 # Reappearing: file found again during grace period
-                repository.clear_source_missing(cid)
                 repository.sync_manifest_to_found_path(cid, found)
                 reappeared.append(cid)
                 record_operational_event(
@@ -574,10 +604,15 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
                     knowledge_path=normalize_path(found.parent.relative_to(knowledge_root)),
                     outcome="reappeared",
                 )
-            else:
-                # Second-stage: still missing → delete manifest + DB row
-                repository.delete_source_registration(cid)
-                db_delete_source(root, cid)
+            elif finalize_missing:
+                # Second-stage: still missing → deregister source-owned state
+                _deregister_source(
+                    root,
+                    canonical_id=cid,
+                    target_path=m.target_path,
+                    delete_materialized_file=False,
+                    delete_attachments=True,
+                )
                 deleted.append(cid)
                 invalidate_area_index(root, knowledge_paths=[m.target_path], reason="source_deleted")
                 record_operational_event(
@@ -588,17 +623,15 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
                 )
             continue
 
-        # Active manifest with materialized_path
+        # Awaiting/materialized/stale manifest
         if found is not None:
-            # Update materialized_path if file moved
+            # Update knowledge_path if file moved or rediscovered.
             new_target = normalize_path(found.parent.relative_to(knowledge_root))
-            old_target = m.target_path or (
-                normalize_path(Path(m.materialized_path).parent) if m.materialized_path else ""
-            )
+            old_target = m.target_path
 
             repository.sync_manifest_to_found_path(cid, found)
 
-            if new_target != old_target:
+            if new_target != old_target or resolution.resolution != "direct":
                 updated.append(ReconcileEntry(canonical_id=cid, old_path=old_target, new_path=new_target))
                 invalidate_area_index(root, knowledge_paths=[old_target, new_target], reason="reconcile_path_updated")
                 record_operational_event(
@@ -612,15 +645,15 @@ def reconcile_sources(root: Path | None = None) -> ReconcileResult:
                 unchanged_count += 1
         else:
             # First-stage missing: file not found at any tier
-            repository.mark_source_missing(cid, utc_now)
-            marked_missing.append(cid)
-            not_found.append(cid)
-            record_operational_event(
-                event_type="reconcile.missing_marked",
-                canonical_id=cid,
-                knowledge_path=m.target_path,
-                outcome="missing",
-            )
+            if mark_source_missing(root, canonical_id=cid, missing_since_utc=utc_now, outcome="missing"):
+                marked_missing.append(cid)
+                not_found.append(cid)
+                record_operational_event(
+                    event_type="reconcile.missing_marked",
+                    canonical_id=cid,
+                    knowledge_path=m.target_path,
+                    outcome="missing",
+                )
 
     # Orphan DB row pruning: delete DB rows with no corresponding manifest
     manifest_dir = root / ".brain-sync" / "sources"

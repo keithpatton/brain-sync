@@ -269,7 +269,9 @@ def brain_sync_remove_file(ctx: Context, path: str) -> dict:
 @server.tool(
     name="brain_sync_remove",
     description=(
-        "Unregister a sync source by canonical ID or URL. Set delete_files=true to also remove the knowledge folder."
+        "Unregister a sync source by canonical ID or URL. "
+        "This removes the source registration and synced files; "
+        "delete_files is accepted for compatibility."
     ),
 )
 def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> dict:
@@ -281,8 +283,7 @@ def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> 
             source=source,
             delete_files=delete_files,
         )
-        if delete_files:
-            _mark_cached_index_stale(rt)
+        _mark_cached_index_stale(rt)
         return {"status": "ok", **asdict(result)}
     except SourceNotFoundError:
         return {

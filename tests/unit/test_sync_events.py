@@ -72,6 +72,8 @@ def test_apply_folder_move_updates_runtime_state_and_emits_events(brain: Path) -
     manifest = read_source_manifest(brain, result.canonical_id)
     assert manifest is not None
     assert manifest.target_path == "new-dir"
+    assert manifest.knowledge_path == "new-dir/source-1.md"
+    assert manifest.knowledge_state == "awaiting"
     moved_state = load_insight_state(brain, "new-dir")
     assert moved_state is not None
     assert load_insight_state(brain, "old-dir") is None

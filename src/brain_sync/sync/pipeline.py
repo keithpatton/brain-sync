@@ -123,11 +123,17 @@ async def process_source(
             doc_id,
             check.status.name,
             check.fingerprint,
-            source_state.metadata_fingerprint,
+            source_state.remote_fingerprint,
             target,
             existing_file,
         )
-    if check and check.status == UpdateStatus.UNCHANGED and existing_file is not None and not context_missing:
+    if (
+        check
+        and check.status == UpdateStatus.UNCHANGED
+        and existing_file is not None
+        and not context_missing
+        and source_state.knowledge_state == "materialized"
+    ):
         log.debug("Source %s unchanged (fingerprint %s)", doc_id, check.fingerprint)
         source_state.last_checked_utc = now
         return False, []
@@ -135,7 +141,12 @@ async def process_source(
     # Defensive guard: if adapter reports UNCHANGED but the local file
     # does not exist (e.g. test adapter or corrupted state), skip fetch.
     # Real adapters return CHANGED on first sync (metadata_fingerprint starts None).
-    if check and check.status == UpdateStatus.UNCHANGED and existing_file is None:
+    if (
+        check
+        and check.status == UpdateStatus.UNCHANGED
+        and existing_file is None
+        and source_state.knowledge_state == "materialized"
+    ):
         log.debug("Source %s unchanged and no local file, skipping", doc_id)
         source_state.last_checked_utc = now
         return False, []
@@ -236,12 +247,16 @@ async def process_source(
     # Compute content hash from body (excluding managed header) so the hash
     # stays stable across header updates and matches sync_hint semantics.
     body_hash = content_hash(markdown.encode("utf-8"))
+    remote_fingerprint = (
+        result.remote_fingerprint or (check.fingerprint if check else None) or source_state.remote_fingerprint
+    )
+    if remote_fingerprint is None:
+        raise RuntimeError(f"Adapter did not provide remote_fingerprint for {source_state.canonical_id}")
 
     source_state.last_checked_utc = now
     source_state.content_hash = body_hash
     source_state.source_type = source_type.value
-    if result.metadata_fingerprint:
-        source_state.metadata_fingerprint = result.metadata_fingerprint
+    source_state.remote_fingerprint = remote_fingerprint
 
     # The pipeline owns fetch/assembly. Once we have the final markdown body,
     # normal runtime portable writes cross the repository boundary here.
@@ -255,10 +270,15 @@ async def process_source(
             source_type=source_state.source_type,
             source_url=source_state.source_url,
             content_hash=body_hash,
-            last_synced_utc=now,
+            remote_fingerprint=remote_fingerprint,
+            materialized_utc=now,
         )
         changed = materialization.changed
         target = repository.knowledge_root / materialization.materialized_path
+        source_state.knowledge_path = materialization.materialized_path
+        source_state.knowledge_state = "materialized"
+        source_state.materialized_utc = now
+        source_state.missing_since_utc = None
         for stale_name in materialization.duplicate_files_removed:
             log.warning(
                 "Removed duplicate managed file for %s: %s",
@@ -276,7 +296,7 @@ async def process_source(
         changed = write_if_changed(target, markdown)
 
     if changed:
-        source_state.last_changed_utc = now
+        source_state.materialized_utc = now
         log.info("Updated %s (content changed)", filename)
     else:
         log.info("Fetched %s (no content change)", filename)

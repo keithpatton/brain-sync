@@ -508,11 +508,13 @@ class TestBrainSyncRemove:
         result = brain_sync_remove(ctx, source="confluence:12345")
         assert result["status"] == "ok"
         assert result["canonical_id"] == "confluence:12345"
-        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     @patch("brain_sync.interfaces.mcp.server.remove_source", return_value=SAMPLE_REMOVE_RESULT)
     def test_remove_with_delete_files_invalidates_index_even_if_no_owned_files_were_deleted(
-        self, mock_remove, _dummy_root
+        self,
+        mock_remove,
+        _dummy_root,
     ):
         from brain_sync.interfaces.mcp.server import brain_sync_remove
 
@@ -536,7 +538,7 @@ class TestBrainSyncRemove:
         assert result["error"] == "source_not_found"
         assert result["source"] == "confluence:99999"
 
-    def test_remove_delete_files_drops_unsynced_empty_area_from_future_queries(self, tmp_path):
+    def test_remove_delete_files_keeps_empty_area_structure_when_no_user_files_exist(self, tmp_path):
         from brain_sync.application.sources import add_source
         from brain_sync.interfaces.mcp.server import brain_sync_query, brain_sync_remove
 
@@ -560,7 +562,7 @@ class TestBrainSyncRemove:
         assert removed["status"] == "ok"
 
         after = brain_sync_query(ctx, query="UnsyncedArea")
-        assert all(match["path"] != "initiatives/UnsyncedArea" for match in after["matches"])
+        assert any(match["path"] == "initiatives/UnsyncedArea" for match in after["matches"])
 
 
 # ---------------------------------------------------------------------------

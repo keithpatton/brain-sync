@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-APP_VERSION = "0.6.0"
-BRAIN_FORMAT_VERSION = "1.0"
+BRAIN_FORMAT_VERSION = "1.1"
 BRAIN_MANIFEST_VERSION = 1
-SOURCE_MANIFEST_VERSION = 1
+SOURCE_MANIFEST_VERSION = 2
 INSIGHT_STATE_VERSION = 1
 
 MANAGED_DIRNAME = ".brain-sync"
@@ -73,7 +72,6 @@ def is_managed_path(path: Path) -> bool:
 
 
 __all__ = [
-    "APP_VERSION",
     "ATTACHMENTS_DIRNAME",
     "BRAIN_FORMAT_VERSION",
     "BRAIN_MANIFEST_FILENAME",

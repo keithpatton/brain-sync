@@ -66,7 +66,7 @@ class ConfluenceAdapter:
         if v is None:
             return UpdateCheckResult(status=UpdateStatus.UNKNOWN)
         version_str = str(v)
-        status = UpdateStatus.UNCHANGED if version_str == source_state.metadata_fingerprint else UpdateStatus.CHANGED
+        status = UpdateStatus.UNCHANGED if version_str == source_state.remote_fingerprint else UpdateStatus.CHANGED
         return UpdateCheckResult(
             status=status,
             fingerprint=version_str,
@@ -98,7 +98,7 @@ class ConfluenceAdapter:
         return SourceFetchResult(
             body_markdown=markdown,
             comments=comments,
-            metadata_fingerprint=fingerprint,
+            remote_fingerprint=fingerprint,
             title=title,
             source_html=html,
         )

@@ -1,45 +1,39 @@
 # Versioning
 
-This document defines the version model for brain-sync going forward.
-It separates three different kinds of version so compatibility and tests
-can reason about them cleanly.
+This document defines the version model for brain-sync.
 
----
-
-## Version Types
-
-brain-sync uses three distinct version domains:
+brain-sync uses three version domains:
 
 
-| Domain                    | Purpose                                  | Example |
-| ------------------------- | ---------------------------------------- | ------- |
-| Brain Format version      | Portable filesystem contract for a brain | `1.0`   |
-| Runtime DB schema version | Machine-local cache/runtime schema       | `v25`   |
-| App version               | Version of the brain-sync application    | `0.6.0` |
+| Domain            | Meaning                        | Current value |
+| ----------------- | ------------------------------ | ------------- |
+| Brain Format      | Portable filesystem contract   | `1.1`         |
+| Runtime DB schema | Machine-local runtime DB shape | `v26`         |
+| App version       | Packaged application version   | `0.6.0`       |
 
 
 These versions must not be conflated.
 
 ---
 
-## Brain Format Version
+## Brain Format
 
-The **Brain Format version** is the version of the portable on-disk
-brain structure defined by `[docs/brain/](brain/README.md)` together with the
-shared contract docs in this directory.
+The Brain Format version governs portable filesystem state, including:
 
-It governs:
-
-- required filesystem layout
-- manifest shapes
+- source manifest fields and invariants
 - frontmatter identity rules
-- managed namespace semantics
-- what counts as brain state
+- reserved managed namespaces
+- the portable/runtime ownership split
 
-For the current supported release:
+The current Brain Format is `1.1`.
 
-- human-readable version: `1.0`
-- on-disk representation: `.brain-sync/brain.json`
+Brain Format `1.1` intentionally changes the portable source-state contract by:
+
+- removing durable `target_path`
+- replacing the old lifecycle split with `knowledge_path` plus `knowledge_state`
+- moving durable freshness ownership to `remote_fingerprint`
+
+The on-disk `brain.json` file remains:
 
 ```json
 {
@@ -47,9 +41,9 @@ For the current supported release:
 }
 ```
 
-The on-disk `version` field is currently the major format version only.
-Minor or patch clarifications to the spec do not require a new on-disk
-number unless the portable filesystem contract changes.
+The major on-disk number stays `1` because this is still the first major
+portable format family. The normative portable schema details live in
+[docs/brain/SCHEMAS.md](brain/SCHEMAS.md).
 
 ### When to bump Brain Format version
 
@@ -72,131 +66,56 @@ filesystem state
 
 ---
 
-## Runtime DB Schema Version
+## Runtime DB Schema
 
-The **runtime DB schema version** is an internal implementation detail
-for machine-local runtime state. It is not the user-facing compatibility
-contract.
+The runtime DB schema version governs only machine-local runtime state.
 
-For the current supported release:
+The current runtime DB schema is:
 
-- runtime schema label: `v25`
-- runtime schema integer in code / `meta.schema_version`: `25`
+- label: `v26`
+- integer value in `meta.schema_version`: `26`
 
-This runtime schema governs:
+Schema `v26` narrows runtime source state to polling and scheduling only and
+renames the source-progress table from `sync_cache` to `sync_polling`.
 
-- `sync_cache`
-- `child_discovery_requests`
-- `regen_locks`
-- `operational_events`
-- `token_events`
-- DB-local metadata used to create or rebuild those tables
-
-The runtime DB may be deleted and rebuilt without invalidating a valid
-brain. DB schema versioning therefore remains important for engineering,
-but it must not be used as the public definition of "what version of
-brain this is".
-
-Supported runtime schema upgrades should migrate user databases in place
-unless a compatibility row explicitly says otherwise. Rebuild remains the
-recovery path for missing, corrupt, or unsupported runtime DB state, not the
-default upgrade strategy.
+Supported earlier runtime schemas migrate in place during normal upgrades.
+Rebuild remains the fallback for missing, corrupt, unsupported, or provisional
+runtime DB state.
 
 ---
 
 ## App Version
 
-The **app version** is the version of the brain-sync application itself.
-It should follow semantic versioning.
+The current app version is `0.6.0.0`.
 
-The canonical source for the app version is `pyproject.toml` under
-`[project].version`.
+This remains the current release identifier for the Brain Format `1.1` /
+runtime schema `v26` row.
 
-For the current supported release, that value is `0.6.0`.
-
-### App Version Bump Policy
-
-Use app-version increments to communicate user-visible compatibility impact:
-
-- increment **major** for intentional breaking changes to supported public
-contracts such as the Brain Format, supported CLI/MCP behavior, or other
-documented compatibility surfaces that require users to change how they
-upgrade or operate brain-sync
-- increment **minor** for backward-compatible feature and architecture changes
-that materially extend the product, including new supported compatibility
-rows such as a runtime DB schema upgrade that preserves user continuity
-across releases
-- increment **patch** for backward-compatible bug fixes, doc-only updates,
-small internal refactors, and other changes that do not introduce a new
-supported compatibility row or materially change expected user behavior
-
-If a future packaging tool requires a four-part installer version such as
-`0.6.0.0`, treat that as a packaging-derived form of the canonical app
-version rather than as the primary version identifier in the spec. Build
-metadata policy remains unspecified for now.
+The canonical source is `pyproject.toml`.
 
 ---
 
 ## Compatibility Expression
 
-Compatibility should always be stated in the form:
+Compatibility statements should use this form:
 
 `brain-sync <app version> supports Brain Format <format version> with runtime DB schema <db version>`
 
-For the current supported release:
+Current statement:
 
-`brain-sync 0.6.0 supports Brain Format 1.0 with runtime DB schema v25`
+`brain-sync 0.6.0 supports Brain Format 1.1 with runtime DB schema v26`
 
-This means:
-
-- the app can create and operate on Brain Format 1.0 brains
-- repair/rebuild flows apply to Brain Format 1.0 brains
-- runtime DB state for that release uses the v25 schema
-- provisional pre-narrowing local `v25` DBs that still contain reverted
-tables are unsupported and are rebuilt before normal use
-
-Compatibility details live in [COMPATIBILITY.md](COMPATIBILITY.md).
+See [docs/COMPATIBILITY.md](COMPATIBILITY.md) for the supported rows and
+transition guarantees.
 
 ---
 
 ## Testing Implications
 
-Tests should express compatibility in terms of Brain Format version, not
-just DB schema version.
+Compatibility and migration tests should explicitly cover:
 
-Recommended test language:
+- fresh Brain Format `1.1` init
+- Brain Format `1.0 -> 1.1` guided migration behavior
+- runtime DB `v23/v24/v25 -> v26` in-place migration
+- runtime DB rebuild without changing durable source truth
 
-- "valid Brain Format v1.0 brain"
-- "drifted Brain Format v1.0 brain"
-- "unsupported pre-v1 legacy brain"
-- "runtime DB schema v25 rebuild"
-- "provisional pre-narrowing v25 runtime DB reset"
-
-This lets the suite distinguish:
-
-- portable format conformance
-- repair of the current supported format
-- rejection of unsupported legacy layouts
-- runtime cache rebuild behavior
-
----
-
-## Current Baseline
-
-The current baseline is:
-
-- Brain Format: `1.0`
-- Runtime DB schema: `v25`
-- App version: `0.6.0`
-
-Pre-Brain Format `1.0` development layouts are not part of Brain Format `1.0`. They are
-legacy internal layouts, not supported portable versions.
-
-`0.5.0` with runtime DB schema `v23` was the clean-break release that
-established the current portable format baseline. During the current
-transition, that row remains a supported upgrade source. `0.6.0` with runtime
-DB schema `v25` continues that portable baseline while treating in-place
-runtime DB migration as the default expectation for supported upgrades from
-supported earlier schemas such as `v23`. Developer/tester local `v25` DBs from
-the pre-narrowing branch shape are not part of that supported continuity path
-and are rebuilt.

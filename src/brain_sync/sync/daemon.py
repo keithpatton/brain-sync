@@ -38,21 +38,28 @@ RESCAN_INTERVAL = 300  # 5 minutes
 TICK_MAX_SLEEP = 10.0  # max seconds between ticks
 
 
-def _ensure_source_states(
+def _sync_scheduler_state(
     state: SyncState,
     scheduler: Scheduler,
 ) -> None:
-    """Ensure every source in state is scheduled."""
+    """Make the in-memory scheduler match the active source projection."""
+    active_keys = set(state.sources)
+    for stale_key in set(scheduler._scheduled_keys) - active_keys:
+        scheduler.remove(stale_key)
+
     for cid, ss in state.sources.items():
-        if cid not in scheduler._scheduled_keys:
-            if ss.next_check_utc and ss.interval_seconds:
+        if ss.next_check_utc and ss.interval_seconds:
+            if cid not in scheduler._scheduled_keys:
                 scheduler.schedule_from_persisted(
                     cid,
                     ss.next_check_utc,
                     ss.interval_seconds,
                 )
-            else:
-                scheduler.schedule_immediate(cid)
+        else:
+            # Sources that just became active again (for example after leaving
+            # missing) should be polled promptly rather than inheriting a stale
+            # in-memory schedule from a prior lifecycle.
+            scheduler.schedule_immediate(cid)
 
 
 def _knowledge_rel_path(root: Path, folder: Path) -> str:
@@ -65,13 +72,29 @@ def _knowledge_rel_path(root: Path, folder: Path) -> str:
         return ""
 
 
+def _log_reconcile_result(result) -> None:
+    for entry in result.updated:
+        log.info(
+            "Reconciled %s: knowledge/%s -> knowledge/%s",
+            entry.canonical_id,
+            entry.old_path,
+            entry.new_path,
+        )
+    for canonical_id in result.marked_missing:
+        log.info("Marked %s missing after local filesystem reconcile", canonical_id)
+    for canonical_id in result.reappeared:
+        log.info("Rediscovered missing source %s during reconcile", canonical_id)
+    for canonical_id in result.deleted:
+        log.info("Deregistered still-missing source %s during reconcile", canonical_id)
+
+
 async def run(root: Path) -> None:
     ensure_safe_temp_root_runtime(root, operation="run daemon")
     log.info("brain-sync starting, root: %s", root)
 
     # Reconcile target_paths with filesystem before loading state for sync.
     # This handles files moved while the daemon was not running.
-    # INVARIANT: reconcile must run before _ensure_source_states() because
+    # INVARIANT: reconcile must run before _sync_scheduler_state() because
     # reconcile repairs manifest-backed placement before the scheduler loads
     # source state for the sync loop.
     pid = os.getpid()
@@ -79,14 +102,7 @@ async def run(root: Path) -> None:
     tree_result = reconcile_knowledge_tree(root)
     write_daemon_status(pid, "starting")
 
-    if reconcile_result.updated:
-        for entry in reconcile_result.updated:
-            log.info(
-                "Reconciled %s: knowledge/%s -> knowledge/%s",
-                entry.canonical_id,
-                entry.old_path,
-                entry.new_path,
-            )
+    _log_reconcile_result(reconcile_result)
 
     prune_token_events(retention_days=load_retention_days())
 
@@ -94,7 +110,7 @@ async def run(root: Path) -> None:
     scheduler = Scheduler()
     watcher = KnowledgeWatcher(root)
 
-    _ensure_source_states(state, scheduler)
+    _sync_scheduler_state(state, scheduler)
     save_state(root, state)
 
     last_rescan = time.monotonic()
@@ -141,12 +157,26 @@ async def run(root: Path) -> None:
                                 log.info("Watcher structure-only change enqueued for %s", rel or "(root)")
                             else:
                                 log.debug("Watcher event for %s ignored", rel or "(root)")
+                        # Live watcher churn may mark first-stage missing or
+                        # repair stale paths, but it must not collapse the
+                        # grace period into second-stage deregistration.
+                        reconcile_result = reconcile_sources(root, finalize_missing=False)
+                        _log_reconcile_result(reconcile_result)
+                        if (
+                            reconcile_result.updated
+                            or reconcile_result.marked_missing
+                            or reconcile_result.deleted
+                            or reconcile_result.reappeared
+                        ):
+                            state = load_state(root)
+                            _sync_scheduler_state(state, scheduler)
+                            save_state(root, state)
 
                     # 2. Periodic state reload (pick up sources added via CLI)
                     now = time.monotonic()
                     if now - last_rescan >= RESCAN_INTERVAL:
                         state = load_state(root)
-                        _ensure_source_states(state, scheduler)
+                        _sync_scheduler_state(state, scheduler)
                         save_state(root, state)
                         last_rescan = now
 

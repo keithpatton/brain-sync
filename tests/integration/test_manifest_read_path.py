@@ -1,4 +1,4 @@
-"""Integration tests for manifest-authoritative read path."""
+"""Integration tests for manifest-authoritative source lifecycle behavior."""
 
 from __future__ import annotations
 
@@ -9,21 +9,13 @@ import pytest
 
 from brain_sync.application.init import init_brain
 from brain_sync.application.source_state import SourceState, load_state, save_state
-from brain_sync.application.sources import (
-    add_source,
-    list_sources,
-    reconcile_sources,
-)
+from brain_sync.application.sources import add_source, list_sources, reconcile_sources
 from brain_sync.application.sync_events import apply_folder_move
 from brain_sync.brain.fileops import atomic_write_bytes
-from brain_sync.brain.manifest import (
-    SyncHint,
-    mark_manifest_missing,
-    read_source_manifest,
-    write_source_manifest,
-)
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
 from brain_sync.brain.tree import normalize_path
-from brain_sync.sync.pipeline import prepend_managed_header
+from brain_sync.runtime.repository import load_child_discovery_request, load_sync_progress
 from brain_sync.sync.watcher import FolderMove
 
 pytestmark = pytest.mark.integration
@@ -52,204 +44,138 @@ def brain(tmp_path: Path) -> Path:
 
 
 def _create_synced_file(brain: Path, cid: str, area: str, filename: str, body: str = "content") -> Path:
-    """Create a file with managed header as if synced by the pipeline."""
-    d = brain / "knowledge" / area
-    d.mkdir(parents=True, exist_ok=True)
-    f = d / filename
-    md = prepend_managed_header(cid, body)
-    f.write_text(md, encoding="utf-8")
-    return f
+    directory = brain / "knowledge" / area
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / filename
+    path.write_text(prepend_managed_header(cid, body), encoding="utf-8")
+    return path
 
 
-class TestSeedFromHint:
-    def test_matching_file_seeds_at_normal_cadence(self, brain: Path):
-        """Sync hint matches local file → seeded with content_hash and next_check_utc."""
-        from brain_sync.brain.fileops import content_hash
-
-        body = "# Test Page\n\nContent here.\n"
-        body_hash = content_hash(body.encode("utf-8"))
-
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        # Simulate a synced file by writing managed-header file + updating manifest
-        _create_synced_file(brain, CONFLUENCE_CID, "area", "c12345-test-page.md", body)
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "area/c12345-test-page.md"
-        m.sync_hint = SyncHint(content_hash=body_hash, last_synced_utc="2026-03-14T10:00:00+00:00")
-        write_source_manifest(brain, m)
-
-        # Delete DB to force seed-from-hint path
-        db_path = brain / ".sync-state.sqlite"
-        db_path.unlink(missing_ok=True)
-
-        loaded = load_state(brain)
-        ss = loaded.sources[CONFLUENCE_CID]
-        assert ss.content_hash == body_hash
-        assert ss.last_checked_utc == "2026-03-14T10:00:00+00:00"
-        assert ss.next_check_utc is not None
-        assert ss.interval_seconds == 1800
-
-    def test_mismatched_file_empty_progress(self, brain: Path):
-        """Sync hint doesn't match local file → empty progress (schedule immediate)."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        _create_synced_file(brain, CONFLUENCE_CID, "area", "c12345-test-page.md", "different content")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "area/c12345-test-page.md"
-        m.sync_hint = SyncHint(content_hash="wrong_hash", last_synced_utc="2026-03-14T10:00:00")
-        write_source_manifest(brain, m)
-
-        db_path = brain / ".sync-state.sqlite"
-        db_path.unlink(missing_ok=True)
-
-        loaded = load_state(brain)
-        ss = loaded.sources[CONFLUENCE_CID]
-        assert ss.content_hash is None
-        assert ss.next_check_utc is None
-
-    def test_missing_file_empty_progress(self, brain: Path):
-        """Sync hint but file doesn't exist → empty progress."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "area/c12345-test-page.md"
-        m.sync_hint = SyncHint(content_hash="abc", last_synced_utc="2026-03-14T10:00:00")
-        write_source_manifest(brain, m)
-
-        db_path = brain / ".sync-state.sqlite"
-        db_path.unlink(missing_ok=True)
-
-        loaded = load_state(brain)
-        ss = loaded.sources[CONFLUENCE_CID]
-        assert ss.content_hash is None
-
-    def test_empty_materialized_path_no_file_read(self, brain: Path):
-        """Empty materialized_path → seed_from_hint skips file read."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        # materialized_path is already "" from add_source
-        m.sync_hint = SyncHint(content_hash="abc", last_synced_utc="2026-03-14T10:00:00")
-        write_source_manifest(brain, m)
-
-        db_path = brain / ".sync-state.sqlite"
-        db_path.unlink(missing_ok=True)
-
-        loaded = load_state(brain)
-        ss = loaded.sources[CONFLUENCE_CID]
-        assert ss.content_hash is None  # No file read attempted
+def _set_materialized_manifest(brain: Path, knowledge_path: str) -> None:
+    manifest = read_source_manifest(brain, CONFLUENCE_CID)
+    assert manifest is not None
+    manifest.knowledge_state = "materialized"
+    manifest.knowledge_path = knowledge_path
+    manifest.content_hash = "sha256:abc"
+    manifest.remote_fingerprint = "rev-1"
+    manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+    write_source_manifest(brain, manifest)
 
 
 class TestReconcileManifestReadPath:
-    def test_moved_file_found_via_identity_header(self, brain: Path):
-        """Tier-2: file moved but has identity header → found."""
+    def test_moved_to_different_dir_and_renamed_found_via_header(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old")
         _create_synced_file(brain, CONFLUENCE_CID, "old", "c12345-test-page.md")
-        # Update manifest materialized_path to simulate a synced source
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "old/c12345-test-page.md"
-        write_source_manifest(brain, m)
+        _set_materialized_manifest(brain, "old/c12345-test-page.md")
 
-        # Move file to new location (rename breaks tier-1 match)
-        (brain / "knowledge" / "old" / "c12345-test-page.md").rename(brain / "knowledge" / "old" / "renamed-page.md")
-
-        result = reconcile_sources(root=brain)
-        # File found via identity header in same dir
-        assert result.not_found == []
-
-    def test_moved_to_different_dir_and_renamed_found_via_header(self, brain: Path):
-        """Tier-2: file moved to different dir AND renamed (no prefix) → found via header scan."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="old")
-        _create_synced_file(brain, CONFLUENCE_CID, "old", "c12345-test-page.md")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "old/c12345-test-page.md"
-        write_source_manifest(brain, m)
-
-        # Move to a completely different directory AND remove the canonical prefix
         new_dir = brain / "knowledge" / "new-area" / "sub"
         new_dir.mkdir(parents=True)
         (brain / "knowledge" / "old" / "c12345-test-page.md").rename(new_dir / "renamed-page.md")
 
         result = reconcile_sources(root=brain)
-        # File found via identity header scan across all of knowledge/
+
         assert result.not_found == []
         assert result.marked_missing == []
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_path == "new-area/sub/renamed-page.md"
+        assert manifest.knowledge_state == "stale"
 
-    def test_two_stage_missing_first_marks(self, brain: Path):
-        """First reconcile marks missing; file still exists in manifest."""
+    def test_two_stage_missing_first_marks(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "area/c12345-test-page.md"
-        write_source_manifest(brain, m)
-        # File doesn't exist on disk
+        _set_materialized_manifest(brain, "area/c12345-test-page.md")
 
         result = reconcile_sources(root=brain)
         assert CONFLUENCE_CID in result.marked_missing
-        # Manifest still exists
-        m2 = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m2 is not None
-        assert m2.status == "missing"
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "missing"
+        assert manifest.missing_since_utc is not None
 
-    def test_two_stage_missing_second_deletes(self, brain: Path):
-        """Second reconcile of already-missing source → deletes manifest."""
+    def test_non_finalizing_reconcile_preserves_missing_grace_period(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "area/c12345-test-page.md"
-        write_source_manifest(brain, m)
+        _set_materialized_manifest(brain, "area/c12345-test-page.md")
 
-        # First reconcile marks missing
+        first = reconcile_sources(root=brain, finalize_missing=False)
+        second = reconcile_sources(root=brain, finalize_missing=False)
+
+        assert CONFLUENCE_CID in first.marked_missing
+        assert second.deleted == []
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "missing"
+
+    def test_two_stage_missing_second_deletes(self, brain: Path) -> None:
+        add_source(
+            root=brain,
+            url=CONFLUENCE_URL,
+            target_path="area",
+            fetch_children=True,
+            sync_attachments=True,
+            child_path="children",
+        )
+        _set_materialized_manifest(brain, "area/c12345-test-page.md")
+        attachment_dir = brain / "knowledge" / "area" / ".brain-sync" / "attachments" / "c12345"
+        attachment_dir.mkdir(parents=True)
+        (attachment_dir / "a789.png").write_bytes(b"png")
+
         reconcile_sources(root=brain)
-        # Second reconcile deletes
         result = reconcile_sources(root=brain)
+
         assert CONFLUENCE_CID in result.deleted
         assert read_source_manifest(brain, CONFLUENCE_CID) is None
+        assert CONFLUENCE_CID not in load_sync_progress(brain)
+        assert load_child_discovery_request(brain, CONFLUENCE_CID) is None
+        assert not attachment_dir.exists()
 
-    def test_reappearing_file_clears_missing(self, brain: Path):
-        """File reappears during grace period → missing status cleared."""
+    def test_two_stage_missing_deletes_attachments_even_if_manifest_target_path_is_stale(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old-area", sync_attachments=True)
+        _set_materialized_manifest(brain, "old-area/c12345-test-page.md")
+        moved_attachment_dir = brain / "knowledge" / "new-area" / ".brain-sync" / "attachments" / "c12345"
+        moved_attachment_dir.mkdir(parents=True)
+        (moved_attachment_dir / "a789.png").write_bytes(b"png")
+
+        reconcile_sources(root=brain)
+        result = reconcile_sources(root=brain)
+
+        assert CONFLUENCE_CID in result.deleted
+        assert read_source_manifest(brain, CONFLUENCE_CID) is None
+        assert not moved_attachment_dir.exists()
+
+    def test_reappearing_file_clears_missing_and_marks_stale(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "area/c12345-test-page.md"
-        write_source_manifest(brain, m)
-
-        # Mark missing
+        _set_materialized_manifest(brain, "area/c12345-test-page.md")
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
-        # Now create the file
         _create_synced_file(brain, CONFLUENCE_CID, "area", "c12345-test-page.md")
 
         result = reconcile_sources(root=brain)
         assert CONFLUENCE_CID in result.reappeared
-        m2 = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m2 is not None
-        assert m2.status == "active"
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "stale"
+        assert manifest.missing_since_utc is None
 
-    def test_unmaterialized_source_skipped(self, brain: Path):
-        """Active source with empty materialized_path and no file → unchanged (not missing)."""
+    def test_awaiting_source_is_not_marked_missing(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
 
         result = reconcile_sources(root=brain)
         assert result.unchanged == 1
         assert result.not_found == []
         assert result.marked_missing == []
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "awaiting"
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
-    def test_materialized_overlong_path_is_not_marked_missing(self, brain: Path):
+    def test_materialized_overlong_path_is_not_marked_missing(self, brain: Path) -> None:
         rel = _long_relative_path(brain / "knowledge", "c12345-test-page.md")
         target_path = normalize_path(rel.parent)
         add_source(root=brain, url=CONFLUENCE_URL, target_path=target_path)
 
         content = prepend_managed_header(CONFLUENCE_CID, "content")
         atomic_write_bytes(brain / "knowledge" / rel, content.encode("utf-8"))
-
-        manifest = read_source_manifest(brain, CONFLUENCE_CID)
-        assert manifest is not None
-        manifest.materialized_path = normalize_path(rel)
-        write_source_manifest(brain, manifest)
+        _set_materialized_manifest(brain, normalize_path(rel))
 
         result = reconcile_sources(root=brain)
 
@@ -257,42 +183,29 @@ class TestReconcileManifestReadPath:
         assert result.not_found == []
         assert result.unchanged == 1
 
-    def test_orphan_db_rows_pruned(self, brain: Path):
-        """DB rows with no corresponding manifest are pruned during reconcile."""
+    def test_orphan_db_rows_pruned(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
-        # Add a source only in DB (no manifest)
         state = load_state(brain)
         state.sources[CONFLUENCE_CID_2] = SourceState(
             canonical_id=CONFLUENCE_CID_2,
             source_url=CONFLUENCE_URL_2,
             source_type="confluence",
-            last_checked_utc="2026-03-14T10:00:00",
+            next_check_utc="2026-03-19T11:00:00+00:00",
         )
         save_state(brain, state)
 
         result = reconcile_sources(root=brain)
         assert result.orphan_rows_pruned == 1
+        assert CONFLUENCE_CID_2 not in load_sync_progress(brain)
 
-    def test_list_sources_manifest_authoritative(self, brain: Path):
-        """list_sources returns manifest-authoritative data."""
+    def test_list_sources_manifest_authoritative(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="eng")
         sources = list_sources(root=brain)
         assert len(sources) == 1
         assert sources[0].canonical_id == CONFLUENCE_CID
         assert sources[0].target_path == "eng"
 
-    def test_list_sources_after_db_delete(self, brain: Path):
-        """list_sources still works after DB deletion."""
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="eng")
-        (brain / ".sync-state.sqlite").unlink(missing_ok=True)
-
-        sources = list_sources(root=brain)
-        assert len(sources) == 1
-        assert sources[0].canonical_id == CONFLUENCE_CID
-        assert sources[0].target_path == "eng"
-
-    def test_missing_source_not_in_list(self, brain: Path):
-        """Missing-status source doesn't appear in list_sources."""
+    def test_missing_source_not_in_list(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
@@ -301,33 +214,27 @@ class TestReconcileManifestReadPath:
 
 
 class TestApplyFolderMoveManifests:
-    def test_skips_unmaterialized(self, brain: Path):
-        """apply_folder_move skips manifests with empty materialized_path."""
+    def test_updates_awaiting_anchor_without_materializing(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-dir")
-        # manifest has materialized_path=""
 
         k_old = brain / "knowledge" / "old-dir"
         k_old.mkdir(parents=True, exist_ok=True)
         k_new = brain / "knowledge" / "new-dir"
+        import shutil
 
+        shutil.move(str(k_old), str(k_new))
         move = FolderMove(src=k_old.resolve(), dest=k_new.resolve())
         apply_folder_move(brain, move=move)
 
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        # target_path updated (it matched old-dir)
-        assert m.target_path == "new-dir"
-        # materialized_path still empty (unmaterialized)
-        assert m.materialized_path == ""
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_path == "new-dir/c12345.md"
+        assert manifest.knowledge_state == "awaiting"
 
-    def test_updates_materialized_and_target(self, brain: Path):
-        """apply_folder_move updates both manifest fields when file is materialized."""
+    def test_updates_materialized_path_and_marks_stale(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-dir")
         _create_synced_file(brain, CONFLUENCE_CID, "old-dir", "c12345-test-page.md")
-        m = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m is not None
-        m.materialized_path = "old-dir/c12345-test-page.md"
-        write_source_manifest(brain, m)
+        _set_materialized_manifest(brain, "old-dir/c12345-test-page.md")
 
         k_old = (brain / "knowledge" / "old-dir").resolve()
         k_new = brain / "knowledge" / "new-dir"
@@ -338,7 +245,7 @@ class TestApplyFolderMoveManifests:
         move = FolderMove(src=k_old, dest=k_new.resolve())
         apply_folder_move(brain, move=move)
 
-        m2 = read_source_manifest(brain, CONFLUENCE_CID)
-        assert m2 is not None
-        assert m2.materialized_path == "new-dir/c12345-test-page.md"
-        assert m2.target_path == "new-dir"
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_path == "new-dir/c12345-test-page.md"
+        assert manifest.knowledge_state == "stale"

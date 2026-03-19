@@ -17,21 +17,37 @@ pytestmark = pytest.mark.unit
 def _manifest(
     canonical_id: str,
     *,
-    materialized_path: str = "",
-    target_path: str = "area",
-    status: str = "active",
+    knowledge_path: str = "area/c12345-test-page.md",
+    knowledge_state: str = "materialized",
 ) -> SourceManifest:
     page_id = canonical_id.split(":", 1)[1]
-    return SourceManifest(
-        version=MANIFEST_VERSION,
-        canonical_id=canonical_id,
-        source_url=f"https://acme.atlassian.net/wiki/spaces/ENG/pages/{page_id}",
-        source_type="confluence",
-        materialized_path=materialized_path,
-        sync_attachments=False,
-        target_path=target_path,
-        status=status,
-    )
+    kwargs = {
+        "version": MANIFEST_VERSION,
+        "canonical_id": canonical_id,
+        "source_url": f"https://acme.atlassian.net/wiki/spaces/ENG/pages/{page_id}",
+        "source_type": "confluence",
+        "sync_attachments": False,
+        "knowledge_path": knowledge_path,
+        "knowledge_state": knowledge_state,
+    }
+    if knowledge_state in {"materialized", "stale"}:
+        kwargs.update(
+            {
+                "content_hash": "sha256:abc",
+                "remote_fingerprint": "rev-1",
+                "materialized_utc": "2026-03-19T09:00:00+00:00",
+            }
+        )
+    elif knowledge_state == "missing":
+        kwargs.update(
+            {
+                "missing_since_utc": "2026-03-19T10:00:00+00:00",
+                "content_hash": "sha256:abc",
+                "remote_fingerprint": "rev-1",
+                "materialized_utc": "2026-03-19T09:00:00+00:00",
+            }
+        )
+    return SourceManifest(**kwargs)
 
 
 @pytest.fixture
@@ -43,9 +59,9 @@ def brain(tmp_path: Path) -> Path:
 
 
 class TestResolveSourceFile:
-    def test_returns_unmaterialized_for_active_manifest_without_file(self, brain: Path) -> None:
+    def test_returns_unmaterialized_for_awaiting_manifest_without_file(self, brain: Path) -> None:
         repository = BrainRepository(brain)
-        manifest = _manifest("confluence:12345")
+        manifest = _manifest("confluence:12345", knowledge_state="awaiting", knowledge_path="area/c12345.md")
 
         resolution = repository.resolve_source_file(manifest)
 
@@ -54,8 +70,8 @@ class TestResolveSourceFile:
 
     def test_prefers_identity_index_for_moved_managed_file(self, brain: Path) -> None:
         repository = BrainRepository(brain)
-        manifest = _manifest("confluence:12345", materialized_path="area/c12345-test-page.md")
-        moved = brain / "knowledge" / "other" / "c12345-test-page.md"
+        manifest = _manifest("confluence:12345")
+        moved = brain / "knowledge" / "other" / "renamed-page.md"
         moved.parent.mkdir(parents=True)
         moved.write_text(
             prepend_managed_header(
@@ -69,7 +85,7 @@ class TestResolveSourceFile:
 
         resolution = repository.resolve_source_file(
             manifest,
-            identity_index={"confluence:12345": Path("other/c12345-test-page.md")},
+            identity_index={"confluence:12345": Path("other/renamed-page.md")},
         )
 
         assert resolution.resolution == "identity"
@@ -77,7 +93,7 @@ class TestResolveSourceFile:
 
     def test_falls_back_to_prefix_rediscovery_for_unmanaged_move(self, brain: Path) -> None:
         repository = BrainRepository(brain)
-        manifest = _manifest("confluence:12345", materialized_path="area/c12345-test-page.md")
+        manifest = _manifest("confluence:12345")
         moved = brain / "knowledge" / "other" / "c12345-test-page.md"
         moved.parent.mkdir(parents=True)
         moved.write_text("# Test Page\n", encoding="utf-8")
@@ -89,12 +105,8 @@ class TestResolveSourceFile:
 
 
 class TestManifestUpdates:
-    def test_apply_folder_move_updates_target_and_materialized_paths(self, brain: Path) -> None:
-        manifest = _manifest(
-            "confluence:12345",
-            materialized_path="old-area/c12345-test-page.md",
-            target_path="old-area",
-        )
+    def test_apply_folder_move_updates_knowledge_path_and_marks_stale(self, brain: Path) -> None:
+        manifest = _manifest("confluence:12345", knowledge_path="old-area/c12345-test-page.md")
         write_source_manifest(brain, manifest)
 
         repository = BrainRepository(brain)
@@ -103,16 +115,61 @@ class TestManifestUpdates:
         assert len(updates) == 1
         assert updates[0].old_target_path == "old-area"
         assert updates[0].new_target_path == "new-area"
+        assert updates[0].knowledge_path == "new-area/c12345-test-page.md"
 
         updated = read_source_manifest(brain, "confluence:12345")
         assert updated is not None
-        assert updated.target_path == "new-area"
-        assert updated.materialized_path == "new-area/c12345-test-page.md"
+        assert updated.knowledge_path == "new-area/c12345-test-page.md"
+        assert updated.knowledge_state == "stale"
+
+    def test_apply_folder_move_keeps_awaiting_state(self, brain: Path) -> None:
+        manifest = _manifest("confluence:12345", knowledge_path="old-area/c12345.md", knowledge_state="awaiting")
+        write_source_manifest(brain, manifest)
+
+        repository = BrainRepository(brain)
+        repository.apply_folder_move_to_manifests("old-area", "new-area")
+
+        updated = read_source_manifest(brain, "confluence:12345")
+        assert updated is not None
+        assert updated.knowledge_path == "new-area/c12345.md"
+        assert updated.knowledge_state == "awaiting"
+
+    def test_sync_manifest_to_found_path_marks_rediscovered_source_stale(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        write_source_manifest(brain, _manifest("confluence:12345"))
+        moved = brain / "knowledge" / "other" / "renamed-page.md"
+        moved.parent.mkdir(parents=True)
+        moved.write_text(prepend_managed_header("confluence:12345", "# Test"), encoding="utf-8")
+
+        knowledge_path, target_path = repository.sync_manifest_to_found_path("confluence:12345", moved)
+
+        assert knowledge_path == "other/renamed-page.md"
+        assert target_path == "other"
+        updated = read_source_manifest(brain, "confluence:12345")
+        assert updated is not None
+        assert updated.knowledge_path == "other/renamed-page.md"
+        assert updated.knowledge_state == "stale"
+
+    def test_sync_manifest_to_found_path_clears_missing_and_marks_stale(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        write_source_manifest(
+            brain,
+            _manifest("confluence:12345", knowledge_state="missing"),
+        )
+        rediscovered = brain / "knowledge" / "area" / "c12345-test-page.md"
+        rediscovered.parent.mkdir(parents=True)
+        rediscovered.write_text(prepend_managed_header("confluence:12345", "# Test"), encoding="utf-8")
+
+        repository.sync_manifest_to_found_path("confluence:12345", rediscovered)
+
+        updated = read_source_manifest(brain, "confluence:12345")
+        assert updated is not None
+        assert updated.knowledge_state == "stale"
+        assert updated.missing_since_utc is None
 
     def test_sync_manifest_to_found_path_raises_for_file_outside_knowledge_root(self, brain: Path) -> None:
         repository = BrainRepository(brain)
-        manifest = _manifest("confluence:12345", materialized_path="area/c12345-test-page.md")
-        write_source_manifest(brain, manifest)
+        write_source_manifest(brain, _manifest("confluence:12345"))
         outside = brain.parent / "outside.md"
         outside.write_text("# Outside\n", encoding="utf-8")
 
@@ -222,65 +279,6 @@ class TestLegacyJournalHealing:
         assert not (area_insights_dir(brain, "area") / "journal").exists()
         assert target.read_text(encoding="utf-8") == ("## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry.")
 
-    def test_heal_legacy_journal_layout_keeps_preamble_without_duplicating_first_entry(self, brain: Path) -> None:
-        repository = BrainRepository(brain)
-        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
-        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("## 09:00\n\nTarget entry.", encoding="utf-8")
-        legacy.write_text(
-            "Legacy preamble.\n\n## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry.",
-            encoding="utf-8",
-        )
-
-        assert repository.heal_legacy_journal_layout("area") is True
-
-        assert target.read_text(encoding="utf-8") == (
-            "Legacy preamble.\n\n## 09:00\n\nTarget entry.\n\n## 10:30\n\nLegacy-only entry."
-        )
-
-    def test_heal_legacy_journal_layout_orders_unique_blocks_by_timestamp(self, brain: Path) -> None:
-        repository = BrainRepository(brain)
-        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
-        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("## 10:00\n\nTarget entry.", encoding="utf-8")
-        legacy.write_text("## 09:00\n\nLegacy entry.", encoding="utf-8")
-
-        assert repository.heal_legacy_journal_layout("area") is True
-
-        assert target.read_text(encoding="utf-8") == ("## 09:00\n\nLegacy entry.\n\n## 10:00\n\nTarget entry.")
-
-    def test_heal_legacy_journal_layout_keeps_distinct_preambles_from_both_files(self, brain: Path) -> None:
-        repository = BrainRepository(brain)
-        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
-        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("Target preamble.\n\n## 10:00\n\nTarget entry.", encoding="utf-8")
-        legacy.write_text("Legacy preamble.\n\n## 09:00\n\nLegacy entry.", encoding="utf-8")
-
-        assert repository.heal_legacy_journal_layout("area") is True
-
-        assert target.read_text(encoding="utf-8") == (
-            "Legacy preamble.\n\nTarget preamble.\n\n## 09:00\n\nLegacy entry.\n\n## 10:00\n\nTarget entry."
-        )
-
-    def test_heal_legacy_journal_layout_keeps_distinct_plain_text_when_no_timestamp_blocks(self, brain: Path) -> None:
-        repository = BrainRepository(brain)
-        legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
-        target = area_journal_dir(brain, "area") / "2026-03" / "2026-03-17.md"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("Target plain text.", encoding="utf-8")
-        legacy.write_text("Legacy plain text.", encoding="utf-8")
-
-        assert repository.heal_legacy_journal_layout("area") is True
-
-        assert target.read_text(encoding="utf-8") == "Legacy plain text.\n\nTarget plain text."
-
     def test_heal_legacy_journal_layout_is_idempotent(self, brain: Path) -> None:
         repository = BrainRepository(brain)
         legacy = area_insights_dir(brain, "area") / "journal" / "2026-03" / "2026-03-17.md"
@@ -311,6 +309,30 @@ class TestAttachmentCleanup:
         orphans = repository.iter_orphan_attachment_dirs({"confluence:12345": registered})
 
         assert orphans == [orphan_dir]
+
+
+class TestSourceOwnedRemoval:
+    def test_remove_source_owned_files_deletes_prefix_rediscovered_file_and_keeps_empty_area_dir(
+        self,
+        brain: Path,
+    ) -> None:
+        repository = BrainRepository(brain)
+        manifest = _manifest("confluence:12345", knowledge_path="old-area/c12345-test-page.md")
+        write_source_manifest(brain, manifest)
+
+        moved = brain / "knowledge" / "new-area" / "c12345-renamed.md"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("# Detached but still prefixed\n", encoding="utf-8")
+        attachment_dir = moved.parent / ".brain-sync" / "attachments" / "c12345"
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        (attachment_dir / "a789.png").write_bytes(b"png")
+
+        deleted = repository.remove_source_owned_files("old-area", "confluence:12345")
+
+        assert deleted is True
+        assert not moved.exists()
+        assert not attachment_dir.exists()
+        assert (brain / "knowledge" / "new-area").is_dir()
 
 
 class TestFilesystemLockContention:
@@ -370,7 +392,8 @@ class TestFilesystemLockContention:
                 source_type="confluence",
                 source_url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345",
                 content_hash="abc123",
-                last_synced_utc="2026-03-18T00:00:00+00:00",
+                remote_fingerprint="rev-2",
+                materialized_utc="2026-03-18T00:00:00+00:00",
             )
 
         target = target_dir / "fresh.md"

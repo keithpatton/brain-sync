@@ -174,7 +174,7 @@ a coordinator that delegates those policies instead of owning them inline.
 | Layer | Owner | Responsibility |
 |---|---|---|
 | `knowledge/` plus source manifests plus managed area artifacts | `brain/repository.py` used by sync / reconcile / doctor / regen, with watcher as edge observer | Durable portable-brain artifacts, document locations, and managed filesystem policy |
-| `regen_locks` plus `sync_cache` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, progress cache, telemetry, and process state |
+| `regen_locks` plus `sync_polling` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, polling cache, telemetry, and process state |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
 The filesystem remains authoritative. Runtime state is machine-local and
@@ -205,6 +205,14 @@ This per-source directory isolation is a key simplification in the current
 layout. Attachments
 move with their area, and removing a source's attachments is a simple
 directory cleanup rather than a relationship-tracking exercise.
+
+That cleanup has two intentionally different entry points:
+
+- explicit source removal is destructive to the synced markdown and its
+  source-owned attachments
+- watcher-driven missing detection is non-finalizing and only records the
+  first-stage missing transition until a later deterministic finalizing
+  reconcile
 
 ### Architectural Principles
 
@@ -280,7 +288,7 @@ The system uses a tiered authority model:
 | State class | Authoritative location | Portable | Rebuildable |
 |---|---|---|---|
 | Source registration intent | `.brain-sync/sources/*.json` | Yes | No |
-| Source sync freshness hint | manifest `sync_hint` plus `sync_cache` | Hint yes, DB no | Yes |
+| Source path/lifecycle/freshness truth | manifest `knowledge_path`, `knowledge_state`, and last-successful fields | Yes | No |
 | Child-discovery requests | `child_discovery_requests` | No | Yes |
 | Query/index freshness | `knowledge/` structure plus `knowledge/**/.brain-sync/insights/summary.md` | Yes | Yes |
 | Insight hashes | `knowledge/**/.brain-sync/insights/insight-state.json` | Yes | Yes |
@@ -312,7 +320,7 @@ brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/ENG/pages/123456
 
 Reconciliation uses a three-tier resolution chain:
 
-1. manifest `materialized_path`
+1. manifest `knowledge_path`
 2. frontmatter identity scan
 3. canonical-prefix filename fallback
 
@@ -333,12 +341,13 @@ Current durable fields:
 - `canonical_id`
 - `source_url`
 - `source_type`
-- `materialized_path`
-- `target_path`
 - `sync_attachments`
-- `status`
+- `knowledge_path`
+- `knowledge_state`
 - optional `missing_since_utc`
-- optional `sync_hint`
+- optional `content_hash`
+- optional `remote_fingerprint`
+- optional `materialized_utc`
 
 Operational one-shot flags such as `fetch_children` and `child_path` are no
 longer part of the durable manifest contract.
@@ -375,7 +384,7 @@ Current runtime DB tables:
 | Table | Purpose | If deleted |
 |---|---|---|
 | `meta` | Runtime schema marker | Recreated |
-| `sync_cache` | Polling schedule and sync progress cache | Rebuilt from manifests and sync hints |
+| `sync_polling` | Polling schedule and sync progress cache | Rebuilt from manifests |
 | `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
 | `operational_events` | Append-only local operational event trail | History lost only |
@@ -419,8 +428,9 @@ long-lived caches, but further performance tuning may still be worthwhile.
   replacing `__main__.py` as the owner of the daemon loop.
 - regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
-- `0.6.0` / `v25` keeps Brain Format `1.0` stable while shifting normal
-  runtime-schema evolution toward in-place migration for supported upgrades.
+- `0.6.0` / `v26` introduces Brain Format `1.1`, moving durable source
+  lifecycle and freshness truth fully into portable manifests while narrowing
+  runtime DB state to polling and scheduling.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.

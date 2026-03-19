@@ -54,12 +54,12 @@ from brain_sync.brain.layout import (
 from brain_sync.brain.managed_markdown import extract_source_id, prepend_managed_header
 from brain_sync.brain.manifest import (
     SourceManifest,
-    SyncHint,
     clear_manifest_missing,
     delete_source_manifest,
     mark_manifest_missing,
     read_all_source_manifests,
     read_source_manifest,
+    update_manifest_materialization,
     write_source_manifest,
 )
 from brain_sync.brain.tree import normalize_path
@@ -130,7 +130,7 @@ class ManifestMove:
     canonical_id: str
     old_target_path: str
     new_target_path: str
-    materialized_path: str
+    knowledge_path: str
 
 
 @dataclass(frozen=True)
@@ -263,36 +263,44 @@ class BrainRepository:
         return True
 
     def clear_source_missing(self, canonical_id: str) -> bool:
-        """Clear missing status if the manifest exists."""
+        """Clear missing status and mark the source stale if the manifest exists."""
         manifest = read_source_manifest(self.root, canonical_id)
         if manifest is None:
             return False
         clear_manifest_missing(self.root, canonical_id)
         return True
 
-    def update_source_sync_hint(self, canonical_id: str, *, content_hash: str, last_synced_utc: str) -> bool:
-        """Persist the portable sync hint after a successful materialization."""
+    def mark_source_stale(self, canonical_id: str, *, knowledge_path: str | None = None) -> bool:
+        """Persist a portable stale transition for a source that must rematerialize."""
         manifest = read_source_manifest(self.root, canonical_id)
         if manifest is None:
             return False
-        manifest.sync_hint = SyncHint(content_hash=content_hash, last_synced_utc=last_synced_utc)
+        if knowledge_path is not None:
+            manifest.knowledge_path = self._normalize_relative_knowledge_path(
+                knowledge_path,
+                operation="mark_source_stale",
+            )
+        if manifest.knowledge_state != "awaiting":
+            manifest.knowledge_state = "stale"
+        manifest.missing_since_utc = None
         write_source_manifest(self.root, manifest)
         return True
 
-    def set_source_target_path(
+    def set_source_area_path(
         self,
         canonical_id: str,
         target_path: str,
-        *,
-        clear_materialized_path: bool = False,
     ) -> bool:
-        """Update manifest target_path, optionally clearing materialized_path."""
+        """Update the anchored knowledge_path to a different area."""
         manifest = read_source_manifest(self.root, canonical_id)
         if manifest is None:
             return False
-        manifest.target_path = self._normalize_relative_knowledge_path(target_path, operation="set_source_target_path")
-        if clear_materialized_path:
-            manifest.materialized_path = ""
+        filename = Path(manifest.knowledge_path).name or f"{source_dir_id(canonical_id)}.md"
+        normalized_area = self._normalize_relative_knowledge_path(target_path, operation="set_source_area_path")
+        manifest.knowledge_path = normalize_path(Path(normalized_area) / filename) if normalized_area else filename
+        if manifest.knowledge_state != "awaiting":
+            manifest.knowledge_state = "stale"
+        manifest.missing_since_utc = None
         write_source_manifest(self.root, manifest)
         return True
 
@@ -309,8 +317,8 @@ class BrainRepository:
         """Resolve a materialized source file using durable source semantics."""
         canonical_id = manifest.canonical_id
 
-        if manifest.materialized_path:
-            direct = self._knowledge_root / manifest.materialized_path
+        if manifest.knowledge_path:
+            direct = self._knowledge_root / manifest.knowledge_path
             if path_is_file(direct):
                 return SourceResolution(canonical_id=canonical_id, path=direct, resolution="direct")
 
@@ -328,7 +336,7 @@ class BrainRepository:
         if rediscovered is not None:
             return SourceResolution(canonical_id=canonical_id, path=rediscovered, resolution="prefix")
 
-        if manifest.status == "active" and not manifest.materialized_path:
+        if manifest.knowledge_state == "awaiting":
             return SourceResolution(canonical_id=canonical_id, path=None, resolution="unmaterialized")
 
         return SourceResolution(canonical_id=canonical_id, path=None, resolution="missing")
@@ -341,25 +349,26 @@ class BrainRepository:
             raise BrainRepositoryInvariantError(f"{operation}: manifest not found for {canonical_id}")
 
         found_file = self._require_file_under_knowledge_root(found_path, operation=operation)
-        materialized_path = normalize_path(found_file.relative_to(self._knowledge_root))
+        knowledge_path = normalize_path(found_file.relative_to(self._knowledge_root))
         target_path = normalize_path(found_file.parent.relative_to(self._knowledge_root))
         changed = False
 
-        if manifest.materialized_path != materialized_path:
-            manifest.materialized_path = materialized_path
+        if manifest.knowledge_path != knowledge_path:
+            manifest.knowledge_path = knowledge_path
             changed = True
-        if manifest.target_path != target_path:
-            manifest.target_path = target_path
+        if manifest.knowledge_state != "awaiting" and manifest.knowledge_state != "missing":
+            if manifest.knowledge_state != "stale":
+                manifest.knowledge_state = "stale"
+                changed = True
+        elif manifest.knowledge_state == "missing":
+            manifest.knowledge_state = "stale"
+            manifest.missing_since_utc = None
             changed = True
 
         if changed:
             write_source_manifest(self.root, manifest)
 
-        return materialized_path, target_path
-
-    def record_materialized_file(self, canonical_id: str, file_path: Path) -> tuple[str, str]:
-        """Persist manifest reality after a successful materialization write."""
-        return self.sync_manifest_to_found_path(canonical_id, file_path)
+        return knowledge_path, target_path
 
     def materialize_markdown(
         self,
@@ -371,7 +380,8 @@ class BrainRepository:
         source_type: str,
         source_url: str,
         content_hash: str,
-        last_synced_utc: str,
+        remote_fingerprint: str,
+        materialized_utc: str,
     ) -> MaterializationResult:
         """Persist one managed markdown file and update its manifest metadata."""
         target_dir = self.ensure_knowledge_dir(knowledge_path)
@@ -408,8 +418,14 @@ class BrainRepository:
         materialized_path = normalize_path(target.relative_to(self._knowledge_root))
         target_path = normalize_path(target.parent.relative_to(self._knowledge_root))
         if read_source_manifest(self.root, canonical_id) is not None:
-            materialized_path, target_path = self.record_materialized_file(canonical_id, target)
-            self.update_source_sync_hint(canonical_id, content_hash=content_hash, last_synced_utc=last_synced_utc)
+            update_manifest_materialization(
+                self.root,
+                canonical_id,
+                knowledge_path=materialized_path,
+                content_hash=content_hash,
+                remote_fingerprint=remote_fingerprint,
+                materialized_utc=materialized_utc,
+            )
 
         return MaterializationResult(
             canonical_id=canonical_id,
@@ -462,6 +478,41 @@ class BrainRepository:
         shutil.rmtree(str(win_long_path(attachment_dir)))
         return True
 
+    def iter_source_attachment_dirs(self, canonical_id: str, *, target_path: str | None = None) -> list[Path]:
+        """Return every managed attachment directory owned by one source."""
+        source_dir = source_dir_id(canonical_id)
+        matches: list[Path] = []
+        seen: set[Path] = set()
+
+        if target_path is not None:
+            normalized = self._normalize_relative_knowledge_path(
+                target_path,
+                operation="iter_source_attachment_dirs",
+            )
+            target_dir = self._knowledge_root / Path(normalized) if normalized else self._knowledge_root
+            candidate = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME / source_dir
+            if path_is_dir(candidate):
+                matches.append(candidate)
+                seen.add(candidate)
+
+        for attachments_dir in rglob_paths(self._knowledge_root, ATTACHMENTS_DIRNAME):
+            if attachments_dir.parent.name != MANAGED_DIRNAME or not path_is_dir(attachments_dir):
+                continue
+            candidate = attachments_dir / source_dir
+            if path_is_dir(candidate) and candidate not in seen:
+                matches.append(candidate)
+                seen.add(candidate)
+
+        return matches
+
+    def remove_source_attachment_dirs(self, canonical_id: str, *, target_path: str | None = None) -> bool:
+        """Delete every managed attachment directory owned by one source."""
+        deleted = False
+        for attachment_dir in self.iter_source_attachment_dirs(canonical_id, target_path=target_path):
+            shutil.rmtree(str(win_long_path(attachment_dir)))
+            deleted = True
+        return deleted
+
     def move_knowledge_tree(self, source_path: str, dest_path: str) -> bool:
         """Move one knowledge area directory to another knowledge-relative path."""
         source_rel = self._normalize_relative_knowledge_path(source_path, operation="move_knowledge_tree(source_path)")
@@ -505,22 +556,22 @@ class BrainRepository:
             raise BrainRepositoryInvariantError("apply_folder_move_to_manifests: folder move paths must be non-empty")
         updates: list[ManifestMove] = []
         for manifest in read_all_source_manifests(self.root).values():
-            old_mp = manifest.materialized_path
+            old_kp = manifest.knowledge_path
             old_tp = manifest.target_path
 
-            if old_mp and (old_mp == src_rel or old_mp.startswith(src_rel + "/")):
-                manifest.materialized_path = dest_rel + old_mp[len(src_rel) :]
-            if old_tp == src_rel or old_tp.startswith(src_rel + "/"):
-                manifest.target_path = dest_rel + old_tp[len(src_rel) :]
+            if old_kp == src_rel or old_kp.startswith(src_rel + "/"):
+                manifest.knowledge_path = dest_rel + old_kp[len(src_rel) :]
+                if manifest.knowledge_state not in {"awaiting", "missing"}:
+                    manifest.knowledge_state = "stale"
 
-            if manifest.materialized_path != old_mp or manifest.target_path != old_tp:
+            if manifest.knowledge_path != old_kp:
                 write_source_manifest(self.root, manifest)
                 updates.append(
                     ManifestMove(
                         canonical_id=manifest.canonical_id,
                         old_target_path=old_tp,
                         new_target_path=manifest.target_path,
-                        materialized_path=manifest.materialized_path,
+                        knowledge_path=manifest.knowledge_path,
                     )
                 )
         return updates
@@ -755,36 +806,57 @@ class BrainRepository:
         return True
 
     def remove_source_owned_files(self, target_path: str, canonical_id: str) -> bool:
-        """Delete only the portable files owned by a synced source in one area."""
-        normalized = self._normalize_relative_knowledge_path(target_path, operation="remove_source_owned_files")
+        """Delete only the portable files owned by a synced source."""
+        self._normalize_relative_knowledge_path(target_path, operation="remove_source_owned_files")
+        deleted = False
+        manifest = read_source_manifest(self.root, canonical_id)
+        seen_files: set[Path] = set()
+
+        if manifest is not None:
+            resolved = self.resolve_source_file(manifest)
+            if resolved.path is not None:
+                owned_file = self._require_file_under_knowledge_root(
+                    resolved.path,
+                    operation="remove_source_owned_files",
+                )
+                owned_file.unlink()
+                seen_files.add(owned_file)
+                deleted = True
+
+        for candidate in rglob_paths(self._knowledge_root, "*.md"):
+            if candidate in seen_files or not path_is_file(candidate):
+                continue
+            if extract_source_id(candidate) != canonical_id:
+                continue
+            candidate.unlink()
+            deleted = True
+
+        if self.remove_source_managed_artifacts(target_path, canonical_id):
+            deleted = True
+
+        return deleted
+
+    def remove_source_managed_artifacts(self, target_path: str, canonical_id: str) -> bool:
+        """Delete only source-owned managed artifacts, preserving user-facing markdown."""
+        normalized = self._normalize_relative_knowledge_path(
+            target_path,
+            operation="remove_source_managed_artifacts",
+        )
         target_dir = self._knowledge_root / Path(normalized) if normalized else self._knowledge_root
-        if not path_exists(target_dir):
-            return False
-        if not path_is_dir(target_dir):
+        if path_exists(target_dir) and not path_is_dir(target_dir):
             raise BrainRepositoryInvariantError(
-                f"remove_source_owned_files: target path '{normalized}' does not resolve to a directory"
+                f"remove_source_managed_artifacts: target path '{normalized}' does not resolve to a directory"
             )
 
         deleted = False
-        prefix = canonical_prefix(canonical_id)
-        for candidate in iterdir_paths(target_dir):
-            if path_is_file(candidate) and candidate.name.startswith(prefix):
-                candidate.unlink()
+        if self.remove_source_attachment_dirs(canonical_id, target_path=target_path):
+            deleted = True
+
+        if path_is_dir(target_dir):
+            legacy_ctx = target_dir / "_sync-context"
+            if path_is_dir(legacy_ctx):
+                shutil.rmtree(str(win_long_path(legacy_ctx)))
                 deleted = True
-
-        if remove_source_attachment_dir(target_dir, canonical_id):
-            deleted = True
-
-        legacy_ctx = target_dir / "_sync-context"
-        if path_is_dir(legacy_ctx):
-            shutil.rmtree(str(win_long_path(legacy_ctx)))
-            deleted = True
-
-        for dirpath in sorted(rglob_paths(target_dir, "*"), reverse=True):
-            if path_is_dir(dirpath) and not iterdir_paths(dirpath):
-                dirpath.rmdir()
-        if path_exists(target_dir) and not iterdir_paths(target_dir):
-            target_dir.rmdir()
 
         return deleted
 

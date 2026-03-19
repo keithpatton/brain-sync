@@ -1,4 +1,4 @@
-"""Unit tests for pipeline.py skip-guard logic and filename healing."""
+"""Unit tests for source sync pipeline lifecycle semantics."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_sync.application.source_state import SourceState
-from brain_sync.sources import canonical_filename, detect_source_type, extract_id
 from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.sync.pipeline import process_source
 
@@ -16,18 +15,23 @@ pytestmark = pytest.mark.unit
 
 _GDOC_URL = "https://docs.google.com/document/d/abc123/edit"
 _CANONICAL_ID = "gdoc:abc123"
-_DOC_ID = "abc123"
 _TITLE = "My Doc"
 _FINGERPRINT = "rev-42"
 
 
-@pytest.fixture
-def source_state() -> SourceState:
+def _source_state(
+    *,
+    knowledge_path: str = "area/gabc123-my-doc.md",
+    knowledge_state: str = "materialized",
+    remote_fingerprint: str | None = _FINGERPRINT,
+) -> SourceState:
     return SourceState(
         canonical_id=_CANONICAL_ID,
         source_url=_GDOC_URL,
         source_type="googledocs",
-        metadata_fingerprint=_FINGERPRINT,
+        knowledge_path=knowledge_path,
+        knowledge_state=knowledge_state,
+        remote_fingerprint=remote_fingerprint,
     )
 
 
@@ -46,7 +50,7 @@ def fetch_result() -> SourceFetchResult:
     return SourceFetchResult(
         body_markdown="# My Doc\n\nContent.",
         title=_TITLE,
-        metadata_fingerprint=_FINGERPRINT,
+        remote_fingerprint=_FINGERPRINT,
         comments=[],
     )
 
@@ -63,12 +67,12 @@ def _make_adapter(check_result: UpdateCheckResult, fetch_result: SourceFetchResu
     return adapter
 
 
-class TestSkipGuardWithRoot:
-    async def test_skip_when_file_found_via_rediscover(
-        self, source_state: SourceState, unchanged_check: UpdateCheckResult, tmp_path: Path
+class TestSkipGuard:
+    async def test_skips_unchanged_materialized_source_with_existing_file(
+        self, unchanged_check: UpdateCheckResult, tmp_path: Path
     ) -> None:
-        """When rediscover_local_path finds the file, skip guard fires and fetch is not called."""
-        discovered = tmp_path / "knowledge" / f"g{_DOC_ID}-my-doc.md"
+        source_state = _source_state()
+        discovered = tmp_path / "knowledge" / "area" / "gabc123-my-doc.md"
         adapter = _make_adapter(unchanged_check)
 
         with (
@@ -81,77 +85,43 @@ class TestSkipGuardWithRoot:
         assert children == []
         adapter.fetch.assert_not_called()
 
-    async def test_skip_when_file_not_found_via_rediscover(
-        self,
-        source_state: SourceState,
-        unchanged_check: UpdateCheckResult,
-        fetch_result: SourceFetchResult,
-        tmp_path: Path,
+    async def test_stale_source_forces_full_fetch_even_when_fingerprint_matches(
+        self, unchanged_check: UpdateCheckResult, fetch_result: SourceFetchResult, tmp_path: Path
     ) -> None:
-        """When rediscover_local_path returns None and status is UNCHANGED, skip fetch."""
+        source_state = _source_state(knowledge_state="stale")
+        stale_path = tmp_path / "knowledge" / "area" / "renamed.md"
+        stale_path.parent.mkdir(parents=True)
+        stale_path.write_text("# stale", encoding="utf-8")
         adapter = _make_adapter(unchanged_check, fetch_result)
 
-        with (
-            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=None),
-        ):
+        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
-        assert changed is False
-        assert children == []
-        adapter.fetch.assert_not_called()
-
-    async def test_skip_guard_does_not_fire_when_status_changed(
-        self,
-        source_state: SourceState,
-        fetch_result: SourceFetchResult,
-        tmp_path: Path,
-    ) -> None:
-        """When check returns CHANGED, fetch is called even if the file exists on disk."""
-        changed_check = UpdateCheckResult(
-            status=UpdateStatus.CHANGED,
-            fingerprint="rev-43",
-            title=_TITLE,
-            adapter_state={"revisionId": "rev-43"},
-        )
-        discovered = tmp_path / "knowledge" / f"g{_DOC_ID}-my-doc.md"
-        adapter = _make_adapter(changed_check, fetch_result)
-
-        with (
-            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
-            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=discovered),
-        ):
-            changed, _children = await process_source(source_state, AsyncMock(), root=tmp_path)
-
         assert changed is True
-        adapter.fetch.assert_called_once()
+        assert children == []
+        adapter.fetch.assert_awaited_once()
+        assert source_state.knowledge_state == "materialized"
+        assert source_state.knowledge_path == "area/gabc123-my-doc.md"
+        assert source_state.remote_fingerprint == _FINGERPRINT
 
-
-class TestSkipGuardWithoutRoot:
-    def _target_filename(self) -> str:
-        stype = detect_source_type(_GDOC_URL)
-        doc_id = extract_id(stype, _GDOC_URL)
-        return canonical_filename(stype, doc_id, _TITLE)
-
-    async def test_skip_when_root_none_and_file_exists(
-        self,
-        source_state: SourceState,
-        unchanged_check: UpdateCheckResult,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_awaiting_source_does_not_skip_even_if_adapter_reports_unchanged(
+        self, unchanged_check: UpdateCheckResult, fetch_result: SourceFetchResult, tmp_path: Path
     ) -> None:
-        """With root=None, falls back to target.exists(); skip fires when file is present."""
-        monkeypatch.chdir(tmp_path)
-        fname = self._target_filename()
-        (tmp_path / fname).write_text("# My Doc\n")
-        adapter = _make_adapter(unchanged_check)
+        source_state = _source_state(
+            knowledge_path="area/gabc123.md",
+            knowledge_state="awaiting",
+            remote_fingerprint=None,
+        )
+        adapter = _make_adapter(unchanged_check, fetch_result)
 
         with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
-            changed, children = await process_source(source_state, AsyncMock(), root=None)
+            changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
-        assert changed is False
+        assert changed is True
         assert children == []
-        adapter.fetch.assert_not_called()
+        adapter.fetch.assert_awaited_once()
+        assert source_state.knowledge_state == "materialized"
+        assert source_state.materialized_utc is not None
 
 
 class TestGoogleAttachmentHandling:
@@ -163,7 +133,8 @@ class TestGoogleAttachmentHandling:
             canonical_id=_CANONICAL_ID,
             source_url=_GDOC_URL,
             source_type="googledocs",
-            target_path="area",
+            knowledge_path="area/gabc123.md",
+            knowledge_state="awaiting",
             sync_attachments=True,
         )
         adapter = MagicMock()
@@ -184,7 +155,7 @@ class TestGoogleAttachmentHandling:
             return_value=SourceFetchResult(
                 body_markdown="# My Doc\n\nContent.",
                 title=_TITLE,
-                metadata_fingerprint="rev-43",
+                remote_fingerprint="rev-43",
                 comments=[],
                 inline_images=[
                     DiscoveredImage(
@@ -215,42 +186,22 @@ class TestGoogleAttachmentHandling:
         mock_inline.assert_awaited_once()
         mock_attachments.assert_not_called()
 
-    async def test_skip_when_root_none_and_file_absent(
-        self,
-        source_state: SourceState,
-        unchanged_check: UpdateCheckResult,
-        fetch_result: SourceFetchResult,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """With root=None and no file on disk and status UNCHANGED, skip fetch."""
-        monkeypatch.chdir(tmp_path)
-        adapter = _make_adapter(unchanged_check, fetch_result)
-
-        with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
-            changed, children = await process_source(source_state, AsyncMock(), root=None)
-
-        assert changed is False
-        assert children == []
-        adapter.fetch.assert_not_called()
-
 
 class TestFilenameHealing:
-    async def test_title_rename_rewrites_single_managed_file(
-        self,
-        tmp_path: Path,
-    ) -> None:
+    async def test_title_rename_rewrites_single_managed_file(self, tmp_path: Path) -> None:
         root = tmp_path / "brain"
         area = root / "knowledge" / "area"
         area.mkdir(parents=True)
-        (root / ".brain-sync" / "sources").mkdir(parents=True)
 
         source_state = SourceState(
             canonical_id="confluence:12345",
             source_url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Test",
             source_type="confluence",
-            target_path="area",
-            metadata_fingerprint="rev-1",
+            knowledge_path="area/c12345-old-title.md",
+            knowledge_state="materialized",
+            remote_fingerprint="rev-1",
+            content_hash="sha256:old",
+            materialized_utc="2026-03-19T08:00:00+00:00",
         )
 
         old_path = area / "c12345-old-title.md"
@@ -283,7 +234,7 @@ class TestFilenameHealing:
             return_value=SourceFetchResult(
                 body_markdown="# New Title\n\nBody.",
                 title="New Title",
-                metadata_fingerprint="rev-2",
+                remote_fingerprint="rev-2",
                 comments=[],
             )
         )
@@ -296,3 +247,4 @@ class TestFilenameHealing:
 
         files = sorted(area.glob("c12345-*.md"))
         assert [path.name for path in files] == ["c12345-new-title.md"]
+        assert source_state.knowledge_path == "area/c12345-new-title.md"

@@ -381,9 +381,10 @@ def handle_remove_file(args) -> None:
 def handle_remove(args) -> None:
     from brain_sync.application.sources import SourceNotFoundError, remove_source
 
+    root = _resolve_root_or_exit(args)
     try:
         result = remove_source(
-            root=_get_root(args),
+            root=root,
             source=args.source,
             delete_files=args.delete_files,
         )
@@ -398,7 +399,7 @@ def handle_remove(args) -> None:
     log.info("  URL: %s", result.source_url)
     log.info("  Path: knowledge/%s", result.target_path)
     if result.files_deleted:
-        log.info("  Deleted: %s", args.root.resolve() / "knowledge" / result.target_path)
+        log.info("  Deleted synced markdown and source-owned attachments from disk")
     log.info("Source removed")
 
 

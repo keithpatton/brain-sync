@@ -32,24 +32,28 @@ from brain_sync.runtime.repository import (
 pytestmark = pytest.mark.unit
 
 
-def _write_manifest(root: Path, cid: str, *, target_path: str = "", materialized_path: str = "") -> None:
+def _write_manifest(root: Path, cid: str, *, target_path: str = "", knowledge_path: str = "") -> None:
+    anchored_path = knowledge_path or (f"{target_path}/c123-page.md" if target_path else "c123-page.md")
     write_source_manifest(
         root,
         SourceManifest(
-            version=1,
+            version=2,
             canonical_id=cid,
             source_url="https://example.com",
             source_type="confluence",
-            materialized_path=materialized_path,
             sync_attachments=False,
-            target_path=target_path,
+            knowledge_path=anchored_path,
+            knowledge_state="materialized",
+            content_hash="portable-hash",
+            remote_fingerprint="portable-fp",
+            materialized_utc="2026-01-01T00:00:00Z",
         ),
     )
 
 
 class TestRuntimeState:
     def test_save_and_load_round_trip_uses_runtime_db(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, "confluence:123", target_path="area", materialized_path="area/c123-page.md")
+        _write_manifest(tmp_path, "confluence:123", target_path="area", knowledge_path="area/c123-page.md")
 
         state = SyncState()
         state.sources["confluence:123"] = SourceState(
@@ -57,17 +61,18 @@ class TestRuntimeState:
             source_url="https://example.com",
             source_type="confluence",
             last_checked_utc="2026-01-01T00:00:00Z",
-            last_changed_utc="2026-01-01T00:00:00Z",
+            knowledge_path="area/c123-page.md",
+            knowledge_state="materialized",
             current_interval_secs=3600,
-            content_hash="abc123",
-            metadata_fingerprint="42",
         )
 
         save_state(tmp_path, state)
         loaded = load_state(tmp_path)
 
         assert "confluence:123" in loaded.sources
-        assert loaded.sources["confluence:123"].content_hash == "abc123"
+        assert loaded.sources["confluence:123"].content_hash == "portable-hash"
+        assert loaded.sources["confluence:123"].remote_fingerprint == "portable-fp"
+        assert loaded.sources["confluence:123"].last_checked_utc == "2026-01-01T00:00:00Z"
         assert state_module.RUNTIME_DB_FILE.exists()
         assert not (tmp_path / ".sync-state.sqlite").exists()
         assert not state_module.RUNTIME_DB_FILE.is_relative_to(tmp_path)
@@ -151,7 +156,7 @@ class TestRuntimeState:
             token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
             runtime_tables = migrated.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('child_discovery_requests', 'operational_events') ORDER BY name"
+                "('child_discovery_requests', 'operational_events', 'sync_polling') ORDER BY name"
             ).fetchall()
         finally:
             migrated.close()
@@ -162,6 +167,7 @@ class TestRuntimeState:
         assert runtime_tables == [
             ("child_discovery_requests",),
             ("operational_events",),
+            ("sync_polling",),
         ]
 
     def test_provisional_pre_narrowing_v25_runtime_db_is_rebuilt(self, tmp_path: Path) -> None:
@@ -206,7 +212,7 @@ class TestRuntimeState:
             ("meta",),
             ("operational_events",),
             ("regen_locks",),
-            ("sync_cache",),
+            ("sync_polling",),
             ("token_events",),
         ]
         assert token_rows == (0,)

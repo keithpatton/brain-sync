@@ -28,6 +28,7 @@ desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+.tmp*/
 
 # Brain-sync runtime state
 .sync-state.json

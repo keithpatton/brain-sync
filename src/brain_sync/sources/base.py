@@ -17,12 +17,17 @@ class SourceStateLike(Protocol):
     canonical_id: str
     source_url: str
     source_type: str
-    target_path: str
+    knowledge_path: str
+    knowledge_state: str
     sync_attachments: bool
+    missing_since_utc: str | None
     last_checked_utc: str | None
-    last_changed_utc: str | None
     content_hash: str | None
-    metadata_fingerprint: str | None
+    remote_fingerprint: str | None
+    materialized_utc: str | None
+
+    @property
+    def target_path(self) -> str: ...
 
 
 class UpdateStatus(Enum):
@@ -80,7 +85,7 @@ class DiscoveredImage:
 class SourceFetchResult:
     body_markdown: str
     comments: list[Comment] = field(default_factory=list)
-    metadata_fingerprint: str | None = None
+    remote_fingerprint: str | None = None
     title: str | None = None
     source_html: str | None = None
     inline_images: list[DiscoveredImage] = field(default_factory=list)

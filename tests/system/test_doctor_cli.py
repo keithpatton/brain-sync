@@ -109,15 +109,16 @@ class TestDoctorWouldTriggerFetchExitsOne:
         manifest_dir = brain_root / ".brain-sync" / "sources"
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest = {
-            "manifest_version": 1,
+            "version": 2,
             "canonical_id": "confluence:99999",
             "source_url": "https://acme.atlassian.net/wiki/spaces/ENG/pages/99999",
             "source_type": "confluence",
-            "materialized_path": "area/c99999-missing-doc.md",
-            "fetch_children": False,
             "sync_attachments": False,
-            "target_path": "area",
-            "status": "active",
+            "knowledge_path": "area/c99999-missing-doc.md",
+            "knowledge_state": "materialized",
+            "content_hash": "sha256:abc",
+            "remote_fingerprint": "rev-1",
+            "materialized_utc": "2026-03-19T08:00:00+00:00",
         }
         (manifest_dir / "confluence-99999.json").write_text(json.dumps(manifest))
 

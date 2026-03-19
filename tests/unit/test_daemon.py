@@ -11,12 +11,13 @@ from unittest.mock import patch
 import pytest
 
 from brain_sync.application.init import init_brain
-from brain_sync.application.source_state import load_state
+from brain_sync.application.source_state import SourceState, SyncState, load_state
 from brain_sync.application.sources import add_source
+from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import read_source_manifest
 from brain_sync.runtime.child_requests import load_child_discovery_request
 from brain_sync.sources.base import RemoteSourceMissingError
-from brain_sync.sync.daemon import run
+from brain_sync.sync.daemon import _sync_scheduler_state, run
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +26,17 @@ pytestmark = pytest.mark.unit
 class _FakeSourceReconcileResult:
     updated: list[Any]
     not_found: list[str]
+    marked_missing: list[str] | None = None
+    deleted: list[str] | None = None
+    reappeared: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.marked_missing is None:
+            self.marked_missing = []
+        if self.deleted is None:
+            self.deleted = []
+        if self.reappeared is None:
+            self.reappeared = []
 
 
 @dataclass
@@ -38,12 +50,17 @@ class _FakeScheduler:
     def __init__(self) -> None:
         self._scheduled_keys: set[str] = set()
         self._popped = False
+        self.immediate_calls: list[str] = []
+        self.persisted_calls: list[str] = []
+        self.removed_calls: list[str] = []
 
     def schedule_from_persisted(self, canonical_id: str, _next_check_utc: str, _interval_seconds: int) -> None:
         self._scheduled_keys.add(canonical_id)
+        self.persisted_calls.append(canonical_id)
 
     def schedule_immediate(self, canonical_id: str) -> None:
         self._scheduled_keys.add(canonical_id)
+        self.immediate_calls.append(canonical_id)
 
     def pop_due(self) -> list[str]:
         if self._popped:
@@ -53,6 +70,7 @@ class _FakeScheduler:
 
     def remove(self, canonical_id: str) -> None:
         self._scheduled_keys.discard(canonical_id)
+        self.removed_calls.append(canonical_id)
 
     def reschedule(self, _canonical_id: str, _interval: int) -> None:
         pass
@@ -76,6 +94,50 @@ class _FakeWatcher:
 
     def drain_events(self) -> set[Path]:
         return set()
+
+
+class _DeletingWatcher:
+    def __init__(self, root: Path) -> None:
+        self._file = root / "knowledge" / "area" / "c12345-test-page.md"
+        self._emitted = False
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def drain_moves(self) -> list[Any]:
+        return []
+
+    def drain_events(self) -> set[Path]:
+        if self._emitted:
+            return set()
+        self._file.unlink()
+        self._emitted = True
+        return {self._file.parent}
+
+
+class _TwoEventWatcher:
+    def __init__(self, root: Path) -> None:
+        self._events = [
+            root / "knowledge" / "area",
+            root / "knowledge" / "other",
+        ]
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def drain_moves(self) -> list[Any]:
+        return []
+
+    def drain_events(self) -> set[Path]:
+        if not self._events:
+            return set()
+        return {self._events.pop(0)}
 
 
 class _FakeRegenQueue:
@@ -169,5 +231,116 @@ async def test_daemon_routes_upstream_404_into_missing_lifecycle(tmp_path: Path)
 
     manifest = read_source_manifest(root, result.canonical_id)
     assert manifest is not None
-    assert manifest.status == "missing"
+    assert manifest.knowledge_state == "missing"
+    assert manifest.missing_since_utc is not None
+    assert result.canonical_id not in load_state(root).sources
+
+
+@pytest.mark.asyncio
+async def test_daemon_uses_non_finalizing_reconcile_for_watcher_events(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+    add_source(root, url="test://doc/reconcile-mode", target_path="area")
+    (root / "knowledge" / "other").mkdir(parents=True)
+
+    observed_finalize_flags: list[bool] = []
+
+    def _fake_reconcile(root_arg: Path, *, finalize_missing: bool = True):
+        assert root_arg == root
+        observed_finalize_flags.append(finalize_missing)
+        return _FakeSourceReconcileResult(updated=[], not_found=[])
+
+    async def _stop_after_tick(_seconds: float) -> None:
+        raise asyncio.CancelledError()
+
+    with (
+        patch("brain_sync.sync.daemon.reconcile_sources", side_effect=_fake_reconcile),
+        patch(
+            "brain_sync.sync.daemon.reconcile_knowledge_tree",
+            return_value=_FakeTreeReconcileResult(orphans_cleaned=[], content_changed=[], enqueued_paths=[]),
+        ),
+        patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
+        patch("brain_sync.sync.daemon.KnowledgeWatcher", _TwoEventWatcher),
+        patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
+        patch("brain_sync.sync.daemon.process_source", return_value=(False, [])),
+        patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
+        patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run(root)
+
+    assert observed_finalize_flags == [True, False]
+
+
+def test_sync_scheduler_state_removes_stale_keys_and_restarts_reappeared_sources_immediately() -> None:
+    scheduler = _FakeScheduler()
+    scheduler._scheduled_keys = {"confluence:12345", "confluence:99999"}
+    state = SyncState(
+        sources={
+            "confluence:12345": SourceState(
+                canonical_id="confluence:12345",
+                source_url="https://example.com/12345",
+                source_type="confluence",
+                knowledge_path="area/c12345.md",
+            )
+        }
+    )
+
+    _sync_scheduler_state(state, scheduler)
+
+    assert "confluence:99999" in scheduler.removed_calls
+    assert scheduler.immediate_calls == ["confluence:12345"]
+
+
+@pytest.mark.asyncio
+async def test_daemon_marks_live_local_delete_missing_before_due_poll(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    result = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Page",
+        target_path="area",
+    )
+    materialized = root / "knowledge" / "area" / "c12345-test-page.md"
+    materialized.parent.mkdir(parents=True, exist_ok=True)
+    materialized.write_text(prepend_managed_header(result.canonical_id, "# Page"), encoding="utf-8")
+    manifest = read_source_manifest(root, result.canonical_id)
+    assert manifest is not None
+    manifest.knowledge_state = "materialized"
+    manifest.knowledge_path = "area/c12345-test-page.md"
+    manifest.content_hash = "sha256:abc"
+    manifest.remote_fingerprint = "rev-1"
+    manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+    from brain_sync.brain.manifest import write_source_manifest
+
+    write_source_manifest(root, manifest)
+
+    async def _process_source_should_not_run(*_args, **_kwargs):
+        raise AssertionError("watcher-triggered reconcile should remove missing sources before polling")
+
+    async def _stop_after_tick(_seconds: float) -> None:
+        raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "brain_sync.sync.daemon.reconcile_knowledge_tree",
+            return_value=_FakeTreeReconcileResult(orphans_cleaned=[], content_changed=[], enqueued_paths=[]),
+        ),
+        patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
+        patch("brain_sync.sync.daemon.KnowledgeWatcher", _DeletingWatcher),
+        patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
+        patch("brain_sync.sync.daemon.process_source", side_effect=_process_source_should_not_run),
+        patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
+        patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run(root)
+
+    manifest = read_source_manifest(root, result.canonical_id)
+    assert manifest is not None
+    assert manifest.knowledge_state == "missing"
+    assert manifest.missing_since_utc is not None
     assert result.canonical_id not in load_state(root).sources

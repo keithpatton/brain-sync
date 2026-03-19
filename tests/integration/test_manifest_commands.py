@@ -1,4 +1,4 @@
-"""Integration tests: source commands write manifests alongside DB."""
+"""Integration tests for source commands against Brain Format 1.1 manifests."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_sync.application.doctor import doctor
 from brain_sync.application.init import init_brain
 from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import (
@@ -16,7 +17,12 @@ from brain_sync.application.sources import (
     remove_source,
     update_source,
 )
-from brain_sync.brain.manifest import read_all_source_manifests, read_source_manifest
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import (
+    read_all_source_manifests,
+    read_source_manifest,
+    write_source_manifest,
+)
 from brain_sync.runtime.child_requests import load_child_discovery_request
 from brain_sync.runtime.repository import _connect
 
@@ -28,7 +34,6 @@ CONFLUENCE_CID = "confluence:12345"
 
 @pytest.fixture
 def brain(tmp_path: Path) -> Path:
-    """Create a valid v23 brain with runtime DB initialized."""
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -38,7 +43,7 @@ def brain(tmp_path: Path) -> Path:
 
 
 class TestAddSourceWritesManifest:
-    def test_creates_manifest_on_add(self, brain: Path):
+    def test_creates_awaiting_manifest_on_add(self, brain: Path) -> None:
         result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
@@ -46,16 +51,17 @@ class TestAddSourceWritesManifest:
         assert manifest.source_url == CONFLUENCE_URL
         assert manifest.source_type == "confluence"
         assert manifest.sync_attachments is False
-        assert manifest.status == "active"
+        assert manifest.knowledge_state == "awaiting"
+        assert manifest.knowledge_path == "area/c12345.md"
 
-    def test_manifest_and_db_both_created(self, brain: Path):
+    def test_manifest_and_state_both_created(self, brain: Path) -> None:
         result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
         manifest = read_source_manifest(brain, result.canonical_id)
         state = load_state(brain)
         assert manifest is not None
         assert result.canonical_id in state.sources
 
-    def test_add_with_flags(self, brain: Path):
+    def test_add_with_flags(self, brain: Path) -> None:
         result = add_source(
             brain,
             url=CONFLUENCE_URL,
@@ -68,144 +74,98 @@ class TestAddSourceWritesManifest:
         request = load_child_discovery_request(brain, result.canonical_id)
         assert manifest is not None
         assert manifest.sync_attachments is True
-        assert not hasattr(manifest, "fetch_children")
-        assert not hasattr(manifest, "child_path")
         assert request is not None
         assert request.fetch_children is True
         assert request.child_path == "children"
 
-    def test_add_rejects_child_path_without_fetch_children(self, brain: Path):
+    def test_add_rejects_child_path_without_fetch_children(self, brain: Path) -> None:
         with pytest.raises(InvalidChildDiscoveryRequestError):
-            add_source(
-                brain,
-                url=CONFLUENCE_URL,
-                target_path="area",
-                child_path="children",
-            )
-
-
-class TestRemoveSourceDeletesManifest:
-    def test_removes_manifest_on_remove(self, brain: Path):
-        result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
-        remove_source(brain, source=result.canonical_id, delete_files=False)
-        assert read_source_manifest(brain, result.canonical_id) is None
-
-    def test_removes_manifest_with_file_delete(self, brain: Path):
-        result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
-        # Create a fake synced file
-        area = brain / "knowledge" / "area"
-        area.mkdir(parents=True, exist_ok=True)
-        (area / "c12345-test-page.md").write_text("# test\n")
-        remove_source(brain, source=result.canonical_id, delete_files=True)
-        assert read_source_manifest(brain, result.canonical_id) is None
+            add_source(brain, url=CONFLUENCE_URL, target_path="area", child_path="children")
 
 
 class TestMoveSourceUpdatesManifest:
-    def test_updates_manifest_path(self, brain: Path):
+    def test_updates_awaiting_anchor(self, brain: Path) -> None:
         result = add_source(brain, url=CONFLUENCE_URL, target_path="old-area")
         move_source(brain, source=result.canonical_id, to_path="new-area")
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
-        # No synced file exists yet — materialized_path stays empty until first sync
-        assert manifest.materialized_path == ""
+        assert manifest.knowledge_path == "new-area/c12345.md"
+        assert manifest.knowledge_state == "awaiting"
 
-    def test_updates_manifest_with_file_path(self, brain: Path):
+    def test_updates_materialized_path_and_marks_stale(self, brain: Path) -> None:
         result = add_source(brain, url=CONFLUENCE_URL, target_path="old-area")
-        # Create a synced file at the old location
         old_dir = brain / "knowledge" / "old-area"
         old_dir.mkdir(parents=True, exist_ok=True)
-        (old_dir / "c12345-test-page.md").write_text("# test\n")
+        (old_dir / "c12345-test-page.md").write_text(prepend_managed_header(CONFLUENCE_CID, "# test"), encoding="utf-8")
 
-        move_source(brain, source=result.canonical_id, to_path="new-area")
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
-        # File was moved, so manifest stores full file path
-        assert manifest.materialized_path == "new-area/c12345-test-page.md"
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "old-area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
+
+        move_source(brain, source=result.canonical_id, to_path="new-area")
+        moved = read_source_manifest(brain, result.canonical_id)
+        assert moved is not None
+        assert moved.knowledge_path == "new-area/c12345-test-page.md"
+        assert moved.knowledge_state == "stale"
 
 
 class TestUpdateSourceUpdatesManifest:
-    def test_updates_flags_in_manifest(self, brain: Path):
+    def test_updates_flags_in_manifest(self, brain: Path) -> None:
         result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
         update_source(brain, source=result.canonical_id, sync_attachments=True)
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
         assert manifest.sync_attachments is True
 
-    def test_updates_child_path_for_pending_request(self, brain: Path):
-        result = add_source(brain, url=CONFLUENCE_URL, target_path="area", fetch_children=True, child_path="children")
-        update_source(brain, source=result.canonical_id, child_path="kids")
-        manifest = read_source_manifest(brain, result.canonical_id)
-        request = load_child_discovery_request(brain, result.canonical_id)
-        assert manifest is not None
-        assert not hasattr(manifest, "child_path")
-        assert request is not None
-        assert request.fetch_children is True
-        assert request.child_path == "kids"
 
-    def test_update_rejects_child_path_without_pending_request(self, brain: Path):
-        result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
-
-        with pytest.raises(InvalidChildDiscoveryRequestError):
-            update_source(brain, source=result.canonical_id, child_path="kids")
-
-    def test_update_clears_pending_child_request_when_fetch_children_is_disabled(self, brain: Path):
-        result = add_source(brain, url=CONFLUENCE_URL, target_path="area", fetch_children=True, child_path="children")
-
-        update_source(brain, source=result.canonical_id, fetch_children=False)
-
-        assert load_child_discovery_request(brain, result.canonical_id) is None
-
-
-class TestReconcileBootstrapsMigration:
-    def test_no_bootstrap_from_sync_cache_in_v21(self, brain: Path):
-        """In v21, sync_cache has no intent — bootstrap from DB produces nothing."""
+class TestReconcileBehavior:
+    def test_reconcile_does_not_bootstrap_from_runtime_only_rows(self, brain: Path) -> None:
+        state = load_state(brain)
+        state.sources[CONFLUENCE_CID] = state.sources.get(
+            CONFLUENCE_CID,
+            load_state(brain).sources.get(CONFLUENCE_CID, None),  # keep mypy quiet; not used
+        )
         from brain_sync.application.source_state import SourceState, SyncState, save_state
 
-        state = SyncState()
-        state.sources[CONFLUENCE_CID] = SourceState(
-            canonical_id=CONFLUENCE_CID,
-            source_url=CONFLUENCE_URL,
-            source_type="confluence",
-            target_path="area",
-            last_checked_utc="2026-01-01T00:00:00",
+        runtime_only = SyncState(
+            sources={
+                CONFLUENCE_CID: SourceState(
+                    canonical_id=CONFLUENCE_CID,
+                    source_url=CONFLUENCE_URL,
+                    source_type="confluence",
+                    next_check_utc="2026-03-19T11:00:00+00:00",
+                )
+            }
         )
-        save_state(brain, state)
-        import shutil
-
+        save_state(brain, runtime_only)
         manifest_dir = brain / ".brain-sync" / "sources"
-        if manifest_dir.exists():
-            shutil.rmtree(manifest_dir)
-        manifest_dir.mkdir(parents=True)
+        for path in manifest_dir.glob("*.json"):
+            path.unlink()
         assert read_all_source_manifests(brain) == {}
 
         reconcile_sources(brain)
 
-        # v21: sync_cache has no intent fields, bootstrap can't create manifests
-        manifests = read_all_source_manifests(brain)
-        assert len(manifests) == 0
+        assert read_all_source_manifests(brain) == {}
 
-    def test_does_not_bootstrap_when_manifests_exist(self, brain: Path):
-        """If manifests already exist, bootstrap is a no-op."""
-        add_source(brain, url=CONFLUENCE_URL, target_path="area")
-        # Manifest was created by add_source — reconcile should not touch it
-        original = read_source_manifest(brain, CONFLUENCE_CID)
-        reconcile_sources(brain)
-        after = read_source_manifest(brain, CONFLUENCE_CID)
-        assert original is not None
-        assert after is not None
-        assert original.canonical_id == after.canonical_id
-
-
-class TestReconcileUpdatesManifestPath:
-    def test_reconcile_updates_manifest_on_move(self, brain: Path):
-        """When a synced file is moved on disk, reconcile updates the manifest."""
+    def test_reconcile_updates_manifest_on_move(self, brain: Path) -> None:
         result = add_source(brain, url=CONFLUENCE_URL, target_path="old-area")
-        # Create file at old location
         old_dir = brain / "knowledge" / "old-area"
         old_dir.mkdir(parents=True, exist_ok=True)
-        (old_dir / "c12345-test-page.md").write_text("# test\n")
+        (old_dir / "c12345-test-page.md").write_text(prepend_managed_header(CONFLUENCE_CID, "# test"), encoding="utf-8")
+        manifest = read_source_manifest(brain, result.canonical_id)
+        assert manifest is not None
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "old-area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
 
-        # Move file to new location
         new_dir = brain / "knowledge" / "new-area"
         new_dir.mkdir(parents=True, exist_ok=True)
         (old_dir / "c12345-test-page.md").rename(new_dir / "c12345-test-page.md")
@@ -213,6 +173,71 @@ class TestReconcileUpdatesManifestPath:
         reconcile_result = reconcile_sources(brain)
         assert len(reconcile_result.updated) == 1
 
+        moved = read_source_manifest(brain, result.canonical_id)
+        assert moved is not None
+        assert moved.knowledge_path == "new-area/c12345-test-page.md"
+        assert moved.knowledge_state == "stale"
+
+
+class TestRemoveSourceDeletesManifest:
+    def test_removes_manifest_on_remove(self, brain: Path) -> None:
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="area")
+        remove_source(brain, source=result.canonical_id, delete_files=False)
+        assert read_source_manifest(brain, result.canonical_id) is None
+
+    def test_remove_without_delete_files_removes_managed_source_content_cleanly(self, brain: Path) -> None:
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="area", sync_attachments=True)
+        doc_path = brain / "knowledge" / "area" / "c12345-test-page.md"
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(
+            prepend_managed_header(CONFLUENCE_CID, "# test", source_type="confluence", source_url=CONFLUENCE_URL),
+            encoding="utf-8",
+        )
+        att_dir = brain / "knowledge" / "area" / ".brain-sync" / "attachments" / "c12345"
+        att_dir.mkdir(parents=True)
+        (att_dir / "a789.png").write_bytes(b"png")
+
+        remove_source(brain, source=result.canonical_id, delete_files=False)
+
+        assert read_source_manifest(brain, result.canonical_id) is None
+        assert not doc_path.exists()
+        assert not att_dir.exists()
+        result = doctor(brain)
+        assert not [finding for finding in result.findings if finding.check == "unregistered_synced_files"]
+        assert not [finding for finding in result.findings if finding.check == "orphan_attachments"]
+
+    def test_remove_deletes_prefix_rediscovered_markdown(self, brain: Path) -> None:
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="old-area")
         manifest = read_source_manifest(brain, result.canonical_id)
         assert manifest is not None
-        assert manifest.materialized_path == "new-area/c12345-test-page.md"
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "old-area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
+
+        moved = brain / "knowledge" / "new-area" / "c12345-renamed.md"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("# Prefix-only rediscovered file\n", encoding="utf-8")
+
+        remove_source(brain, source=result.canonical_id, delete_files=False)
+
+        assert read_source_manifest(brain, result.canonical_id) is None
+        assert not moved.exists()
+
+    def test_remove_does_not_prune_empty_area_directory(self, brain: Path) -> None:
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="project/area", sync_attachments=True)
+        doc_path = brain / "knowledge" / "project" / "area" / "c12345-test-page.md"
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(
+            prepend_managed_header(CONFLUENCE_CID, "# test", source_type="confluence", source_url=CONFLUENCE_URL),
+            encoding="utf-8",
+        )
+        att_dir = brain / "knowledge" / "project" / "area" / ".brain-sync" / "attachments" / "c12345"
+        att_dir.mkdir(parents=True)
+        (att_dir / "a789.png").write_bytes(b"png")
+
+        remove_source(brain, source=result.canonical_id, delete_files=False)
+
+        assert (brain / "knowledge" / "project" / "area").is_dir()

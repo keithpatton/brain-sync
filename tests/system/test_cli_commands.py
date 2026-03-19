@@ -109,7 +109,8 @@ class TestAdd:
         manifest = read_source_manifest(brain_root, "test:123")
         assert manifest is not None
         assert manifest.canonical_id == "test:123"
-        assert manifest.target_path == "area"
+        assert manifest.knowledge_path == "area/123.md"
+        assert manifest.knowledge_state == "awaiting"
 
     def test_add_duplicate_rejects(self, cli: CliRunner, brain_root: Path):
         """Adding the same source twice does not crash (warns instead)."""
@@ -134,6 +135,14 @@ class TestAdd:
 class TestRemove:
     """brain-sync remove via subprocess."""
 
+    def test_remove_help_describes_delete_files_as_compatibility(self, cli: CliRunner) -> None:
+        result = cli.run("remove", "--help")
+        help_text = " ".join(result.stdout.split())
+
+        assert result.returncode == 0
+        assert "Compatibility flag" in help_text
+        assert "already deletes synced files from disk" in help_text
+
     def test_remove_existing(self, cli: CliRunner, brain_root: Path, config_dir: Path):
         """Remove a registered source succeeds."""
         cli.run("init", str(brain_root))
@@ -143,7 +152,7 @@ class TestRemove:
 
         # Verify removed from DB
         conn = sqlite3.connect(str(config_dir / "db" / "brain-sync.sqlite"))
-        row = conn.execute("SELECT 1 FROM sync_cache WHERE canonical_id = 'test:rm1'").fetchone()
+        row = conn.execute("SELECT 1 FROM sync_polling WHERE canonical_id = 'test:rm1'").fetchone()
         conn.close()
         assert row is None
 
@@ -172,7 +181,7 @@ class TestMove:
 
         manifest = read_source_manifest(brain_root, "test:mv1")
         assert manifest is not None
-        assert manifest.target_path == "new-area"
+        assert manifest.knowledge_path == "new-area/mv1.md"
 
     def test_move_nonexistent_exits_cleanly(self, cli: CliRunner, brain_root: Path):
         """Moving a nonexistent source exits cleanly."""

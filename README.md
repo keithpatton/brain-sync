@@ -258,7 +258,7 @@ python -m brain_sync.interfaces.mcp.server
 | `brain-sync run [--root <path>]` | Start the daemon |
 | `brain-sync add <url> [...]` | Register a URL for sync |
 | `brain-sync add-file <file> [...]` | Import a local markdown or text file |
-| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source |
+| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source and its synced files (`--delete-files` is accepted for compatibility) |
 | `brain-sync remove-file <path>` | Remove a local file from `knowledge/` |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source |

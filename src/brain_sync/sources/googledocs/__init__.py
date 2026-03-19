@@ -59,7 +59,7 @@ class GoogleDocsAdapter:
             return UpdateCheckResult(status=UpdateStatus.UNKNOWN, title=None)
         fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
         title = tabs_doc.title
-        if fingerprint == source_state.metadata_fingerprint:
+        if fingerprint == source_state.remote_fingerprint:
             return UpdateCheckResult(
                 status=UpdateStatus.UNCHANGED,
                 fingerprint=fingerprint,
@@ -112,7 +112,7 @@ class GoogleDocsAdapter:
         return SourceFetchResult(
             body_markdown=body_markdown,
             comments=[],
-            metadata_fingerprint=fingerprint,
+            remote_fingerprint=fingerprint,
             title=title,
             inline_images=list(images_by_cid.values()),
             download_headers=download_headers,

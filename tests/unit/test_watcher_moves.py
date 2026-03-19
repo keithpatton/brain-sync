@@ -10,13 +10,7 @@ from watchdog.events import DirMovedEvent
 from brain_sync.application.init import init_brain
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
 from brain_sync.application.sync_events import apply_folder_move
-from brain_sync.brain.manifest import (
-    MANIFEST_VERSION,
-    SourceManifest,
-    ensure_manifest_dir,
-    read_source_manifest,
-    write_source_manifest,
-)
+from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
 from brain_sync.sync.watcher import FolderMove, KnowledgeEventHandler
 
 pytestmark = pytest.mark.unit
@@ -59,24 +53,29 @@ class TestApplyFolderMove:
         assert load_insight_state(brain, "new-name") is not None
         assert load_insight_state(brain, "new-name/sub") is not None
 
-    def test_updates_source_target_paths_in_manifests(self, brain: Path) -> None:
-        ensure_manifest_dir(brain)
-        for cid, url, target_path in [
-            ("confluence:123", "https://example.com/123", "old-name"),
-            ("confluence:456", "https://example.com/456", "old-name/sub"),
+    def test_updates_source_knowledge_paths_in_manifests(self, brain: Path) -> None:
+        for cid, url, knowledge_path, state in [
+            ("confluence:123", "https://example.com/123", "old-name/c123.md", "materialized"),
+            ("confluence:456", "https://example.com/456", "old-name/sub/c456.md", "awaiting"),
         ]:
-            write_source_manifest(
-                brain,
-                SourceManifest(
-                    version=MANIFEST_VERSION,
-                    canonical_id=cid,
-                    source_url=url,
-                    source_type="confluence",
-                    materialized_path="",
-                    sync_attachments=False,
-                    target_path=target_path,
-                ),
-            )
+            manifest_kwargs = {
+                "version": MANIFEST_VERSION,
+                "canonical_id": cid,
+                "source_url": url,
+                "source_type": "confluence",
+                "sync_attachments": False,
+                "knowledge_path": knowledge_path,
+                "knowledge_state": state,
+            }
+            if state == "materialized":
+                manifest_kwargs.update(
+                    {
+                        "content_hash": "sha256:abc",
+                        "remote_fingerprint": "rev-1",
+                        "materialized_utc": "2026-03-19T09:00:00+00:00",
+                    }
+                )
+            write_source_manifest(brain, SourceManifest(**manifest_kwargs))
 
         old_dir = brain / "knowledge" / "old-name"
         old_dir.mkdir(parents=True)
@@ -88,8 +87,10 @@ class TestApplyFolderMove:
         m1 = read_source_manifest(brain, "confluence:123")
         m2 = read_source_manifest(brain, "confluence:456")
 
-        assert m1 is not None and m1.target_path == "new-name"
-        assert m2 is not None and m2.target_path == "new-name/sub"
+        assert m1 is not None and m1.knowledge_path == "new-name/c123.md"
+        assert m1.knowledge_state == "stale"
+        assert m2 is not None and m2.knowledge_path == "new-name/sub/c456.md"
+        assert m2.knowledge_state == "awaiting"
 
     def test_noop_when_move_not_within_knowledge(self, brain: Path) -> None:
         outside_src = brain.parent / "outside-old"

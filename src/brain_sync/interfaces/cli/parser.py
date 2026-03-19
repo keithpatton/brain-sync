@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_file.add_argument("--subtree", default=None, help="Restrict placement suggestions to this subtree")
 
     # --- remove ---
-    p_remove = sub.add_parser("remove", help="Unregister a sync source")
+    p_remove = sub.add_parser("remove", help="Unregister a sync source and delete its synced files")
     p_remove.add_argument(
         "--root",
         type=Path,
@@ -75,7 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
     p_remove.add_argument("source", help="Canonical ID or URL of the source to remove")
-    p_remove.add_argument("--delete-files", action="store_true", help="Also delete synced files from disk")
+    p_remove.add_argument(
+        "--delete-files",
+        action="store_true",
+        help="Compatibility flag; remove already deletes synced files from disk",
+    )
 
     # --- remove-file ---
     p_remove_file = sub.add_parser("remove-file", help="Remove a file from knowledge/")

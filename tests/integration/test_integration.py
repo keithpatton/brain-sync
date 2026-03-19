@@ -79,7 +79,7 @@ def _mock_adapter(html, title="TestPage", version=1, comments=None):
     fetch_result = SourceFetchResult(
         body_markdown=html_to_markdown(html),
         comments=comments_list,
-        metadata_fingerprint=str(version),
+        remote_fingerprint=str(version),
         title=title,
     )
     adapter.fetch = AsyncMock(return_value=fetch_result)
@@ -110,7 +110,8 @@ class TestFullSyncFlow:
             canonical_id=key,
             source_url=FAKE_URL,
             source_type="confluence",
-            target_path=target_path,
+            knowledge_path=f"{target_path}/c12345.md",
+            knowledge_state="awaiting",
         )
 
         changed = self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
@@ -145,21 +146,21 @@ class TestFullSyncFlow:
             canonical_id=key,
             source_url=FAKE_URL,
             source_type="confluence",
-            target_path=target_path,
+            knowledge_path=f"{target_path}/c12345.md",
+            knowledge_state="awaiting",
         )
 
         # First run
         self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
 
-        first_changed_utc = state.sources[key].last_changed_utc
+        first_hash = state.sources[key].content_hash
         time.sleep(0.05)
 
         # Second run — same content
         changed = self._run_with_mocks(state.sources[key], root, FAKE_HTML_V1)
 
         assert changed is False
-        # last_changed_utc should NOT have been updated
-        assert state.sources[key].last_changed_utc == first_changed_utc
+        assert state.sources[key].content_hash == first_hash
 
     def test_changed_content_triggers_state_reset(self, root):
         """Content change: file rewritten, state updated."""
@@ -172,7 +173,8 @@ class TestFullSyncFlow:
             canonical_id=key,
             source_url=FAKE_URL,
             source_type="confluence",
-            target_path=target_path,
+            knowledge_path=f"{target_path}/c12345.md",
+            knowledge_state="awaiting",
         )
 
         # First run with V1
@@ -223,9 +225,9 @@ class TestStatePersistenceRoundTrip:
                 canonical_id=key,
                 source_url=FAKE_URL,
                 source_type="confluence",
-                materialized_path="",
                 sync_attachments=False,
-                target_path=target_path,
+                knowledge_path=f"{target_path}/c12345.md",
+                knowledge_state="awaiting",
             ),
         )
 
@@ -234,7 +236,8 @@ class TestStatePersistenceRoundTrip:
             canonical_id=key,
             source_url=FAKE_URL,
             source_type="confluence",
-            target_path=target_path,
+            knowledge_path=f"{target_path}/c12345.md",
+            knowledge_state="awaiting",
         )
 
         adapter = _mock_adapter(FAKE_HTML_V1)

@@ -182,7 +182,7 @@ class TestAdapter:
 
         return SourceFetchResult(
             body_markdown=body,
-            metadata_fingerprint=fingerprint,
+            remote_fingerprint=fingerprint,
             title=entry.get("title"),
         )
 

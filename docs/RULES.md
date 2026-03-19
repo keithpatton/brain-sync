@@ -388,10 +388,10 @@ control.
 | Operation | Online | Offline |
 |---|---|---|
 | Edit file | Edits preserved until next sync, then **overwritten** by remote content | Same |
-| Delete file | Watcher detects absence; marked `missing` in manifest (first stage) | Reconciliation marks `missing` (first stage) |
-| Delete file (second reconcile) | Source deregistered: manifest deleted, DB cleaned, area attachments removed | Same |
-| Rename file | Watcher detects as change in area; reconciliation finds file via identity header or prefix glob | Reconciliation finds via three-tier resolution, updates `materialized_path` |
-| Move to another area | Watcher detects as folder change; manifest `materialized_path` and `target_path` updated | Reconciliation finds via three-tier resolution, updates manifest |
+| Delete file | Watcher/reconcile writes `knowledge_state = missing` and `missing_since_utc` immediately | Same |
+| Delete file (finalizing reconcile) | Source deregistered: manifest deleted, DB cleaned, area attachments removed | Same |
+| Rename file | Reconciliation rediscovers by identity and writes updated `knowledge_path` plus `knowledge_state = stale` | Same |
+| Move to another area | Watcher/reconcile writes updated `knowledge_path` plus `knowledge_state = stale` as early as possible | Same |
 
 **Key behaviour:** When a user deletes a synced source file, the system
 treats the user as authoritative. The source will not reappear — the
@@ -404,12 +404,20 @@ next sync. This is by design — the remote source is authoritative for
 synced content. Users who want to annotate should create a separate
 user-authored file in the same area.
 
+Explicit source removal is destructive to synced source material:
+
+- remove source: source registration, managed markdown, and source-owned
+  attachments are deleted together
+- user-driven filesystem deletion is the softer path that enters the missing
+  lifecycle first and only deregisters on a later finalizing reconcile if the
+  source is still absent
+
 ### Folders
 
 | Operation | Online | Offline |
 |---|---|---|
 | Create folder with content | New area detected, queued for regen | New area detected at reconciliation |
-| Rename folder | Manifests updated (`materialized_path`, `target_path`); insights move with the folder (co-located); DB state updated | Reconciliation detects new path, updates manifests and DB |
+| Rename folder | Manifests update `knowledge_path`; materialized/stale sources become `stale`; insights move with the folder | Reconciliation detects new path, updates manifests and DB |
 | Move folder | Same as rename | Same as rename |
 | Delete folder | All contained synced sources enter missing protocol; area insights cleaned up; journals preserved if possible | Reconciliation handles each contained source individually |
 | Delete empty folder | No action (was not an area) | No action |
@@ -471,7 +479,7 @@ A [synced source](GLOSSARY.md#synced-source) has exactly one
 When the system needs to locate a synced source file, it uses three-tier
 resolution (ordered by priority):
 
-1. **Manifest `materialized_path`** — direct file path check.
+1. **Manifest `knowledge_path`** — direct file path check.
 2. **Frontmatter identity scan** — search `knowledge/` for a file
    containing the matching `brain_sync_canonical_id`.
 3. **Canonical prefix glob** — filename prefix match
@@ -518,8 +526,10 @@ Materialization must:
 - embed authoritative identity [frontmatter](GLOSSARY.md#frontmatter)
 - merge with any existing YAML frontmatter by updating only the
   `brain_sync_*` keys and preserving all other keys
-- write the file to the knowledge tree under the source's `target_path`
-- update `materialized_path` and `sync_hint` in the source manifest
+- write the file to the knowledge tree under the source's current anchored
+  `knowledge_path` parent
+- update `knowledge_path`, `knowledge_state = materialized`, `content_hash`,
+  `remote_fingerprint`, and `materialized_utc` in the source manifest
 - preserve the [canonical ID](GLOSSARY.md#canonical-id)
 
 Materialization must not modify unrelated user knowledge.
@@ -552,14 +562,24 @@ Filesystem truth always overrides stale runtime state.
 
 When a synced source file cannot be found:
 
-1. **First pass:** Source marked `missing` with a timestamp. Manifest
-   preserved.
+1. **First pass:** source manifest is updated to `knowledge_state = missing`
+   with `missing_since_utc`. Manifest preserved.
 2. **Second pass (next reconciliation):** If still missing, source is
    deregistered — manifest deleted, database rows cleaned, source
    attachments removed.
 
 This provides a grace period for temporary filesystem states (e.g. file
 being moved by an external tool, cloud sync in progress).
+
+Watcher-driven reconcile is non-finalizing. While the daemon is running, the
+watcher may write first-stage `missing` or repair rediscovered paths, but it
+must not perform second-stage deregistration cleanup. Second-stage cleanup is
+reserved for deterministic finalizing reconcile paths such as startup
+reconciliation, explicit reconcile commands, or explicit doctor cleanup.
+
+A source in `knowledge_state = missing` is still registered during that grace
+period. Duplicate add attempts must fail until the source is either
+rediscovered or fully deregistered on the second pass.
 
 ---
 
@@ -680,7 +700,7 @@ Journals are:
 
 ## Schema Evaluation
 
-This section defines the minimal schema set for Brain Format 1.0 and
+This section defines the minimal schema set for Brain Format 1.1 and
 evaluates each against current usage.
 
 ### Source Manifest Schema
@@ -695,12 +715,13 @@ Current fields:
 | `canonical_id` | string | yes | Durable source identity |
 | `source_url` | string | yes | Remote URL |
 | `source_type` | string | yes | Adapter key (`confluence`, `google_doc`) |
-| `materialized_path` | string | yes | Relative path from `knowledge/` to local file (empty until first sync) |
-| `target_path` | string | yes | Intended placement area inside `knowledge/` |
+| `knowledge_path` | string | yes | Relative path from `knowledge/` to the anchored knowledge file |
+| `knowledge_state` | string | yes | Durable file lifecycle (`awaiting`, `materialized`, `stale`, `missing`) |
 | `sync_attachments` | boolean | yes | Whether to sync attachments |
-| `status` | string | yes | `active` or `missing` |
-| `missing_since_utc` | string | no | Timestamp when file first detected missing (only when status=missing) |
-| `sync_hint` | object | no | Advisory freshness hint |
+| `missing_since_utc` | string | conditional | Timestamp when file first detected missing |
+| `content_hash` | string | conditional | Last successful materialized content hash |
+| `remote_fingerprint` | string | conditional | Last successful adapter-owned freshness token |
+| `materialized_utc` | string | conditional | UTC time of last successful full materialization |
 
 Fields intentionally absent:
 
@@ -712,23 +733,18 @@ Fields intentionally absent:
 - `manifest_version` — renamed to `version` for consistency across all
   manifests.
 
-**`target_path` vs `materialized_path`:** Both are retained.
-`target_path` is placement intent (set on add, "put this in
-`teams/platform`"). `materialized_path` is filesystem reality (set on
-first sync, updated on detected moves, "the file is actually at
-`teams/platform/c12345-title.md`"). They serve different purposes at
-different lifecycle stages. After a folder move, both are updated to
-reflect the new location.
+`knowledge_path` is the single durable path field. Its parent directory is the
+effective area path. Registration writes a provisional anchored filename, and
+successful materialization may replace that filename with the final canonical
+markdown filename.
 
-### `sync_hint` Sub-Schema
+State rules:
 
-| Field | Type | Purpose |
-|---|---|---|
-| `content_hash` | string | Hash of last synced body (excludes frontmatter) |
-| `last_synced_utc` | string | UTC time of last successful sync |
-
-Advisory only — used to avoid unnecessary fetches, not as source of
-truth.
+- `awaiting`: no file expected yet; last-successful fields must be null
+- `materialized`: file expected at `knowledge_path`; last-successful fields set
+- `stale`: file may be present but must be rematerialized; last-successful
+  fields remain set
+- `missing`: file currently not present; `missing_since_utc` must be set
 
 ### Brain Manifest Schema
 
@@ -779,7 +795,7 @@ The runtime database contains 6 tables:
 | Table | Purpose | Authoritative |
 |---|---|---|
 | `meta` | Schema version tracking | Yes (for DB migrations) |
-| `sync_cache` | Machine-local polling schedule and sync progress | No — rebuildable from manifests |
+| `sync_polling` | Machine-local polling schedule and sync progress | No — rebuildable from manifests |
 | `child_discovery_requests` | Machine-local one-shot child-discovery request state | No — machine-local daemon handoff state |
 | `regen_locks` | Cross-process regen coordination | No — transient per daemon session |
 | `operational_events` | Append-only machine-local operational trail for observability only | No — local observability only |
@@ -794,7 +810,7 @@ Earlier runtime-only tables are intentionally absent:
 
 - `documents` — tracked synced documents and attachments with content
   hashes, URLs, titles. This is absent because source identity lives
-  in manifests, sync progress lives in `sync_cache`, and attachment
+  in manifests, sync progress lives in `sync_polling`, and attachment
   identity is derived from the filesystem
   (`.brain-sync/attachments/<source_dir_id>/`).
 - `relationships` — tracked parent-child attachment relationships for
@@ -905,7 +921,7 @@ watching.
 ### Operational flags stay out of manifests
 
 `fetch_children` and `child_path` are one-shot operational commands, not
-durable source state. Brain Format 1.0 treats them as command
+durable source state. Brain Format 1.1 treats them as command
 parameters consumed at execution time, keeping manifests focused on
 durable registration intent. `child_path` only has meaning while there is an
 active pending child-discovery request; it must not persist as latent durable

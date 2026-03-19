@@ -152,13 +152,14 @@ class TestPipelineWritesFrontmatter:
             canonical_id=_CANONICAL_ID,
             source_url=_CONFLUENCE_URL,
             source_type="confluence",
-            target_path="area",
+            knowledge_path="area/c12345.md",
+            knowledge_state="awaiting",
         )
         check = UpdateCheckResult(status=UpdateStatus.CHANGED, fingerprint=_FINGERPRINT, title=_TITLE)
         fetch = SourceFetchResult(
             body_markdown="# Test Page\n\nContent here.",
             title=_TITLE,
-            metadata_fingerprint=_FINGERPRINT,
+            remote_fingerprint=_FINGERPRINT,
         )
 
         with patch("brain_sync.sync.pipeline.get_adapter", return_value=_make_adapter(check, fetch)):
