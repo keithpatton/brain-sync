@@ -3,6 +3,10 @@
 Tests call tool handler functions directly — no stdio transport needed.
 Source management tools mock underlying commands. Query tools use real
 filesystem via tmp_path fixtures.
+
+These tests still use `target_path` because the MCP/public tool surface
+currently exposes that input/output term. Do not treat it as the primary
+portable schema term in new test coverage; prefer `knowledge_path` for that.
 """
 
 from __future__ import annotations

@@ -1,3 +1,10 @@
+"""Unit tests for the application command layer.
+
+This layer still accepts `target_path` as a compatibility/input term. When new
+tests need to validate durable portable-brain semantics, prefer asserting the
+resulting `knowledge_path` rather than extending `target_path` terminology.
+"""
+
 from __future__ import annotations
 
 import json

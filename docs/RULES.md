@@ -27,7 +27,7 @@ A brain is a filesystem-backed knowledge system.
   [frontmatter](GLOSSARY.md#frontmatter) in
   [synced source](GLOSSARY.md#synced-source) files.
 - [Generated meaning](GLOSSARY.md#generated-meaning) is always
-  reproducible from user knowledge.
+  produced from user knowledge.
 - Deleting [runtime state](GLOSSARY.md#runtime-state) never damages the
   brain.
 
@@ -103,7 +103,9 @@ Brain managed files may exist in:
 
 The system may create, update, or delete managed files at any time.
 User knowledge must not depend on managed files for correctness.
-Managed files may be regenerated unless explicitly defined as durable.
+Regenerability depends on the managed-content kind. Generated meaning is
+typically regenerable; manifests, journals, and other durable managed artifacts
+follow their owning rules.
 
 ---
 
@@ -472,7 +474,7 @@ content from the managed namespace.
 ## Identity Rules
 
 A [synced source](GLOSSARY.md#synced-source) has exactly one
-[canonical identity](GLOSSARY.md#canonical-id).
+[canonical ID](GLOSSARY.md#canonical-id).
 
 ### Identity Resolution Chain
 
@@ -505,14 +507,14 @@ reports this as DRIFT.
 At most one materialized markdown file may carry a given
 `brain_sync_canonical_id` within the `knowledge/` tree.
 
-If multiple files carry the same canonical identity, the brain is in
-DRIFT / invalid state. Repair must collapse those duplicates back to a
+If multiple files carry the same canonical ID, the brain is in
+DRIFT. Repair must collapse those duplicates back to a
 single surviving materialized file and update source tracking to point
 to that file.
 
 Filename prefixes remain derived hints, not independent identities. A
 title change may change the filename slug, but it must not produce a
-second file with the same canonical identity.
+second file with the same canonical ID.
 
 ---
 
@@ -594,7 +596,7 @@ Regeneration processes areas depth-first:
 
 1. Deepest areas regenerate from their own readable files.
 2. Parent areas regenerate from child summaries only (not raw child
-   content) — this is the **compression pyramid**.
+   content).
 3. Dirty propagation: a parent is only processed when at least one child
    produced a different result.
 4. Each area is processed at most once per cycle.
@@ -698,133 +700,37 @@ Journals are:
 
 ---
 
-## Schema Evaluation
+## Schema Authority
 
-This section defines the minimal schema set for Brain Format 1.1 and
-evaluates each against current usage.
+This document does not restate field-by-field schema tables. Authoritative
+persisted shapes live in:
 
-### Source Manifest Schema
+- [`docs/brain/SCHEMAS.md`](brain/SCHEMAS.md) — portable manifests and synced
+  source frontmatter
+- [`docs/runtime/SCHEMAS.md`](runtime/SCHEMAS.md) — machine-local runtime
+  files and runtime DB tables
 
-Path: `.brain-sync/sources/<source_dir_id>.json`
+The cross-cutting schema rules that matter here are:
 
-Current fields:
+- portable schema artifacts live inside the [brain root](GLOSSARY.md#brain-root)
+  at `.brain-sync/brain.json`,
+  `.brain-sync/sources/<source_dir_id>.json` (where `source_dir_id` is the
+  [source directory ID](GLOSSARY.md#source-directory-id)), and
+  `knowledge/<area>/.brain-sync/insights/insight-state.json`
+- runtime schema artifacts live in the
+  [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory),
+  including `config.json`, `daemon.json`, and `db/brain-sync.sqlite`
+- every durable manifest is self-versioned using a `version` field
+- `meta.schema_version` is authoritative only for interpreting the runtime DB
+- `knowledge_path` is the durable source path anchor
+- `brain_sync_*` frontmatter is the authoritative document-level identity
+  binding for materialized synced documents
+- `fetch_children` and `child_path` are operational inputs, not durable
+  portable manifest fields
+- `missing_since_utc` remains the current first-stage missing marker even
+  though it is a known portable anomaly pending planned removal
 
-| Field | Type | Required | Purpose |
-|---|---|---|---|
-| `version` | integer | yes | Schema version |
-| `canonical_id` | string | yes | Durable source identity |
-| `source_url` | string | yes | Remote URL |
-| `source_type` | string | yes | Adapter key (`confluence`, `google_doc`) |
-| `knowledge_path` | string | yes | Relative path from `knowledge/` to the anchored knowledge file |
-| `knowledge_state` | string | yes | Durable file lifecycle (`awaiting`, `materialized`, `stale`, `missing`) |
-| `sync_attachments` | boolean | yes | Whether to sync attachments |
-| `missing_since_utc` | string | conditional | Timestamp when file first detected missing |
-| `content_hash` | string | conditional | Last successful materialized content hash |
-| `remote_fingerprint` | string | conditional | Last successful adapter-owned freshness token |
-| `materialized_utc` | string | conditional | UTC time of last successful full materialization |
-
-Fields intentionally absent:
-
-- `fetch_children` — one-shot operational flag. It is a command
-  parameter, not durable source state, so it belongs to the `add` and
-  `sync` commands rather than the manifest.
-- `child_path` — one-shot placement hint for discovered children.
-  Same reasoning as `fetch_children`; it is not durable manifest state.
-- `manifest_version` — renamed to `version` for consistency across all
-  manifests.
-
-`knowledge_path` is the single durable path field. Its parent directory is the
-effective area path. Registration writes a provisional anchored filename, and
-successful materialization may replace that filename with the final canonical
-markdown filename.
-
-State rules:
-
-- `awaiting`: no file expected yet; last-successful fields must be null
-- `materialized`: file expected at `knowledge_path`; last-successful fields set
-- `stale`: file may be present but must be rematerialized; last-successful
-  fields remain set
-- `missing`: file currently not present; `missing_since_utc` must be set
-
-### Brain Manifest Schema
-
-Path: `.brain-sync/brain.json`
-
-| Field | Type | Purpose |
-|---|---|---|
-| `version` | integer | Brain schema version |
-
-Intentionally minimal. Future versions may add brain-level
-configuration.
-
-### Insight State Schema
-
-Path: `knowledge/<area>/.brain-sync/insights/insight-state.json`
-
-| Field | Type | Purpose |
-|---|---|---|
-| `version` | integer | Schema version |
-| `content_hash` | string | Hash of semantic inputs to the summary |
-| `structure_hash` | string | Hash of structural layout |
-| `summary_hash` | string | Hash of generated summary content |
-| `last_regen_utc` | string | UTC time of last successful regeneration |
-
-This schema is clean and unchanged from the current sidecar design.
-
-### Synced Source Frontmatter Schema
-
-Embedded as YAML frontmatter in materialized markdown files.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `brain_sync_source` | string | Provider/type name |
-| `brain_sync_canonical_id` | string | Authoritative source identity |
-| `brain_sync_source_url` | string | Canonical remote URL |
-
-The `brain_sync_` prefix prevents collision with user-authored
-frontmatter in the same file.
-
-### Database Schema
-
-Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
-[brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory),
-**not** inside the brain root)
-
-The runtime database contains 6 tables:
-
-| Table | Purpose | Authoritative |
-|---|---|---|
-| `meta` | Schema version tracking | Yes (for DB migrations) |
-| `sync_polling` | Machine-local polling schedule and sync progress | No — rebuildable from manifests |
-| `child_discovery_requests` | Machine-local one-shot child-discovery request state | No — machine-local daemon handoff state |
-| `regen_locks` | Cross-process regen coordination | No — transient per daemon session |
-| `operational_events` | Append-only machine-local operational trail for observability only | No — local observability only |
-| `token_events` | Append-only LLM cost telemetry | No — machine-local observability, persisted for local inspection only |
-
-When a supported runtime schema upgrade exists, normal upgrades should migrate
-runtime DB state in place unless compatibility docs explicitly say otherwise.
-Rebuild is the fallback for missing, corrupt, or unsupported runtime DB state,
-not the default upgrade path.
-
-Earlier runtime-only tables are intentionally absent:
-
-- `documents` — tracked synced documents and attachments with content
-  hashes, URLs, titles. This is absent because source identity lives
-  in manifests, sync progress lives in `sync_polling`, and attachment
-  identity is derived from the filesystem
-  (`.brain-sync/attachments/<source_dir_id>/`).
-- `relationships` — tracked parent-child attachment relationships for
-  reference counting (don't delete an attachment if another source
-  references it). This is absent because attachments are physically
-  isolated per source in their own `<source_dir_id>/` directory,
-  eliminating the need for cross-source reference counting. Deleting a
-  source's attachments is a simple `rmtree`.
-- `daemon_status` — tracked daemon PID and health. This now lives in
-  the [brain-sync runtime directory](GLOSSARY.md#brain-sync-runtime-directory)
-  (`~/.brain-sync/daemon.json`) since it is per-machine process state,
-  not brain state.
-
-### Regen Templates
+### Packaged Regen Resources
 
 Regen templates (summary layout, journal format, etc.) are internal to
 the brain-sync package. They are bundled in the source code and loaded
@@ -894,7 +800,7 @@ Files that carry a `version` field:
 ## Structural Simplifications
 
 This section summarises the current structural model behind the Brain
-Format 1.0 rules.
+Format 1.1 rules.
 
 ### Co-located insights move with their area
 

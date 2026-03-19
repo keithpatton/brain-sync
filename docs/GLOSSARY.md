@@ -1,7 +1,44 @@
 # Glossary
 
 This glossary defines the canonical terms used when describing the
-brain-sync brain, runtime, and compatibility model. Terms are alphabetised.
+brain-sync brain, runtime, and compatibility model.
+
+It is primarily an agent-first reference: an agent should be able to predict
+what is authoritative, what is portable, and what changes when the filesystem
+or a synced source changes. Terms are alphabetised. The opening map provides
+the shortest route to the core model; later entries provide the precise
+definitions.
+
+---
+
+## Agent-First Model
+
+brain-sync behavior is easiest to predict by separating portable
+[brain state](#brain-state) from machine-local [runtime state](#runtime-state),
+then splitting portable managed state into its semantic classes.
+
+| State Class | Portable | Primary Question | Typical Artifacts |
+|---|---|---|---|
+| [User knowledge](#user-knowledge) | yes | What knowledge is the user preserving directly? | user-authored notes, materialized synced documents |
+| [Brain normative state](#brain-normative-state) | yes | What does the brain currently claim is true? | `canonical_id`, `knowledge_path`, `knowledge_state` |
+| [Brain reconciliation baseline](#brain-reconciliation-baseline) | yes | What settled observations must a future machine inherit? | `content_hash`, `remote_fingerprint`, insight hashes |
+| [Generated meaning](#generated-meaning) | yes | What understanding has brain-sync produced? | `summary.md`, journal entries |
+| [Managed knowledge dependencies](#managed-knowledge-dependencies) | yes | What supporting managed artifacts must travel with the brain? | synced attachment binaries |
+| [Runtime state](#runtime-state) | no | What does this machine need in order to operate? | DB rows, daemon status, logs, schedules |
+
+When predicting behavior, inspect in this order:
+
+1. [Filesystem authority](#filesystem-authority): what exists on disk now?
+2. [Brain normative state](#brain-normative-state): what does the brain assert
+   exists, where, and in what lifecycle state?
+3. [Brain reconciliation baseline](#brain-reconciliation-baseline): what
+   settled observations are recorded for future decisions?
+4. [Change detection](#change-detection) and [reconciliation](#reconciliation):
+   what durable updates follow from current disk truth?
+5. [Regeneration](#regeneration) and the [stability guard](#stability-guard):
+   does meaning need to be recomputed, and does the rewrite materially matter?
+6. [Runtime state](#runtime-state): what coordination or telemetry supports
+   execution without changing portable meaning?
 
 ---
 
@@ -11,7 +48,8 @@ An **attachment** is a binary file associated with a [synced source](#synced-sou
 and managed by brain-sync.
 
 Attachments are stored under the [knowledge area's](#knowledge-area)
-[managed files](#brain-managed-files) at
+[brain managed files](#brain-managed-files) as
+[managed knowledge dependencies](#managed-knowledge-dependencies) at
 `.brain-sync/attachments/<source_dir_id>/`.
 
 Example: `knowledge/teams/platform/.brain-sync/attachments/c987654/a4736286723-architecture-diagram.png`
@@ -59,7 +97,7 @@ It consists of:
 
 - [user knowledge](#user-knowledge)
 - [brain managed files](#brain-managed-files) inside the
-  [brain root](#brain-root)
+[brain root](#brain-root)
 
 It excludes [runtime state](#runtime-state).
 
@@ -67,7 +105,34 @@ A brain-state entry changes only when its durable on-disk identity or
 bytes change. Rewriting an unchanged managed file does not create a new class
 of brain state.
 
+Within [brain managed files](#brain-managed-files), brain-sync distinguishes:
+
+- [brain normative state](#brain-normative-state)
+- [brain reconciliation baseline](#brain-reconciliation-baseline)
+- [generated meaning](#generated-meaning)
+- [managed knowledge dependencies](#managed-knowledge-dependencies)
+
+Brain state does not include runtime-local operational state or
+runtime-local observation history. Those remain part of
+[runtime state](#runtime-state), not portable brain state.
+
 ---
+
+## Brain-Sync Database
+
+The **brain-sync database** is a machine-local SQLite database used for
+runtime coordination and caching. It is not authoritative — the brain
+can be fully reconstructed if it is deleted.
+
+Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
+[brain-sync runtime directory](#brain-sync-runtime-directory))
+
+The database is **not** inside the brain root. It is
+[runtime state](#runtime-state).
+
+Its concrete runtime schema, including current tables, is defined in
+[runtime/SCHEMAS.md](runtime/SCHEMAS.md).
+
 
 ## Brain-Sync Runtime Directory
 
@@ -93,29 +158,20 @@ of [brain state](#brain-state). Everything in it is
 loss of [user knowledge](#user-knowledge) or
 [generated meaning](#generated-meaning).
 
-## Brain-Sync Database
+---
 
-The **brain-sync database** is a machine-local SQLite database used for
-runtime coordination and caching. It is not authoritative — the brain
-can be fully reconstructed if it is deleted.
+## Brain Manifest
 
-Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
-[brain-sync runtime directory](#brain-sync-runtime-directory))
+The **brain manifest** is the root portable [manifest](#manifest) at
+`.brain-sync/brain.json`.
 
-The database is **not** inside the brain root. It is
-[runtime state](#runtime-state).
+It records portable brain-format metadata for the whole
+[brain root](#brain-root).
 
-Current tables:
+The current schema is intentionally minimal; see the
+[Brain Manifest Schema](brain/SCHEMAS.md#brain-manifest-schema).
 
-
-| Table          | Purpose                                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------- |
-| `meta`         | Schema version for migration                                                                            |
-| `sync_cache`   | Machine-local polling schedule state                                                                    |
-| `child_discovery_requests` | Machine-local one-shot child-discovery request state                                         |
-| `regen_locks`  | Cross-process regen coordination                                                                        |
-| `token_events` | Append-only LLM cost telemetry persisted for local observability; not part of core brain-state recovery |
-
+---
 
 ## Brain Managed Files
 
@@ -124,7 +180,7 @@ within the [brain root](#brain-root).
 
 Earlier docs may refer to these as **brain-sync managed files**. The preferred
 term is **brain managed files** because the key boundary is that these files
-are managed within the Brain and are part of brain state.
+are managed within the Brain and are part of [brain state](#brain-state).
 
 This includes:
 
@@ -132,10 +188,40 @@ This includes:
 - per-area `knowledge/**/.brain-sync/` — insights, [journals](#journal),
 [attachments](#attachment), [insight state](#insight-state)
 
-Managed files are part of the durable [brain state](#brain-state) and
-are portable across machines. Users should not edit them directly —
+Brain managed files are portable. Users should not edit them directly:
 brain-sync owns these files and may create, update, or delete them at
 any time.
+
+Brain managed files carry four kinds of managed content:
+
+- [brain normative state](#brain-normative-state) — state that defines
+current asserted brain truth
+- [brain reconciliation baseline](#brain-reconciliation-baseline) — last
+known settled facts needed for future machines to make correct decisions
+- [generated meaning](#generated-meaning) — brain-sync-authored output such
+as insights and journals
+- [managed knowledge dependencies](#managed-knowledge-dependencies) —
+managed artifacts that preserve the usable form of knowledge but are not
+themselves state assertions
+
+Examples from fields defined by the
+[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) and
+instantiated in synced source [manifests](#manifest):
+
+- [brain normative state](#brain-normative-state): `canonical_id`,
+`source_url`, `source_type`, `sync_attachments`, `knowledge_path`,
+`knowledge_state`
+- [brain reconciliation baseline](#brain-reconciliation-baseline):
+`content_hash`, `remote_fingerprint`, `materialized_utc`,
+`insight-state.json` fields such as `content_hash`, `structure_hash`,
+`summary_hash`, `last_regen_utc`
+- [generated meaning](#generated-meaning): `summary.md`, journal entries
+- [managed knowledge dependencies](#managed-knowledge-dependencies):
+attachment binaries under `.brain-sync/attachments/<source_dir_id>/`
+
+Managed stores may also carry schema metadata such as manifest `version` and
+`brain.json.version`. That metadata governs how the managed store is
+interpreted; it is not itself one of the four managed-content kinds.
 
 The `.brain-sync` directory name is reserved at every level of the
 [knowledge tree](#knowledge-tree).
@@ -146,6 +232,77 @@ Note: brain-sync also manages files in the
 brain state. In this glossary, **brain managed files** means the
 managed files inside the [brain root](#brain-root), not runtime-managed files
 under `~/.brain-sync/`.
+
+---
+
+## Brain Normative State
+
+**Brain normative state** is the part of [brain managed files](#brain-managed-files)
+that defines the current asserted truth of the brain.
+
+This state is:
+
+- authoritative
+- portable across machines
+- required for another machine to understand what the brain currently claims
+is true
+
+Examples from fields defined by the
+[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) and
+instantiated in synced source [manifests](#manifest):
+
+- `canonical_id`
+- `source_url`
+- `source_type`
+- `sync_attachments`
+- `knowledge_path`
+- `knowledge_state`
+
+Brain normative state is distinct from
+[brain reconciliation baseline](#brain-reconciliation-baseline), which stores
+the last settled baseline facts needed for future decisions.
+
+---
+
+## Brain Reconciliation Baseline
+
+**Brain reconciliation baseline** is the part of
+[brain managed files](#brain-managed-files) that records the last known settled
+facts required for future machines to interpret and evolve the same brain
+correctly.
+
+These facts are observational in origin, but they have been stabilized into
+portable truth because another machine must inherit them.
+
+Examples from fields defined by the
+[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) and
+instantiated in synced source [manifests](#manifest):
+
+- `content_hash`
+- `remote_fingerprint`
+- `materialized_utc`
+
+Examples from fields defined by the
+[Insight State Schema](brain/SCHEMAS.md#insight-state-schema) and
+instantiated in [insight state](#insight-state) manifests:
+
+- `content_hash`
+- `structure_hash`
+- `summary_hash`
+- `last_regen_utc`
+
+Brain reconciliation baseline is distinct from:
+
+- [brain normative state](#brain-normative-state), which defines current
+asserted brain truth
+- runtime-local observation history, which reflects how one runtime
+  encountered the world over time
+
+This pattern is not limited to fields defined by the
+[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema). It also
+appears in other portable managed artifacts, such as per-area
+[insight state](#insight-state), wherever the system preserves the last
+settled facts needed for future decisions.
 
 ---
 
@@ -175,8 +332,8 @@ The canonical ID appears in:
 filesystem-safe derivative used for manifest filenames and per-source
 attachment directories, e.g. `c987654`)
 
-Brain Format 1.0 standardises the canonical ID as the single identity primitive across
-all source types and contexts. The filename prefix is always derived
+Brain Format `1.x` uses the canonical ID as the single identity primitive
+across all source types and contexts. The filename prefix is always derived
 deterministically from the canonical ID.
 
 ---
@@ -191,10 +348,10 @@ Two hashes are computed for each area:
 - **content hash** — SHA-256 of the area's readable files and child area
 summaries. A changed content hash means the semantic input has changed
 and regeneration is needed.
-- **structure hash** — SHA-256 of the area's child directory names only.
-A changed structure hash with an unchanged content hash indicates a
-structural move (e.g. folder rename) that does not require a full
-regeneration.
+- **structure hash** — SHA-256 of the area's structural layout
+  (directory and filename shape). A changed structure hash with an unchanged
+  content hash indicates a structural move or rename that does not require a
+  full regeneration.
 
 These hashes are stored in the [insight state](#insight-state) manifest
 and compared on each regen cycle to classify changes as: no change,
@@ -301,10 +458,27 @@ frontmatter only.
 
 ---
 
+## Filesystem Authority
+
+**Filesystem authority** is the governing principle that disk truth wins over
+stale runtime understanding.
+
+This means:
+
+- [runtime state](#runtime-state) must adapt to the filesystem
+- [reconciliation](#reconciliation) repairs portable managed state to match
+  current disk truth
+- the system must tolerate online and offline user changes to the
+  [knowledge tree](#knowledge-tree)
+
+When runtime belief and disk reality differ, the filesystem wins.
+
+---
+
 ## Generated Meaning
 
-**Generated meaning** is any AI-summarised or AI-authored content that is
-built from [user knowledge](#user-knowledge).
+**Generated meaning** is brain-sync-authored content produced from
+[user knowledge](#user-knowledge).
 
 Generated meaning currently includes:
 
@@ -340,9 +514,9 @@ This distinction keeps prompt shape and token use more deterministic:
 
 - **[core knowledge](#core-knowledge)** is the raw source
 - **[global context](#global-context)** is the prompt-ready context assembled
-  from `_core`
+from `_core`
 - **[generated meaning](#generated-meaning)** is the distilled output brain-sync
-  writes and maintains
+writes and maintains
 
 If `_core` has no managed summary yet, non-`_core` regeneration proceeds
 without global context.
@@ -358,7 +532,24 @@ summary hashes, and timestamps to determine when regeneration is needed.
 
 Path: `knowledge/<area>/.brain-sync/insights/insight-state.json`
 
+Insight state is part of
+[brain reconciliation baseline](#brain-reconciliation-baseline), not
+[generated meaning](#generated-meaning). It records the settled baseline used
+to decide whether generated insights must be recomputed.
+
 See [brain/SCHEMAS.md](brain/SCHEMAS.md) for field definitions.
+
+---
+
+## Insight-State Manifest
+
+An **insight-state manifest** is the portable per-area [manifest](#manifest)
+at `knowledge/<area>/.brain-sync/insights/insight-state.json`.
+
+It stores [brain reconciliation baseline](#brain-reconciliation-baseline) for
+generated insights, not the insight text itself.
+
+See also: [insight state](#insight-state).
 
 ---
 
@@ -427,11 +618,41 @@ it.
 It holds:
 
 - [user knowledge](#user-knowledge) — user-authored notes,
-[synced source](#synced-source) documents, and [attachments](#attachment)
+[synced source](#synced-source) documents
 - [brain managed files](#brain-managed-files) — the per-area
 `.brain-sync/` directories
 
 The knowledge tree is the durable core of the [brain](#brain).
+
+---
+
+## Managed Knowledge Dependencies
+
+**Managed knowledge dependencies** are the part of
+[brain managed files](#brain-managed-files) that preserve the usable form of
+knowledge content without themselves being portable state assertions.
+
+These are non-primary managed artifacts referenced by knowledge documents and
+co-moved with them.
+
+These dependencies are:
+
+- portable
+- managed by brain-sync
+- required to preserve the usable form of some knowledge content
+- not themselves [brain normative state](#brain-normative-state) or
+[brain reconciliation baseline](#brain-reconciliation-baseline)
+
+Currently this class consists only of synced attachment binaries.
+
+Example:
+
+- attachment binaries under `.brain-sync/attachments/<source_dir_id>/`
+
+Managed knowledge dependencies are distinct from
+[user knowledge](#user-knowledge): the dependency bytes are managed system
+artifacts, while user-authored references to them remain part of user
+knowledge.
 
 ---
 
@@ -465,12 +686,12 @@ During materialization, brain-sync:
 1. Fetches the source content from the remote provider
 2. Converts it to markdown
 3. Embeds [frontmatter](#frontmatter) identity at the top of the file
-4. Writes the file to the path specified by `materialized_path` in the
+4. Writes the file to the path anchored by `knowledge_path` in the
   source [manifest](#manifest)
 
 The resulting file is called a **materialized document**. Its
-`materialized_path` (relative to `knowledge/`) is recorded in the source
-manifest and used as the primary path for
+`knowledge_path` (relative to `knowledge/`) is recorded in the source
+manifest and used as the primary path anchor for
 [reconciliation](#reconciliation).
 
 ---
@@ -506,7 +727,7 @@ work in practice. When the [daemon](#daemon) starts, it:
 
 1. Walks all source [manifests](#manifest) and uses **three-tier file
   resolution** to locate each source's file:
-  - tier 1: `materialized_path` (direct path check)
+  - tier 1: `knowledge_path` (direct path check)
   - tier 2: [frontmatter](#frontmatter) identity scan
   - tier 3: [canonical ID](#canonical-id) prefix glob
 2. Updates manifests to reflect any detected moves
@@ -541,8 +762,32 @@ across discovery, hashing, regeneration, and reconciliation.
 
 ## Runtime State
 
-**Runtime state** is machine-local state that supports brain-sync while
-running but is **not** part of the portable [brain state](#brain-state).
+**Runtime state** is machine-local state used by brain-sync to observe,
+coordinate, schedule, cache, and execute work against a brain.
+
+Runtime state is not part of the portable [brain state](#brain-state).
+
+Runtime state may contain both:
+
+- operational execution state
+- local observation history about how one runtime encountered the world
+  relative to the brain
+
+Observation-history-like runtime state:
+
+- reflects timing, sequencing, or accumulation of observations
+- depends on runtime execution history
+- is not required for another machine to correctly interpret and evolve the
+  current brain state
+
+Operational runtime state:
+
+- supports scheduling, polling, retries, coordination, telemetry, and other
+  execution-supporting behaviour
+- is safe to discard and rebuild
+- changes how the system operates, not what the brain means
+
+A single runtime artifact may contain both kinds of runtime-local state.
 
 All runtime state lives in the
 [brain-sync runtime directory](#brain-sync-runtime-directory)
@@ -553,46 +798,89 @@ All runtime state lives in the
 - `logs/` — rotating log files
 - `daemon.json` — daemon PID and status
 
+Runtime-managed stores may also contain schema metadata such as runtime DB
+schema version markers. That metadata governs interpretation of runtime state;
+it is not itself operational state or observation history.
+
 Runtime state can be rebuilt or recreated without loss of
 [user knowledge](#user-knowledge) or
 [generated meaning](#generated-meaning). Nothing inside the
-[brain root](#brain-root) is runtime state.
+[brain root](#brain-root) is runtime state, except for the known unreleased
+portable anomaly `missing_since_utc`, which remains in the
+[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) pending
+planned removal.
 
 ---
 
 ## Schema
 
-A **schema** defines the structure and meaning of a class of document.
+A **schema** defines the structure and meaning of a class of persisted
+artifact.
 
 Schemas define fields, required structure, and interpretation rules.
-A schema is instantiated as either a [manifest](#manifest) (standalone JSON)
-or as [frontmatter](#frontmatter) (YAML embedded in markdown).
+Schemas may govern portable file artifacts or runtime persisted structures.
 
-Brain schemas:
+Examples of schema-governed persisted artifacts include
+[manifests](#manifest), [frontmatter](#frontmatter), and runtime database
+tables.
 
-- synced source schema → synced source manifest
-- brain schema → brain manifest
-- insight state schema → [insight state](#insight-state) manifest
-- synced source frontmatter schema → synced source frontmatter
+Portable brain schemas:
+
+- [Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) → synced
+  source manifest
+- [Brain Manifest Schema](brain/SCHEMAS.md#brain-manifest-schema) → brain
+  manifest
+- [Insight State Schema](brain/SCHEMAS.md#insight-state-schema) →
+[insight state](#insight-state) manifest
+- [Synced Source Frontmatter Schema](brain/SCHEMAS.md#synced-source-frontmatter-schema)
+  → synced source frontmatter
+
+Runtime schemas and schema-shaped runtime artifacts are documented in
+[runtime/SCHEMAS.md](runtime/SCHEMAS.md), including database tables and
+other machine-local persisted structures.
 
 See [brain/SCHEMAS.md](brain/SCHEMAS.md) for full definitions and
 [runtime/SCHEMAS.md](runtime/SCHEMAS.md) for machine-local runtime schemas.
 
 ---
 
-## Synced Source
+## Source Directory ID
 
-A **synced source** is an external document or page tracked by brain-sync
-and materialized into the [knowledge tree](#knowledge-tree).
+A **source directory ID** is the deterministic filesystem-safe derivative of a
+[canonical ID](#canonical-id).
 
-Examples: a Confluence page, a Google Doc.
+It is used for:
 
-Each synced source has:
+- synced source manifest filenames
+- per-source attachment directories
+- canonical filename prefixes
 
-- a [manifest](#manifest) at `.brain-sync/sources/<id>.json`
-- a materialized markdown file in `knowledge/` with
-[frontmatter](#frontmatter) identity
-- optionally, [attachments](#attachment) under the area's `.brain-sync/`
+Example:
+
+- canonical ID: `confluence:987654`
+- source directory ID: `c987654`
+
+The source directory ID is a filesystem derivative of identity, not a separate
+identity primitive.
+
+---
+
+## Source Manifest
+
+A **source manifest** is the portable [manifest](#manifest) for a
+[synced source](#synced-source).
+
+Path pattern: `.brain-sync/sources/<source_dir_id>.json`
+
+A source manifest stores:
+
+- [brain normative state](#brain-normative-state) for the source
+- [brain reconciliation baseline](#brain-reconciliation-baseline) for the
+  source
+- schema metadata such as `version`
+
+See the [Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) for
+the concrete field contract.
 
 ---
 
@@ -613,6 +901,23 @@ not to [journals](#journal) which are append-only.
 
 ---
 
+## Synced Source
+
+A **synced source** is an external document or page tracked by brain-sync
+and materialized into the [knowledge tree](#knowledge-tree).
+
+Examples: a Confluence page, a Google Doc.
+
+Each synced source has:
+
+- a [canonical ID](#canonical-id)
+- a [source manifest](#source-manifest)
+- a materialized markdown file in `knowledge/` with
+[frontmatter](#frontmatter) identity
+- optionally, [attachments](#attachment) under the area's `.brain-sync/`
+
+---
+
 ## Sync
 
 **Sync** (synchronisation) is the process of fetching remote content from
@@ -625,7 +930,8 @@ During a sync cycle, brain-sync:
 1. Checks each registered source against its remote provider
 2. Compares content hashes to detect upstream changes
 3. [Materializes](#materialization) changed content to the local file
-4. Updates the source [manifest's](#manifest) `sync_hint`
+4. Updates the source [manifest's](#manifest) lifecycle and
+  last-successful fields
 5. Queues affected [knowledge areas](#knowledge-area) for
   [regeneration](#regeneration)
 
@@ -661,10 +967,13 @@ It includes:
 
 - user-authored notes and documents (markdown, text)
 - [synced source](#synced-source) materialized documents
-- [attachments](#attachment) associated with synced sources
 
 User knowledge is the input to [regeneration](#regeneration). It is distinct
 from [generated meaning](#generated-meaning), which is brain-sync's output.
+
+User knowledge may depend on [managed knowledge dependencies](#managed-knowledge-dependencies)
+such as synced attachments, but those dependency files are [brain managed files](#brain-managed-files),
+not user knowledge.
 
 ---
 
@@ -693,17 +1002,21 @@ each area's `.brain-sync/`, they move automatically with the folder.
 
 A [schema](#schema) defines the structure of a [manifest](#manifest).
 
-Example: the synced source schema defines the structure of
-`.brain-sync/sources/c987654.json` — a concrete synced source manifest.
+Example: the
+[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema)
+defines the structure of `.brain-sync/sources/c987654.json` — a concrete
+synced source manifest.
 
 ### Schema → Frontmatter
 
 A [schema](#schema) may be instantiated as [frontmatter](#frontmatter)
 embedded inside a markdown document.
 
-Example: the synced source frontmatter schema is instantiated as the YAML
-header inside `c987654-attachment-handling.md`, binding that file to its
-upstream Confluence page.
+Example: the
+[Synced Source Frontmatter Schema](brain/SCHEMAS.md#synced-source-frontmatter-schema)
+is instantiated as the YAML header inside
+`c987654-attachment-handling.md`, binding that file to its upstream
+Confluence page.
 
 ### Template → Generated Meaning
 

@@ -1,4 +1,9 @@
-"""Integration tests for source commands against Brain Format 1.1 manifests."""
+"""Integration tests for source commands against Brain Format 1.1 manifests.
+
+`target_path` appears here because the command surface still accepts that
+placement input for compatibility. In new tests, prefer `knowledge_path` when
+asserting portable manifest/state semantics.
+"""
 
 from __future__ import annotations
 

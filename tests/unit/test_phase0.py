@@ -1,4 +1,9 @@
-"""Phase 0 tests for the Brain Format 1.0 / runtime v23 baseline."""
+"""Phase 0 tests for the Brain Format 1.0 / runtime v23 baseline.
+
+This module is legacy-baseline coverage. Keep the historical label for the
+baseline it protects, but prefer current glossary/schema terminology in new
+tests outside this file.
+"""
 
 from __future__ import annotations
 

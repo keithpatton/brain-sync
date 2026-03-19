@@ -3,8 +3,16 @@
 This document defines machine-local runtime artifacts for the supported
 Brain Format `1.1` / runtime schema `v26` release.
 
-Runtime artifacts live outside the portable brain and are rebuildable unless
-explicitly noted otherwise.
+Runtime artifacts live outside the portable brain. They support execution,
+coordination, and observability; they do not define portable brain meaning.
+
+Agent-first reading model:
+
+- if runtime state and portable brain state disagree, the filesystem plus
+  portable manifests win
+- `meta` is authoritative only for interpreting the runtime DB itself
+- all other runtime artifacts are machine-local helpers or history, not
+  portable truth
 
 ---
 
@@ -20,10 +28,55 @@ If `BRAIN_SYNC_CONFIG_DIR` is set, that directory is used instead.
 
 Current runtime artifacts:
 
-- `config.json`
-- `daemon.json`
-- `db/brain-sync.sqlite`
-- `logs/`
+| Artifact | Role |
+|---|---|
+| `config.json` | machine-local config, active-brain selection, credentials, and local defaults |
+| `daemon.json` | current daemon lifecycle snapshot |
+| `db/brain-sync.sqlite` | runtime coordination, scheduling, and telemetry store |
+| `logs/` | rotating local logs |
+
+---
+
+## `config.json`
+
+`config.json` is the machine-local runtime config file. It is not versioned as
+a separate schema family, so this section documents the keys currently
+consumed by brain-sync.
+
+Current top-level keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `brains` | array[string] | Registered brain roots. Only the first entry is treated as active in the current single-brain runtime model. |
+| `regen` | object | Optional defaults for regeneration behavior. |
+| `confluence` | object | Optional Confluence credentials. |
+| `google` | object | Optional Google OAuth token cache. |
+| `token_events` | object | Optional local token-telemetry retention settings. |
+| `log_level` | string | Optional default CLI/MCP log level. |
+
+Current nested shapes used by brain-sync:
+
+- `regen`: `model` (string), `effort` (string), `timeout` (integer seconds),
+  `max_turns` (integer), `similarity_threshold` (number)
+- `confluence`: `domain` (string), `email` (string), `token` (string)
+- `google`: `token` (object; Google authorized-user credentials payload)
+- `token_events`: `retention_days` (integer)
+
+Unknown keys may exist for forward compatibility; readers should ignore keys
+they do not understand.
+
+---
+
+## `daemon.json`
+
+`daemon.json` is the current daemon lifecycle snapshot written in the runtime
+directory.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `pid` | integer | Process ID of the daemon instance that wrote the file. |
+| `started_at` | string or null | UTC time when the current daemon session started. |
+| `status` | string | Current daemon status. Typical values: `starting`, `ready`, `stopped`. |
 
 ---
 
@@ -40,7 +93,25 @@ The current schema version is `26`, stored in `meta.schema_version`.
 Supported earlier runtime schemas such as `v23`, `v24`, and `v25` migrate in
 place to `v26`. Unsupported or provisional DB shapes are rebuilt.
 
+SQLite conventions used here:
+
+- UTC timestamps are stored as text
+- booleans are stored as `0` or `1`
+
+Current table roles:
+
+| Table | Role |
+|---|---|
+| `meta` | runtime DB schema metadata |
+| `sync_polling` | polling schedule and source-check timing cache |
+| `regen_locks` | regen ownership and lifecycle coordination by knowledge path |
+| `child_discovery_requests` | one-shot runtime requests for discovered children |
+| `operational_events` | append-only local operational event trail |
+| `token_events` | append-only local LLM usage telemetry |
+
 ### `meta`
+
+`meta` is authoritative only for interpreting the runtime DB itself.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -54,7 +125,7 @@ Required row:
 ### `sync_polling`
 
 `sync_polling` is the narrowed runtime source-state table. It owns only
-machine-local polling and scheduling facts.
+machine-local polling, scheduling, and related runtime tracking facts.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -121,5 +192,5 @@ source manifest.
 | `success` | integer | Boolean stored as `0` or `1`. |
 | `created_utc` | text | UTC timestamp of event creation. |
 
-Current implementation:
+Canonical owner:
 `src/brain_sync/runtime/repository.py`

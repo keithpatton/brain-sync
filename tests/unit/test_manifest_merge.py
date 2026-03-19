@@ -1,4 +1,9 @@
-"""Tests for manifest-authoritative load_state() merge logic."""
+"""Tests for manifest-authoritative load_state() merge logic.
+
+Where `target_path` appears below, it is asserting the derived compatibility
+alias exposed from manifest `knowledge_path`. New manifest/state assertions
+should prefer `knowledge_path` as the primary portable-contract term.
+"""
 
 from __future__ import annotations
 

@@ -3,11 +3,23 @@
 This document defines the portable Brain Format `1.1` schema surfaces owned by
 the brain root.
 
+Agent-first reading model:
+
+- first identify the portable artifact path
+- then read the **Authority Class** column to see whether a field is schema
+  metadata, [brain normative state](../GLOSSARY.md#brain-normative-state), or
+  [brain reconciliation baseline](../GLOSSARY.md#brain-reconciliation-baseline)
+- use [`../RULES.md`](../RULES.md) and [`../GLOSSARY.md`](../GLOSSARY.md) for
+  lifecycle behavior; this document stays focused on persisted shape
+
 Implementation references point at canonical owners, not compatibility shims.
 
 ---
 
 ## Source Manifest Schema
+
+The source manifest is the portable authority for synced-source identity,
+placement, lifecycle, and last-settled source baseline.
 
 Each synced source has one durable manifest at:
 
@@ -20,19 +32,19 @@ also reused for per-source attachment directories.
 
 ### Fields
 
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `version` | integer | yes | Source manifest schema version. Current value: `2`. |
-| `canonical_id` | string | yes | Durable provider-specific identity. |
-| `source_url` | string | yes | Canonical source URL. |
-| `source_type` | string | yes | Durable source type (`confluence`, `google_doc`, `test`). |
-| `sync_attachments` | boolean | yes | Durable attachment-sync setting. |
-| `knowledge_path` | string | yes | Durable knowledge-file anchor, relative to `knowledge/`. |
-| `knowledge_state` | string | yes | Durable lifecycle state for the knowledge file. |
-| `missing_since_utc` | string or null | conditional | First missing-detection timestamp. |
-| `content_hash` | string or null | conditional | Last successful materialized content hash. |
-| `remote_fingerprint` | string or null | conditional | Last successful adapter-owned freshness token. |
-| `materialized_utc` | string or null | conditional | UTC time of the last successful full materialization. |
+| Field | Type | Required | Authority Class | Meaning |
+|---|---|---|---|---|
+| `version` | integer | yes | schema metadata | Source manifest schema version. Current value: `2`. |
+| `canonical_id` | string | yes | brain normative state | Durable provider-specific identity. |
+| `source_url` | string | yes | brain normative state | Canonical source URL. |
+| `source_type` | string | yes | brain normative state | Durable source type (`confluence`, `google_doc`, `test`). |
+| `sync_attachments` | boolean | yes | brain normative state | Durable attachment-sync setting. |
+| `knowledge_path` | string | yes | brain normative state | Durable knowledge-file anchor, relative to `knowledge/`. |
+| `knowledge_state` | string | yes | brain normative state | Durable lifecycle state for the knowledge file. |
+| `missing_since_utc` | string or null | conditional | portable anomaly (pending removal) | Provisional anomaly: UTC time when one runtime first observed the source missing, slated for removal from portable state. |
+| `content_hash` | string or null | conditional | brain reconciliation baseline | Last successful materialized content hash. |
+| `remote_fingerprint` | string or null | conditional | brain reconciliation baseline | Last successful adapter-owned freshness token. |
+| `materialized_utc` | string or null | conditional | brain reconciliation baseline | UTC time when the current materialized source baseline was accepted into portable brain state after successful full materialization. |
 
 Retired fields from Brain Format `1.0` are intentionally absent:
 
@@ -88,13 +100,16 @@ The parent of `knowledge_path` is the effective area path.
 }
 ```
 
-Current implementation:
+Canonical owners:
 `src/brain_sync/brain/manifest.py`,
 `src/brain_sync/brain/repository.py`
 
 ---
 
 ## Brain Manifest Schema
+
+The brain manifest carries portable format metadata for the whole brain. It
+does not carry per-source or per-area state.
 
 The portable brain manifest lives at:
 
@@ -104,9 +119,9 @@ The portable brain manifest lives at:
 
 Fields:
 
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `version` | integer | yes | Portable brain-format major version. Current on-disk value: `1`. |
+| Field | Type | Required | Authority Class | Meaning |
+|---|---|---|---|---|
+| `version` | integer | yes | schema metadata | Portable brain-format major version. Current on-disk value: `1`. |
 
 Brain Format `1.1` keeps the same on-disk brain manifest number because the
 portable compatibility line is still within major format `1`.
@@ -114,6 +129,10 @@ portable compatibility line is still within major format `1`.
 ---
 
 ## Insight State Schema
+
+The insight-state manifest is the portable baseline for regeneration decisions
+for one knowledge area. It does not store runtime lifecycle or the summary
+text itself.
 
 Per-area portable regen state lives at:
 
@@ -123,15 +142,15 @@ knowledge/<area>/.brain-sync/insights/insight-state.json
 
 Fields:
 
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `version` | integer | yes | Insight-state schema version. |
-| `content_hash` | string | yes | Hash of semantic inputs for the summary. |
-| `structure_hash` | string | yes | Hash of structural layout. |
-| `summary_hash` | string | yes | Hash of generated summary text. |
-| `last_regen_utc` | string | yes | UTC time of the last successful regeneration. |
+| Field | Type | Required | Authority Class | Meaning |
+|---|---|---|---|---|
+| `version` | integer | yes | schema metadata | Insight-state schema version. |
+| `content_hash` | string | yes | brain reconciliation baseline | Hash of semantic inputs for the summary. |
+| `structure_hash` | string | yes | brain reconciliation baseline | Hash of structural layout. |
+| `summary_hash` | string | yes | brain reconciliation baseline | Hash of generated summary text. |
+| `last_regen_utc` | string | yes | brain reconciliation baseline | UTC time when the current generated-insight baseline was accepted into portable brain state after successful regeneration. |
 
-Current implementation:
+Canonical owner:
 `src/brain_sync/brain/sidecar.py`
 
 ---
@@ -139,6 +158,8 @@ Current implementation:
 ## Synced Source Frontmatter Schema
 
 Materialized synced markdown files embed authoritative identity frontmatter.
+Frontmatter binds the document to its synced-source identity; lifecycle and
+freshness stay in the source manifest.
 
 Fields:
 

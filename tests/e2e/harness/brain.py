@@ -1,4 +1,9 @@
-"""Brain root factory for E2E tests."""
+"""Brain root factory for E2E tests.
+
+Some fixture helpers still accept legacy `target_path` seed data for
+compatibility with older tests. Prefer `knowledge_path`-first fixture language
+for any new E2E coverage.
+"""
 
 from __future__ import annotations
 
@@ -113,6 +118,9 @@ def seed_sources(root: Path, sources: list[dict]) -> None:
         cid = src["canonical_id"]
         url = src.get("source_url", "https://acme.atlassian.net/wiki/spaces/ENG/pages/123")
         stype = src.get("source_type", "confluence")
+        # Compatibility shim for older fixture callers; avoid extending
+        # `target_path` usage in new test data when `knowledge_path` semantics
+        # are what the test is really asserting.
         tp = src.get("target_path", "")
         write_source_manifest(
             root,
