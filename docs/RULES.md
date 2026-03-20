@@ -99,6 +99,14 @@ current brain state or authorize lifecycle actions until it has been
 reconciled against the currently attached portable brain and fresh local
 observation.
 
+Portable brains must remain valid across process restarts, runtime rebuilds,
+and later attachment by a different runtime instance over time.
+
+brain-sync supports at most one active daemon attachment to a given
+[brain root](GLOSSARY.md#brain-root) at a time. Simultaneous daemon
+attachments against the same brain are outside the supported contract and must
+not be relied on for correctness.
+
 ### Managed Namespace
 
 The folder name `.brain-sync` is reserved at every level of the brain.
@@ -589,6 +597,9 @@ reconcile are also non-destructive with respect to missing-source cleanup.
 A source in `knowledge_state = missing` is still registered during that grace
 period. Duplicate add attempts must fail until the source is either
 rediscovered or explicitly finalized.
+
+For explanatory synced-source lifecycle models, event matrices, and state
+diagrams, see [sync/README.md](sync/README.md).
 
 ---
 

@@ -12,7 +12,11 @@ document for the subject you are changing.
 |---|---|---|---|
 | `docs/brain/` | Portable brain reference | Portable schemas, generated artifact templates, brain version scope | Runtime-only details, tutorials, architectural rationale |
 | `docs/runtime/` | Runtime reference | Runtime schemas, DB/config/daemon shapes | Portable brain contract, tutorials, architectural rationale |
-| `docs/{RULES,VERSIONING,COMPATIBILITY,GLOSSARY}.md` | Shared cross-cutting reference | Shared ontology, state rules, version/support relations | Tutorials, coding workflow, deep architecture rationale |
+| `docs/sync/` | Sync lifecycle explanation | Synced-source lifecycle models, daemon/watcher/reconcile/poll flows, sync-specific diagrams and scenario matrices | Normative invariants, field-level schema tables, user how-tos |
+| `docs/GLOSSARY.md` | Shared ontology reference | Canonical terms, definitions, and concept boundaries | Architecture rationale, workflows, tutorials |
+| `docs/RULES.md` | Normative system rules | Cross-cutting invariants, guarantees, precedence rules, and behavioural constraints | Implementation rationale, deep module design, tutorials |
+| `docs/VERSIONING.md` | Versioning reference | Version scope, versioning policy, and upgrade/version relations | Architecture rationale, coding workflow, tutorials |
+| `docs/COMPATIBILITY.md` | Compatibility reference | Supported compatibility surfaces, shims, compatibility guarantees, and removal policy | General architecture rationale, coding workflow, tutorials |
 | `docs/architecture/` | System explanation | Design, module responsibilities, state models, rationale, technical debt | Normative on-disk schema definitions, user how-tos |
 | `AGENTS.md` | Repository working rules | Coding standards, testing guidance, git hygiene, privacy rules | Deep architecture explanation, format spec detail, user tutorials |
 | `README.md` | User guide | Install, configure, operate, update | Contributor-only rules, deep internals, schema detail |
@@ -22,6 +26,8 @@ Update triggers:
 - Update `docs/brain/` when the portable brain contract changes.
 - Update `docs/runtime/` when machine-local runtime schema or runtime artifact
   shape changes.
+- Update `docs/sync/` when synced-source lifecycle behavior, daemon/reconcile
+  flow explanations, or sync-focused diagrams and scenario models change.
 - Update root `docs/*.md` shared references when cross-cutting ontology,
   rules, versioning, or compatibility policy changes.
 - Update `docs/architecture/` when responsibilities, dependencies, or system
@@ -40,6 +46,12 @@ and precedence rules in `docs/RULES.md`. Keep `docs/architecture/` focused on
 explanation: module responsibilities, rationale, tradeoffs, and technical
 debt. When architecture needs to mention a rule, summarize it briefly and link
 to the authoritative rule rather than restating the full constraint.
+
+Keep `docs/sync/` focused on synced-source lifecycle explanation: event models,
+state transitions, process-flow explanation, and agent-facing test reasoning.
+When sync docs need to mention a rule or schema, summarize it briefly and link
+to `docs/RULES.md`, `docs/brain/`, or `docs/runtime/` rather than restating it
+normatively.
 
 Package `__init__.py` docstrings should be concise summaries of the owning
 subsystem's role: responsibility, what belongs, and what does not. They should
@@ -63,6 +75,10 @@ If you need portable brain structure, start with
 If you need runtime DB/config/daemon details, start with
 [`docs/runtime/README.md`](docs/runtime/README.md).
 
+If you need synced-source lifecycle behavior, daemon/watch/reconcile/poll
+flows, or sync-specific diagrams, start with
+[`docs/sync/README.md`](docs/sync/README.md).
+
 If you need shared ontology, state rules, versioning, or compatibility, go to:
 
 - [`docs/GLOSSARY.md`](docs/GLOSSARY.md)
@@ -70,7 +86,7 @@ If you need shared ontology, state rules, versioning, or compatibility, go to:
 - [`docs/VERSIONING.md`](docs/VERSIONING.md)
 - [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)
 
-If you need design rationale or module responsibilities, go to
+If you need system-level design rationale or module responsibilities, go to
 [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
 
 ## Brain Contract

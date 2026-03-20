@@ -19,3 +19,8 @@ Status: Recommended.
 Change: Do not broaden this implementation into a full repo-wide event-catalog refactor. Centralizing event-name constants and removing scattered string literals should be handled as follow-up work after this approved plan is executed. Within this plan, prefer bounded changes that avoid unnecessary naming churn while keeping new lifecycle/finalization events exact and reviewable.
 Reason: The approved work is source lifecycle hardening, not a general observability redesign. Keeping the event-catalog centralization as a follow-up avoids reopening plan scope while still giving the implementation agent enough guidance to preserve and extend the event model responsibly.
 Status: Deferred follow-up.
+
+2026-03-20T21:37:58+13:00
+Change: Executed the approved source lifecycle hardening plan in the repository and recorded the implementation in commit `3cc93ec` (`Harden source lifecycle ownership and finalization`).
+Reason: Preserve the execution trail for the approved plan without modifying the approved artifact itself. The implementation delivered the approved lifecycle/finalization subsystem hardening, documentation/schema/versioning updates, and the required validation coverage.
+Status: Executed.

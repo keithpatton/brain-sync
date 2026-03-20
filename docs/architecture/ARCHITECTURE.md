@@ -169,6 +169,10 @@ Sync-owned lifecycle orchestration is now split explicitly:
   active polling and administrative listing
 - `sync/watcher.py` remains an edge observer only
 
+For a synced-source lifecycle view organized around entry paths,
+`knowledge_state`, and event scenarios, see
+[../sync/README.md](../sync/README.md).
+
 ### Ownership Model
 
 | Layer | Owner | Responsibility |
@@ -188,6 +192,12 @@ boundary: when a daemon or tool process starts, it must assume the attached
 portable brain may have changed while this runtime was offline. Persisted
 runtime rows are therefore reusable only as local history until reconciled
 against the currently attached portable manifests and filesystem.
+
+The supported runtime model is intentionally simpler than full multi-runtime
+coordination: a portable brain may be attached by different runtimes over time,
+but only one active daemon attachment to a given brain is in contract at once.
+That keeps lifecycle authority and recovery logic centered on portable truth
+plus fresh local observation rather than cross-daemon coordination.
 
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are
@@ -217,8 +227,8 @@ That cleanup has two intentionally different entry points:
 - explicit source removal is destructive to the synced markdown and its
   source-owned attachments
 - watcher-driven missing detection is non-finalizing and only records the
-  first-stage missing transition until a later deterministic finalizing
-  reconcile
+  first-stage missing transition until later explicit finalization after
+  revalidation
 
 ### Architectural Principles
 

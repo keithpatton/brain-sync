@@ -14,6 +14,9 @@ It gives you:
 For the normative on-disk contract, see `docs/brain/` and the shared
 reference docs under `docs/`.
 
+For synced-source lifecycle behavior, event/state models, and daemon/reconcile
+flow explanation, see `docs/sync/README.md`.
+
 ## Getting Started
 
 ### Prerequisites
