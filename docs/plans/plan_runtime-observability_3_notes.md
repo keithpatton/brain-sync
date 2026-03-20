@@ -1,5 +1,11 @@
 # Plan runtime-observability.3 Implementation Notes
 
+2026-03-20T18:15:39+13:00
+Change: Closure review recorded for `plan_runtime-observability_3_approved_2026-03-16T15-57-33.md`; repository history indicates the revision 3 observability work was carried into the later ownership and release-alignment changes.
+Reason: Commit `6d7eb76` on 2026-03-18 (`Harden regen and runtime ownership boundaries`) introduced the operational event surfaces and tests tied to this plan, and commit `da2dcb7` on 2026-03-18 (`Align v25 runtime state with release contract`) finalized the retained runtime event inventory referenced by the plan trail.
+Assumed completion date: 2026-03-18T20:46:46+13:00.
+Status: Completed (inferred from git history).
+
 2026-03-17T12:35
 Change: Use `plan_runtime-observability_3_approved_2026-03-16T15-57-33.md` as the implementation basis; the earlier revision 2 approval is superseded.
 Reason: Revision 3 is the latest approved artifact and already carries forward the required reconciliation distinctions from `TreeReconcileResult`.

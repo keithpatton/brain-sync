@@ -1,5 +1,11 @@
 # Plan architecture-hardening.2 Implementation Notes
 
+2026-03-20T18:15:39+13:00
+Change: Closure review recorded for `plan_architecture-hardening_2_approved_2026-03-17T20-58-15.md`; repository history indicates the approved hardening slice landed before follow-on revision 3 work began.
+Reason: Commits `b69157b` on 2026-03-17 (`Harden phase 2 architecture boundaries`), `b62610d` on 2026-03-18 (`Advance phase 3 hardening ownership seams`), `bf6b135` on 2026-03-18 (`Start phase 4 shared application workflows`), `2446e01` on 2026-03-18 (`Continue phase 4 reconcile and reporting workflows`), and `c20e007` on 2026-03-18 (`Start phase 5 runtime semantics and MCP transport hardening`) match the staged execution notes already captured in this file.
+Assumed completion date: 2026-03-18T10:25:51+13:00.
+Status: Completed (inferred from git history; later work continued under revision 3).
+
 2026-03-18T09:55:07+13:00
 Note: Phase 5 now makes the config-dir runtime semantics explicit in code: `runtime.config.active_brain_root()` and `application.roots.resolve_active_root()` select only the first configured root, while token telemetry and daemon-status helpers are config-dir scoped and no longer accept unused `root` parameters.
 Why it matters: The remaining root-parameter cleanup is concentrated in broader `runtime.repository` DB entrypoints. Those APIs are still threaded widely through sync and regen callers, so the next slice should treat them as a dedicated seam cleanup rather than mixing them into unrelated workflow changes.
