@@ -92,6 +92,13 @@ Examples:
 
 Deleting runtime state must not damage brain state.
 
+On process start or brain re-attachment, persisted runtime state must be
+treated as non-authoritative cached local history. It may inform local
+recovery, scheduling, and coordination, but it must not by itself assert
+current brain state or authorize lifecycle actions until it has been
+reconciled against the currently attached portable brain and fresh local
+observation.
+
 ### Managed Namespace
 
 The folder name `.brain-sync` is reserved at every level of the brain.

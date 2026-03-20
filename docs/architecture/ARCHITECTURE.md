@@ -183,6 +183,12 @@ schema upgrades are expected to migrate in place so local history and telemetry
 are preserved during normal app upgrades. Rebuild is the fallback for missing,
 corrupt, or unsupported runtime state.
 
+That machine-local status has an operational consequence at every process
+boundary: when a daemon or tool process starts, it must assume the attached
+portable brain may have changed while this runtime was offline. Persisted
+runtime rows are therefore reusable only as local history until reconciled
+against the currently attached portable manifests and filesystem.
+
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are
 implementation detail, not the approved semantic entry points for normal
@@ -225,6 +231,11 @@ readable-content discovery and hashing.
 
 **Manifest-authoritative registration**: manifests are the durable record of
 what sources exist; runtime tables only cache progress and coordination.
+
+**Process-boundary runtime blindness**: persisted runtime tables do not carry
+authoritative claims about what happened to the portable brain while no
+process was attached. Restart and re-attachment must revalidate portable truth
+before reused runtime rows can influence lifecycle actions.
 
 **Co-located managed state**: area summaries, insight state, journals, and
 attachments live with the area they describe. That removes the old mirror-tree

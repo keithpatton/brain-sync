@@ -14,6 +14,16 @@ Agent-first reading model:
 - all other runtime artifacts are machine-local helpers or history, not
   portable truth
 
+Startup and re-attachment rule:
+
+- persisted runtime artifacts are non-authoritative cached local history
+- when a process starts, or when a runtime attaches to a brain root, existing
+  runtime rows must be reconciled against the currently attached portable
+  brain before they drive lifecycle behavior
+- a runtime row may inform local recovery or scheduling, but it must not by
+  itself assert current source state, preserve cross-process lifecycle
+  eligibility, or authorize destructive mutation
+
 ---
 
 ## Runtime Directory
@@ -138,6 +148,11 @@ machine-local polling, scheduling, and related runtime tracking facts.
 Portable source truth does not live here. Durable source lifecycle, path,
 freshness, and last-successful materialization facts live in the portable
 source manifest.
+
+Persisted `sync_polling` rows are reusable only as machine-local polling
+history. After process start or brain re-attachment, they must not be treated
+as proof that the currently attached brain still has the same active-source
+set or schedule assumptions as when the prior process exited.
 
 ### `regen_locks`
 

@@ -124,6 +124,11 @@ The **brain-sync database** is a machine-local SQLite database used for
 runtime coordination and caching. It is not authoritative — the brain
 can be fully reconstructed if it is deleted.
 
+Because it is machine-local runtime state, it is also blind to portable-brain
+mutations that happened while this runtime was detached. After process start
+or brain re-attachment, persisted database rows are reusable only as local
+history until reconciled against the currently attached portable brain.
+
 Path: `~/.brain-sync/db/brain-sync.sqlite` (inside the
 [brain-sync runtime directory](#brain-sync-runtime-directory))
 
@@ -723,7 +728,10 @@ changes (moves, deletes, additions) and brings the system into agreement
 with disk truth.
 
 Reconciliation is what makes the "filesystem is authoritative" principle
-work in practice. When the [daemon](#daemon) starts, it:
+work in practice. Persisted runtime state cannot assume the brain is unchanged
+since the last process attached. Startup reconciliation therefore treats
+runtime rows as suspect local history until they are checked against the
+current portable brain and filesystem. When the [daemon](#daemon) starts, it:
 
 1. Walks all source [manifests](#manifest) and uses **three-tier file
   resolution** to locate each source's file:
@@ -772,6 +780,11 @@ Runtime state may contain both:
 - operational execution state
 - local observation history about how one runtime encountered the world
   relative to the brain
+
+After process restart or brain re-attachment, persisted runtime state remains
+useful only as machine-local history. It must not by itself claim that the
+portable brain is still in the same state as when the previous process
+stopped.
 
 Observation-history-like runtime state:
 
