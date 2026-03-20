@@ -7,9 +7,9 @@ brain-sync uses three version domains:
 
 | Domain            | Meaning                        | Current value |
 | ----------------- | ------------------------------ | ------------- |
-| Brain Format      | Portable filesystem contract   | `1.1`         |
-| Runtime DB schema | Machine-local runtime DB shape | `v26`         |
-| App version       | Packaged application version   | `0.6.0`       |
+| Brain Format      | Portable filesystem contract   | `1.2`         |
+| Runtime DB schema | Machine-local runtime DB shape | `v27`         |
+| App version       | Packaged application version   | `0.7.0`       |
 
 
 These versions must not be conflated.
@@ -25,13 +25,14 @@ The Brain Format version governs portable filesystem state, including:
 - reserved managed namespaces
 - the portable/runtime ownership split
 
-The current Brain Format is `1.1`.
+The current Brain Format is `1.2`.
 
-Brain Format `1.1` intentionally changes the portable source-state contract by:
+Brain Format `1.2` intentionally changes the portable source-state contract by:
 
-- removing durable `target_path`
-- replacing the old lifecycle split with `knowledge_path` plus `knowledge_state`
-- moving durable freshness ownership to `remote_fingerprint`
+- removing portable `missing_since_utc`
+- keeping `knowledge_path` plus `knowledge_state` as the durable source path
+  and lifecycle contract
+- keeping durable freshness ownership in `remote_fingerprint`
 
 The on-disk `brain.json` file remains:
 
@@ -72,11 +73,12 @@ The runtime DB schema version governs only machine-local runtime state.
 
 The current runtime DB schema is:
 
-- label: `v26`
-- integer value in `meta.schema_version`: `26`
+- label: `v27`
+- integer value in `meta.schema_version`: `27`
 
-Schema `v26` narrows runtime source state to polling and scheduling only and
-renames the source-progress table from `sync_cache` to `sync_polling`.
+Schema `v27` keeps `sync_polling` polling-only and adds
+`source_lifecycle_runtime` for missing-source confirmation history,
+source-level lifecycle leases, and explicit-finalization coordination.
 
 Supported earlier runtime schemas migrate in place during normal upgrades.
 Rebuild remains the fallback for missing, corrupt, unsupported, or provisional
@@ -86,10 +88,10 @@ runtime DB state.
 
 ## App Version
 
-The current app version is `0.6.0.0`.
+The current app version is `0.7.0.0`.
 
-This remains the current release identifier for the Brain Format `1.1` /
-runtime schema `v26` row.
+This is the current release identifier for the Brain Format `1.2` /
+runtime schema `v27` row.
 
 The canonical source is `pyproject.toml`.
 
@@ -103,7 +105,7 @@ Compatibility statements should use this form:
 
 Current statement:
 
-`brain-sync 0.6.0 supports Brain Format 1.1 with runtime DB schema v26`
+`brain-sync 0.7.0 supports Brain Format 1.2 with runtime DB schema v27`
 
 See [docs/COMPATIBILITY.md](COMPATIBILITY.md) for the supported rows and
 transition guarantees.
@@ -114,8 +116,7 @@ transition guarantees.
 
 Compatibility and migration tests should explicitly cover:
 
-- fresh Brain Format `1.1` init
-- Brain Format `1.0 -> 1.1` guided migration behavior
-- runtime DB `v23/v24/v25 -> v26` in-place migration
+- fresh Brain Format `1.2` init
+- Brain Format `1.1 -> 1.2` guided migration behavior
+- runtime DB `v23/v24/v25/v26 -> v27` in-place migration
 - runtime DB rebuild without changing durable source truth
-

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-BRAIN_FORMAT_VERSION = "1.1"
+BRAIN_FORMAT_VERSION = "1.2"
 BRAIN_MANIFEST_VERSION = 1
-SOURCE_MANIFEST_VERSION = 2
+SOURCE_MANIFEST_VERSION = 3
 INSIGHT_STATE_VERSION = 1
 
 MANAGED_DIRNAME = ".brain-sync"

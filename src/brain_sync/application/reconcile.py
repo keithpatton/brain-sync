@@ -1,25 +1,16 @@
-"""Application-owned reconciliation workflows."""
+"""Application-facing reconciliation workflows."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.application.insights import load_all_insight_states
 from brain_sync.application.query_index import invalidate_area_index
-from brain_sync.application.regen import classify_folder_change
 from brain_sync.application.sources import ReconcileEntry, reconcile_sources
-from brain_sync.runtime.repository import record_operational_event
-from brain_sync.sync.reconcile import KnowledgeTreeScanResult, scan_knowledge_tree
+from brain_sync.sync.reconcile import TreeReconcileResult
+from brain_sync.sync.reconcile import reconcile_knowledge_tree as reconcile_knowledge_tree_sync
 
 __all__ = ["ReconcileReport", "TreeReconcileResult", "reconcile_brain", "reconcile_knowledge_tree"]
-
-
-@dataclass(frozen=True)
-class TreeReconcileResult:
-    orphans_cleaned: list[str] = field(default_factory=list)
-    content_changed: list[str] = field(default_factory=list)
-    enqueued_paths: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -42,38 +33,12 @@ class ReconcileReport:
 
 
 def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
-    """Reconcile the knowledge tree using application-owned cross-plane state views."""
-    tracked_paths = {state.knowledge_path for state in load_all_insight_states(root)}
-    scan_result: KnowledgeTreeScanResult = scan_knowledge_tree(root, tracked_paths=tracked_paths)
-    candidate_paths = set(scan_result.candidate_paths)
-
-    content_changed: list[str] = []
-    for path in sorted(candidate_paths):
-        change, _, _ = classify_folder_change(root, path)
-        if change.change_type != "none":
-            content_changed.append(path)
-
-    for orphan in scan_result.orphans_cleaned:
-        record_operational_event(
-            event_type="reconcile.orphan_cleaned",
-            knowledge_path=orphan,
-            outcome="cleaned",
-        )
-    for path in content_changed:
+    result = reconcile_knowledge_tree_sync(root)
+    for path in result.content_changed:
         invalidate_area_index(root, knowledge_paths=[path], reason="reconcile_content_changed")
-    for path in scan_result.enqueued_paths:
+    for path in result.enqueued_paths:
         invalidate_area_index(root, knowledge_paths=[path], reason="reconcile_path_enqueued")
-        record_operational_event(
-            event_type="reconcile.path_enqueued",
-            knowledge_path=path,
-            outcome="enqueued",
-        )
-
-    return TreeReconcileResult(
-        orphans_cleaned=scan_result.orphans_cleaned,
-        content_changed=content_changed,
-        enqueued_paths=scan_result.enqueued_paths,
-    )
+    return result
 
 
 def reconcile_brain(root: Path, *, include_knowledge_tree: bool = False) -> ReconcileReport:

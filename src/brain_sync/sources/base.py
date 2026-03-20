@@ -20,7 +20,6 @@ class SourceStateLike(Protocol):
     knowledge_path: str
     knowledge_state: str
     sync_attachments: bool
-    missing_since_utc: str | None
     last_checked_utc: str | None
     content_hash: str | None
     remote_fingerprint: str | None

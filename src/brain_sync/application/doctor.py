@@ -11,7 +11,6 @@ from pathlib import Path
 from brain_sync.application.insights import InsightState, load_all_insight_states, load_insight_state
 from brain_sync.application.roots import InvalidBrainRootError, _require_root
 from brain_sync.application.source_state import SyncState, save_state, seed_source_state_from_manifest
-from brain_sync.application.sources import _deregister_source
 from brain_sync.brain.fileops import (
     path_exists,
     path_is_dir,
@@ -32,7 +31,6 @@ from brain_sync.brain.managed_markdown import extract_source_id
 from brain_sync.brain.manifest import (
     SourceManifest,
     read_all_source_manifests,
-    read_source_manifest,
 )
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.sidecar import read_all_regen_meta, read_regen_meta
@@ -572,6 +570,8 @@ def _apply_fixes(
     identity_index: dict[str, Path],
 ) -> None:
     repository = BrainRepository(root)
+    from brain_sync.application.sources import reconcile_sources
+
     for finding in findings:
         if finding.severity not in {Severity.DRIFT, Severity.CORRUPTION}:
             continue
@@ -581,12 +581,10 @@ def _apply_fixes(
                 finding.fix_applied = True
 
             elif finding.check == "manifest_file_match" and finding.canonical_id:
-                manifest = manifests.get(finding.canonical_id)
-                if manifest is None:
-                    continue
-                resolved = repository.resolve_source_file(manifest, identity_index=identity_index)
-                if resolved.path is not None:
-                    repository.sync_manifest_to_found_path(finding.canonical_id, resolved.path)
+                report = reconcile_sources(root, finalize_missing=False)
+                if any(entry.canonical_id == finding.canonical_id for entry in report.updated) or (
+                    finding.canonical_id not in report.not_found
+                ):
                     finding.fix_applied = True
 
             elif finding.check == "identity_headers" and finding.canonical_id:
@@ -613,12 +611,9 @@ def _apply_fixes(
                 finding.fix_applied = True
 
             elif finding.check == "path_normalization" and finding.canonical_id:
-                manifest = read_source_manifest(root, finding.canonical_id)
-                if manifest is None:
-                    continue
-                manifest.knowledge_path = normalize_path(manifest.knowledge_path)
-                repository.save_source_manifest(manifest)
-                finding.fix_applied = True
+                report = reconcile_sources(root, finalize_missing=False)
+                if any(entry.canonical_id == finding.canonical_id for entry in report.updated):
+                    finding.fix_applied = True
 
             elif finding.check == "legacy_journal_layout" and finding.knowledge_path is not None:
                 if repository.heal_legacy_journal_layout(finding.knowledge_path):
@@ -669,32 +664,19 @@ def rebuild_db(root: Path | None = None) -> DoctorResult:
 
 
 def deregister_missing(root: Path | None = None) -> DoctorResult:
-    root = _resolve_doctor_root(root)
-    findings: list[Finding] = []
-    for cid, manifest in read_all_source_manifests(root).items():
-        if manifest.knowledge_state != "missing":
-            continue
-        _deregister_source(
-            root,
-            canonical_id=cid,
-            target_path=manifest.target_path,
-            delete_materialized_file=False,
-            delete_attachments=True,
-        )
-        findings.append(
+    _resolve_doctor_root(root)
+    return DoctorResult(
+        findings=[
             Finding(
                 check="deregister_missing",
-                severity=Severity.OK,
-                message=f"Deregistered missing source: {cid}",
-                canonical_id=cid,
-                fix_applied=True,
+                severity=Severity.DRIFT,
+                message=(
+                    "doctor --deregister-missing has been removed. Use `brain-sync finalize-missing <canonical-id>`."
+                ),
             )
-        )
-    if not findings:
-        findings.append(
-            Finding(check="deregister_missing", severity=Severity.OK, message="No missing sources to deregister")
-        )
-    return DoctorResult(findings=findings, fix_mode=True)
+        ],
+        fix_mode=False,
+    )
 
 
 def adopt_baseline(root: Path | None = None) -> DoctorResult:

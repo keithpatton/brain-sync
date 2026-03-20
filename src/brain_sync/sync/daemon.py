@@ -4,19 +4,11 @@ import asyncio
 import logging
 import os
 import time
-from datetime import UTC, datetime
+import uuid
 from pathlib import Path
 
 import httpx
 
-from brain_sync.application.child_discovery import process_discovered_children
-from brain_sync.application.reconcile import reconcile_knowledge_tree
-from brain_sync.application.source_state import SyncState, load_state, save_state
-from brain_sync.application.sources import (
-    mark_source_missing as mark_source_missing_lifecycle,
-)
-from brain_sync.application.sources import reconcile_sources
-from brain_sync.application.sync_events import apply_folder_move, enqueue_regen_path, handle_watcher_folder_change
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen.lifecycle import regen_session
 from brain_sync.regen.queue import RegenQueue
@@ -28,14 +20,29 @@ from brain_sync.runtime.repository import (
 )
 from brain_sync.runtime.token_tracking import load_retention_days
 from brain_sync.sources.base import RemoteSourceMissingError
-from brain_sync.sync.pipeline import process_source
+from brain_sync.sync.lifecycle import (
+    apply_folder_move,
+    enqueue_regen_path,
+    handle_watcher_folder_change,
+    observe_missing_source,
+    process_discovered_children,
+    reconcile_sources,
+)
+from brain_sync.sync.pipeline import SourceLifecycleLeaseConflictError, process_source
+from brain_sync.sync.reconcile import reconcile_knowledge_tree
 from brain_sync.sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
+from brain_sync.sync.source_state import SyncState, load_active_sync_state, save_active_sync_state
 from brain_sync.sync.watcher import KnowledgeWatcher
 
 log = logging.getLogger(__name__)
 
 RESCAN_INTERVAL = 300  # 5 minutes
 TICK_MAX_SLEEP = 10.0  # max seconds between ticks
+LEASE_CONFLICT_RETRY_SECS = 5
+
+
+def _source_lease_owner_id() -> str:
+    return f"daemon-sync:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
 
 def _sync_scheduler_state(
@@ -98,7 +105,7 @@ async def run(root: Path) -> None:
     # reconcile repairs manifest-backed placement before the scheduler loads
     # source state for the sync loop.
     pid = os.getpid()
-    reconcile_result = reconcile_sources(root)
+    reconcile_result = reconcile_sources(root, finalize_missing=False)
     tree_result = reconcile_knowledge_tree(root)
     write_daemon_status(pid, "starting")
 
@@ -106,12 +113,12 @@ async def run(root: Path) -> None:
 
     prune_token_events(retention_days=load_retention_days())
 
-    state = load_state(root)
+    state = load_active_sync_state(root)
     scheduler = Scheduler()
     watcher = KnowledgeWatcher(root)
 
     _sync_scheduler_state(state, scheduler)
-    save_state(root, state)
+    save_active_sync_state(root, state)
 
     last_rescan = time.monotonic()
 
@@ -168,16 +175,16 @@ async def run(root: Path) -> None:
                             or reconcile_result.deleted
                             or reconcile_result.reappeared
                         ):
-                            state = load_state(root)
+                            state = load_active_sync_state(root)
                             _sync_scheduler_state(state, scheduler)
-                            save_state(root, state)
+                            save_active_sync_state(root, state)
 
                     # 2. Periodic state reload (pick up sources added via CLI)
                     now = time.monotonic()
                     if now - last_rescan >= RESCAN_INTERVAL:
-                        state = load_state(root)
+                        state = load_active_sync_state(root)
                         _sync_scheduler_state(state, scheduler)
-                        save_state(root, state)
+                        save_active_sync_state(root, state)
                         last_rescan = now
 
                     # 3. Process due sources
@@ -196,7 +203,10 @@ async def run(root: Path) -> None:
                                 http_client,
                                 root=root,
                                 fetch_children=child_request.fetch_children if child_request is not None else False,
+                                lifecycle_owner_id=_source_lease_owner_id(),
                             )
+                            ss = load_active_sync_state(root).sources.get(key, ss)
+                            state.sources[key] = ss
                             interval = compute_interval(ss.last_changed_utc)
                             ss.current_interval_secs = interval
                             # Enqueue regen if content changed
@@ -221,18 +231,21 @@ async def run(root: Path) -> None:
                                 state=state,
                             )
                         except RemoteSourceMissingError as e:
-                            marked = mark_source_missing_lifecycle(
-                                root,
-                                canonical_id=key,
-                                missing_since_utc=datetime.now(UTC).isoformat(),
-                                outcome="remote_missing",
-                            )
+                            marked = observe_missing_source(root, canonical_id=key, outcome="remote_missing")
                             scheduler.remove(key)
                             state.sources.pop(key, None)
                             if marked:
                                 log.warning("Marked %s as missing after upstream 404: %s", key, e)
                             else:
                                 log.warning("Upstream 404 for unregistered source %s: %s", key, e)
+                            continue
+                        except SourceLifecycleLeaseConflictError as e:
+                            log.info(
+                                "Skipping %s due to active lifecycle lease held by %s",
+                                key,
+                                e.lease_owner or "unknown",
+                            )
+                            scheduler.reschedule(key, LEASE_CONFLICT_RETRY_SECS)
                             continue
                         except Exception as e:
                             log.warning("Error processing %s: %s", key, e)
@@ -246,7 +259,7 @@ async def run(root: Path) -> None:
                         ss.interval_seconds = interval
                         ss.next_check_utc = compute_next_check_utc(interval)
                         try:
-                            save_state(root, state)
+                            save_active_sync_state(root, state)
                         except Exception:
                             log.warning("Failed to save state (will retry next tick)", exc_info=True)
 
@@ -296,7 +309,7 @@ async def run(root: Path) -> None:
                 except Exception:
                     log.warning("Failed to write daemon stopped status", exc_info=True)
                 try:
-                    save_state(root, state)
+                    save_active_sync_state(root, state)
                 except Exception:
                     log.error("Failed to save state on shutdown", exc_info=True)
                 log.info("brain-sync stopped")

@@ -84,7 +84,7 @@ _ALLOWED_PACKAGE_DEPENDENCIES = {
     "interfaces": frozenset({"application"}),
     "brain": frozenset({"util"}),
     "runtime": frozenset({"util"}),
-    "sync": frozenset({"brain", "runtime", "sources", "util"}),
+    "sync": frozenset({"brain", "runtime", "regen", "sources", "util"}),
     "regen": frozenset({"brain", "runtime", "llm", "util"}),
     "query": frozenset({"brain", "util"}),
     "sources": frozenset({"util"}),
@@ -116,17 +116,6 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
             "brain_sync.util.logging",
         }
     ),
-    "src/brain_sync/sync/daemon.py": frozenset(
-        {
-            "brain_sync.application.child_discovery",
-            "brain_sync.application.reconcile",
-            "brain_sync.application.source_state",
-            "brain_sync.application.sources",
-            "brain_sync.application.sync_events",
-            "brain_sync.regen.lifecycle",
-            "brain_sync.regen.queue",
-        }
-    ),
 }
 
 _RULE_EXCEPTION_IMPORTS = {
@@ -145,6 +134,32 @@ _RULE_EXCEPTION_IMPORTS = {
 }
 
 _TRANSITIONAL_DEBT_IMPORTS: dict[str, frozenset[str]] = {}
+_SYNC_LIFECYCLE_ORCHESTRATORS = frozenset(
+    {
+        "src/brain_sync/sync/lifecycle.py",
+        "src/brain_sync/sync/finalization.py",
+    }
+)
+_SYNC_LIFECYCLE_ONLY_FILES = frozenset({"src/brain_sync/sync/lifecycle.py"})
+_LIFECYCLE_RESERVED_METHODS = frozenset(
+    {
+        "save_source_manifest",
+        "update_source_sync_settings",
+        "mark_source_missing",
+        "sync_manifest_to_found_path",
+        "delete_source_registration",
+        "remove_source_owned_files",
+        "materialize_markdown",
+        "set_source_area_path",
+    }
+)
+_LIFECYCLE_ONLY_RESERVED_METHODS = frozenset(
+    {
+        "move_knowledge_tree",
+        "move_source_attachment_dir",
+        "apply_folder_move_to_manifests",
+    }
+)
 
 
 def _iter_python_files() -> list[Path]:
@@ -271,6 +286,15 @@ def _assert_exact_allowlist(
         if stale:
             message_parts.append("Stale exception entries:\n" + "\n".join(sorted(stale)))
         raise AssertionError("\n\n".join(message_parts))
+
+
+def _brain_repository_method_calls(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            calls.add(node.func.attr)
+    return calls
 
 
 def test_portable_mutation_primitives_do_not_spread_beyond_approved_exception_set() -> None:
@@ -525,3 +549,55 @@ def test_transitional_boundary_debts_are_closed_and_exact() -> None:
         actual_off_graph=actual_off_graph,
         label="Transitional boundary debts",
     )
+
+
+def test_sync_package_no_longer_imports_application_modules() -> None:
+    violations: list[str] = []
+
+    for path in sorted((_SRC_ROOT / "sync").rglob("*.py")):
+        rel = _root_relative(path)
+        imported = _imported_modules(path)
+        forbidden = sorted(module for module in imported if module.startswith("brain_sync.application"))
+        if forbidden:
+            violations.append(f"{rel}: {', '.join(forbidden)}")
+
+    message = "Production sync modules must not import application modules:\n" + "\n".join(violations)
+    assert violations == [], message
+
+
+def test_sync_lifecycle_orchestrators_are_named_explicitly() -> None:
+    for rel_path in sorted(_SYNC_LIFECYCLE_ORCHESTRATORS):
+        assert (_ROOT / rel_path).exists(), f"Expected lifecycle orchestrator file missing: {rel_path}"
+
+    policy_path = _ROOT / "src" / "brain_sync" / "sync" / "lifecycle_policy.py"
+    tree = ast.parse(policy_path.read_text(encoding="utf-8"), filename=str(policy_path))
+    violations = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module]
+    violations.extend(alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names)
+    forbidden = sorted(
+        module
+        for module in violations
+        if module.startswith("brain_sync.brain")
+        or module.startswith("brain_sync.runtime")
+        or module.startswith("brain_sync.application")
+    )
+    assert forbidden == [], "sync.lifecycle_policy.py must remain IO-free:\n" + "\n".join(forbidden)
+
+
+def test_reserved_brain_repository_lifecycle_methods_are_called_only_from_approved_orchestrators() -> None:
+    violations: list[str] = []
+
+    for path in _iter_python_files():
+        rel = _root_relative(path)
+        calls = _brain_repository_method_calls(path)
+        shared_hits = sorted(calls & _LIFECYCLE_RESERVED_METHODS)
+        lifecycle_only_hits = sorted(calls & _LIFECYCLE_ONLY_RESERVED_METHODS)
+        if shared_hits and rel not in _SYNC_LIFECYCLE_ORCHESTRATORS:
+            violations.append(f"{rel}: {', '.join(shared_hits)}")
+        if lifecycle_only_hits and rel not in _SYNC_LIFECYCLE_ONLY_FILES:
+            violations.append(f"{rel}: {', '.join(lifecycle_only_hits)}")
+
+    message = (
+        "Reserved BrainRepository lifecycle mutation methods must stay in sync/lifecycle.py "
+        "or sync/finalization.py as approved:\n" + "\n".join(violations)
+    )
+    assert violations == [], message

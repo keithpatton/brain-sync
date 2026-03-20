@@ -27,6 +27,7 @@ _ALLOWED_RUNTIME_TABLES = frozenset(
     {
         "meta",
         "sync_polling",
+        "source_lifecycle_runtime",
         "regen_locks",
         "token_events",
         "child_discovery_requests",
@@ -113,6 +114,17 @@ CREATE TABLE IF NOT EXISTS sync_polling (
 );
 """
 
+_SOURCE_LIFECYCLE_RUNTIME_DDL = """
+CREATE TABLE IF NOT EXISTS source_lifecycle_runtime (
+    canonical_id TEXT PRIMARY KEY,
+    local_missing_first_observed_utc TEXT,
+    local_missing_last_confirmed_utc TEXT,
+    missing_confirmation_count INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_utc TEXT
+);
+"""
+
 _REGEN_LOCKS_DDL = """
 CREATE TABLE IF NOT EXISTS regen_locks (
     knowledge_path TEXT PRIMARY KEY,
@@ -195,6 +207,16 @@ class SyncProgress:
     interval_seconds: int | None = None
 
 
+@dataclass(frozen=True)
+class SourceLifecycleRuntime:
+    canonical_id: str
+    local_missing_first_observed_utc: str | None = None
+    local_missing_last_confirmed_utc: str | None = None
+    missing_confirmation_count: int = 0
+    lease_owner: str | None = None
+    lease_expires_utc: str | None = None
+
+
 class _SyncProgressLike(Protocol):
     canonical_id: str
     last_checked_utc: str | None
@@ -259,6 +281,7 @@ def _initialize_runtime_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.executescript(_SYNC_POLLING_DDL)
+    conn.executescript(_SOURCE_LIFECYCLE_RUNTIME_DDL)
     conn.executescript(_REGEN_LOCKS_DDL)
     conn.executescript(_TOKEN_EVENTS_DDL)
     conn.executescript(_CHILD_DISCOVERY_REQUESTS_DDL)
@@ -307,10 +330,20 @@ def _migrate_runtime_db(conn: sqlite3.Connection, from_version: int) -> int:
             conn.execute("DROP TABLE sync_cache")
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            ("26",),
+        )
+        conn.commit()
+        log.info("Migrated runtime DB schema from v25 to v26")
+        version = 26
+
+    if version == 26:
+        conn.executescript(_SOURCE_LIFECYCLE_RUNTIME_DDL)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
-        log.info("Migrated runtime DB schema from v25 to v%d", SCHEMA_VERSION)
+        log.info("Migrated runtime DB schema from v26 to v%d", SCHEMA_VERSION)
         version = SCHEMA_VERSION
 
     return version
@@ -1074,12 +1107,315 @@ def save_sync_progress(root: Path, state: object) -> None:
 save_state = save_sync_progress  # deprecated alias
 
 
+def ensure_source_polling(root: Path, canonical_id: str, *, current_interval_secs: int = 1800) -> None:
+    """Ensure an active-polling row exists for a registered source."""
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO sync_polling (canonical_id, current_interval_secs) VALUES (?, ?)",
+            (canonical_id, current_interval_secs),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def delete_source(root: Path, canonical_id: str) -> None:
     """Delete a sync_polling row from the DB by canonical ID."""
     conn = _connect(root)
     try:
         conn.execute("DELETE FROM sync_polling WHERE canonical_id = ?", (canonical_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def load_source_lifecycle_runtime(root: Path, canonical_id: str) -> SourceLifecycleRuntime | None:
+    conn = _connect(root)
+    try:
+        row = conn.execute(
+            "SELECT canonical_id, local_missing_first_observed_utc, "
+            "local_missing_last_confirmed_utc, missing_confirmation_count, "
+            "lease_owner, lease_expires_utc "
+            "FROM source_lifecycle_runtime WHERE canonical_id = ?",
+            (canonical_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    return SourceLifecycleRuntime(
+        canonical_id=row[0],
+        local_missing_first_observed_utc=row[1],
+        local_missing_last_confirmed_utc=row[2],
+        missing_confirmation_count=row[3] or 0,
+        lease_owner=row[4],
+        lease_expires_utc=row[5],
+    )
+
+
+def load_all_source_lifecycle_runtime(root: Path) -> dict[str, SourceLifecycleRuntime]:
+    conn = _connect(root)
+    try:
+        rows = conn.execute(
+            "SELECT canonical_id, local_missing_first_observed_utc, "
+            "local_missing_last_confirmed_utc, missing_confirmation_count, "
+            "lease_owner, lease_expires_utc "
+            "FROM source_lifecycle_runtime"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        row[0]: SourceLifecycleRuntime(
+            canonical_id=row[0],
+            local_missing_first_observed_utc=row[1],
+            local_missing_last_confirmed_utc=row[2],
+            missing_confirmation_count=row[3] or 0,
+            lease_owner=row[4],
+            lease_expires_utc=row[5],
+        )
+        for row in rows
+    }
+
+
+def save_source_lifecycle_runtime(root: Path, runtime_state: SourceLifecycleRuntime) -> None:
+    conn = _connect(root)
+    try:
+        conn.execute(
+            "INSERT INTO source_lifecycle_runtime "
+            "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(canonical_id) DO UPDATE SET "
+            "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
+            "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
+            "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "lease_owner=excluded.lease_owner, "
+            "lease_expires_utc=excluded.lease_expires_utc",
+            (
+                runtime_state.canonical_id,
+                runtime_state.local_missing_first_observed_utc,
+                runtime_state.local_missing_last_confirmed_utc,
+                runtime_state.missing_confirmation_count,
+                runtime_state.lease_owner,
+                runtime_state.lease_expires_utc,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_source_lifecycle_runtime(root: Path, canonical_id: str) -> None:
+    conn = _connect(root)
+    try:
+        conn.execute("DELETE FROM source_lifecycle_runtime WHERE canonical_id = ?", (canonical_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_source_missing_confirmation(
+    root: Path,
+    canonical_id: str,
+    *,
+    observed_utc: str | None = None,
+) -> SourceLifecycleRuntime:
+    observed = observed_utc or _utc_now()
+    conn = _connect(root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, lease_owner, lease_expires_utc "
+            "FROM source_lifecycle_runtime WHERE canonical_id = ?",
+            (canonical_id,),
+        ).fetchone()
+        if row is None:
+            state = SourceLifecycleRuntime(
+                canonical_id=canonical_id,
+                local_missing_first_observed_utc=observed,
+                local_missing_last_confirmed_utc=observed,
+                missing_confirmation_count=1,
+            )
+        else:
+            state = SourceLifecycleRuntime(
+                canonical_id=canonical_id,
+                local_missing_first_observed_utc=row[0] or observed,
+                local_missing_last_confirmed_utc=observed,
+                missing_confirmation_count=max(int(row[2] or 0) + 1, 1),
+                lease_owner=row[3],
+                lease_expires_utc=row[4],
+            )
+        conn.execute(
+            "INSERT INTO source_lifecycle_runtime "
+            "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(canonical_id) DO UPDATE SET "
+            "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
+            "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
+            "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "lease_owner=excluded.lease_owner, "
+            "lease_expires_utc=excluded.lease_expires_utc",
+            (
+                state.canonical_id,
+                state.local_missing_first_observed_utc,
+                state.local_missing_last_confirmed_utc,
+                state.missing_confirmation_count,
+                state.lease_owner,
+                state.lease_expires_utc,
+            ),
+        )
+        conn.commit()
+        return state
+    finally:
+        conn.close()
+
+
+def clear_source_lifecycle_lease(
+    root: Path,
+    canonical_id: str,
+    *,
+    owner_id: str | None = None,
+) -> None:
+    conn = _connect(root)
+    try:
+        if owner_id is None:
+            conn.execute(
+                "UPDATE source_lifecycle_runtime SET lease_owner = NULL, lease_expires_utc = NULL "
+                "WHERE canonical_id = ?",
+                (canonical_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE source_lifecycle_runtime SET lease_owner = NULL, lease_expires_utc = NULL "
+                "WHERE canonical_id = ? AND lease_owner = ?",
+                (canonical_id, owner_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def acquire_source_lifecycle_lease(
+    root: Path,
+    canonical_id: str,
+    owner_id: str,
+    *,
+    lease_expires_utc: str,
+) -> tuple[bool, SourceLifecycleRuntime | None]:
+    conn = _connect(root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, lease_owner, lease_expires_utc "
+            "FROM source_lifecycle_runtime WHERE canonical_id = ?",
+            (canonical_id,),
+        ).fetchone()
+        existing = (
+            SourceLifecycleRuntime(
+                canonical_id=canonical_id,
+                local_missing_first_observed_utc=row[0],
+                local_missing_last_confirmed_utc=row[1],
+                missing_confirmation_count=row[2] or 0,
+                lease_owner=row[3],
+                lease_expires_utc=row[4],
+            )
+            if row is not None
+            else None
+        )
+        if existing is not None and existing.lease_owner and existing.lease_owner != owner_id:
+            if existing.lease_expires_utc and existing.lease_expires_utc >= _utc_now():
+                conn.commit()
+                return False, existing
+
+        next_state = SourceLifecycleRuntime(
+            canonical_id=canonical_id,
+            local_missing_first_observed_utc=existing.local_missing_first_observed_utc if existing else None,
+            local_missing_last_confirmed_utc=existing.local_missing_last_confirmed_utc if existing else None,
+            missing_confirmation_count=existing.missing_confirmation_count if existing else 0,
+            lease_owner=owner_id,
+            lease_expires_utc=lease_expires_utc,
+        )
+        conn.execute(
+            "INSERT INTO source_lifecycle_runtime "
+            "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(canonical_id) DO UPDATE SET "
+            "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
+            "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
+            "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "lease_owner=excluded.lease_owner, "
+            "lease_expires_utc=excluded.lease_expires_utc",
+            (
+                next_state.canonical_id,
+                next_state.local_missing_first_observed_utc,
+                next_state.local_missing_last_confirmed_utc,
+                next_state.missing_confirmation_count,
+                next_state.lease_owner,
+                next_state.lease_expires_utc,
+            ),
+        )
+        conn.commit()
+        return True, next_state
+    finally:
+        conn.close()
+
+
+def renew_source_lifecycle_lease(
+    root: Path,
+    canonical_id: str,
+    owner_id: str,
+    *,
+    lease_expires_utc: str,
+) -> tuple[bool, SourceLifecycleRuntime | None]:
+    conn = _connect(root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, lease_owner, lease_expires_utc "
+            "FROM source_lifecycle_runtime WHERE canonical_id = ?",
+            (canonical_id,),
+        ).fetchone()
+        existing = (
+            SourceLifecycleRuntime(
+                canonical_id=canonical_id,
+                local_missing_first_observed_utc=row[0],
+                local_missing_last_confirmed_utc=row[1],
+                missing_confirmation_count=row[2] or 0,
+                lease_owner=row[3],
+                lease_expires_utc=row[4],
+            )
+            if row is not None
+            else None
+        )
+        if existing is None or existing.lease_owner != owner_id:
+            conn.commit()
+            return False, existing
+
+        next_state = SourceLifecycleRuntime(
+            canonical_id=canonical_id,
+            local_missing_first_observed_utc=existing.local_missing_first_observed_utc,
+            local_missing_last_confirmed_utc=existing.local_missing_last_confirmed_utc,
+            missing_confirmation_count=existing.missing_confirmation_count,
+            lease_owner=owner_id,
+            lease_expires_utc=lease_expires_utc,
+        )
+        conn.execute(
+            "UPDATE source_lifecycle_runtime "
+            "SET lease_owner = ?, lease_expires_utc = ? "
+            "WHERE canonical_id = ? AND lease_owner = ?",
+            (owner_id, lease_expires_utc, canonical_id, owner_id),
+        )
+        conn.commit()
+        return True, next_state
     finally:
         conn.close()
 

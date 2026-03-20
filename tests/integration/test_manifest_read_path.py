@@ -15,7 +15,12 @@ from brain_sync.brain.fileops import atomic_write_bytes
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
 from brain_sync.brain.tree import normalize_path
-from brain_sync.runtime.repository import load_child_discovery_request, load_sync_progress
+from brain_sync.runtime.repository import (
+    acquire_source_lifecycle_lease,
+    load_child_discovery_request,
+    load_source_lifecycle_runtime,
+    load_sync_progress,
+)
 from brain_sync.sync.watcher import FolderMove
 
 pytestmark = pytest.mark.integration
@@ -90,7 +95,9 @@ class TestReconcileManifestReadPath:
         manifest = read_source_manifest(brain, CONFLUENCE_CID)
         assert manifest is not None
         assert manifest.knowledge_state == "missing"
-        assert manifest.missing_since_utc is not None
+        runtime_state = load_source_lifecycle_runtime(brain, CONFLUENCE_CID)
+        assert runtime_state is not None
+        assert runtime_state.missing_confirmation_count == 1
 
     def test_non_finalizing_reconcile_preserves_missing_grace_period(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
@@ -105,7 +112,7 @@ class TestReconcileManifestReadPath:
         assert manifest is not None
         assert manifest.knowledge_state == "missing"
 
-    def test_two_stage_missing_second_deletes(self, brain: Path) -> None:
+    def test_second_missing_confirmation_stays_non_destructive(self, brain: Path) -> None:
         add_source(
             root=brain,
             url=CONFLUENCE_URL,
@@ -120,15 +127,19 @@ class TestReconcileManifestReadPath:
         (attachment_dir / "a789.png").write_bytes(b"png")
 
         reconcile_sources(root=brain)
-        result = reconcile_sources(root=brain)
+        reconcile_sources(root=brain)
 
-        assert CONFLUENCE_CID in result.deleted
-        assert read_source_manifest(brain, CONFLUENCE_CID) is None
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "missing"
+        runtime_state = load_source_lifecycle_runtime(brain, CONFLUENCE_CID)
+        assert runtime_state is not None
+        assert runtime_state.missing_confirmation_count >= 2
         assert CONFLUENCE_CID not in load_sync_progress(brain)
-        assert load_child_discovery_request(brain, CONFLUENCE_CID) is None
-        assert not attachment_dir.exists()
+        assert load_child_discovery_request(brain, CONFLUENCE_CID) is not None
+        assert attachment_dir.exists()
 
-    def test_two_stage_missing_deletes_attachments_even_if_manifest_target_path_is_stale(self, brain: Path) -> None:
+    def test_missing_source_retains_attachments_even_if_manifest_target_path_is_stale(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-area", sync_attachments=True)
         _set_materialized_manifest(brain, "old-area/c12345-test-page.md")
         moved_attachment_dir = brain / "knowledge" / "new-area" / ".brain-sync" / "attachments" / "c12345"
@@ -138,9 +149,11 @@ class TestReconcileManifestReadPath:
         reconcile_sources(root=brain)
         result = reconcile_sources(root=brain)
 
-        assert CONFLUENCE_CID in result.deleted
-        assert read_source_manifest(brain, CONFLUENCE_CID) is None
-        assert not moved_attachment_dir.exists()
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "missing"
+        assert not result.deleted
+        assert moved_attachment_dir.exists()
 
     def test_reappearing_file_clears_missing_and_marks_stale(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
@@ -155,6 +168,7 @@ class TestReconcileManifestReadPath:
         assert manifest is not None
         assert manifest.knowledge_state == "stale"
         assert manifest.missing_since_utc is None
+        assert load_source_lifecycle_runtime(brain, CONFLUENCE_CID) is None
 
     def test_awaiting_source_is_not_marked_missing(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
@@ -198,6 +212,27 @@ class TestReconcileManifestReadPath:
         assert result.orphan_rows_pruned == 1
         assert CONFLUENCE_CID_2 not in load_sync_progress(brain)
 
+    def test_reconcile_preserves_active_non_missing_lifecycle_lease_rows(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+        _create_synced_file(brain, CONFLUENCE_CID, "area", "c12345-test-page.md")
+        _set_materialized_manifest(brain, "area/c12345-test-page.md")
+
+        acquired, _ = acquire_source_lifecycle_lease(
+            brain,
+            CONFLUENCE_CID,
+            "move-owner",
+            lease_expires_utc="2099-01-01T00:00:00+00:00",
+        )
+        assert acquired is True
+
+        result = reconcile_sources(root=brain)
+
+        assert result.unchanged == 1
+        runtime_state = load_source_lifecycle_runtime(brain, CONFLUENCE_CID)
+        assert runtime_state is not None
+        assert runtime_state.lease_owner == "move-owner"
+        assert runtime_state.lease_expires_utc == "2099-01-01T00:00:00+00:00"
+
     def test_list_sources_manifest_authoritative(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="eng")
         sources = list_sources(root=brain)
@@ -210,7 +245,8 @@ class TestReconcileManifestReadPath:
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
         sources = list_sources(root=brain)
-        assert len(sources) == 0
+        assert len(sources) == 1
+        assert sources[0].knowledge_state == "missing"
 
 
 class TestApplyFolderMoveManifests:

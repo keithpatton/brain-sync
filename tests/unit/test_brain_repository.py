@@ -41,7 +41,6 @@ def _manifest(
     elif knowledge_state == "missing":
         kwargs.update(
             {
-                "missing_since_utc": "2026-03-19T10:00:00+00:00",
                 "content_hash": "sha256:abc",
                 "remote_fingerprint": "rev-1",
                 "materialized_utc": "2026-03-19T09:00:00+00:00",

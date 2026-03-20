@@ -235,12 +235,13 @@ Primary tools:
 | `brain_sync_get_context` | Load global context from the `_core` summary at `knowledge/_core/.brain-sync/insights/summary.md` |
 | `brain_sync_open_area` | Load an area's summary, artifacts, and children |
 | `brain_sync_open_file` | Read a text file from the brain |
-| `brain_sync_list` | List registered sources |
+| `brain_sync_list` | List registered sources, including `knowledge_state` for missing registered sources |
 | `brain_sync_add` | Register a sync source |
 | `brain_sync_add_file` | Add a local markdown or text file |
 | `brain_sync_update` | Update source settings |
 | `brain_sync_remove` | Remove a sync source |
 | `brain_sync_move` | Move a source to a new path |
+| `brain_sync_finalize_missing` | Explicitly finalize one missing registered source by canonical ID |
 | `brain_sync_reconcile` | Reconcile filesystem moves |
 | `brain_sync_regen` | Regenerate summaries |
 
@@ -260,10 +261,11 @@ python -m brain_sync.interfaces.mcp.server
 | `brain-sync add-file <file> [...]` | Import a local markdown or text file |
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source and its synced files (`--delete-files` is accepted for compatibility) |
 | `brain-sync remove-file <path>` | Remove a local file from `knowledge/` |
-| `brain-sync list [--path <filter>] [--status]` | List registered sources |
+| `brain-sync list [--path <filter>] [--status]` | List registered sources and print `State: <knowledge_state>` for each source |
 | `brain-sync move <canonical-id> --to <new-path>` | Move a source |
 | `brain-sync update <canonical-id-or-url> [...]` | Update source settings |
 | `brain-sync reconcile [--root <path>]` | Reconcile filesystem moves |
+| `brain-sync finalize-missing <canonical-id>` | Explicitly finalize one missing registered source after revalidation |
 | `brain-sync status [--root <path>]` | Show daemon and sync status |
 | `brain-sync regen [<knowledge-path>]` | Trigger regeneration |
 | `brain-sync doctor [--fix|--rebuild-db]` | Validate or repair a brain |
@@ -339,6 +341,8 @@ On the next `brain-sync run`:
 
 - manifests are reconciled with filesystem truth
 - moved synced files are rediscovered
+- missing synced sources remain registered until you explicitly run
+  `brain-sync finalize-missing <canonical-id>`
 - changed areas are re-queued for regeneration
 - co-located summaries and attachments already move with their folders
 

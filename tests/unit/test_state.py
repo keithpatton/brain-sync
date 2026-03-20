@@ -17,7 +17,7 @@ from brain_sync.application.insights import (
     save_insight_state,
 )
 from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
-from brain_sync.brain.manifest import SourceManifest, write_source_manifest
+from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, write_source_manifest
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION
 from brain_sync.runtime.repository import (
     RegenLock,
@@ -37,7 +37,7 @@ def _write_manifest(root: Path, cid: str, *, target_path: str = "", knowledge_pa
     write_source_manifest(
         root,
         SourceManifest(
-            version=2,
+            version=MANIFEST_VERSION,
             canonical_id=cid,
             source_url="https://example.com",
             source_type="confluence",
@@ -156,7 +156,8 @@ class TestRuntimeState:
             token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
             runtime_tables = migrated.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('child_discovery_requests', 'operational_events', 'sync_polling') ORDER BY name"
+                "('child_discovery_requests', 'operational_events', 'source_lifecycle_runtime', 'sync_polling') "
+                "ORDER BY name"
             ).fetchall()
         finally:
             migrated.close()
@@ -167,6 +168,7 @@ class TestRuntimeState:
         assert runtime_tables == [
             ("child_discovery_requests",),
             ("operational_events",),
+            ("source_lifecycle_runtime",),
             ("sync_polling",),
         ]
 
@@ -212,6 +214,7 @@ class TestRuntimeState:
             ("meta",),
             ("operational_events",),
             ("regen_locks",),
+            ("source_lifecycle_runtime",),
             ("sync_polling",),
             ("token_events",),
         ]

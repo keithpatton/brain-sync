@@ -59,7 +59,6 @@ class SourceManifest:
     sync_attachments: bool
     knowledge_path: str
     knowledge_state: KnowledgeState
-    missing_since_utc: str | None
     content_hash: str | None
     remote_fingerprint: str | None
     materialized_utc: str | None
@@ -89,7 +88,7 @@ class SourceManifest:
         self.sync_attachments = sync_attachments
         self.knowledge_path = _normalize_manifest_knowledge_path(knowledge_path)
         self.knowledge_state = knowledge_state
-        self.missing_since_utc = missing_since_utc
+        del missing_since_utc
         self.content_hash = content_hash
         self.remote_fingerprint = remote_fingerprint
         self.materialized_utc = materialized_utc
@@ -103,6 +102,19 @@ class SourceManifest:
     def target_path(self) -> str:
         return normalize_path(Path(self.knowledge_path).parent)
 
+    @property
+    def missing_since_utc(self) -> str | None:
+        """Compatibility shim for tests and legacy callers.
+
+        Brain Format 1.2 removes this field from the portable contract. The
+        in-memory property remains only to keep older call sites from crashing.
+        """
+        return None
+
+    @missing_since_utc.setter
+    def missing_since_utc(self, value: str | None) -> None:
+        del value
+
     def validate(self) -> None:
         if self.version != MANIFEST_VERSION:
             raise ManifestValidationError(
@@ -115,21 +127,19 @@ class SourceManifest:
             raise ManifestValidationError(f"knowledge_path is required for {self.canonical_id}")
 
         if self.knowledge_state == "awaiting":
-            _require_null(self.missing_since_utc, "missing_since_utc", self.canonical_id)
             _require_null(self.content_hash, "content_hash", self.canonical_id)
             _require_null(self.remote_fingerprint, "remote_fingerprint", self.canonical_id)
             _require_null(self.materialized_utc, "materialized_utc", self.canonical_id)
             return
 
         if self.knowledge_state in {"materialized", "stale"}:
-            _require_null(self.missing_since_utc, "missing_since_utc", self.canonical_id)
             _require_set(self.content_hash, "content_hash", self.canonical_id)
             _require_set(self.remote_fingerprint, "remote_fingerprint", self.canonical_id)
             _require_set(self.materialized_utc, "materialized_utc", self.canonical_id)
             return
 
         if self.knowledge_state == "missing":
-            _require_set(self.missing_since_utc, "missing_since_utc", self.canonical_id)
+            return
 
 
 def _normalize_manifest_knowledge_path(knowledge_path: str) -> str:
@@ -182,10 +192,15 @@ def _serialize_manifest(manifest: SourceManifest) -> bytes:
     manifest.validate()
     data = asdict(manifest)
     data["source_type"] = _to_durable_source_type(data["source_type"])
-    for field_name in ("missing_since_utc", "content_hash", "remote_fingerprint", "materialized_utc"):
+    for field_name in ("content_hash", "remote_fingerprint", "materialized_utc"):
         if data.get(field_name) is None:
             del data[field_name]
     return (json.dumps(data, indent=2, sort_keys=False) + "\n").encode("utf-8")
+
+
+def _optional_str(raw: dict[str, object], field_name: str) -> str | None:
+    value = raw.get(field_name)
+    return value if isinstance(value, str) else None
 
 
 class UnsupportedManifestVersion(Exception):
@@ -197,11 +212,28 @@ class UnsupportedManifestVersion(Exception):
         super().__init__(f"Unsupported manifest version {version} in {path} (supported: {MANIFEST_VERSION})")
 
 
+def _deserialize_legacy_v2_manifest(raw: dict[str, object], *, source_path: str) -> SourceManifest:
+    return SourceManifest(
+        version=MANIFEST_VERSION,
+        canonical_id=str(raw["canonical_id"]),
+        source_url=str(raw["source_url"]),
+        source_type=_from_durable_source_type(str(raw["source_type"])),
+        sync_attachments=bool(raw["sync_attachments"]),
+        knowledge_path=str(raw["knowledge_path"]),
+        knowledge_state=str(raw["knowledge_state"]),  # type: ignore[arg-type]
+        content_hash=_optional_str(raw, "content_hash"),
+        remote_fingerprint=_optional_str(raw, "remote_fingerprint"),
+        materialized_utc=_optional_str(raw, "materialized_utc"),
+    )
+
+
 def _deserialize_manifest(data: bytes, *, source_path: str = "<unknown>") -> SourceManifest:
     raw = json.loads(data)
     version = raw.get("version", raw.get("manifest_version"))
     if not isinstance(version, int):
         raise ValueError(f"Invalid or missing version in {source_path}")
+    if version == 2:
+        return _deserialize_legacy_v2_manifest(raw, source_path=source_path)
     if version != MANIFEST_VERSION:
         raise UnsupportedManifestVersion(source_path, version)
     return SourceManifest(
@@ -212,10 +244,9 @@ def _deserialize_manifest(data: bytes, *, source_path: str = "<unknown>") -> Sou
         sync_attachments=raw["sync_attachments"],
         knowledge_path=raw["knowledge_path"],
         knowledge_state=raw["knowledge_state"],
-        missing_since_utc=raw.get("missing_since_utc"),
-        content_hash=raw.get("content_hash"),
-        remote_fingerprint=raw.get("remote_fingerprint"),
-        materialized_utc=raw.get("materialized_utc"),
+        content_hash=_optional_str(raw, "content_hash"),
+        remote_fingerprint=_optional_str(raw, "remote_fingerprint"),
+        materialized_utc=_optional_str(raw, "materialized_utc"),
     )
 
 
@@ -241,7 +272,10 @@ def read_source_manifest(root: Path, canonical_id: str) -> SourceManifest | None
     if not path_exists(target):
         return None
     try:
-        return _deserialize_manifest(read_bytes(target), source_path=str(target))
+        manifest = _deserialize_manifest(read_bytes(target), source_path=str(target))
+        if manifest.version != MANIFEST_VERSION:
+            write_source_manifest(root, manifest)
+        return manifest
     except UnsupportedManifestVersion:
         raise
     except (json.JSONDecodeError, KeyError, TypeError, ValueError, ManifestValidationError) as exc:
@@ -260,6 +294,8 @@ def read_all_source_manifests(root: Path) -> dict[str, SourceManifest]:
             continue
         try:
             manifest = _deserialize_manifest(read_bytes(path), source_path=str(path))
+            if manifest.version != MANIFEST_VERSION:
+                write_source_manifest(root, manifest)
             result[manifest.canonical_id] = manifest
         except UnsupportedManifestVersion:
             raise
@@ -268,15 +304,15 @@ def read_all_source_manifests(root: Path) -> dict[str, SourceManifest]:
     return result
 
 
-def mark_manifest_missing(root: Path, canonical_id: str, utc_now: str) -> None:
-    """Mark a manifest as missing (first stage of two-stage deregistration)."""
+def mark_manifest_missing(root: Path, canonical_id: str, utc_now: str | None = None) -> None:
+    """Mark a manifest as missing (first stage of the explicit-only lifecycle)."""
+    del utc_now
     manifest = read_source_manifest(root, canonical_id)
     if manifest is None:
         return
     manifest.knowledge_state = "missing"
-    manifest.missing_since_utc = utc_now
     write_source_manifest(root, manifest)
-    log.info("Marked source %s as missing (grace period)", canonical_id)
+    log.info("Marked source %s as missing", canonical_id)
 
 
 def clear_manifest_missing(root: Path, canonical_id: str) -> None:
@@ -285,7 +321,6 @@ def clear_manifest_missing(root: Path, canonical_id: str) -> None:
     if manifest is None:
         return
     manifest.knowledge_state = "stale"
-    manifest.missing_since_utc = None
     write_source_manifest(root, manifest)
     log.info("Cleared missing state for %s and marked it stale", canonical_id)
 
@@ -314,7 +349,6 @@ def update_manifest_materialization(
         return
     manifest.knowledge_path = _normalize_manifest_knowledge_path(knowledge_path)
     manifest.knowledge_state = "materialized"
-    manifest.missing_since_utc = None
     manifest.content_hash = content_hash
     manifest.remote_fingerprint = remote_fingerprint
     manifest.materialized_utc = materialized_utc

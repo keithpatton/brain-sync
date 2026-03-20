@@ -54,7 +54,6 @@ def _write_manifest(root: Path, cid: str, url: str, **kwargs: object) -> None:
         "content_hash": kwargs.get("content_hash", "sha256:abc123"),
         "remote_fingerprint": kwargs.get("remote_fingerprint", "fp123"),
         "materialized_utc": kwargs.get("materialized_utc", "2026-03-14T09:00:00+00:00"),
-        "missing_since_utc": kwargs.get("missing_since_utc"),
     }
     if data["knowledge_state"] == "awaiting":
         data["content_hash"] = None
@@ -107,7 +106,6 @@ class TestLoadStateMerge:
             CONFLUENCE_CID,
             CONFLUENCE_URL,
             knowledge_state="missing",
-            missing_since_utc="2026-03-14T12:00:00+00:00",
         )
 
         loaded = load_state(brain)

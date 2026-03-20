@@ -23,7 +23,7 @@ All source lives under `src/brain_sync/`.
 | Application / interfaces | `application/`, `interfaces/` | Interface-neutral operations plus CLI and MCP transport adapters |
 | Portable brain plane | `brain/` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
 | Runtime plane | `runtime/` | Machine-local config, DB, daemon status, and telemetry |
-| Sync subsystem | `sync/` | Daemon loop, polling, filesystem watching, and source materialization |
+| Sync subsystem | `sync/` | Daemon loop, lifecycle orchestration, polling, filesystem watching, reconciliation, explicit finalization, and source materialization |
 | Query subsystem | `query/` | Read-model indexing and placement/search helpers over portable brain structure |
 | Source adapters | `sources/base`, `sources/registry`, `sources/confluence/`, `sources/googledocs/`, `sources/conversion`, `sources/docx` | Per-source fetch logic, provider REST/auth flows, and source-format normalization |
 | LLM abstraction | `llm/base`, `llm/claude_cli`, `llm/fake` | Backend protocol, production transport, deterministic fake |
@@ -137,7 +137,7 @@ When `brain-sync run` starts, it reconciles filesystem truth before entering
 the normal sync loop:
 
 ```text
-reconcile_sources()        -> manifest-driven file resolution and missing-source handling
+reconcile_sources()        -> manifest-driven file resolution and non-destructive missing-source handling
 reconcile_knowledge_tree() -> portable/filesystem cleanup and offline change detection
 load_state()               -> manifest-authoritative merge with runtime progress cache
 regen_session()            -> acquire regen ownership
@@ -159,22 +159,22 @@ folder moves carry summaries and attachment directories with them
 automatically. The system repairs manifests and runtime state, but no longer
 maintains a separate top-level insight mirror.
 
-Watcher policy and child-discovery policy now live under `application/`:
+Sync-owned lifecycle orchestration is now split explicitly:
 
-- `application/sync_events.py` owns watcher move handling, watcher change to
-  regen-enqueue policy, and structure-only repair policy
-- `application/child_discovery.py` owns one-shot child placement and
-  registration policy
-
-`sync/watcher.py` remains an edge observer only, and `sync/daemon.py` remains
-a coordinator that delegates those policies instead of owning them inline.
+- `sync/lifecycle.py` owns source registration, updates, moves, missing
+  observation, admin listing, child discovery, and registered-source
+  materialization commit ordering
+- `sync/finalization.py` owns explicit missing-source finalization
+- `sync/source_state.py` owns manifest-plus-runtime source projections for
+  active polling and administrative listing
+- `sync/watcher.py` remains an edge observer only
 
 ### Ownership Model
 
 | Layer | Owner | Responsibility |
 |---|---|---|
 | `knowledge/` plus source manifests plus managed area artifacts | `brain/repository.py` used by sync / reconcile / doctor / regen, with watcher as edge observer | Durable portable-brain artifacts, document locations, and managed filesystem policy |
-| `regen_locks` plus `sync_polling` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, polling cache, telemetry, and process state |
+| `regen_locks` plus `sync_polling` plus `source_lifecycle_runtime` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, polling cache, source lifecycle coordination, telemetry, and process state |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
 The filesystem remains authoritative. Runtime state is machine-local and
@@ -355,7 +355,6 @@ Current durable fields:
 - `sync_attachments`
 - `knowledge_path`
 - `knowledge_state`
-- optional `missing_since_utc`
 - optional `content_hash`
 - optional `remote_fingerprint`
 - optional `materialized_utc`
@@ -395,7 +394,8 @@ Current runtime DB tables:
 | Table | Purpose | If deleted |
 |---|---|---|
 | `meta` | Runtime schema marker | Recreated |
-| `sync_polling` | Polling schedule and sync progress cache | Rebuilt from manifests |
+| `sync_polling` | Polling schedule and sync progress cache for active sources | Rebuilt from manifests |
+| `source_lifecycle_runtime` | Machine-local missing/finalization coordination and source-level lifecycle leases | Rebuilt from current portable truth plus new local observations |
 | `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
 | `operational_events` | Append-only local operational event trail | History lost only |
@@ -439,9 +439,10 @@ long-lived caches, but further performance tuning may still be worthwhile.
   replacing `__main__.py` as the owner of the daemon loop.
 - regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
-- `0.6.0` / `v26` introduces Brain Format `1.1`, moving durable source
-  lifecycle and freshness truth fully into portable manifests while narrowing
-  runtime DB state to polling and scheduling.
+- `0.7.0` / `v27` introduces Brain Format `1.2`, removing portable
+  `missing_since_utc`, moving missing/finalization coordination into
+  `source_lifecycle_runtime`, and reserving source lifecycle mutation to the
+  sync-owned lifecycle/finalization seams.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.

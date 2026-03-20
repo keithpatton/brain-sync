@@ -254,12 +254,13 @@ class BrainRepository:
         write_source_manifest(self.root, manifest)
         return True
 
-    def mark_source_missing(self, canonical_id: str, utc_now: str) -> bool:
+    def mark_source_missing(self, canonical_id: str, utc_now: str | None = None) -> bool:
         """Mark a manifest missing if it exists."""
+        del utc_now
         manifest = read_source_manifest(self.root, canonical_id)
         if manifest is None:
             return False
-        mark_manifest_missing(self.root, canonical_id, utc_now)
+        mark_manifest_missing(self.root, canonical_id)
         return True
 
     def clear_source_missing(self, canonical_id: str) -> bool:
@@ -280,9 +281,8 @@ class BrainRepository:
                 knowledge_path,
                 operation="mark_source_stale",
             )
-        if manifest.knowledge_state != "awaiting":
+        if manifest.knowledge_state not in {"awaiting", "missing"}:
             manifest.knowledge_state = "stale"
-        manifest.missing_since_utc = None
         write_source_manifest(self.root, manifest)
         return True
 
@@ -298,9 +298,8 @@ class BrainRepository:
         filename = Path(manifest.knowledge_path).name or f"{source_dir_id(canonical_id)}.md"
         normalized_area = self._normalize_relative_knowledge_path(target_path, operation="set_source_area_path")
         manifest.knowledge_path = normalize_path(Path(normalized_area) / filename) if normalized_area else filename
-        if manifest.knowledge_state != "awaiting":
+        if manifest.knowledge_state not in {"awaiting", "missing"}:
             manifest.knowledge_state = "stale"
-        manifest.missing_since_utc = None
         write_source_manifest(self.root, manifest)
         return True
 
@@ -362,7 +361,6 @@ class BrainRepository:
                 changed = True
         elif manifest.knowledge_state == "missing":
             manifest.knowledge_state = "stale"
-            manifest.missing_since_utc = None
             changed = True
 
         if changed:

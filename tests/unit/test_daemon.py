@@ -16,6 +16,7 @@ from brain_sync.application.sources import add_source
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import read_source_manifest
 from brain_sync.runtime.child_requests import load_child_discovery_request
+from brain_sync.runtime.repository import load_source_lifecycle_runtime
 from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.daemon import _sync_scheduler_state, run
 
@@ -160,8 +161,16 @@ async def _fake_regen_session(_root: Path, reclaim_stale: bool = True):
 
 
 async def _run_daemon_once(root: Path, fetch_children_flags: list[bool], *, missing: bool = False) -> None:
-    async def _fake_process_source(_source_state, _http_client, root=None, *, fetch_children=False):
+    async def _fake_process_source(
+        _source_state,
+        _http_client,
+        root=None,
+        *,
+        fetch_children=False,
+        lifecycle_owner_id=None,
+    ):
         fetch_children_flags.append(fetch_children)
+        assert lifecycle_owner_id is not None
         if missing:
             raise RemoteSourceMissingError(source_type="confluence", source_id="12345", details="404")
         return False, []
@@ -232,7 +241,9 @@ async def test_daemon_routes_upstream_404_into_missing_lifecycle(tmp_path: Path)
     manifest = read_source_manifest(root, result.canonical_id)
     assert manifest is not None
     assert manifest.knowledge_state == "missing"
-    assert manifest.missing_since_utc is not None
+    runtime_state = load_source_lifecycle_runtime(root, result.canonical_id)
+    assert runtime_state is not None
+    assert runtime_state.missing_confirmation_count >= 1
     assert result.canonical_id not in load_state(root).sources
 
 
@@ -270,7 +281,7 @@ async def test_daemon_uses_non_finalizing_reconcile_for_watcher_events(tmp_path:
         with pytest.raises(asyncio.CancelledError):
             await run(root)
 
-    assert observed_finalize_flags == [True, False]
+    assert observed_finalize_flags == [False, False]
 
 
 def test_sync_scheduler_state_removes_stale_keys_and_restarts_reappeared_sources_immediately() -> None:
@@ -342,5 +353,7 @@ async def test_daemon_marks_live_local_delete_missing_before_due_poll(tmp_path: 
     manifest = read_source_manifest(root, result.canonical_id)
     assert manifest is not None
     assert manifest.knowledge_state == "missing"
-    assert manifest.missing_since_utc is not None
+    runtime_state = load_source_lifecycle_runtime(root, result.canonical_id)
+    assert runtime_state is not None
+    assert runtime_state.missing_confirmation_count >= 1
     assert result.canonical_id not in load_state(root).sources

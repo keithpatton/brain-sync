@@ -3,7 +3,7 @@
 This directory is the authoritative reference for the portable brain state
 managed by brain-sync.
 
-Brain Format `1.0` is the current outward-facing version of the portable
+Brain Format `1.2` is the current outward-facing version of the portable
 brain. It determines compatibility and migration expectations for durable
 on-disk state.
 
@@ -26,6 +26,13 @@ Use this directory for questions about:
 - which on-disk brain documents exist and where they live
 - which generated artifacts are normative instances inside the brain
 - what the current brain version means
+- which source lifecycle facts are portable versus machine-local
+
+Brain Format `1.2` keeps source identity, placement, lifecycle state, and
+last-successful materialization baseline in portable manifests, while leaving
+missing-observation timing and explicit-finalization coordination in machine-
+local runtime state. A source in portable `knowledge_state = missing` remains
+registered until it is either rediscovered or explicitly finalized.
 
 Do not use this directory for runtime-only machine-local files or application
 architecture rationale. Those live in [`docs/runtime/`](../runtime/README.md)

@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_sync.application.source_state import SourceState
+from brain_sync.runtime.repository import SourceLifecycleRuntime
 from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
-from brain_sync.sync.pipeline import process_source
+from brain_sync.sync.pipeline import SourceLifecycleLeaseConflictError, process_source
 
 pytestmark = pytest.mark.unit
 
@@ -104,7 +105,7 @@ class TestSkipGuard:
         assert source_state.knowledge_path == "area/gabc123-my-doc.md"
         assert source_state.remote_fingerprint == _FINGERPRINT
 
-    async def test_awaiting_source_does_not_skip_even_if_adapter_reports_unchanged(
+    async def test_awaiting_source_skips_when_adapter_reports_unchanged_without_local_file(
         self, unchanged_check: UpdateCheckResult, fetch_result: SourceFetchResult, tmp_path: Path
     ) -> None:
         source_state = _source_state(
@@ -117,11 +118,61 @@ class TestSkipGuard:
         with patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter):
             changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
 
-        assert changed is True
+        assert changed is False
         assert children == []
-        adapter.fetch.assert_awaited_once()
-        assert source_state.knowledge_state == "materialized"
-        assert source_state.materialized_utc is not None
+        adapter.fetch.assert_not_awaited()
+        assert source_state.knowledge_state == "awaiting"
+        assert source_state.materialized_utc is None
+
+    async def test_root_backed_processing_fails_closed_when_lease_changes_before_materialization(
+        self, fetch_result: SourceFetchResult, tmp_path: Path
+    ) -> None:
+        source_state = _source_state()
+        adapter = _make_adapter(
+            UpdateCheckResult(
+                status=UpdateStatus.CHANGED,
+                fingerprint="rev-43",
+                title=_TITLE,
+                adapter_state={"revisionId": "rev-43"},
+            ),
+            fetch_result,
+        )
+        refreshed_state = _source_state()
+
+        with (
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch(
+                "brain_sync.runtime.repository.acquire_source_lifecycle_lease",
+                return_value=(True, None),
+            ),
+            patch("brain_sync.runtime.repository.clear_source_lifecycle_lease"),
+            patch(
+                "brain_sync.sync.source_state.load_active_sync_state",
+                return_value=MagicMock(sources={_CANONICAL_ID: refreshed_state}),
+            ),
+            patch(
+                "brain_sync.sync.lifecycle.renew_source_lifecycle_lease",
+                return_value=(
+                    False,
+                    SourceLifecycleRuntime(
+                        canonical_id=_CANONICAL_ID,
+                        lease_owner="move-owner",
+                        lease_expires_utc="2099-01-01T00:00:00+00:00",
+                    ),
+                ),
+            ),
+        ):
+            with pytest.raises(SourceLifecycleLeaseConflictError) as excinfo:
+                await process_source(
+                    source_state,
+                    AsyncMock(),
+                    root=tmp_path,
+                    lifecycle_owner_id="daemon-owner",
+                )
+
+        assert excinfo.value.canonical_id == _CANONICAL_ID
+        assert excinfo.value.lease_owner == "move-owner"
+        assert not (tmp_path / "knowledge" / "area" / "gabc123-my-doc.md").exists()
 
 
 class TestGoogleAttachmentHandling:

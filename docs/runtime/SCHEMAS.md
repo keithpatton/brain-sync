@@ -1,7 +1,7 @@
 # Runtime Schemas
 
 This document defines machine-local runtime artifacts for the supported
-Brain Format `1.1` / runtime schema `v26` release.
+Brain Format `1.2` / runtime schema `v27` release.
 
 Runtime artifacts live outside the portable brain. They support execution,
 coordination, and observability; they do not define portable brain meaning.
@@ -98,10 +98,10 @@ Runtime DB path:
 ~/.brain-sync/db/brain-sync.sqlite
 ```
 
-The current schema version is `26`, stored in `meta.schema_version`.
+The current schema version is `27`, stored in `meta.schema_version`.
 
-Supported earlier runtime schemas such as `v23`, `v24`, and `v25` migrate in
-place to `v26`. Unsupported or provisional DB shapes are rebuilt.
+Supported earlier runtime schemas `v23`, `v24`, `v25`, and `v26` migrate in
+place to `v27`. Unsupported or provisional DB shapes are rebuilt.
 
 SQLite conventions used here:
 
@@ -113,7 +113,8 @@ Current table roles:
 | Table | Role |
 |---|---|
 | `meta` | runtime DB schema metadata |
-| `sync_polling` | polling schedule and source-check timing cache |
+| `sync_polling` | polling schedule and source-check timing cache for actively polled sources |
+| `source_lifecycle_runtime` | machine-local missing/finalization coordination for registered sources |
 | `regen_locks` | regen ownership and lifecycle coordination by knowledge path |
 | `child_discovery_requests` | one-shot runtime requests for discovered children |
 | `operational_events` | append-only local operational event trail |
@@ -154,6 +155,30 @@ history. After process start or brain re-attachment, they must not be treated
 as proof that the currently attached brain still has the same active-source
 set or schedule assumptions as when the prior process exited.
 
+Missing registered sources leave `sync_polling`. They remain represented only
+by portable manifests plus `source_lifecycle_runtime` until rediscovery,
+successful rematerialization, or explicit finalization.
+
+### `source_lifecycle_runtime`
+
+`source_lifecycle_runtime` is a machine-local coordination table for registered
+sources that are missing, are being explicitly finalized, or currently need a
+source-level lifecycle lease.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `canonical_id` | text | Source canonical ID; primary key. |
+| `local_missing_first_observed_utc` | text or null | UTC timestamp of the first local missing observation retained in this row. |
+| `local_missing_last_confirmed_utc` | text or null | UTC timestamp of the most recent local missing confirmation retained in this row. |
+| `missing_confirmation_count` | integer | Count of local missing confirmations retained in this row. |
+| `lease_owner` | text or null | Source-level lifecycle lease owner when one is active. |
+| `lease_expires_utc` | text or null | UTC expiry time for the current source-level lifecycle lease. |
+
+Rows are cached local history, not portable truth. After process start or
+brain re-attachment, an existing row may inform revalidation, but it must not
+by itself assert current source state, preserve cross-process finalization
+eligibility, or authorize destructive mutation.
+
 ### `regen_locks`
 
 | Field | Type | Meaning |
@@ -187,6 +212,9 @@ set or schedule assumptions as when the prior process exited.
 | `outcome` | text or null | Stable outcome label. |
 | `duration_ms` | integer or null | Optional duration in milliseconds. |
 | `details_json` | text or null | Optional JSON payload. |
+
+Operational events are append-only diagnostics only. They are not a replay
+source and must not become lifecycle authority.
 
 ### `token_events`
 

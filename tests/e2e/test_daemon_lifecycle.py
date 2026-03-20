@@ -53,5 +53,5 @@ class TestDaemonLifecycle:
         conn = sqlite3.connect(str(brain.db_path))
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         conn.close()
-        assert "sync_cache" in tables
+        assert "sync_polling" in tables
         assert "regen_locks" in tables

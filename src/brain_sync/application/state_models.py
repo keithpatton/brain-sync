@@ -35,7 +35,6 @@ class SourceState(_PathNormalized):
     knowledge_path: str = ""
     knowledge_state: str = "awaiting"
     sync_attachments: bool = False
-    missing_since_utc: str | None = None
     content_hash: str | None = None
     remote_fingerprint: str | None = None
     materialized_utc: str | None = None
@@ -69,6 +68,14 @@ class SourceState(_PathNormalized):
     @last_changed_utc.setter
     def last_changed_utc(self, value: str | None) -> None:
         self.materialized_utc = value
+
+    @property
+    def missing_since_utc(self) -> str | None:
+        return None
+
+    @missing_since_utc.setter
+    def missing_since_utc(self, value: str | None) -> None:
+        del value
 
 
 @dataclass

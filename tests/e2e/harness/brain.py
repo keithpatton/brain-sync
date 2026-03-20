@@ -103,25 +103,24 @@ def seed_knowledge_tree(root: Path, structure: dict) -> None:
 
 
 def seed_sources(root: Path, sources: list[dict]) -> None:
-    """Register sources via manifests + sync_cache rows."""
+    """Register sources via authoritative manifests plus runtime polling rows."""
     from brain_sync.brain.manifest import (
         SOURCE_MANIFEST_VERSION,
         SourceManifest,
+        derive_provisional_knowledge_path,
         ensure_manifest_dir,
         write_source_manifest,
     )
-    from brain_sync.runtime.repository import _connect
+    from brain_sync.runtime.repository import ensure_source_polling
 
     ensure_manifest_dir(root)
-    conn = _connect(root)
     for src in sources:
         cid = src["canonical_id"]
         url = src.get("source_url", "https://acme.atlassian.net/wiki/spaces/ENG/pages/123")
         stype = src.get("source_type", "confluence")
-        # Compatibility shim for older fixture callers; avoid extending
-        # `target_path` usage in new test data when `knowledge_path` semantics
-        # are what the test is really asserting.
         tp = src.get("target_path", "")
+        knowledge_path = src.get("knowledge_path", derive_provisional_knowledge_path(tp, cid))
+        knowledge_state = src.get("knowledge_state", "awaiting")
         write_source_manifest(
             root,
             SourceManifest(
@@ -129,17 +128,12 @@ def seed_sources(root: Path, sources: list[dict]) -> None:
                 canonical_id=cid,
                 source_url=url,
                 source_type=stype,
-                materialized_path="",
-                sync_attachments=False,
-                target_path=tp,
+                sync_attachments=bool(src.get("sync_attachments", False)),
+                knowledge_path=knowledge_path,
+                knowledge_state=knowledge_state,
             ),
         )
-        conn.execute(
-            "INSERT OR REPLACE INTO sync_cache (canonical_id) VALUES (?)",
-            (cid,),
-        )
-    conn.commit()
-    conn.close()
+        ensure_source_polling(root, cid)
 
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures"

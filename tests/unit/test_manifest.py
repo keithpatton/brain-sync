@@ -1,4 +1,4 @@
-"""Unit tests for Brain Format 1.1 source manifests."""
+"""Unit tests for Brain Format 1.2 source manifests."""
 
 from __future__ import annotations
 
@@ -103,7 +103,6 @@ def test_roundtrip_materialized_manifest(root: Path) -> None:
             {
                 "knowledge_state": "missing",
                 "knowledge_path": "engineering/c12345-some-page.md",
-                "missing_since_utc": "2026-03-19T09:00:00+00:00",
                 "content_hash": "sha256:abc123",
                 "remote_fingerprint": "42",
                 "materialized_utc": "2026-03-19T08:00:00+00:00",
@@ -127,7 +126,7 @@ def test_state_matrix_serializes_valid_pairings(
             knowledge_state="awaiting",
         )
     elif knowledge_state == "missing":
-        manifest = _make_manifest(knowledge_state="missing", missing_since_utc="2026-03-19T09:00:00+00:00")
+        manifest = _make_manifest(knowledge_state="missing")
     else:
         manifest = _make_manifest(knowledge_state=knowledge_state)
 
@@ -145,7 +144,6 @@ def test_state_matrix_serializes_valid_pairings(
         {"knowledge_state": "materialized", "content_hash": None},
         {"knowledge_state": "materialized", "remote_fingerprint": None},
         {"knowledge_state": "stale", "materialized_utc": None},
-        {"knowledge_state": "missing", "missing_since_utc": None},
         {"knowledge_path": "engineering"},
         {"knowledge_path": "../escape.md"},
     ],
@@ -163,7 +161,7 @@ def test_missing_helpers_and_materialization_helpers(root: Path) -> None:
     missing_manifest = read_source_manifest(root, manifest.canonical_id)
     assert missing_manifest is not None
     assert missing_manifest.knowledge_state == "missing"
-    assert missing_manifest.missing_since_utc == "2026-03-19T10:00:00+00:00"
+    assert missing_manifest.missing_since_utc is None
 
     clear_manifest_missing(root, manifest.canonical_id)
     stale_manifest = read_source_manifest(root, manifest.canonical_id)

@@ -14,7 +14,8 @@ from brain_sync.brain.fileops import iterdir_paths, path_is_dir
 from brain_sync.brain.layout import area_insights_dir
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import find_all_content_paths, is_readable_file
-from brain_sync.runtime.repository import delete_regen_lock
+from brain_sync.regen import classify_folder_change
+from brain_sync.runtime.repository import delete_regen_lock, load_all_regen_locks, record_operational_event
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,13 @@ log = logging.getLogger(__name__)
 class KnowledgeTreeScanResult:
     orphans_cleaned: list[str] = field(default_factory=list)
     candidate_paths: list[str] = field(default_factory=list)
+    enqueued_paths: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TreeReconcileResult:
+    orphans_cleaned: list[str] = field(default_factory=list)
+    content_changed: list[str] = field(default_factory=list)
     enqueued_paths: list[str] = field(default_factory=list)
 
 
@@ -93,3 +101,34 @@ def scan_knowledge_tree(root: Path, *, tracked_paths: set[str]) -> KnowledgeTree
         )
 
     return result
+
+
+def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
+    tracked_paths = {lock.knowledge_path for lock in load_all_regen_locks(root)}
+    scan_result = scan_knowledge_tree(root, tracked_paths=tracked_paths)
+    candidate_paths = set(scan_result.candidate_paths)
+
+    content_changed: list[str] = []
+    for path in sorted(candidate_paths):
+        change, _, _ = classify_folder_change(root, path)
+        if change.change_type != "none":
+            content_changed.append(path)
+
+    for orphan in scan_result.orphans_cleaned:
+        record_operational_event(
+            event_type="reconcile.orphan_cleaned",
+            knowledge_path=orphan,
+            outcome="cleaned",
+        )
+    for path in scan_result.enqueued_paths:
+        record_operational_event(
+            event_type="reconcile.path_enqueued",
+            knowledge_path=path,
+            outcome="enqueued",
+        )
+
+    return TreeReconcileResult(
+        orphans_cleaned=scan_result.orphans_cleaned,
+        content_changed=content_changed,
+        enqueued_paths=scan_result.enqueued_paths,
+    )

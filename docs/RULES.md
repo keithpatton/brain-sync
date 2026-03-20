@@ -397,8 +397,8 @@ control.
 | Operation | Online | Offline |
 |---|---|---|
 | Edit file | Edits preserved until next sync, then **overwritten** by remote content | Same |
-| Delete file | Watcher/reconcile writes `knowledge_state = missing` and `missing_since_utc` immediately | Same |
-| Delete file (finalizing reconcile) | Source deregistered: manifest deleted, DB cleaned, area attachments removed | Same |
+| Delete file | Watcher/reconcile writes portable `knowledge_state = missing`, records machine-local missing confirmation, and removes the source from active polling | Same |
+| Explicit finalize missing source | Dedicated finalization entrypoint removes the manifest last after revalidation and cleanup | Same |
 | Rename file | Reconciliation rediscovers by identity and writes updated `knowledge_path` plus `knowledge_state = stale` | Same |
 | Move to another area | Watcher/reconcile writes updated `knowledge_path` plus `knowledge_state = stale` as early as possible | Same |
 
@@ -418,8 +418,8 @@ Explicit source removal is destructive to synced source material:
 - remove source: source registration, managed markdown, and source-owned
   attachments are deleted together
 - user-driven filesystem deletion is the softer path that enters the missing
-  lifecycle first and only deregisters on a later finalizing reconcile if the
-  source is still absent
+  lifecycle first and only leaves the registry through explicit finalization if
+  the source is still absent
 
 ### Folders
 
@@ -571,24 +571,24 @@ Filesystem truth always overrides stale runtime state.
 
 When a synced source file cannot be found:
 
-1. **First pass:** source manifest is updated to `knowledge_state = missing`
-   with `missing_since_utc`. Manifest preserved.
-2. **Second pass (next reconciliation):** If still missing, source is
-   deregistered — manifest deleted, database rows cleaned, source
-   attachments removed.
+1. **Observation / confirmation:** source manifest is updated to
+   `knowledge_state = missing`, the source remains registered, and the runtime
+   `source_lifecycle_runtime` row records local missing confirmation history.
+2. **Explicit finalization:** destructive cleanup may happen only through the
+   dedicated finalization lifecycle entrypoint after fresh revalidation against
+   the current portable brain and current filesystem state.
 
 This provides a grace period for temporary filesystem states (e.g. file
 being moved by an external tool, cloud sync in progress).
 
 Watcher-driven reconcile is non-finalizing. While the daemon is running, the
 watcher may write first-stage `missing` or repair rediscovered paths, but it
-must not perform second-stage deregistration cleanup. Second-stage cleanup is
-reserved for deterministic finalizing reconcile paths such as startup
-reconciliation, explicit reconcile commands, or explicit doctor cleanup.
+must not perform destructive finalization. Startup reconcile and explicit
+reconcile are also non-destructive with respect to missing-source cleanup.
 
 A source in `knowledge_state = missing` is still registered during that grace
 period. Duplicate add attempts must fail until the source is either
-rediscovered or fully deregistered on the second pass.
+rediscovered or explicitly finalized.
 
 ---
 
@@ -734,8 +734,8 @@ The cross-cutting schema rules that matter here are:
   binding for materialized synced documents
 - `fetch_children` and `child_path` are operational inputs, not durable
   portable manifest fields
-- `missing_since_utc` remains the current first-stage missing marker even
-  though it is a known portable anomaly pending planned removal
+- machine-local missing confirmation timing and explicit-finalization leases
+  live in runtime schema `v27`, not in portable manifests
 
 ### Packaged Regen Resources
 
@@ -807,7 +807,7 @@ Files that carry a `version` field:
 ## Structural Simplifications
 
 This section summarises the current structural model behind the Brain
-Format 1.1 rules.
+Format 1.2 rules.
 
 ### Co-located insights move with their area
 
@@ -834,7 +834,7 @@ watching.
 ### Operational flags stay out of manifests
 
 `fetch_children` and `child_path` are one-shot operational commands, not
-durable source state. Brain Format 1.1 treats them as command
+durable source state. Brain Format 1.2 treats them as command
 parameters consumed at execution time, keeping manifests focused on
 durable registration intent. `child_path` only has meaning while there is an
 active pending child-discovery request; it must not persist as latent durable

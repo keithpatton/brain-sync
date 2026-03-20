@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import signal
 import sys
 from dataclasses import dataclass
@@ -119,6 +120,16 @@ def _resolve_root_or_exit(args) -> Path:
             log.error("Cannot resolve brain root: %s. %s", e, _root_resolution_hint())
             sys.exit(1)
     return root
+
+
+def _looks_like_source_canonical_id(value: str) -> bool:
+    if not value or value.strip() != value:
+        return False
+    if "://" in value or "/" in value or "\\" in value or "," in value or " " in value:
+        return False
+    if re.match(r"^[A-Za-z]:", value):
+        return False
+    return ":" in value
 
 
 def _prompt_for_placement(
@@ -423,6 +434,7 @@ def handle_list(args) -> None:
         log.info("%s", s.canonical_id)
         log.info("  URL:  %s", s.source_url)
         log.info("  Path: knowledge/%s", s.target_path)
+        log.info("  State: %s", s.knowledge_state)
         if args.status:
             log.info("  Last checked: %s", s.last_checked_utc or "never")
             log.info("  Last changed: %s", s.last_changed_utc or "never")
@@ -529,6 +541,27 @@ def handle_reconcile(args) -> None:
         log.info("Discovered %d new knowledge area(s) needing regen.", len(report.enqueued_paths))
 
     log.info("Reconciled %d source(s). %d unchanged.", len(report.updated), report.unchanged)
+
+
+def handle_finalize_missing(args) -> None:
+    from brain_sync.application.sources import finalize_missing
+
+    root = _resolve_root_or_exit(args)
+    if not _looks_like_source_canonical_id(args.canonical_id):
+        log.error("finalize-missing requires a canonical ID, not a URL, path, or bulk target.")
+        sys.exit(1)
+    result = finalize_missing(root=root, canonical_id=args.canonical_id)
+
+    log.info("Result: %s", result.result_state)
+    if result.knowledge_state is not None:
+        log.info("  State: %s", result.knowledge_state)
+    if result.missing_confirmation_count is not None:
+        log.info("  Missing confirmations: %d", result.missing_confirmation_count)
+    if result.message:
+        log.info("  %s", result.message)
+
+    if result.result_state in {"lease_conflict", "not_found"}:
+        sys.exit(1)
 
 
 def handle_status(args) -> None:
@@ -697,7 +730,7 @@ def handle_update_skill(args) -> None:
 
 
 def handle_doctor(args) -> None:
-    from brain_sync.application.doctor import Severity, adopt_baseline, deregister_missing, doctor, rebuild_db
+    from brain_sync.application.doctor import Severity, adopt_baseline, doctor, rebuild_db
 
     # Mutual exclusivity check
     flags = [args.fix, args.rebuild_db, args.deregister_missing, args.adopt_baseline]
@@ -710,7 +743,8 @@ def handle_doctor(args) -> None:
     if args.rebuild_db:
         result = rebuild_db(root)
     elif args.deregister_missing:
-        result = deregister_missing(root)
+        log.error("doctor --deregister-missing has been removed. Use `brain-sync finalize-missing <canonical-id>`.")
+        sys.exit(1)
     elif args.adopt_baseline:
         result = adopt_baseline(root)
     else:

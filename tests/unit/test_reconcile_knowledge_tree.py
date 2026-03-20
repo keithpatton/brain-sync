@@ -237,7 +237,7 @@ class TestCandidateClassification:
             return original(root, knowledge_path)
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("brain_sync.application.reconcile.classify_folder_change", _track)
+            mp.setattr("brain_sync.sync.reconcile.classify_folder_change", _track)
             result = reconcile_knowledge_tree(brain)
 
         assert result.content_changed == []

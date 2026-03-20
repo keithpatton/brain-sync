@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+from argparse import Namespace
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from brain_sync.interfaces.cli.handlers import handle_finalize_missing
+from brain_sync.sync.finalization import FinalizationResult
+
+pytestmark = pytest.mark.unit
+
+
+def _args(canonical_id: str = "test:123") -> Namespace:
+    return Namespace(canonical_id=canonical_id, root=Path("C:/brain"))
+
+
+@patch("brain_sync.interfaces.cli.handlers._resolve_root_or_exit", return_value=Path("C:/brain"))
+@patch(
+    "brain_sync.application.sources.finalize_missing",
+    return_value=FinalizationResult(
+        canonical_id="test:123",
+        result_state="pending_confirmation",
+        finalized=False,
+        knowledge_state="missing",
+        missing_confirmation_count=2,
+        eligible=False,
+    ),
+)
+def test_handle_finalize_missing_returns_cleanly_for_pending_confirmation(mock_finalize, mock_root) -> None:
+    handle_finalize_missing(_args())
+
+    mock_root.assert_called_once()
+    mock_finalize.assert_called_once_with(root=Path("C:/brain"), canonical_id="test:123")
+
+
+@patch("brain_sync.interfaces.cli.handlers._resolve_root_or_exit", return_value=Path("C:/brain"))
+@patch(
+    "brain_sync.application.sources.finalize_missing",
+    return_value=FinalizationResult(
+        canonical_id="test:123",
+        result_state="finalized",
+        finalized=True,
+        eligible=True,
+    ),
+)
+def test_handle_finalize_missing_returns_cleanly_for_finalized(mock_finalize, mock_root) -> None:
+    handle_finalize_missing(_args())
+
+    mock_root.assert_called_once()
+    mock_finalize.assert_called_once_with(root=Path("C:/brain"), canonical_id="test:123")
+
+
+@patch("brain_sync.interfaces.cli.handlers._resolve_root_or_exit", return_value=Path("C:/brain"))
+@patch(
+    "brain_sync.application.sources.finalize_missing",
+    return_value=FinalizationResult(
+        canonical_id="test:123",
+        result_state="lease_conflict",
+        finalized=False,
+        eligible=False,
+        message="lease held elsewhere",
+    ),
+)
+def test_handle_finalize_missing_exits_one_for_lease_conflict(mock_finalize, mock_root) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        handle_finalize_missing(_args())
+
+    assert excinfo.value.code == 1
+    mock_root.assert_called_once()
+    mock_finalize.assert_called_once_with(root=Path("C:/brain"), canonical_id="test:123")
+
+
+@patch("brain_sync.interfaces.cli.handlers._resolve_root_or_exit", return_value=Path("C:/brain"))
+@patch(
+    "brain_sync.application.sources.finalize_missing",
+    return_value=FinalizationResult(
+        canonical_id="test:123",
+        result_state="not_found",
+        finalized=False,
+        error="not_found",
+    ),
+)
+def test_handle_finalize_missing_exits_one_for_not_found(mock_finalize, mock_root) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        handle_finalize_missing(_args())
+
+    assert excinfo.value.code == 1
+    mock_root.assert_called_once()
+    mock_finalize.assert_called_once_with(root=Path("C:/brain"), canonical_id="test:123")
+
+
+@patch("brain_sync.interfaces.cli.handlers._resolve_root_or_exit", return_value=Path("C:/brain"))
+@patch("brain_sync.application.sources.finalize_missing")
+def test_handle_finalize_missing_rejects_url_targeting(mock_finalize, mock_root) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        handle_finalize_missing(_args("https://example.com/page"))
+
+    assert excinfo.value.code == 1
+    mock_root.assert_called_once()
+    mock_finalize.assert_not_called()
+
+
+@patch("brain_sync.interfaces.cli.handlers._resolve_root_or_exit", return_value=Path("C:/brain"))
+@patch("brain_sync.application.sources.finalize_missing")
+def test_handle_finalize_missing_rejects_windows_path_targeting(mock_finalize, mock_root) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        handle_finalize_missing(_args(r"C:\temp\page"))
+
+    assert excinfo.value.code == 1
+    mock_root.assert_called_once()
+    mock_finalize.assert_not_called()

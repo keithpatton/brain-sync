@@ -152,6 +152,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
 
+    # --- finalize-missing ---
+    p_finalize = sub.add_parser(
+        "finalize-missing",
+        help="Explicitly finalize one missing registered source by canonical ID",
+    )
+    p_finalize.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_finalize.add_argument("canonical_id", help="Canonical ID of the missing source to finalize")
+
     # --- status ---
     p_status = sub.add_parser("status", help="Show daemon and sync status")
     p_status.add_argument(
@@ -234,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument(
         "--deregister-missing",
         action="store_true",
-        help="Finalize all missing sources immediately",
+        help="Deprecated; use finalize-missing <canonical-id> instead",
     )
     p_doctor.add_argument(
         "--adopt-baseline",

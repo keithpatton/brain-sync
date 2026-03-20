@@ -121,17 +121,17 @@ class TestGitCloneScenario:
             daemon.start()
             daemon.wait_for_ready(timeout=20)
 
-            # Wait for DB to exist and have sync_cache rows restored from manifests
+            # Wait for DB to exist and have sync_polling rows restored from manifests
             wait_for_db(
                 clone_db_path,
-                "SELECT COUNT(*) FROM sync_cache",
+                "SELECT COUNT(*) FROM sync_polling",
                 lambda rows: rows[0][0] >= 2,
                 timeout=15,
             )
 
-            # Verify sync_cache has both sources
+            # Verify sync_polling has both sources
             conn = sqlite3.connect(str(clone_db_path))
-            rows = conn.execute("SELECT canonical_id FROM sync_cache").fetchall()
+            rows = conn.execute("SELECT canonical_id FROM sync_polling").fetchall()
             conn.close()
             cids = {r[0] for r in rows}
             assert "confluence:11111" in cids

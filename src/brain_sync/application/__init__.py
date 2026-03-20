@@ -31,7 +31,7 @@ from brain_sync.application.browse import (
     open_file,
     query_brain,
 )
-from brain_sync.application.doctor import DoctorResult, Finding, Severity, deregister_missing, doctor, rebuild_db
+from brain_sync.application.doctor import DoctorResult, Finding, Severity, doctor, rebuild_db
 from brain_sync.application.init import InitResult, init_brain, update_skill
 from brain_sync.application.insights import (
     InsightState,
@@ -78,6 +78,7 @@ from brain_sync.application.roots import (
 from brain_sync.application.source_state import SourceState, SyncState, load_state, save_state
 from brain_sync.application.sources import (
     AddResult,
+    FinalizationResult,
     InvalidChildDiscoveryRequestError,
     MigrateResult,
     MoveResult,
@@ -90,6 +91,7 @@ from brain_sync.application.sources import (
     UpdateResult,
     add_source,
     check_source_exists,
+    finalize_missing,
     list_sources,
     migrate_sources,
     move_source,
@@ -118,6 +120,7 @@ __all__ = [
     "BrainQueryResult",
     "DoctorResult",
     "DocumentTitleRequiredError",
+    "FinalizationResult",
     "Finding",
     "GlobalContextView",
     "InitResult",
@@ -160,10 +163,10 @@ __all__ = [
     "check_source_exists",
     "classify_folder_change",
     "delete_insight_state",
-    "deregister_missing",
     "detect_subtree",
     "doctor",
     "extract_file_excerpt",
+    "finalize_missing",
     "get_brain_context",
     "get_usage_summary",
     "init_brain",

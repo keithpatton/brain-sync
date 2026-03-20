@@ -23,16 +23,16 @@ def _project_version() -> str:
 
 
 def test_supported_compatibility_row_constants() -> None:
-    assert _project_version() == "0.6.0.0"
-    assert BRAIN_FORMAT_VERSION == "1.1"
-    assert RUNTIME_DB_SCHEMA_VERSION == 26
+    assert _project_version() == "0.7.0.0"
+    assert BRAIN_FORMAT_VERSION == "1.2"
+    assert RUNTIME_DB_SCHEMA_VERSION == 27
 
 
 def test_pyproject_version_matches_app_version() -> None:
-    assert _project_version() == "0.6.0.0"
+    assert _project_version() == "0.7.0.0"
 
 
-def test_fresh_init_matches_brain_format_v1_1(tmp_path: Path) -> None:
+def test_fresh_init_matches_brain_format_v1_2(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
 
@@ -63,7 +63,7 @@ def test_runtime_db_can_be_rebuilt_without_invalidating_brain(tmp_path: Path) ->
     assert not (root / ".sync-state.sqlite").exists()
 
 
-def test_supported_v23_runtime_db_is_migrated_to_v26_in_place(tmp_path: Path) -> None:
+def test_supported_v23_runtime_db_is_migrated_to_v27_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -125,7 +125,8 @@ def test_supported_v23_runtime_db_is_migrated_to_v26_in_place(tmp_path: Path) ->
         token_rows = migrated.execute("SELECT COUNT(*) FROM token_events").fetchone()
         runtime_tables = migrated.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-            "('child_discovery_requests', 'operational_events', 'sync_polling') ORDER BY name"
+            "('child_discovery_requests', 'operational_events', 'source_lifecycle_runtime', 'sync_polling') "
+            "ORDER BY name"
         ).fetchall()
     finally:
         migrated.close()
@@ -135,6 +136,7 @@ def test_supported_v23_runtime_db_is_migrated_to_v26_in_place(tmp_path: Path) ->
     assert runtime_tables == [
         ("child_discovery_requests",),
         ("operational_events",),
+        ("source_lifecycle_runtime",),
         ("sync_polling",),
     ]
 

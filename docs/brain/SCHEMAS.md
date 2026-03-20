@@ -1,6 +1,6 @@
 # Brain Schemas
 
-This document defines the portable Brain Format `1.1` schema surfaces owned by
+This document defines the portable Brain Format `1.2` schema surfaces owned by
 the brain root.
 
 Agent-first reading model:
@@ -34,14 +34,13 @@ also reused for per-source attachment directories.
 
 | Field | Type | Required | Authority Class | Meaning |
 |---|---|---|---|---|
-| `version` | integer | yes | schema metadata | Source manifest schema version. Current value: `2`. |
+| `version` | integer | yes | schema metadata | Source manifest schema version. Current value: `3`. |
 | `canonical_id` | string | yes | brain normative state | Durable provider-specific identity. |
 | `source_url` | string | yes | brain normative state | Canonical source URL. |
 | `source_type` | string | yes | brain normative state | Durable source type (`confluence`, `google_doc`, `test`). |
 | `sync_attachments` | boolean | yes | brain normative state | Durable attachment-sync setting. |
 | `knowledge_path` | string | yes | brain normative state | Durable knowledge-file anchor, relative to `knowledge/`. |
 | `knowledge_state` | string | yes | brain normative state | Durable lifecycle state for the knowledge file. |
-| `missing_since_utc` | string or null | conditional | portable anomaly (pending removal) | Provisional anomaly: UTC time when one runtime first observed the source missing, slated for removal from portable state. |
 | `content_hash` | string or null | conditional | brain reconciliation baseline | Last successful materialized content hash. |
 | `remote_fingerprint` | string or null | conditional | brain reconciliation baseline | Last successful adapter-owned freshness token. |
 | `materialized_utc` | string or null | conditional | brain reconciliation baseline | UTC time when the current materialized source baseline was accepted into portable brain state after successful full materialization. |
@@ -64,12 +63,12 @@ Allowed values:
 
 ### State Matrix
 
-| `knowledge_state` | File expectation | `missing_since_utc` | `content_hash` | `remote_fingerprint` | `materialized_utc` |
-|---|---|---|---|---|---|
-| `awaiting` | file not yet expected | null | null | null | null |
-| `materialized` | file must exist at `knowledge_path` | null | set | set | set |
-| `stale` | file may exist, but must be rematerialized | null | set | set | set |
-| `missing` | file should not currently be treated as present | set | may stay set | may stay set | may stay set |
+| `knowledge_state` | File expectation | `content_hash` | `remote_fingerprint` | `materialized_utc` |
+|---|---|---|---|---|
+| `awaiting` | file not yet expected | null | null | null |
+| `materialized` | file must exist at `knowledge_path` | set | set | set |
+| `stale` | file may exist, but must be rematerialized | set | set | set |
+| `missing` | file should not currently be treated as present, but the source remains registered | may stay set | may stay set | may stay set |
 
 ### Path Semantics
 
@@ -123,7 +122,7 @@ Fields:
 |---|---|---|---|---|
 | `version` | integer | yes | schema metadata | Portable brain-format major version. Current on-disk value: `1`. |
 
-Brain Format `1.1` keeps the same on-disk brain manifest number because the
+Brain Format `1.2` keeps the same on-disk brain manifest number because the
 portable compatibility line is still within major format `1`.
 
 ---

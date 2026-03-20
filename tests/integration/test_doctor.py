@@ -14,7 +14,7 @@ from brain_sync.application.source_state import load_state
 from brain_sync.application.sources import add_source
 from brain_sync.brain.layout import area_attachments_root, area_insights_dir, area_journal_dir, area_summary_path
 from brain_sync.brain.managed_markdown import prepend_managed_header
-from brain_sync.brain.manifest import read_all_source_manifests, read_source_manifest, write_source_manifest
+from brain_sync.brain.manifest import read_source_manifest, write_source_manifest
 from brain_sync.brain.sidecar import SIDECAR_FILENAME, RegenMeta, read_regen_meta, write_regen_meta
 from brain_sync.runtime.repository import (
     _connect,
@@ -167,7 +167,7 @@ class TestDoctorRebuildDb:
 
 
 class TestDoctorMissingLifecycle:
-    def test_deregisters_missing_sources(self, brain: Path) -> None:
+    def test_deregister_missing_reports_migration_hint_without_destructive_cleanup(self, brain: Path) -> None:
         _add_synced_source(brain)
         attachment_dir = area_attachments_root(brain, "project") / "c12345"
         attachment_dir.mkdir(parents=True)
@@ -180,11 +180,14 @@ class TestDoctorMissingLifecycle:
         write_source_manifest(brain, manifest)
 
         result = deregister_missing(brain)
-        assert any(f.canonical_id == "confluence:12345" for f in result.findings)
-        assert "confluence:12345" not in read_all_source_manifests(brain)
-        assert "confluence:12345" not in load_sync_progress(brain)
-        assert load_child_discovery_request(brain, "confluence:12345") is None
-        assert not attachment_dir.exists()
+        assert len(result.findings) == 1
+        assert result.findings[0].check == "deregister_missing"
+        assert result.findings[0].severity is Severity.DRIFT
+        assert "finalize-missing" in result.findings[0].message
+        assert read_source_manifest(brain, "confluence:12345") is not None
+        assert "confluence:12345" in load_sync_progress(brain)
+        assert load_child_discovery_request(brain, "confluence:12345") is not None
+        assert attachment_dir.exists()
 
 
 class TestDoctorOperationalChecks:

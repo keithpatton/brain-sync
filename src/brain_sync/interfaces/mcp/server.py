@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -67,11 +68,13 @@ from brain_sync.application.reconcile import reconcile_brain
 from brain_sync.application.regen import RegenFailed, run_regen
 from brain_sync.application.roots import resolve_active_root
 from brain_sync.application.sources import (
+    FinalizationResult,
     InvalidChildDiscoveryRequestError,
     SourceAlreadyExistsError,
     SourceNotFoundError,
     UnsupportedSourceUrlError,
     add_source,
+    finalize_missing,
     list_sources,
     move_source,
     remove_source,
@@ -85,6 +88,16 @@ log = logging.getLogger(__name__)
 def _drop_none_values(payload: dict) -> dict:
     """Remove top-level keys whose values are None."""
     return {key: value for key, value in payload.items() if value is not None}
+
+
+def _looks_like_source_canonical_id(value: str) -> bool:
+    if not value or value.strip() != value:
+        return False
+    if "://" in value or "/" in value or "\\" in value or "," in value or " " in value:
+        return False
+    if re.match(r"^[A-Za-z]:", value):
+        return False
+    return ":" in value
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +368,26 @@ def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
 
 
 @server.tool(
+    name="brain_sync_finalize_missing",
+    description="Explicitly finalize one missing registered source by canonical_id.",
+)
+def brain_sync_finalize_missing(ctx: Context, canonical_id: str) -> dict:
+    rt = _runtime(ctx)
+    if not _looks_like_source_canonical_id(canonical_id):
+        return {
+            "status": "error",
+            "error": "invalid_canonical_id",
+            "message": "brain_sync_finalize_missing requires a canonical_id, not a URL or bulk target.",
+        }
+    result: FinalizationResult = finalize_missing(root=rt.root, canonical_id=canonical_id)
+    payload = _drop_none_values({"status": "ok", **asdict(result)})
+    if result.result_state == "not_found":
+        payload["status"] = "error"
+        payload["error"] = "not_found"
+    return payload
+
+
+@server.tool(
     name="brain_sync_reconcile",
     description=(
         "Reconcile DB target paths with the filesystem. "
@@ -608,20 +641,23 @@ def brain_sync_open_file(
     description=(
         "Check brain consistency and optionally repair. "
         "mode: 'check' (default), 'fix' (auto-repair drift), "
-        "'rebuild_db' (rebuild source sync progress from manifests, preserves regen state), "
-        "'deregister_missing' (finalize all missing sources)."
+        "'rebuild_db' (rebuild source sync progress from manifests, preserves regen state)."
     ),
 )
 def brain_sync_doctor(ctx: Context, mode: str = "check") -> dict:
     """Diagnose brain health and optionally repair."""
-    from brain_sync.application.doctor import Severity, deregister_missing, doctor, rebuild_db
+    from brain_sync.application.doctor import Severity, doctor, rebuild_db
 
     rt = _runtime(ctx)
     try:
         if mode == "rebuild_db":
             result = rebuild_db(rt.root)
         elif mode == "deregister_missing":
-            result = deregister_missing(rt.root)
+            return {
+                "status": "error",
+                "error": "unsupported_mode",
+                "message": "Use brain_sync_finalize_missing(canonical_id=...) instead.",
+            }
         elif mode == "fix":
             result = doctor(rt.root, fix=True)
         else:

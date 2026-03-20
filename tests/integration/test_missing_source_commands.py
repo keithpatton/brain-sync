@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from brain_sync.application.init import init_brain
@@ -12,12 +15,15 @@ from brain_sync.application.sources import (
     add_source,
     list_sources,
     mark_source_missing,
+    move_source,
     reconcile_sources,
     remove_source,
     update_source,
 )
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
+from brain_sync.sources.test import register_test_root, reset_test_adapter
+from brain_sync.sync.pipeline import process_source
 
 pytestmark = pytest.mark.integration
 
@@ -42,6 +48,13 @@ def _materialize_manifest(brain: Path) -> None:
     manifest.remote_fingerprint = "rev-1"
     manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
     write_source_manifest(brain, manifest)
+
+
+def _script_test_source(root: Path, canonical_id: str, sequence: list[dict[str, str]]) -> None:
+    adapter_dir = root / ".test-adapter"
+    adapter_dir.mkdir(exist_ok=True)
+    safe_name = canonical_id.replace(":", "_")
+    (adapter_dir / f"{safe_name}.json").write_text(json.dumps({"sequence": sequence}), encoding="utf-8")
 
 
 class TestMissingSourceCommands:
@@ -73,7 +86,9 @@ class TestMissingSourceCommands:
         mark_manifest_missing(brain, CONFLUENCE_CID, "2026-03-14T00:00:00")
 
         sources = list_sources(root=brain)
-        assert len(sources) == 0
+        assert len(sources) == 1
+        assert sources[0].canonical_id == CONFLUENCE_CID
+        assert sources[0].knowledge_state == "missing"
 
     def test_missing_source_not_scheduled(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
@@ -103,3 +118,41 @@ class TestMissingSourceCommands:
         assert manifest.knowledge_state == "stale"
         assert result.reappeared == [CONFLUENCE_CID]
         assert CONFLUENCE_CID in load_state(brain).sources
+
+    def test_root_backed_processing_refreshes_target_path_after_move(self, brain: Path) -> None:
+        reset_test_adapter()
+        try:
+            add_source(root=brain, url="test://doc/move-race", target_path="old-area")
+            stale_state = load_state(brain).sources["test:move-race"]
+
+            register_test_root("test:move-race", brain)
+            _script_test_source(
+                brain,
+                "test:move-race",
+                [{"status": "CHANGED", "body": "# Moved\n\nFresh content.", "title": "Moved"}],
+            )
+
+            move_source(root=brain, source="test:move-race", to_path="new-area")
+
+            async def _run() -> tuple[bool, list]:
+                async with httpx.AsyncClient() as client:
+                    return await process_source(
+                        stale_state,
+                        client,
+                        root=brain,
+                        lifecycle_owner_id="daemon-owner",
+                    )
+
+            changed, _children = asyncio.run(_run())
+
+            assert changed is True
+            assert not (brain / "knowledge" / "old-area").exists()
+            new_files = list((brain / "knowledge" / "new-area").glob("*.md"))
+            assert len(new_files) == 1
+
+            manifest = read_source_manifest(brain, "test:move-race")
+            assert manifest is not None
+            assert manifest.target_path == "new-area"
+            assert manifest.knowledge_path.startswith("new-area/")
+        finally:
+            reset_test_adapter()

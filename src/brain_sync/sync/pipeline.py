@@ -22,10 +22,9 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.brain.fileops import content_hash, path_exists, rediscover_local_path, write_if_changed
+from brain_sync.brain.fileops import content_hash, path_exists, rediscover_local_path
 from brain_sync.brain.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.brain.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
-from brain_sync.brain.repository import BrainRepository
 from brain_sync.sources import (
     canonical_filename,
     canonical_id,
@@ -38,13 +37,24 @@ from brain_sync.sources.registry import get_adapter
 
 __all__ = [
     "ChildDiscoveryResult",
+    "PreparedSourceSync",
     "extract_source_id",
+    "prepare_source_sync",
     "prepend_managed_header",
     "process_source",
     "strip_managed_header",
 ]
 
 log = logging.getLogger(__name__)
+
+
+class SourceLifecycleLeaseConflictError(RuntimeError):
+    """Raised when another lifecycle operation currently owns the source lease."""
+
+    def __init__(self, canonical_id: str, lease_owner: str | None):
+        self.canonical_id = canonical_id
+        self.lease_owner = lease_owner
+        super().__init__(f"Lifecycle lease conflict for {canonical_id}: {lease_owner or 'unknown'}")
 
 
 @dataclass
@@ -54,6 +64,21 @@ class ChildDiscoveryResult:
     canonical_id: str
     url: str
     title: str | None
+
+
+@dataclass
+class PreparedSourceSync:
+    canonical_id: str
+    source_url: str
+    source_type: str
+    target_path: str
+    filename: str
+    markdown: str
+    content_hash: str
+    remote_fingerprint: str
+    checked_utc: str
+    discovered_children: list[ChildDiscoveryResult]
+    skip_materialization: bool = False
 
 
 def _has_context_flags(ss: SourceStateLike) -> bool:
@@ -68,17 +93,14 @@ def _resolve_target_dir(root: Path | None, source_state: SourceStateLike) -> Pat
     return Path(".")
 
 
-async def process_source(
+async def prepare_source_sync(
     source_state: SourceStateLike,
     http_client: httpx.AsyncClient,
     root: Path | None = None,
     *,
     fetch_children: bool = False,
-) -> tuple[bool, list[ChildDiscoveryResult]]:
-    """Fetch, assemble, and materialize one source.
-
-    Returns ``(content_changed, discovered_children)``.
-    """
+) -> PreparedSourceSync:
+    """Fetch and assemble one source for lifecycle-owned materialization."""
     source_type = detect_source_type(source_state.source_url)
     adapter = get_adapter(source_type)
     caps = adapter.capabilities
@@ -89,15 +111,22 @@ async def process_source(
     auth = adapter.auth_provider.load_auth()
     if auth is None:
         log.warning("No auth for %s, skipping %s", source_type.value, source_state.source_url)
-        return False, []
+        return PreparedSourceSync(
+            canonical_id=source_state.canonical_id,
+            source_url=source_state.source_url,
+            source_type=source_type.value,
+            target_path=source_state.target_path,
+            filename=canonical_filename(source_type, extract_id(source_type, source_state.source_url), None),
+            markdown="",
+            content_hash=source_state.content_hash or "",
+            remote_fingerprint=source_state.remote_fingerprint or "",
+            checked_utc=now,
+            discovered_children=[],
+            skip_materialization=True,
+        )
 
     # Target directory
-    repository = BrainRepository(root) if root is not None else None
-    target_dir = (
-        repository.ensure_knowledge_dir(source_state.target_path)
-        if repository is not None
-        else _resolve_target_dir(root, source_state)
-    )
+    target_dir = _resolve_target_dir(root, source_state)
 
     # Version check
     check: UpdateCheckResult | None = None
@@ -136,20 +165,44 @@ async def process_source(
     ):
         log.debug("Source %s unchanged (fingerprint %s)", doc_id, check.fingerprint)
         source_state.last_checked_utc = now
-        return False, []
+        return PreparedSourceSync(
+            canonical_id=source_state.canonical_id,
+            source_url=source_state.source_url,
+            source_type=source_type.value,
+            target_path=source_state.target_path,
+            filename=filename,
+            markdown="",
+            content_hash=source_state.content_hash or "",
+            remote_fingerprint=source_state.remote_fingerprint or check.fingerprint or "",
+            checked_utc=now,
+            discovered_children=[],
+            skip_materialization=True,
+        )
 
-    # Defensive guard: if adapter reports UNCHANGED but the local file
-    # does not exist (e.g. test adapter or corrupted state), skip fetch.
-    # Real adapters return CHANGED on first sync (metadata_fingerprint starts None).
+    # Defensive guard: if an adapter reports UNCHANGED but we have no local
+    # materialized file, do not synthesize content from a fetch path that the
+    # adapter did not intend to use for this revision state.
     if (
         check
         and check.status == UpdateStatus.UNCHANGED
         and existing_file is None
-        and source_state.knowledge_state == "materialized"
+        and source_state.knowledge_state != "stale"
     ):
         log.debug("Source %s unchanged and no local file, skipping", doc_id)
         source_state.last_checked_utc = now
-        return False, []
+        return PreparedSourceSync(
+            canonical_id=source_state.canonical_id,
+            source_url=source_state.source_url,
+            source_type=source_type.value,
+            target_path=source_state.target_path,
+            filename=filename,
+            markdown="",
+            content_hash=source_state.content_hash or "",
+            remote_fingerprint=source_state.remote_fingerprint or check.fingerprint or "",
+            checked_utc=now,
+            discovered_children=[],
+            skip_materialization=True,
+        )
 
     # Full fetch
     prior_adapter_state = check.adapter_state if check else None
@@ -260,45 +313,78 @@ async def process_source(
 
     # The pipeline owns fetch/assembly. Once we have the final markdown body,
     # normal runtime portable writes cross the repository boundary here.
-    changed = False
-    if repository is not None:
-        materialization = repository.materialize_markdown(
-            knowledge_path=source_state.target_path,
-            filename=filename,
-            canonical_id=source_state.canonical_id,
-            markdown=markdown,
-            source_type=source_state.source_type,
-            source_url=source_state.source_url,
-            content_hash=body_hash,
-            remote_fingerprint=remote_fingerprint,
-            materialized_utc=now,
-        )
-        changed = materialization.changed
-        target = repository.knowledge_root / materialization.materialized_path
-        source_state.knowledge_path = materialization.materialized_path
-        source_state.knowledge_state = "materialized"
-        source_state.materialized_utc = now
-        source_state.missing_since_utc = None
-        for stale_name in materialization.duplicate_files_removed:
-            log.warning(
-                "Removed duplicate managed file for %s: %s",
+    return PreparedSourceSync(
+        canonical_id=source_state.canonical_id,
+        source_url=source_state.source_url,
+        source_type=source_state.source_type,
+        target_path=source_state.target_path,
+        filename=filename,
+        markdown=markdown,
+        content_hash=body_hash,
+        remote_fingerprint=remote_fingerprint,
+        checked_utc=now,
+        discovered_children=discovered_children,
+    )
+
+
+async def process_source(
+    source_state: SourceStateLike,
+    http_client: httpx.AsyncClient,
+    root: Path | None = None,
+    *,
+    fetch_children: bool = False,
+    lifecycle_owner_id: str | None = None,
+) -> tuple[bool, list[ChildDiscoveryResult]]:
+    """Compatibility wrapper that routes registered-source writes via lifecycle."""
+    from brain_sync.sync.lifecycle import process_prepared_source
+    from brain_sync.sync.source_state import SourceState
+
+    lease_acquired = False
+    try:
+        if root is not None and lifecycle_owner_id is not None:
+            from datetime import timedelta
+
+            from brain_sync.runtime.repository import acquire_source_lifecycle_lease
+            from brain_sync.sync.source_state import load_active_sync_state
+
+            lease_expires_utc = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+            acquired, existing = acquire_source_lifecycle_lease(
+                root,
                 source_state.canonical_id,
-                stale_name,
+                lifecycle_owner_id,
+                lease_expires_utc=lease_expires_utc,
             )
-    else:
-        # Rootless fallback is kept for narrow non-runtime/test-style usage.
-        markdown = prepend_managed_header(
-            source_state.canonical_id,
-            markdown,
-            source_type=source_state.source_type,
-            source_url=source_state.source_url,
+            if not acquired:
+                raise SourceLifecycleLeaseConflictError(
+                    canonical_id=source_state.canonical_id,
+                    lease_owner=existing.lease_owner if existing is not None else None,
+                )
+            lease_acquired = True
+            refreshed = load_active_sync_state(root).sources.get(source_state.canonical_id)
+            if refreshed is None:
+                return False, []
+            source_state = refreshed
+
+        prepared = await prepare_source_sync(
+            source_state,
+            http_client,
+            root=root,
+            fetch_children=fetch_children,
         )
-        changed = write_if_changed(target, markdown)
+        if root is None:
+            return False, prepared.discovered_children
 
-    if changed:
-        source_state.materialized_utc = now
-        log.info("Updated %s (content changed)", filename)
-    else:
-        log.info("Fetched %s (no content change)", filename)
+        if not isinstance(source_state, SourceState):
+            raise TypeError("root-backed source processing requires a mutable SourceState instance")
+        result = process_prepared_source(
+            root,
+            source_state,
+            prepared,
+            lifecycle_owner_id=lifecycle_owner_id,
+        )
+        return result.changed, result.discovered_children
+    finally:
+        if root is not None and lifecycle_owner_id is not None and lease_acquired:
+            from brain_sync.runtime.repository import clear_source_lifecycle_lease
 
-    return changed, discovered_children
+            clear_source_lifecycle_lease(root, source_state.canonical_id, owner_id=lifecycle_owner_id)

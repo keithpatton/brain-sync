@@ -740,8 +740,9 @@ current portable brain and filesystem. When the [daemon](#daemon) starts, it:
   - tier 3: [canonical ID](#canonical-id) prefix glob
 2. Updates manifests to reflect any detected moves
 3. Applies a **two-stage missing protocol**: a source marked `missing` on
-  the first reconcile pass is deleted only if still missing on the next
-   pass (grace period for temporary filesystem states)
+  the first local observation remains registered and visible in administrative
+  listings while machine-local confirmation state is accumulated; destructive
+  cleanup occurs only through explicit finalization after revalidation
 4. Prunes orphan database rows that no longer correspond to disk state
 
 Reconciliation can also be triggered manually via `brain-sync reconcile`.
@@ -818,10 +819,7 @@ it is not itself operational state or observation history.
 Runtime state can be rebuilt or recreated without loss of
 [user knowledge](#user-knowledge) or
 [generated meaning](#generated-meaning). Nothing inside the
-[brain root](#brain-root) is runtime state, except for the known unreleased
-portable anomaly `missing_since_utc`, which remains in the
-[Source Manifest Schema](brain/SCHEMAS.md#source-manifest-schema) pending
-planned removal.
+[brain root](#brain-root) is runtime state.
 
 ---
 
