@@ -33,8 +33,8 @@ from brain_sync.runtime.repository import (
 from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.sources.test import register_test_root, reset_test_adapter
 from brain_sync.sync.attachments import StagedManagedArtifact
-from brain_sync.sync.lifecycle import observe_missing_source
-from brain_sync.sync.pipeline import SourceLifecycleLeaseConflictError, process_source
+from brain_sync.sync.lifecycle import observe_missing_source, process_prepared_source
+from brain_sync.sync.pipeline import PreparedSourceSync, SourceLifecycleLeaseConflictError, process_source
 
 pytestmark = pytest.mark.integration
 
@@ -356,3 +356,64 @@ class TestMissingSourceCommands:
 
         assert result.result_state == "moved"
         assert load_source_lifecycle_runtime(brain, CONFLUENCE_CID) is None
+
+    def test_process_prepared_source_rolls_back_attachments_when_materialization_fails(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area", sync_attachments=True)
+        source_state = load_state(brain).sources[CONFLUENCE_CID]
+        legacy_dir = brain / "knowledge" / "area" / "_sync-context" / "attachments"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        legacy_file = legacy_dir / "a789-legacy.bin"
+        legacy_file.write_bytes(b"legacy")
+        staged_path = ".brain-sync/attachments/c12345/a790-new.bin"
+
+        prepared = PreparedSourceSync(
+            canonical_id=CONFLUENCE_CID,
+            source_url=CONFLUENCE_URL,
+            source_type="confluence",
+            target_path="area",
+            filename="c12345-test-page.md",
+            markdown="# Test",
+            content_hash="sha256:new",
+            remote_fingerprint="rev-2",
+            checked_utc="2026-03-21T00:00:00+00:00",
+            discovered_children=[],
+            staged_managed_artifacts=(StagedManagedArtifact(local_path=staged_path, data=b"new"),),
+        )
+
+        with patch(
+            "brain_sync.brain.repository.BrainRepository.materialize_markdown",
+            side_effect=RuntimeError("boom"),
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                process_prepared_source(brain, source_state, prepared)
+
+        assert legacy_file.exists()
+        assert legacy_file.read_bytes() == b"legacy"
+        assert not (brain / "knowledge" / "area" / staged_path).exists()
+
+    def test_move_source_returns_lease_conflict_after_mid_operation_lease_loss(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+
+        def _lose_lease_mid_move(self, source_path: str, dest_path: str) -> bool:
+            del self, source_path, dest_path
+            clear_source_lifecycle_lease(brain, CONFLUENCE_CID)
+            acquired, _existing = acquire_source_lifecycle_lease(
+                brain,
+                CONFLUENCE_CID,
+                "other-owner",
+                lease_expires_utc="2099-01-01T00:00:00+00:00",
+            )
+            assert acquired is True
+            return False
+
+        try:
+            with patch("brain_sync.brain.repository.BrainRepository.move_knowledge_tree", new=_lose_lease_mid_move):
+                result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
+        finally:
+            clear_source_lifecycle_lease(brain, CONFLUENCE_CID, owner_id="other-owner")
+
+        assert result.result_state == "lease_conflict"
+        assert result.lease_owner == "other-owner"
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.target_path == "area"

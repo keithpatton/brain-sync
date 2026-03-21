@@ -42,7 +42,7 @@ Current runtime artifacts:
 |---|---|
 | `config.json` | machine-local config, active-brain selection, credentials, and local defaults |
 | `daemon.json` | current daemon lifecycle snapshot |
-| `daemon-locks/<sha256(brain_root)>.lock` | durable per-brain daemon startup guard plus best-effort lock metadata |
+| `daemon.lock` | durable config-dir daemon startup guard plus best-effort lock metadata |
 | `db/brain-sync.sqlite` | runtime coordination, scheduling, and telemetry store |
 | `logs/` | rotating local logs |
 
@@ -81,9 +81,9 @@ they do not understand.
 ## `daemon.json`
 
 `daemon.json` is the current daemon lifecycle snapshot written in the runtime
-directory. It is descriptive status, not the durable startup lock. Same-brain
-daemon exclusivity is enforced by the per-brain lock file under
-`daemon-locks/`.
+directory. It is descriptive status, not the durable startup lock. The current
+runtime model enforces daemon exclusivity per config directory via
+`daemon.lock`.
 
 | Field | Type | Meaning |
 |---|---|---|

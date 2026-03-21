@@ -38,11 +38,11 @@ state. Normal CLI and MCP source-management commands do not RPC into a running
 daemon, and they do not start one implicitly.
 
 A portable brain may be attached by different processes over time, but the
-supported contract allows only one active daemon attachment per brain at once.
-A second daemon start against the same brain is refused before it begins
-reconcile or polling work. Runtime startup enforces that with a durable
-per-brain guard; `daemon.json` remains the current lifecycle snapshot rather
-than the exclusion mechanism itself. The normative rule lives in
+current runtime model allows only one active daemon per runtime config
+directory at once. A second daemon start against the same config dir is
+refused before it begins reconcile or polling work. Runtime startup enforces
+that with a durable config-dir guard; `daemon.json` remains the current
+lifecycle snapshot rather than the exclusion mechanism itself. The normative rule lives in
 [../RULES.md](../RULES.md).
 
 For synced sources, the main entry paths are:
@@ -92,7 +92,7 @@ This matrix is the applicability view of synced-source lifecycle behavior.
 | CLI/MCP | Add Source | Single File | Command |  |  |  |  | x | `awaiting` | Creates a new manifest plus polling state. |
 | CLI/MCP | Update Source | Single File | Command | x | x | x | x |  | unchanged | Updates sync settings and child-discovery intent, not the durable knowledge lifecycle directly. |
 | CLI/MCP | Move Source | Single File | Command | x | x | x | x |  | state-dependent | State unchanged except `materialized` -> `stale`. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict` and does not mutate the source. |
-| CLI/MCP | Remove Source | Single File | Command | x | x | x | x |  | state-dependent | Usually unregisters the source and may remove the materialized file and source-owned attachments. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict`. |
+| CLI/MCP | Remove Source | Single File | Command | x | x | x | x |  | state-dependent | Unregisters the source and removes synced files from disk by default, including the materialized file and source-owned attachments when present. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict`. |
 | CLI/MCP | Reconcile | Knowledge Tree | Command | x | x | x | x |  | conservative repair | Uses the same reconcile engine as daemon startup. `awaiting` usually stays `awaiting`; direct-path present registered sources stay in their current settled state; repaired or rediscovered present sources become `stale`; absent registered sources become or remain `missing`; missing sources that reappear become `stale`. |
 | CLI/MCP | Finalize Missing | Single File | Command |  |  |  | x |  | state-dependent | Finalization rechecks local presence first. If the source file is rediscovered locally, the source is restored to `stale` instead of being unregistered. In a new lifecycle session, the first finalize call may still return `pending_confirmation` even when older missing history already exists. |
 | User | Synced File Moved | Single File | Daemon Watcher |  | x | x |  |  | `stale` | The watcher observes local drift and reconcile repairs the manifest path to the found file. |

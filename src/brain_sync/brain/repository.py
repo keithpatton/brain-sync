@@ -142,6 +142,20 @@ class MaterializationResult:
     duplicate_files_removed: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class AttachmentWriteRollback:
+    local_path: str
+    changed: bool
+    existed: bool
+    previous_data: bytes | None = None
+
+
+@dataclass(frozen=True)
+class AttachmentMigrationRollback:
+    source_path: Path
+    dest_path: Path
+
+
 class BrainRepositoryInvariantError(RuntimeError):
     """Raised when a strict repository mutation receives invalid input."""
 
@@ -624,11 +638,72 @@ class BrainRepository:
             _raise_if_lock_contention("write_attachment_bytes", target, exc)
             raise AssertionError("unreachable") from exc
 
-    def migrate_legacy_attachment_context(self, target_dir: Path, *, source_dir: str, primary_canonical_id: str) -> int:
-        """Best-effort migration from legacy attachment locations into .brain-sync/."""
-        area_dir = self._require_dir_under_knowledge_root(target_dir, operation="migrate_legacy_attachment_context")
-        migrated = 0
+    def write_attachment_bytes_with_rollback(
+        self,
+        *,
+        target_dir: Path,
+        local_path: str,
+        data: bytes,
+    ) -> AttachmentWriteRollback:
+        """Persist attachment bytes and capture enough prior state to undo the write."""
+        safe_target_dir = self._require_dir_under_knowledge_root(
+            target_dir,
+            operation="write_attachment_bytes_with_rollback(target_dir)",
+        )
+        rel_path = self._normalize_relative_portable_path(
+            local_path,
+            operation="write_attachment_bytes_with_rollback(local_path)",
+        )
+        target = safe_target_dir / Path(rel_path)
+        self._require_under_knowledge_root(target, operation="write_attachment_bytes_with_rollback")
+        existed = path_exists(target)
+        previous_data = read_bytes(target) if existed else None
+        changed = self.write_attachment_bytes(target_dir=safe_target_dir, local_path=rel_path, data=data)
+        return AttachmentWriteRollback(
+            local_path=rel_path,
+            changed=changed,
+            existed=existed,
+            previous_data=previous_data,
+        )
+
+    def rollback_attachment_write(self, *, target_dir: Path, rollback: AttachmentWriteRollback) -> None:
+        """Undo one attachment write captured by write_attachment_bytes_with_rollback()."""
+        if not rollback.changed:
+            return
+
+        safe_target_dir = self._require_dir_under_knowledge_root(
+            target_dir,
+            operation="rollback_attachment_write(target_dir)",
+        )
+        rel_path = self._normalize_relative_portable_path(
+            rollback.local_path,
+            operation="rollback_attachment_write(local_path)",
+        )
+        target = safe_target_dir / Path(rel_path)
+        self._require_under_knowledge_root(target, operation="rollback_attachment_write")
+
+        if rollback.existed:
+            assert rollback.previous_data is not None
+            atomic_write_bytes(target, rollback.previous_data)
+            return
+
+        if path_exists(target):
+            target.unlink()
+
+    def migrate_legacy_attachment_context_with_rollback(
+        self,
+        target_dir: Path,
+        *,
+        source_dir: str,
+        primary_canonical_id: str,
+    ) -> tuple[AttachmentMigrationRollback, ...]:
+        """Move legacy attachment files into managed locations and return rollback metadata."""
+        area_dir = self._require_dir_under_knowledge_root(
+            target_dir,
+            operation="migrate_legacy_attachment_context_with_rollback",
+        )
         new_dir = ensure_attachment_dir_for_source_dir(area_dir, source_dir)
+        rollbacks: list[AttachmentMigrationRollback] = []
 
         legacy_root = area_dir / "_sync-context"
         if path_is_dir(legacy_root):
@@ -637,8 +712,9 @@ class BrainRepository:
                 for file_path in iterdir_paths(legacy_att_dir):
                     if not path_is_file(file_path):
                         continue
-                    shutil.move(str(win_long_path(file_path)), str(win_long_path(new_dir / file_path.name)))
-                    migrated += 1
+                    dest_path = new_dir / file_path.name
+                    shutil.move(str(win_long_path(file_path)), str(win_long_path(dest_path)))
+                    rollbacks.append(AttachmentMigrationRollback(source_path=file_path, dest_path=dest_path))
             shutil.rmtree(str(win_long_path(legacy_root)))
 
         bare_id = primary_canonical_id.split(":", 1)[1]
@@ -647,11 +723,40 @@ class BrainRepository:
             for file_path in iterdir_paths(legacy_attachment_dir):
                 if not path_is_file(file_path):
                     continue
-                shutil.move(str(win_long_path(file_path)), str(win_long_path(new_dir / file_path.name)))
-                migrated += 1
+                dest_path = new_dir / file_path.name
+                shutil.move(str(win_long_path(file_path)), str(win_long_path(dest_path)))
+                rollbacks.append(AttachmentMigrationRollback(source_path=file_path, dest_path=dest_path))
             legacy_attachment_dir.rmdir()
 
-        return migrated
+        return tuple(rollbacks)
+
+    def rollback_legacy_attachment_context(
+        self,
+        target_dir: Path,
+        *,
+        rollbacks: tuple[AttachmentMigrationRollback, ...],
+    ) -> None:
+        """Undo one legacy-attachment migration captured by migrate_legacy_attachment_context_with_rollback()."""
+        area_dir = self._require_dir_under_knowledge_root(
+            target_dir,
+            operation="rollback_legacy_attachment_context",
+        )
+        self._require_under_knowledge_root(area_dir, operation="rollback_legacy_attachment_context")
+        for rollback in reversed(rollbacks):
+            if not path_exists(rollback.dest_path):
+                continue
+            rollback.source_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(win_long_path(rollback.dest_path)), str(win_long_path(rollback.source_path)))
+
+    def migrate_legacy_attachment_context(self, target_dir: Path, *, source_dir: str, primary_canonical_id: str) -> int:
+        """Best-effort migration from legacy attachment locations into .brain-sync/."""
+        return len(
+            self.migrate_legacy_attachment_context_with_rollback(
+                target_dir,
+                source_dir=source_dir,
+                primary_canonical_id=primary_canonical_id,
+            )
+        )
 
     def remove_legacy_context_dir(self, legacy_dir: Path) -> bool:
         """Delete one legacy `_sync-context/` directory under the knowledge tree."""

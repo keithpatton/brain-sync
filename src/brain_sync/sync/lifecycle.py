@@ -34,6 +34,7 @@ from brain_sync.runtime.repository import (
     load_sync_progress,
     record_operational_event,
     rename_knowledge_path_prefix,
+    renew_source_lifecycle_lease,
     save_child_discovery_request,
     save_source_lifecycle_runtime,
     source_lifecycle_commit_fence,
@@ -209,6 +210,33 @@ def _lease_expiry() -> str:
     from datetime import UTC, datetime, timedelta
 
     return (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+
+
+def _long_lease_expiry() -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+
+
+def _renew_owned_lease_or_raise_conflict(
+    root: Path,
+    canonical_id: str,
+    owner_id: str,
+    *,
+    lease_expires_utc: str,
+) -> None:
+    renewed, existing = renew_source_lifecycle_lease(
+        root,
+        canonical_id,
+        owner_id,
+        lease_expires_utc=lease_expires_utc,
+    )
+    if renewed:
+        return
+    raise SourceLifecycleLeaseConflictError(
+        canonical_id=canonical_id,
+        lease_owner=existing.lease_owner if existing is not None else None,
+    )
 
 
 def _lease_is_active(runtime_state: SourceLifecycleRuntime) -> bool:
@@ -399,7 +427,7 @@ def remove_source(
         root,
         canonical,
         owner_id,
-        lease_expires_utc=_lease_expiry(),
+        lease_expires_utc=_long_lease_expiry(),
     )
     if not acquired:
         return RemoveResult(
@@ -567,32 +595,50 @@ def process_prepared_source(
                 lease_owner=existing.lease_owner if existing is not None else None,
             )
 
+        target_dir = repository.ensure_knowledge_dir(source_state.target_path)
+        attachment_rollbacks = []
+        migration_rollbacks = ()
         if prepared.staged_managed_artifacts:
-            target_dir = repository.ensure_knowledge_dir(source_state.target_path)
-            if source_state.sync_attachments and prepared.source_type == "confluence":
-                repository.migrate_legacy_attachment_context(
-                    target_dir,
-                    source_dir=source_dir_id(prepared.canonical_id),
-                    primary_canonical_id=prepared.canonical_id,
-                )
-            for artifact in prepared.staged_managed_artifacts:
-                repository.write_attachment_bytes(
-                    target_dir=target_dir,
-                    local_path=artifact.local_path,
-                    data=artifact.data,
-                )
+            try:
+                if source_state.sync_attachments and prepared.source_type == "confluence":
+                    migration_rollbacks = repository.migrate_legacy_attachment_context_with_rollback(
+                        target_dir,
+                        source_dir=source_dir_id(prepared.canonical_id),
+                        primary_canonical_id=prepared.canonical_id,
+                    )
+                for artifact in prepared.staged_managed_artifacts:
+                    attachment_rollbacks.append(
+                        repository.write_attachment_bytes_with_rollback(
+                            target_dir=target_dir,
+                            local_path=artifact.local_path,
+                            data=artifact.data,
+                        )
+                    )
+            except Exception:
+                for rollback in reversed(attachment_rollbacks):
+                    repository.rollback_attachment_write(target_dir=target_dir, rollback=rollback)
+                if migration_rollbacks:
+                    repository.rollback_legacy_attachment_context(target_dir=target_dir, rollbacks=migration_rollbacks)
+                raise
 
-        materialization = repository.materialize_markdown(
-            knowledge_path=source_state.target_path,
-            filename=prepared.filename,
-            canonical_id=prepared.canonical_id,
-            markdown=prepared.markdown,
-            source_type=prepared.source_type,
-            source_url=prepared.source_url,
-            content_hash=prepared.content_hash,
-            remote_fingerprint=prepared.remote_fingerprint,
-            materialized_utc=prepared.checked_utc,
-        )
+        try:
+            materialization = repository.materialize_markdown(
+                knowledge_path=source_state.target_path,
+                filename=prepared.filename,
+                canonical_id=prepared.canonical_id,
+                markdown=prepared.markdown,
+                source_type=prepared.source_type,
+                source_url=prepared.source_url,
+                content_hash=prepared.content_hash,
+                remote_fingerprint=prepared.remote_fingerprint,
+                materialized_utc=prepared.checked_utc,
+            )
+        except Exception:
+            for rollback in reversed(attachment_rollbacks):
+                repository.rollback_attachment_write(target_dir=target_dir, rollback=rollback)
+            if migration_rollbacks:
+                repository.rollback_legacy_attachment_context(target_dir=target_dir, rollbacks=migration_rollbacks)
+            raise
         fence.ensure_source_polling()
         if lifecycle_owner_id is None:
             fence.delete_runtime_row()
@@ -743,8 +789,20 @@ def move_source(
         files_moved = False
         if old_path != to_path:
             files_moved = repository.move_knowledge_tree(old_path, to_path)
+            _renew_owned_lease_or_raise_conflict(
+                root,
+                canonical,
+                owner_id,
+                lease_expires_utc=_long_lease_expiry(),
+            )
             if not files_moved:
                 repository.move_source_attachment_dir(old_path, to_path, canonical)
+                _renew_owned_lease_or_raise_conflict(
+                    root,
+                    canonical,
+                    owner_id,
+                    lease_expires_utc=_long_lease_expiry(),
+                )
 
         manifest = read_source_manifest(root, canonical)
         if manifest is None:
@@ -754,6 +812,12 @@ def move_source(
                 new_path=to_path,
                 message=f"Source not found: {source}",
             )
+        _renew_owned_lease_or_raise_conflict(
+            root,
+            canonical,
+            owner_id,
+            lease_expires_utc=_long_lease_expiry(),
+        )
         found = repository.resolve_source_file(manifest).path
         if found is not None:
             repository.sync_manifest_to_found_path(canonical, found)
@@ -775,6 +839,16 @@ def move_source(
             old_path=old_path,
             new_path=to_path,
             files_moved=files_moved,
+        )
+    except SourceLifecycleLeaseConflictError as exc:
+        return MoveResult(
+            result_state="lease_conflict",
+            source=source,
+            canonical_id=canonical,
+            old_path=old_path,
+            new_path=to_path,
+            lease_owner=exc.lease_owner,
+            message=f"Source lifecycle lease is already held for {canonical}",
         )
     finally:
         with source_lifecycle_commit_fence(root, canonical) as fence:

@@ -123,7 +123,6 @@ _RULE_EXCEPTION_IMPORTS = {
     "src/brain_sync/query/placement.py": frozenset({"brain_sync.sources.docx"}),
     "src/brain_sync/sources/confluence/attachments.py": frozenset(
         {
-            "brain_sync.brain.fileops",
             "brain_sync.brain.repository",
             "brain_sync.sync.attachments",
         }

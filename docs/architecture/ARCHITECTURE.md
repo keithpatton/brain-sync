@@ -211,11 +211,11 @@ against the currently attached portable manifests and filesystem.
 
 The supported runtime model is intentionally simpler than full multi-runtime
 coordination: a portable brain may be attached by different runtimes over time,
-but only one active daemon attachment to a given brain is in contract at once.
+but the current config-dir runtime supports only one active daemon at once.
 Runtime startup now enforces that contract by refusing a second live daemon
-attachment before it enters reconcile or poll work. The durable exclusion is
-the per-brain runtime guard, while `daemon.json` remains an observational
-status snapshot. That keeps lifecycle authority and recovery logic centered on
+before it enters reconcile or poll work. The durable exclusion is the
+config-dir runtime guard, while `daemon.json` remains an observational status
+snapshot. That keeps lifecycle authority and recovery logic centered on
 portable truth plus fresh local observation rather than cross-daemon
 coordination.
 

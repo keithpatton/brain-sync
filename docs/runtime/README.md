@@ -14,10 +14,10 @@ For the current architecture stage, one runtime config directory owns one
 active brain. If `config.json` still contains multiple registered roots, only
 the first entry is treated as active runtime state.
 
-That current single-brain runtime model coexists with a per-brain daemon
+That current single-brain runtime model coexists with a config-dir daemon
 startup guard: `daemon.json` is the latest daemon status snapshot for the
-config directory, while durable same-brain startup exclusion is keyed by the
-attached brain root under `daemon-locks/`.
+config directory, while durable startup exclusion for that runtime lives in
+`daemon.lock`.
 
 Runtime schema `v28` splits active polling from source lifecycle coordination:
 

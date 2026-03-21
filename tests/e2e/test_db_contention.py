@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from brain_sync.application.init import init_brain
 from tests.e2e.harness.assertions import assert_brain_consistent
 from tests.e2e.harness.brain import BrainFixture, seed_knowledge_tree
 from tests.e2e.harness.cli import CliRunner
@@ -276,7 +277,7 @@ class TestReconcileWhileDaemonRunning:
 
 
 class TestDoubleDaemonOwnership:
-    """Two daemons against the same brain — second start is refused."""
+    """Only one daemon may use a runtime config dir at once."""
 
     def test_barriered_simultaneous_start_allows_only_one_ready(
         self,
@@ -342,3 +343,30 @@ class TestDoubleDaemonOwnership:
             d1.shutdown()
 
         assert_brain_consistent(brain.root)
+
+    def test_second_daemon_for_different_brain_same_config_dir_is_refused(
+        self,
+        brain: BrainFixture,
+        config_dir: Path,
+        capture_dir: Path,
+    ):
+        other_root = brain.root.parent / "brain-two"
+        other_root.mkdir()
+        init_brain(other_root)
+
+        d1 = DaemonProcess(brain.root, config_dir, capture_dir)
+        d2 = DaemonProcess(other_root, config_dir, capture_dir)
+        try:
+            d1.start()
+            d1.wait_for_ready()
+
+            d2.start()
+            time.sleep(3)
+            assert not d2.is_running()
+            assert "already running" in d2.stderr_text.lower()
+        finally:
+            d2.shutdown()
+            d1.shutdown()
+
+        assert_brain_consistent(brain.root)
+        assert_brain_consistent(other_root)

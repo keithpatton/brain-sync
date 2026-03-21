@@ -7,7 +7,6 @@ portable brain plane under the brain root.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -2476,10 +2475,8 @@ def _daemon_root_id(root: Path) -> str:
     return value
 
 
-def _daemon_guard_path(root: Path) -> Path:
-    root_id = _daemon_root_id(root)
-    digest = hashlib.sha256(root_id.encode("utf-8")).hexdigest()
-    return DAEMON_STATUS_FILE.parent / "daemon-locks" / f"{digest}.lock"
+def _daemon_guard_path() -> Path:
+    return DAEMON_STATUS_FILE.parent / "daemon.lock"
 
 
 def _lock_daemon_handle(handle: IO[str]) -> bool:
@@ -2527,7 +2524,7 @@ def _read_daemon_guard_payload(lock_path: Path) -> dict | None:
 
 
 def acquire_daemon_start_guard(root: Path) -> DaemonStartGuard:
-    lock_path = _daemon_guard_path(root)
+    lock_path = _daemon_guard_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
     if not _lock_daemon_handle(handle):

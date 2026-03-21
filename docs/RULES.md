@@ -102,13 +102,12 @@ observation.
 Portable brains must remain valid across process restarts, runtime rebuilds,
 and later attachment by a different runtime instance over time.
 
-brain-sync supports at most one active daemon attachment to a given
-[brain root](GLOSSARY.md#brain-root) at a time. A second daemon start against
-the same attached brain must be refused at startup rather than allowed to
-coexist opportunistically. Simultaneous daemon attachments against the same
-brain are outside the supported contract and must not be relied on for
-correctness. `daemon.json` is runtime status only; durable startup exclusion
-must come from the same-brain guard itself.
+brain-sync supports at most one active daemon per runtime config directory at a
+time. In the current single-brain runtime model, that also means at most one
+active daemon attachment to the attached brain. A second daemon start against
+the same config dir must be refused at startup rather than allowed to coexist
+opportunistically. `daemon.json` is runtime status only; durable startup
+exclusion must come from the config-dir daemon guard itself.
 
 ### Managed Namespace
 
@@ -211,7 +210,7 @@ The following off-graph imports are intentionally allowed today:
 | File | Allowed non-graph imports | Why |
 |---|---|---|
 | `src/brain_sync/query/placement.py` | `brain_sync.sources.docx` | Local `.docx` excerpt extraction for placement heuristics |
-| `src/brain_sync/sources/confluence/attachments.py` | `brain_sync.brain.fileops`, `brain_sync.brain.repository`, `brain_sync.sync.attachments` | Provider-specific attachment discovery bridging to sync-owned materialization |
+| `src/brain_sync/sources/confluence/attachments.py` | `brain_sync.brain.repository`, `brain_sync.sync.attachments` | Provider-specific attachment discovery bridging to sync-owned materialization |
 | `src/brain_sync/sources/confluence/auth.py` | `brain_sync.runtime.config` | Provider auth may read and write machine-local config |
 | `src/brain_sync/sources/confluence/rest.py` | `brain_sync.runtime.config` | Provider REST auth loading needs machine-local config |
 | `src/brain_sync/sources/googledocs/auth.py` | `brain_sync.runtime.config` | OAuth token loading and persistence are machine-local |

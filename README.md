@@ -85,9 +85,10 @@ brain-sync run --root ~/my-brain
 ```
 
 The daemon reconciles offline changes, syncs sources, watches `knowledge/`,
-and regenerates summaries as needed. If another live brain-sync daemon is
-already attached to the same brain, the new start is refused immediately by
-the runtime startup guard.
+and regenerates summaries as needed. The current runtime model allows only one
+active daemon per runtime config directory, so if another live brain-sync
+daemon is already using the same config dir, the new start is refused
+immediately by the runtime startup guard.
 
 ### Add a Source
 
