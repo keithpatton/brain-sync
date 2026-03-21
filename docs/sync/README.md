@@ -39,7 +39,9 @@ daemon, and they do not start one implicitly.
 
 A portable brain may be attached by different processes over time, but the
 supported contract allows only one active daemon attachment per brain at once.
-The normative rule lives in [../RULES.md](../RULES.md).
+A second daemon start against the same brain is refused before it begins
+reconcile or polling work. The normative rule lives in
+[../RULES.md](../RULES.md).
 
 For synced sources, the main entry paths are:
 
@@ -62,6 +64,17 @@ Another important split is that missing sources are still registered, but they
 are excluded from active polling until they are rediscovered locally or
 finalized explicitly.
 
+Lifecycle-owning entry paths also carry a session boundary:
+
+- CLI lifecycle commands create a fresh lifecycle session per invocation
+- the daemon keeps one lifecycle session for the life of the daemon run
+- the MCP server keeps one lifecycle session for the life of the server
+
+That matters most for explicit finalization. Missing confirmation counts may be
+inherited from an earlier process, but destructive finalization still requires
+a fresh missing confirmation in the current lifecycle session after local
+revalidation.
+
 ## Event Matrix
 
 This matrix is the applicability view of synced-source lifecycle behavior.
@@ -76,10 +89,10 @@ This matrix is the applicability view of synced-source lifecycle behavior.
 |---|---|---|---|---|---|---|---|---|---|---|
 | CLI/MCP | Add Source | Single File | Command |  |  |  |  | x | `awaiting` | Creates a new manifest plus polling state. |
 | CLI/MCP | Update Source | Single File | Command | x | x | x | x |  | unchanged | Updates sync settings and child-discovery intent, not the durable knowledge lifecycle directly. |
-| CLI/MCP | Move Source | Single File | Command | x | x | x | x |  | state-dependent | State unchanged except `materialized` -> `stale`. |
-| CLI/MCP | Remove Source | Single File | Command | x | x | x | x |  | `unregistered` | Removes registration. Destructive cleanup may remove the materialized file and source-owned attachments. |
-| CLI/MCP | Reconcile | Knowledge Tree | Command | x | x | x | x |  | conservative repair | Uses the same reconcile engine as daemon startup. `awaiting` usually stays `awaiting`; present registered sources become or remain `stale`; absent registered sources become or remain `missing`; missing sources that reappear become `stale`. |
-| CLI/MCP | Finalize Missing | Single File | Command |  |  |  | x |  | usually `unregistered`, or `stale` if rediscovered | Finalization rechecks local presence first. If the source file is rediscovered locally, the source is restored to `stale` instead of being unregistered. |
+| CLI/MCP | Move Source | Single File | Command | x | x | x | x |  | state-dependent | State unchanged except `materialized` -> `stale`. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict` and does not mutate the source. |
+| CLI/MCP | Remove Source | Single File | Command | x | x | x | x |  | state-dependent | Usually unregisters the source and may remove the materialized file and source-owned attachments. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict`. |
+| CLI/MCP | Reconcile | Knowledge Tree | Command | x | x | x | x |  | conservative repair | Uses the same reconcile engine as daemon startup. `awaiting` usually stays `awaiting`; direct-path present registered sources stay in their current settled state; repaired or rediscovered present sources become `stale`; absent registered sources become or remain `missing`; missing sources that reappear become `stale`. |
+| CLI/MCP | Finalize Missing | Single File | Command |  |  |  | x |  | state-dependent | Finalization rechecks local presence first. If the source file is rediscovered locally, the source is restored to `stale` instead of being unregistered. In a new lifecycle session, the first finalize call may still return `pending_confirmation` even when older missing history already exists. |
 | User | Synced File Moved | Single File | Daemon Watcher |  | x | x |  |  | `stale` | The watcher observes local drift and reconcile repairs the manifest path to the found file. |
 | User | Synced File Deleted | Single File | Daemon Watcher |  | x | x |  |  | `missing` | This is first-stage missing only. Later explicit finalization may unregister the source. |
 | User | Source Area Moved | Knowledge Area | Daemon Watcher | x | x | x | x |  | state-dependent | Folder moves have a fast path. `awaiting` stays `awaiting`; `materialized` and `stale` end `stale`; `missing` stays `missing`. |
@@ -139,7 +152,7 @@ stateDiagram-v2
     Materialized --> Materialized: Remote Source - Changed - Daemon Poll
     Materialized --> Materialized: Remote Source - Unchanged - Daemon Poll
     Materialized --> Stale: CLI/MCP - Move Source - Command
-    Materialized --> Stale: CLI/MCP - Reconcile - Command
+    Materialized --> Materialized: CLI/MCP - Reconcile - Command
     Materialized --> Stale: User - Synced File Moved - Watcher/Reconcile
     Materialized --> Stale: User - Source Area Moved - Watcher/Reconcile
     Materialized --> Missing: User - Synced File Deleted - Watcher/Reconcile
@@ -177,6 +190,10 @@ Two practical readings help:
 - `missing` is the "still registered, but do not treat as present or actively
   poll" state.
 
+Handled `lease_conflict` and `pending_confirmation` results are command
+outcomes rather than durable `knowledge_state` values, so they do not appear
+as separate nodes in the state diagram.
+
 ## Agent Reading Guide
 
 Use this page in the following order:
@@ -211,11 +228,16 @@ These are the main reading rules that help agents reason correctly:
   remote source drift.
 - `missing` is still registered state, not removal.
 - `Finalize Missing` is only meaningful from `missing`, and it can either
-  unregister the source or restore it to `stale` if the file is rediscovered
-  during preflight.
+  unregister the source, remain `missing` with `pending_confirmation`, or
+  restore it to `stale` if the file is rediscovered during preflight.
 - `Remove Source` is the explicit unregistering path from any registered state.
 - if a source path changes without durable content being resettled, the normal
   result is `stale`, not immediate `materialized`.
+- watcher and reconcile are observational paths: if they encounter an active
+  conflicting lifecycle lease, they revalidate and skip that source instead of
+  forcing a repair over the lease holder.
+- operational events are useful for diagnostics and testing, but they are
+  best-effort rather than exact-once audit records.
 
 This page summarizes those interpretation rules for design and testing. The
 normative source of truth for guarantees and state contracts remains

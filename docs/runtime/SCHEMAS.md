@@ -1,7 +1,7 @@
 # Runtime Schemas
 
 This document defines machine-local runtime artifacts for the supported
-Brain Format `1.2` / runtime schema `v27` release.
+Brain Format `1.2` / runtime schema `v28` release.
 
 Runtime artifacts live outside the portable brain. They support execution,
 coordination, and observability; they do not define portable brain meaning.
@@ -98,10 +98,10 @@ Runtime DB path:
 ~/.brain-sync/db/brain-sync.sqlite
 ```
 
-The current schema version is `27`, stored in `meta.schema_version`.
+The current schema version is `28`, stored in `meta.schema_version`.
 
-Supported earlier runtime schemas `v23`, `v24`, `v25`, and `v26` migrate in
-place to `v27`. Unsupported or provisional DB shapes are rebuilt.
+Supported earlier runtime schemas `v23`, `v24`, `v25`, `v26`, and `v27`
+migrate in place to `v28`. Unsupported or provisional DB shapes are rebuilt.
 
 SQLite conventions used here:
 
@@ -132,6 +132,17 @@ Current table roles:
 Required row:
 
 - `schema_version`
+
+Current known optional rows:
+
+- `lifecycle_session_id` - current lifecycle-session identifier for the
+  attached lifecycle-owning process
+- `lifecycle_session_owner_kind` - lifecycle-session owner kind such as
+  `cli`, `daemon`, or `mcp`
+
+Those lifecycle-session rows are machine-local runtime hints only. They may be
+replaced by later process attachment and must not become portable lifecycle
+authority.
 
 ### `sync_polling`
 
@@ -171,6 +182,7 @@ source-level lifecycle lease.
 | `local_missing_first_observed_utc` | text or null | UTC timestamp of the first local missing observation retained in this row. |
 | `local_missing_last_confirmed_utc` | text or null | UTC timestamp of the most recent local missing confirmation retained in this row. |
 | `missing_confirmation_count` | integer | Count of local missing confirmations retained in this row. |
+| `last_missing_confirmation_session_id` | text or null | Lifecycle session that wrote the most recent retained missing confirmation. |
 | `lease_owner` | text or null | Source-level lifecycle lease owner when one is active. |
 | `lease_expires_utc` | text or null | UTC expiry time for the current source-level lifecycle lease. |
 
@@ -178,6 +190,12 @@ Rows are cached local history, not portable truth. After process start or
 brain re-attachment, an existing row may inform revalidation, but it must not
 by itself assert current source state, preserve cross-process finalization
 eligibility, or authorize destructive mutation.
+
+Explicit finalization eligibility depends on fresh local revalidation in the
+current lifecycle session. In practice that means inherited confirmation counts
+alone are insufficient: the latest retained missing confirmation must have been
+recorded by the current lifecycle session before destructive finalization may
+proceed.
 
 ### `regen_locks`
 
@@ -214,7 +232,8 @@ eligibility, or authorize destructive mutation.
 | `details_json` | text or null | Optional JSON payload. |
 
 Operational events are append-only diagnostics only. They are not a replay
-source and must not become lifecycle authority.
+source, may be missing or duplicated, and must not become lifecycle
+authority.
 
 ### `token_events`
 

@@ -16,7 +16,7 @@ from brain_sync.application.sources import add_source
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import read_source_manifest
 from brain_sync.runtime.child_requests import load_child_discovery_request
-from brain_sync.runtime.repository import load_source_lifecycle_runtime
+from brain_sync.runtime.repository import DaemonAlreadyRunningError, load_source_lifecycle_runtime
 from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.daemon import _sync_scheduler_state, run
 
@@ -257,8 +257,9 @@ async def test_daemon_uses_non_finalizing_reconcile_for_watcher_events(tmp_path:
 
     observed_finalize_flags: list[bool] = []
 
-    def _fake_reconcile(root_arg: Path, *, finalize_missing: bool = True):
+    def _fake_reconcile(root_arg: Path, *, finalize_missing: bool = True, lifecycle_session_id: str | None = None):
         assert root_arg == root
+        assert lifecycle_session_id is not None
         observed_finalize_flags.append(finalize_missing)
         return _FakeSourceReconcileResult(updated=[], not_found=[])
 
@@ -357,3 +358,19 @@ async def test_daemon_marks_live_local_delete_missing_before_due_poll(tmp_path: 
     assert runtime_state is not None
     assert runtime_state.missing_confirmation_count >= 1
     assert result.canonical_id not in load_state(root).sources
+
+
+@pytest.mark.asyncio
+async def test_daemon_refuses_second_active_daemon(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    with (
+        patch("brain_sync.sync.daemon.ensure_no_active_daemon", side_effect=DaemonAlreadyRunningError(4242)),
+        patch("brain_sync.sync.daemon.write_daemon_status") as mock_status,
+    ):
+        with pytest.raises(DaemonAlreadyRunningError):
+            await run(root)
+
+    mock_status.assert_not_called()

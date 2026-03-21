@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -69,6 +68,7 @@ from brain_sync.application.regen import RegenFailed, run_regen
 from brain_sync.application.roots import resolve_active_root
 from brain_sync.application.sources import (
     FinalizationResult,
+    InvalidCanonicalIdError,
     InvalidChildDiscoveryRequestError,
     SourceAlreadyExistsError,
     SourceNotFoundError,
@@ -81,6 +81,7 @@ from brain_sync.application.sources import (
     update_source,
 )
 from brain_sync.application.status import get_usage_summary
+from brain_sync.runtime.repository import ensure_lifecycle_session
 
 log = logging.getLogger(__name__)
 
@@ -90,14 +91,11 @@ def _drop_none_values(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def _looks_like_source_canonical_id(value: str) -> bool:
-    if not value or value.strip() != value:
-        return False
-    if "://" in value or "/" in value or "\\" in value or "," in value or " " in value:
-        return False
-    if re.match(r"^[A-Za-z]:", value):
-        return False
-    return ":" in value
+def _result_payload(result) -> dict:
+    """Convert an internal lifecycle result into the public MCP success shape."""
+    payload = asdict(result)
+    payload.pop("source", None)
+    return _drop_none_values({"status": "ok", **payload})
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +115,7 @@ class BrainRuntime:
     root: Path
     area_index: AreaIndex
     regen_lock: asyncio.Lock
+    lifecycle_session_id: str
 
 
 @asynccontextmanager
@@ -124,8 +123,14 @@ async def _brain_lifespan(_app: FastMCP) -> AsyncIterator[BrainRuntime]:
     root = resolve_active_root()
     area_index = load_area_index(root)
     regen_lock = asyncio.Lock()
+    lifecycle_session_id = ensure_lifecycle_session(root, owner_kind="mcp")
     log.info("brain-sync MCP started, root=%s", root)
-    yield BrainRuntime(root=root, area_index=area_index, regen_lock=regen_lock)
+    yield BrainRuntime(
+        root=root,
+        area_index=area_index,
+        regen_lock=regen_lock,
+        lifecycle_session_id=lifecycle_session_id,
+    )
 
 
 server = FastMCP("brain-sync", lifespan=_brain_lifespan)
@@ -290,20 +295,21 @@ def brain_sync_remove_file(ctx: Context, path: str) -> dict:
 def brain_sync_remove(ctx: Context, source: str, delete_files: bool = False) -> dict:
     """Unregister a sync source."""
     rt = _runtime(ctx)
-    try:
-        result = remove_source(
-            root=rt.root,
-            source=source,
-            delete_files=delete_files,
-        )
+    result = remove_source(
+        root=rt.root,
+        source=source,
+        delete_files=delete_files,
+    )
+    if result.result_state == "removed":
         _mark_cached_index_stale(rt)
-        return {"status": "ok", **asdict(result)}
-    except SourceNotFoundError:
+        return _result_payload(result)
+    if result.result_state == "not_found":
         return {
             "status": "error",
             "error": "source_not_found",
-            "source": source,
+            "source": result.source,
         }
+    return _result_payload(result)
 
 
 @server.tool(
@@ -350,21 +356,21 @@ def brain_sync_update(
 def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
     """Move a sync source to a new knowledge path."""
     rt = _runtime(ctx)
-    try:
-        result = move_source(
-            root=rt.root,
-            source=source,
-            to_path=to_path,
-        )
-        if result.files_moved:
-            _mark_cached_index_stale(rt)
-        return {"status": "ok", **asdict(result)}
-    except SourceNotFoundError:
+    result = move_source(
+        root=rt.root,
+        source=source,
+        to_path=to_path,
+    )
+    if result.result_state == "moved":
+        _mark_cached_index_stale(rt)
+        return _result_payload(result)
+    if result.result_state == "not_found":
         return {
             "status": "error",
             "error": "source_not_found",
-            "source": source,
+            "source": result.source,
         }
+    return _result_payload(result)
 
 
 @server.tool(
@@ -373,13 +379,18 @@ def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
 )
 def brain_sync_finalize_missing(ctx: Context, canonical_id: str) -> dict:
     rt = _runtime(ctx)
-    if not _looks_like_source_canonical_id(canonical_id):
+    try:
+        result: FinalizationResult = finalize_missing(
+            root=rt.root,
+            canonical_id=canonical_id,
+            lifecycle_session_id=rt.lifecycle_session_id,
+        )
+    except InvalidCanonicalIdError:
         return {
             "status": "error",
             "error": "invalid_canonical_id",
             "message": "brain_sync_finalize_missing requires a canonical_id, not a URL or bulk target.",
         }
-    result: FinalizationResult = finalize_missing(root=rt.root, canonical_id=canonical_id)
     payload = _drop_none_values({"status": "ok", **asdict(result)})
     if result.result_state == "not_found":
         payload["status"] = "error"
@@ -398,7 +409,11 @@ def brain_sync_finalize_missing(ctx: Context, canonical_id: str) -> dict:
 def brain_sync_reconcile(ctx: Context) -> dict:
     """Reconcile DB target paths with where files actually are on disk."""
     rt = _runtime(ctx)
-    result = reconcile_brain(rt.root)
+    result = reconcile_brain(
+        rt.root,
+        lifecycle_session_id=rt.lifecycle_session_id,
+        lifecycle_session_owner_kind="mcp",
+    )
     if result.has_changes:
         _mark_cached_index_stale(rt)
     return {

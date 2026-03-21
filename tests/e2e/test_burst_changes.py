@@ -78,15 +78,11 @@ class TestDaemonRestart:
 
 
 class TestDoubleDaemonStart:
-    """Second daemon start should handle gracefully."""
+    """Second daemon start is refused explicitly."""
 
     @pytest.mark.timeout(30)
-    def test_double_start_no_crash(self, brain: BrainFixture, config_dir, capture_dir):
-        """Two daemons against the same brain should not produce unhandled crashes.
-
-        It is acceptable for one or both to exit cleanly (e.g., DB lock refusal).
-        The key invariant is no unhandled exceptions.
-        """
+    def test_second_start_is_refused(self, brain: BrainFixture, config_dir, capture_dir):
+        """A second daemon against the same brain is rejected at startup."""
         from tests.e2e.harness.daemon import DaemonProcess
 
         d1 = DaemonProcess(brain.root, config_dir, capture_dir)
@@ -96,10 +92,10 @@ class TestDoubleDaemonStart:
             d1.start()
             d1.wait_for_ready(timeout=15)
             d2.start()
-            # Give second daemon time to start or fail
+            # Give second daemon time to fail closed.
             time.sleep(3)
-            # Both may have exited — that's OK (lock contention).
-            # The invariant: brain state is not corrupted.
+            assert not d2.is_running()
+            assert "already running" in d2.stderr_text.lower()
             assert brain.db_path.exists()
         finally:
             d1.shutdown()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,7 @@ from brain_sync.sync.source_state import SourceAdminView as SourceInfo
 __all__ = [
     "AddResult",
     "FinalizationResult",
+    "InvalidCanonicalIdError",
     "InvalidChildDiscoveryRequestError",
     "MigrateResult",
     "MoveResult",
@@ -71,6 +73,33 @@ __all__ = [
     "remove_source",
     "update_source",
 ]
+
+_EXACT_SOURCE_CANONICAL_ID_PATTERN = re.compile(r"^(?:confluence:\d+|gdoc:[A-Za-z0-9_-]+|test:[A-Za-z0-9_-]+)$")
+
+
+class InvalidCanonicalIdError(ValueError):
+    def __init__(self, canonical_id: str):
+        self.canonical_id = canonical_id
+        super().__init__(f"Invalid canonical ID: {canonical_id!r}")
+
+
+def require_exact_source_canonical_id(canonical_id: str) -> str:
+    if not canonical_id or canonical_id.strip() != canonical_id:
+        raise InvalidCanonicalIdError(canonical_id)
+    has_invalid_separator = (
+        "://" in canonical_id
+        or "/" in canonical_id
+        or "\\" in canonical_id
+        or "," in canonical_id
+        or " " in canonical_id
+    )
+    if has_invalid_separator:
+        raise InvalidCanonicalIdError(canonical_id)
+    if re.match(r"^[A-Za-z]:", canonical_id):
+        raise InvalidCanonicalIdError(canonical_id)
+    if _EXACT_SOURCE_CANONICAL_ID_PATTERN.fullmatch(canonical_id) is None:
+        raise InvalidCanonicalIdError(canonical_id)
+    return canonical_id
 
 
 def check_source_exists(root: Path, url: str) -> SourceAlreadyExistsError | None:
@@ -145,17 +174,45 @@ def mark_source_missing(
     canonical_id: str,
     missing_since_utc: str | None = None,
     outcome: str,
+    lifecycle_session_id: str | None = None,
 ) -> bool:
     del missing_since_utc
-    return observe_missing_source(root, canonical_id=canonical_id, outcome=outcome) is not None
+    return (
+        observe_missing_source(
+            root,
+            canonical_id=canonical_id,
+            outcome=outcome,
+            lifecycle_session_id=lifecycle_session_id,
+        )
+        is not None
+    )
 
 
-def reconcile_sources(root: Path | None = None, *, finalize_missing: bool = False) -> ReconcileResult:
-    return sync_reconcile_sources(_require_root(root), finalize_missing=finalize_missing)
+def reconcile_sources(
+    root: Path | None = None,
+    *,
+    finalize_missing: bool = False,
+    lifecycle_session_id: str | None = None,
+) -> ReconcileResult:
+    return sync_reconcile_sources(
+        _require_root(root),
+        finalize_missing=finalize_missing,
+        lifecycle_session_id=lifecycle_session_id,
+    )
 
 
-def finalize_missing(root: Path | None = None, *, canonical_id: str) -> FinalizationResult:
-    return sync_finalize_missing(_require_root(root), canonical_id=canonical_id)
+def finalize_missing(
+    root: Path | None = None,
+    *,
+    canonical_id: str,
+    lifecycle_session_id: str | None = None,
+) -> FinalizationResult:
+    canonical_id = require_exact_source_canonical_id(canonical_id)
+    return sync_finalize_missing(
+        _require_root(root),
+        canonical_id=canonical_id,
+        lifecycle_session_id=lifecycle_session_id,
+    )
 
 
 @dataclass(frozen=True)

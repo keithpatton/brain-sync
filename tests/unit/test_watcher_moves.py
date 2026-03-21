@@ -11,6 +11,7 @@ from brain_sync.application.init import init_brain
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
 from brain_sync.application.sync_events import apply_folder_move
 from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
+from brain_sync.runtime.repository import acquire_source_lifecycle_lease
 from brain_sync.sync.watcher import FolderMove, KnowledgeEventHandler
 
 pytestmark = pytest.mark.unit
@@ -100,6 +101,55 @@ class TestApplyFolderMove:
         apply_folder_move(brain, move=FolderMove(src=outside_src.resolve(), dest=outside_dest.resolve()))
 
         assert outside_src.exists()
+
+    def test_skips_leased_sources_individually(self, brain: Path) -> None:
+        write_source_manifest(
+            brain,
+            SourceManifest(
+                version=MANIFEST_VERSION,
+                canonical_id="confluence:123",
+                source_url="https://example.com/123",
+                source_type="confluence",
+                sync_attachments=False,
+                knowledge_path="old-name/c123.md",
+                knowledge_state="awaiting",
+            ),
+        )
+        write_source_manifest(
+            brain,
+            SourceManifest(
+                version=MANIFEST_VERSION,
+                canonical_id="confluence:456",
+                source_url="https://example.com/456",
+                source_type="confluence",
+                sync_attachments=False,
+                knowledge_path="old-name/c456.md",
+                knowledge_state="awaiting",
+            ),
+        )
+
+        old_dir = brain / "knowledge" / "old-name"
+        old_dir.mkdir(parents=True)
+        new_dir = brain / "knowledge" / "new-name"
+        shutil.move(str(old_dir), str(new_dir))
+
+        acquired, _existing = acquire_source_lifecycle_lease(
+            brain,
+            "confluence:123",
+            "move-owner",
+            lease_expires_utc="2099-01-01T00:00:00+00:00",
+        )
+        assert acquired is True
+
+        apply_folder_move(brain, move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
+
+        leased = read_source_manifest(brain, "confluence:123")
+        free = read_source_manifest(brain, "confluence:456")
+
+        assert leased is not None
+        assert leased.knowledge_path == "old-name/c123.md"
+        assert free is not None
+        assert free.knowledge_path == "new-name/c456.md"
 
 
 class TestOnMovedPreservesRawPaths:

@@ -87,7 +87,7 @@ def handle_run(args) -> None:
         log.error("--root '%s' is not a directory", root)
         sys.exit(1)
 
-    from brain_sync.sync.daemon import run
+    from brain_sync.sync.daemon import DaemonAlreadyRunningError, run
 
     loop = asyncio.new_event_loop()
 
@@ -104,6 +104,9 @@ def handle_run(args) -> None:
 
     try:
         loop.run_until_complete(run(root))
+    except DaemonAlreadyRunningError as e:
+        log.error("%s", e)
+        sys.exit(1)
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:
@@ -390,7 +393,7 @@ def handle_remove_file(args) -> None:
 
 
 def handle_remove(args) -> None:
-    from brain_sync.application.sources import SourceNotFoundError, remove_source
+    from brain_sync.application.sources import remove_source
 
     root = _resolve_root_or_exit(args)
     try:
@@ -399,19 +402,25 @@ def handle_remove(args) -> None:
             source=args.source,
             delete_files=args.delete_files,
         )
-    except SourceNotFoundError as e:
-        log.warning("Source not found: %s", e.source)
-        return
     except BrainNotFoundError as e:
         log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
-    log.info("Removing source: %s", result.canonical_id)
-    log.info("  URL: %s", result.source_url)
-    log.info("  Path: knowledge/%s", result.target_path)
+    log.info("Result: %s", result.result_state)
+    if result.canonical_id:
+        log.info("  Canonical ID: %s", result.canonical_id)
+    if result.source_url:
+        log.info("  URL: %s", result.source_url)
+    if result.target_path:
+        log.info("  Path: knowledge/%s", result.target_path)
+    if result.lease_owner:
+        log.info("  Lease owner: %s", result.lease_owner)
+    if result.message:
+        log.info("  %s", result.message)
     if result.files_deleted:
         log.info("  Deleted synced markdown and source-owned attachments from disk")
-    log.info("Source removed")
+    if result.result_state in {"lease_conflict", "not_found"}:
+        sys.exit(1)
 
 
 def handle_list(args) -> None:
@@ -449,7 +458,7 @@ def handle_list(args) -> None:
 
 
 def handle_move(args) -> None:
-    from brain_sync.application.sources import SourceNotFoundError, move_source
+    from brain_sync.application.sources import move_source
 
     try:
         result = move_source(
@@ -457,16 +466,22 @@ def handle_move(args) -> None:
             source=args.source,
             to_path=args.to_path,
         )
-    except SourceNotFoundError as e:
-        log.warning("Source not found: %s", e.source)
-        return
     except BrainNotFoundError as e:
         log.error("Cannot resolve brain root: %s", e)
         sys.exit(1)
 
+    log.info("Result: %s", result.result_state)
+    if result.canonical_id:
+        log.info("  Canonical ID: %s", result.canonical_id)
+    log.info("  Destination: knowledge/%s", result.new_path)
+    if result.lease_owner:
+        log.info("  Lease owner: %s", result.lease_owner)
+    if result.message:
+        log.info("  %s", result.message)
     if result.files_moved:
         log.info("Moved files: knowledge/%s -> knowledge/%s", result.old_path, result.new_path)
-    log.info("Source %s moved to knowledge/%s", result.canonical_id, result.new_path)
+    if result.result_state in {"lease_conflict", "not_found"}:
+        sys.exit(1)
 
 
 def handle_update(args) -> None:
@@ -544,13 +559,14 @@ def handle_reconcile(args) -> None:
 
 
 def handle_finalize_missing(args) -> None:
-    from brain_sync.application.sources import finalize_missing
+    from brain_sync.application.sources import InvalidCanonicalIdError, finalize_missing
 
     root = _resolve_root_or_exit(args)
-    if not _looks_like_source_canonical_id(args.canonical_id):
+    try:
+        result = finalize_missing(root=root, canonical_id=args.canonical_id)
+    except InvalidCanonicalIdError:
         log.error("finalize-missing requires a canonical ID, not a URL, path, or bulk target.")
         sys.exit(1)
-    result = finalize_missing(root=root, canonical_id=args.canonical_id)
 
     log.info("Result: %s", result.result_state)
     if result.knowledge_state is not None:

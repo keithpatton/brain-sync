@@ -169,6 +169,22 @@ Sync-owned lifecycle orchestration is now split explicitly:
   active polling and administrative listing
 - `sync/watcher.py` remains an edge observer only
 
+Lifecycle-owning processes also carry a runtime lifecycle-session boundary.
+Short-lived CLI lifecycle entrypoints create a fresh session per invocation,
+the daemon keeps one session for the life of the run, and the MCP server keeps
+one for the life of the server process. `source_lifecycle_runtime` stores the
+session that wrote the latest retained missing confirmation so explicit
+finalization can require a fresh confirmation from the current lifecycle
+session instead of trusting inherited runtime history alone.
+
+Same-source coordination now deliberately uses two different behaviors:
+
+- lease-taking lifecycle entrypoints such as remove, move, explicit
+  finalization, and root-backed materialization serialize their work with
+  source-level runtime leases
+- watcher/reconcile observation paths revalidate and skip when another active
+  lifecycle owner already holds that source lease
+
 For a synced-source lifecycle view organized around entry paths,
 `knowledge_state`, and event scenarios, see
 [../sync/README.md](../sync/README.md).
@@ -196,8 +212,10 @@ against the currently attached portable manifests and filesystem.
 The supported runtime model is intentionally simpler than full multi-runtime
 coordination: a portable brain may be attached by different runtimes over time,
 but only one active daemon attachment to a given brain is in contract at once.
-That keeps lifecycle authority and recovery logic centered on portable truth
-plus fresh local observation rather than cross-daemon coordination.
+Runtime startup now enforces that contract by refusing a second live daemon
+attachment before it enters reconcile or poll work. That keeps lifecycle
+authority and recovery logic centered on portable truth plus fresh local
+observation rather than cross-daemon coordination.
 
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are
@@ -405,7 +423,7 @@ Current runtime DB tables:
 |---|---|---|
 | `meta` | Runtime schema marker | Recreated |
 | `sync_polling` | Polling schedule and sync progress cache for active sources | Rebuilt from manifests |
-| `source_lifecycle_runtime` | Machine-local missing/finalization coordination and source-level lifecycle leases | Rebuilt from current portable truth plus new local observations |
+| `source_lifecycle_runtime` | Machine-local missing/finalization coordination, lifecycle-session freshness, and source-level lifecycle leases | Rebuilt from current portable truth plus new local observations |
 | `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
 | `operational_events` | Append-only local operational event trail | History lost only |
@@ -449,10 +467,11 @@ long-lived caches, but further performance tuning may still be worthwhile.
   replacing `__main__.py` as the owner of the daemon loop.
 - regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
-- `0.7.0` / `v27` introduces Brain Format `1.2`, removing portable
+- `0.7.0` / `v28` introduces Brain Format `1.2`, removing portable
   `missing_since_utc`, moving missing/finalization coordination into
-  `source_lifecycle_runtime`, and reserving source lifecycle mutation to the
-  sync-owned lifecycle/finalization seams.
+  `source_lifecycle_runtime`, reserving source lifecycle mutation to the
+  sync-owned lifecycle/finalization seams, and requiring current-session
+  missing confirmation before destructive finalization.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.

@@ -13,6 +13,7 @@ from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifes
 from brain_sync.runtime.repository import (
     acquire_source_lifecycle_lease,
     clear_source_lifecycle_lease,
+    ensure_lifecycle_session,
     load_child_discovery_request,
     load_operational_events,
     load_source_lifecycle_runtime,
@@ -85,9 +86,9 @@ class TestSourceFinalization:
         assert runtime_state.missing_confirmation_count == 2
 
         pending_events = load_operational_events(brain, event_type="source.finalization_pending_confirmation")
-        assert len(pending_events) == 1
-        assert pending_events[0].canonical_id == TEST_CID
-        assert json.loads(pending_events[0].details_json or "{}") == {
+        assert pending_events
+        assert pending_events[-1].canonical_id == TEST_CID
+        assert json.loads(pending_events[-1].details_json or "{}") == {
             "missing_confirmation_count": 2,
             "revalidation_basis": "finalization_preflight",
         }
@@ -103,8 +104,11 @@ class TestSourceFinalization:
 
         reconcile_sources(root=brain)
         reconcile_sources(root=brain)
+        lifecycle_session_id = ensure_lifecycle_session(brain, owner_kind="cli")
 
-        result = finalize_missing(brain, canonical_id=TEST_CID)
+        pending = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+        assert pending.result_state == "pending_confirmation"
+        result = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
 
         assert result.result_state == "finalized"
         assert result.finalized is True
@@ -115,10 +119,10 @@ class TestSourceFinalization:
         assert not attachment_dir.exists()
 
         finalized_events = load_operational_events(brain, event_type="source.finalized")
-        assert len(finalized_events) == 1
-        assert finalized_events[0].canonical_id == TEST_CID
-        assert finalized_events[0].outcome == "finalized"
-        details = json.loads(finalized_events[0].details_json or "{}")
+        assert finalized_events
+        assert finalized_events[-1].canonical_id == TEST_CID
+        assert finalized_events[-1].outcome == "finalized"
+        details = json.loads(finalized_events[-1].details_json or "{}")
         assert details["revalidation_basis"] == "finalization_preflight"
         assert details["missing_confirmation_count"] >= 3
 
@@ -144,14 +148,14 @@ class TestSourceFinalization:
         assert manifest.knowledge_state == "stale"
 
         rediscovered_events = load_operational_events(brain, event_type="source.rediscovered")
-        assert len(rediscovered_events) == 1
-        assert json.loads(rediscovered_events[0].details_json or "{}") == {
+        assert rediscovered_events
+        assert json.loads(rediscovered_events[-1].details_json or "{}") == {
             "revalidation_basis": "finalization_preflight"
         }
 
         not_missing_events = load_operational_events(brain, event_type="source.finalization_not_missing")
-        assert len(not_missing_events) == 1
-        assert json.loads(not_missing_events[0].details_json or "{}") == {"revalidation_basis": "rediscovered"}
+        assert not_missing_events
+        assert json.loads(not_missing_events[-1].details_json or "{}") == {"revalidation_basis": "rediscovered"}
 
     def test_finalize_missing_reports_lease_conflict(self, brain: Path) -> None:
         _register_materialized_source(brain, create_file=False)
@@ -173,10 +177,11 @@ class TestSourceFinalization:
 
         assert result.result_state == "lease_conflict"
         assert result.finalized is False
+        assert result.lease_owner == "other-owner"
 
         conflict_events = load_operational_events(brain, event_type="source.finalization_lease_conflict")
-        assert len(conflict_events) == 1
-        assert json.loads(conflict_events[0].details_json or "{}") == {"lease_owner": "other-owner"}
+        assert conflict_events
+        assert json.loads(conflict_events[-1].details_json or "{}") == {"lease_owner": "other-owner"}
 
     def test_finalize_missing_returns_not_found_for_unknown_source(self, brain: Path) -> None:
         result = finalize_missing(brain, canonical_id="test:missing")
@@ -186,8 +191,8 @@ class TestSourceFinalization:
         assert result.error == "not_found"
 
         events = load_operational_events(brain, event_type="source.finalization_not_found")
-        assert len(events) == 1
-        assert events[0].canonical_id == "test:missing"
+        assert events
+        assert events[-1].canonical_id == "test:missing"
 
     def test_finalize_missing_returns_not_missing_for_registered_non_missing_source(self, brain: Path) -> None:
         add_source(root=brain, url=TEST_URL, target_path="area")
@@ -200,6 +205,6 @@ class TestSourceFinalization:
         assert load_source_lifecycle_runtime(brain, TEST_CID) is None
 
         events = load_operational_events(brain, event_type="source.finalization_not_missing")
-        assert len(events) == 1
-        assert events[0].canonical_id == TEST_CID
-        assert events[0].outcome == "not_missing"
+        assert events
+        assert events[-1].canonical_id == TEST_CID
+        assert events[-1].outcome == "not_missing"

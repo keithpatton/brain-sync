@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -41,6 +43,8 @@ _PROVISIONAL_PRE_NARROWING_V25_TABLES = frozenset(
         "invalidation_tokens",
     }
 )
+_LIFECYCLE_SESSION_ID_META_KEY = "lifecycle_session_id"
+_LIFECYCLE_SESSION_OWNER_KIND_META_KEY = "lifecycle_session_owner_kind"
 
 _TOKEN_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS token_events (
@@ -120,6 +124,7 @@ CREATE TABLE IF NOT EXISTS source_lifecycle_runtime (
     local_missing_first_observed_utc TEXT,
     local_missing_last_confirmed_utc TEXT,
     missing_confirmation_count INTEGER NOT NULL DEFAULT 0,
+    last_missing_confirmation_session_id TEXT,
     lease_owner TEXT,
     lease_expires_utc TEXT
 );
@@ -213,6 +218,7 @@ class SourceLifecycleRuntime:
     local_missing_first_observed_utc: str | None = None
     local_missing_last_confirmed_utc: str | None = None
     missing_confirmation_count: int = 0
+    last_missing_confirmation_session_id: str | None = None
     lease_owner: str | None = None
     lease_expires_utc: str | None = None
 
@@ -340,10 +346,22 @@ def _migrate_runtime_db(conn: sqlite3.Connection, from_version: int) -> int:
         conn.executescript(_SOURCE_LIFECYCLE_RUNTIME_DDL)
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            ("27",),
+        )
+        conn.commit()
+        log.info("Migrated runtime DB schema from v26 to v27")
+        version = 27
+
+    if version == 27:
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(source_lifecycle_runtime)").fetchall()}
+        if "last_missing_confirmation_session_id" not in existing_cols:
+            conn.execute("ALTER TABLE source_lifecycle_runtime ADD COLUMN last_missing_confirmation_session_id TEXT")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
-        log.info("Migrated runtime DB schema from v26 to v%d", SCHEMA_VERSION)
+        log.info("Migrated runtime DB schema from v27 to v%d", SCHEMA_VERSION)
         version = SCHEMA_VERSION
 
     return version
@@ -1020,6 +1038,43 @@ def _utc_now(*, timespec: str = "seconds") -> str:
     return datetime.now(UTC).isoformat(timespec=timespec)
 
 
+def _new_lifecycle_session_id(owner_kind: str) -> str:
+    return f"{owner_kind}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+
+
+def ensure_lifecycle_session(root: Path, *, owner_kind: str) -> str:
+    conn = _connect(root)
+    try:
+        session_id = _new_lifecycle_session_id(owner_kind)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (_LIFECYCLE_SESSION_ID_META_KEY, session_id),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (_LIFECYCLE_SESSION_OWNER_KIND_META_KEY, owner_kind),
+        )
+        conn.commit()
+        return session_id
+    finally:
+        conn.close()
+
+
+def load_lifecycle_session_id(root: Path) -> str | None:
+    conn = _connect(root)
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            (_LIFECYCLE_SESSION_ID_META_KEY,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+    return str(row[0])
+
+
 _event_failure_logged = False
 
 
@@ -1136,7 +1191,7 @@ def load_source_lifecycle_runtime(root: Path, canonical_id: str) -> SourceLifecy
         row = conn.execute(
             "SELECT canonical_id, local_missing_first_observed_utc, "
             "local_missing_last_confirmed_utc, missing_confirmation_count, "
-            "lease_owner, lease_expires_utc "
+            "last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime WHERE canonical_id = ?",
             (canonical_id,),
         ).fetchone()
@@ -1151,8 +1206,9 @@ def load_source_lifecycle_runtime(root: Path, canonical_id: str) -> SourceLifecy
         local_missing_first_observed_utc=row[1],
         local_missing_last_confirmed_utc=row[2],
         missing_confirmation_count=row[3] or 0,
-        lease_owner=row[4],
-        lease_expires_utc=row[5],
+        last_missing_confirmation_session_id=row[4],
+        lease_owner=row[5],
+        lease_expires_utc=row[6],
     )
 
 
@@ -1162,7 +1218,7 @@ def load_all_source_lifecycle_runtime(root: Path) -> dict[str, SourceLifecycleRu
         rows = conn.execute(
             "SELECT canonical_id, local_missing_first_observed_utc, "
             "local_missing_last_confirmed_utc, missing_confirmation_count, "
-            "lease_owner, lease_expires_utc "
+            "last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime"
         ).fetchall()
     finally:
@@ -1174,8 +1230,9 @@ def load_all_source_lifecycle_runtime(root: Path) -> dict[str, SourceLifecycleRu
             local_missing_first_observed_utc=row[1],
             local_missing_last_confirmed_utc=row[2],
             missing_confirmation_count=row[3] or 0,
-            lease_owner=row[4],
-            lease_expires_utc=row[5],
+            last_missing_confirmation_session_id=row[4],
+            lease_owner=row[5],
+            lease_expires_utc=row[6],
         )
         for row in rows
     }
@@ -1187,12 +1244,13 @@ def save_source_lifecycle_runtime(root: Path, runtime_state: SourceLifecycleRunt
         conn.execute(
             "INSERT INTO source_lifecycle_runtime "
             "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
-            "missing_confirmation_count, lease_owner, lease_expires_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(canonical_id) DO UPDATE SET "
             "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
             "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
             "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "last_missing_confirmation_session_id=excluded.last_missing_confirmation_session_id, "
             "lease_owner=excluded.lease_owner, "
             "lease_expires_utc=excluded.lease_expires_utc",
             (
@@ -1200,6 +1258,7 @@ def save_source_lifecycle_runtime(root: Path, runtime_state: SourceLifecycleRunt
                 runtime_state.local_missing_first_observed_utc,
                 runtime_state.local_missing_last_confirmed_utc,
                 runtime_state.missing_confirmation_count,
+                runtime_state.last_missing_confirmation_session_id,
                 runtime_state.lease_owner,
                 runtime_state.lease_expires_utc,
             ),
@@ -1223,14 +1282,16 @@ def record_source_missing_confirmation(
     canonical_id: str,
     *,
     observed_utc: str | None = None,
+    lifecycle_session_id: str | None = None,
 ) -> SourceLifecycleRuntime:
     observed = observed_utc or _utc_now()
+    session_id = lifecycle_session_id or ensure_lifecycle_session(root, owner_kind="cli")
     conn = _connect(root)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
-            "missing_confirmation_count, lease_owner, lease_expires_utc "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime WHERE canonical_id = ?",
             (canonical_id,),
         ).fetchone()
@@ -1240,6 +1301,7 @@ def record_source_missing_confirmation(
                 local_missing_first_observed_utc=observed,
                 local_missing_last_confirmed_utc=observed,
                 missing_confirmation_count=1,
+                last_missing_confirmation_session_id=session_id,
             )
         else:
             state = SourceLifecycleRuntime(
@@ -1247,18 +1309,20 @@ def record_source_missing_confirmation(
                 local_missing_first_observed_utc=row[0] or observed,
                 local_missing_last_confirmed_utc=observed,
                 missing_confirmation_count=max(int(row[2] or 0) + 1, 1),
-                lease_owner=row[3],
-                lease_expires_utc=row[4],
+                last_missing_confirmation_session_id=session_id,
+                lease_owner=row[4],
+                lease_expires_utc=row[5],
             )
         conn.execute(
             "INSERT INTO source_lifecycle_runtime "
             "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
-            "missing_confirmation_count, lease_owner, lease_expires_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(canonical_id) DO UPDATE SET "
             "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
             "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
             "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "last_missing_confirmation_session_id=excluded.last_missing_confirmation_session_id, "
             "lease_owner=excluded.lease_owner, "
             "lease_expires_utc=excluded.lease_expires_utc",
             (
@@ -1266,6 +1330,7 @@ def record_source_missing_confirmation(
                 state.local_missing_first_observed_utc,
                 state.local_missing_last_confirmed_utc,
                 state.missing_confirmation_count,
+                state.last_missing_confirmation_session_id,
                 state.lease_owner,
                 state.lease_expires_utc,
             ),
@@ -1313,7 +1378,7 @@ def acquire_source_lifecycle_lease(
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
-            "missing_confirmation_count, lease_owner, lease_expires_utc "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime WHERE canonical_id = ?",
             (canonical_id,),
         ).fetchone()
@@ -1323,8 +1388,9 @@ def acquire_source_lifecycle_lease(
                 local_missing_first_observed_utc=row[0],
                 local_missing_last_confirmed_utc=row[1],
                 missing_confirmation_count=row[2] or 0,
-                lease_owner=row[3],
-                lease_expires_utc=row[4],
+                last_missing_confirmation_session_id=row[3],
+                lease_owner=row[4],
+                lease_expires_utc=row[5],
             )
             if row is not None
             else None
@@ -1339,18 +1405,20 @@ def acquire_source_lifecycle_lease(
             local_missing_first_observed_utc=existing.local_missing_first_observed_utc if existing else None,
             local_missing_last_confirmed_utc=existing.local_missing_last_confirmed_utc if existing else None,
             missing_confirmation_count=existing.missing_confirmation_count if existing else 0,
+            last_missing_confirmation_session_id=(existing.last_missing_confirmation_session_id if existing else None),
             lease_owner=owner_id,
             lease_expires_utc=lease_expires_utc,
         )
         conn.execute(
             "INSERT INTO source_lifecycle_runtime "
             "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
-            "missing_confirmation_count, lease_owner, lease_expires_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(canonical_id) DO UPDATE SET "
             "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
             "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
             "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "last_missing_confirmation_session_id=excluded.last_missing_confirmation_session_id, "
             "lease_owner=excluded.lease_owner, "
             "lease_expires_utc=excluded.lease_expires_utc",
             (
@@ -1358,6 +1426,7 @@ def acquire_source_lifecycle_lease(
                 next_state.local_missing_first_observed_utc,
                 next_state.local_missing_last_confirmed_utc,
                 next_state.missing_confirmation_count,
+                next_state.last_missing_confirmation_session_id,
                 next_state.lease_owner,
                 next_state.lease_expires_utc,
             ),
@@ -1380,7 +1449,7 @@ def renew_source_lifecycle_lease(
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
-            "missing_confirmation_count, lease_owner, lease_expires_utc "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime WHERE canonical_id = ?",
             (canonical_id,),
         ).fetchone()
@@ -1390,8 +1459,9 @@ def renew_source_lifecycle_lease(
                 local_missing_first_observed_utc=row[0],
                 local_missing_last_confirmed_utc=row[1],
                 missing_confirmation_count=row[2] or 0,
-                lease_owner=row[3],
-                lease_expires_utc=row[4],
+                last_missing_confirmation_session_id=row[3],
+                lease_owner=row[4],
+                lease_expires_utc=row[5],
             )
             if row is not None
             else None
@@ -1405,14 +1475,21 @@ def renew_source_lifecycle_lease(
             local_missing_first_observed_utc=existing.local_missing_first_observed_utc,
             local_missing_last_confirmed_utc=existing.local_missing_last_confirmed_utc,
             missing_confirmation_count=existing.missing_confirmation_count,
+            last_missing_confirmation_session_id=existing.last_missing_confirmation_session_id,
             lease_owner=owner_id,
             lease_expires_utc=lease_expires_utc,
         )
         conn.execute(
             "UPDATE source_lifecycle_runtime "
-            "SET lease_owner = ?, lease_expires_utc = ? "
+            "SET last_missing_confirmation_session_id = ?, lease_owner = ?, lease_expires_utc = ? "
             "WHERE canonical_id = ? AND lease_owner = ?",
-            (owner_id, lease_expires_utc, canonical_id, owner_id),
+            (
+                next_state.last_missing_confirmation_session_id,
+                owner_id,
+                lease_expires_utc,
+                canonical_id,
+                owner_id,
+            ),
         )
         conn.commit()
         return True, next_state
@@ -2151,6 +2228,40 @@ def write_daemon_status(pid: int, status: str) -> None:
         except (json.JSONDecodeError, OSError):
             pass
     DAEMON_STATUS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+class DaemonAlreadyRunningError(RuntimeError):
+    def __init__(self, pid: int):
+        self.pid = pid
+        super().__init__(f"Another brain-sync daemon is already running (pid {pid})")
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def ensure_no_active_daemon() -> None:
+    """Fail closed when a live daemon is already attached to this runtime."""
+    current = read_daemon_status()
+    if current is None:
+        return
+    if current.get("status") not in {"starting", "ready"}:
+        return
+    pid = current.get("pid")
+    if not isinstance(pid, int):
+        return
+    if _pid_is_running(pid):
+        raise DaemonAlreadyRunningError(pid)
 
 
 def read_daemon_status() -> dict | None:

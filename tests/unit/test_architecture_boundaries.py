@@ -113,6 +113,7 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
     "src/brain_sync/interfaces/mcp/server.py": frozenset(
         {
             "brain_sync.runtime.config",
+            "brain_sync.runtime.repository",
             "brain_sync.util.logging",
         }
     ),

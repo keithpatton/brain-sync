@@ -71,7 +71,11 @@ class TestFinalizeMissingCli:
         assert "Missing confirmations: 2" in pending.stderr
         assert read_source_manifest(brain_root, TEST_CID) is not None
 
-    def test_finalize_missing_finalizes_after_confirmation(self, cli: CliRunner, brain_root: Path) -> None:
+    def test_finalize_missing_after_restart_still_requires_current_session_confirmation(
+        self,
+        cli: CliRunner,
+        brain_root: Path,
+    ) -> None:
         _register_materialized_source(cli, brain_root, create_file=False)
 
         first = cli.run("reconcile", "--root", str(brain_root))
@@ -82,8 +86,8 @@ class TestFinalizeMissingCli:
         result = cli.run("finalize-missing", TEST_CID, "--root", str(brain_root))
 
         assert result.returncode == 0
-        assert "Result: finalized" in result.stderr
-        assert read_source_manifest(brain_root, TEST_CID) is None
+        assert "Result: pending_confirmation" in result.stderr
+        assert read_source_manifest(brain_root, TEST_CID) is not None
 
     def test_finalize_missing_rejects_url_targeting(self, cli: CliRunner, brain_root: Path) -> None:
         init_result = cli.run("init", str(brain_root))

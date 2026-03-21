@@ -157,11 +157,36 @@ class TestRemove:
         assert row is None
 
     def test_remove_nonexistent_exits_cleanly(self, cli: CliRunner, brain_root: Path):
-        """Removing a source that doesn't exist exits cleanly (warning, not crash)."""
+        """Removing a source that doesn't exist exits with a handled not-found result."""
         cli.run("init", str(brain_root))
         result = cli.run("remove", "test:nonexistent", "--root", str(brain_root))
-        # Should succeed (handler logs warning, returns)
-        assert result.returncode == 0
+        assert result.returncode == 1
+        assert "Result: not_found" in result.stderr
+        assert "Source not found: test:nonexistent" in result.stderr
+
+    def test_remove_reports_lease_conflict(self, cli: CliRunner, brain_root: Path, config_dir: Path) -> None:
+        cli.run("init", str(brain_root))
+        cli.run("add", "test://doc/rm1", "--path", "area", "--root", str(brain_root))
+        conn = sqlite3.connect(str(config_dir / "db" / "brain-sync.sqlite"))
+        try:
+            conn.execute(
+                "INSERT INTO source_lifecycle_runtime "
+                "(canonical_id, missing_confirmation_count, lease_owner, lease_expires_utc) "
+                "VALUES (?, 0, ?, ?) "
+                "ON CONFLICT(canonical_id) DO UPDATE SET "
+                "lease_owner=excluded.lease_owner, lease_expires_utc=excluded.lease_expires_utc",
+                ("test:rm1", "daemon-owner", "2099-01-01T00:00:00+00:00"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = cli.run("remove", "test:rm1", "--root", str(brain_root))
+
+        assert result.returncode == 1
+        assert "Result: lease_conflict" in result.stderr
+        assert "Canonical ID: test:rm1" in result.stderr
+        assert "Lease owner: daemon-owner" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +209,38 @@ class TestMove:
         assert manifest.knowledge_path == "new-area/mv1.md"
 
     def test_move_nonexistent_exits_cleanly(self, cli: CliRunner, brain_root: Path):
-        """Moving a nonexistent source exits cleanly."""
+        """Moving a nonexistent source exits with a handled not-found result."""
         cli.run("init", str(brain_root))
         result = cli.run("move", "test:nonexistent", "--to", "area", "--root", str(brain_root))
-        assert result.returncode == 0
+        assert result.returncode == 1
+        assert "Result: not_found" in result.stderr
+        assert "Destination: knowledge/area" in result.stderr
+        assert "Source not found: test:nonexistent" in result.stderr
+
+    def test_move_reports_lease_conflict(self, cli: CliRunner, brain_root: Path, config_dir: Path) -> None:
+        cli.run("init", str(brain_root))
+        cli.run("add", "test://doc/mv1", "--path", "old-area", "--root", str(brain_root))
+        conn = sqlite3.connect(str(config_dir / "db" / "brain-sync.sqlite"))
+        try:
+            conn.execute(
+                "INSERT INTO source_lifecycle_runtime "
+                "(canonical_id, missing_confirmation_count, lease_owner, lease_expires_utc) "
+                "VALUES (?, 0, ?, ?) "
+                "ON CONFLICT(canonical_id) DO UPDATE SET "
+                "lease_owner=excluded.lease_owner, lease_expires_utc=excluded.lease_expires_utc",
+                ("test:mv1", "daemon-owner", "2099-01-01T00:00:00+00:00"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = cli.run("move", "test:mv1", "--to", "new-area", "--root", str(brain_root))
+
+        assert result.returncode == 1
+        assert "Result: lease_conflict" in result.stderr
+        assert "Canonical ID: test:mv1" in result.stderr
+        assert "Destination: knowledge/new-area" in result.stderr
+        assert "Lease owner: daemon-owner" in result.stderr
 
 
 # ---------------------------------------------------------------------------

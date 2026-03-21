@@ -339,9 +339,18 @@ async def process_source(
     from brain_sync.sync.lifecycle import process_prepared_source
     from brain_sync.sync.source_state import SourceState
 
+    original_source_state = source_state
+    caller_supplied_owner_id = lifecycle_owner_id is not None
+    effective_owner_id = lifecycle_owner_id
+    if root is not None and effective_owner_id is None:
+        import os
+        import uuid
+
+        effective_owner_id = f"materialize:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
     lease_acquired = False
     try:
-        if root is not None and lifecycle_owner_id is not None:
+        if root is not None and effective_owner_id is not None:
             from datetime import timedelta
 
             from brain_sync.runtime.repository import acquire_source_lifecycle_lease
@@ -351,7 +360,7 @@ async def process_source(
             acquired, existing = acquire_source_lifecycle_lease(
                 root,
                 source_state.canonical_id,
-                lifecycle_owner_id,
+                effective_owner_id,
                 lease_expires_utc=lease_expires_utc,
             )
             if not acquired:
@@ -361,9 +370,28 @@ async def process_source(
                 )
             lease_acquired = True
             refreshed = load_active_sync_state(root).sources.get(source_state.canonical_id)
-            if refreshed is None:
+            if refreshed is None and caller_supplied_owner_id:
                 return False, []
-            source_state = refreshed
+            if refreshed is not None:
+                # Keep legacy root-backed callers working by preserving the
+                # mutable instance they passed in, while still revalidating
+                # from manifest-authoritative active state before processing.
+                if isinstance(original_source_state, SourceState) and not caller_supplied_owner_id:
+                    original_source_state.source_url = refreshed.source_url
+                    original_source_state.source_type = refreshed.source_type
+                    original_source_state.knowledge_path = refreshed.knowledge_path
+                    original_source_state.knowledge_state = refreshed.knowledge_state
+                    original_source_state.sync_attachments = refreshed.sync_attachments
+                    original_source_state.content_hash = refreshed.content_hash
+                    original_source_state.remote_fingerprint = refreshed.remote_fingerprint
+                    original_source_state.materialized_utc = refreshed.materialized_utc
+                    original_source_state.last_checked_utc = refreshed.last_checked_utc
+                    original_source_state.current_interval_secs = refreshed.current_interval_secs
+                    original_source_state.next_check_utc = refreshed.next_check_utc
+                    original_source_state.interval_seconds = refreshed.interval_seconds
+                    source_state = original_source_state
+                else:
+                    source_state = refreshed
 
         prepared = await prepare_source_sync(
             source_state,
@@ -380,11 +408,11 @@ async def process_source(
             root,
             source_state,
             prepared,
-            lifecycle_owner_id=lifecycle_owner_id,
+            lifecycle_owner_id=effective_owner_id,
         )
         return result.changed, result.discovered_children
     finally:
-        if root is not None and lifecycle_owner_id is not None and lease_acquired:
+        if root is not None and effective_owner_id is not None and lease_acquired:
             from brain_sync.runtime.repository import clear_source_lifecycle_lease
 
-            clear_source_lifecycle_lease(root, source_state.canonical_id, owner_id=lifecycle_owner_id)
+            clear_source_lifecycle_lease(root, source_state.canonical_id, owner_id=effective_owner_id)

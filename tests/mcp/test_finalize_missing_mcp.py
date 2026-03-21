@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from brain_sync.application.query_index import load_area_index
+from brain_sync.application.sources import InvalidCanonicalIdError
 from brain_sync.interfaces.mcp.server import BrainRuntime
 from brain_sync.sync.finalization import FinalizationResult
 
@@ -14,7 +15,12 @@ pytestmark = pytest.mark.mcp
 
 
 def _make_ctx(root: Path) -> MagicMock:
-    rt = BrainRuntime(root=root, area_index=load_area_index(root), regen_lock=asyncio.Lock())
+    rt = BrainRuntime(
+        root=root,
+        area_index=load_area_index(root),
+        regen_lock=asyncio.Lock(),
+        lifecycle_session_id="mcp:session-1",
+    )
     ctx = MagicMock()
     ctx.request_context.lifespan_context = rt
     return ctx
@@ -54,7 +60,11 @@ class TestBrainSyncFinalizeMissing:
             "missing_confirmation_count": 2,
             "eligible": False,
         }
-        mock_finalize.assert_called_once_with(root=dummy_root, canonical_id="test:123")
+        mock_finalize.assert_called_once_with(
+            root=dummy_root,
+            canonical_id="test:123",
+            lifecycle_session_id="mcp:session-1",
+        )
 
     @patch(
         "brain_sync.interfaces.mcp.server.finalize_missing",
@@ -80,7 +90,11 @@ class TestBrainSyncFinalizeMissing:
             "eligible": False,
             "message": "lease held elsewhere",
         }
-        mock_finalize.assert_called_once_with(root=dummy_root, canonical_id="test:123")
+        mock_finalize.assert_called_once_with(
+            root=dummy_root,
+            canonical_id="test:123",
+            lifecycle_session_id="mcp:session-1",
+        )
 
     @patch(
         "brain_sync.interfaces.mcp.server.finalize_missing",
@@ -104,9 +118,16 @@ class TestBrainSyncFinalizeMissing:
             "result_state": "not_found",
             "finalized": False,
         }
-        mock_finalize.assert_called_once_with(root=dummy_root, canonical_id="test:123")
+        mock_finalize.assert_called_once_with(
+            root=dummy_root,
+            canonical_id="test:123",
+            lifecycle_session_id="mcp:session-1",
+        )
 
-    @patch("brain_sync.interfaces.mcp.server.finalize_missing")
+    @patch(
+        "brain_sync.interfaces.mcp.server.finalize_missing",
+        side_effect=InvalidCanonicalIdError("https://example.com/page"),
+    )
     def test_rejects_url_targeting(self, mock_finalize, dummy_root: Path) -> None:
         from brain_sync.interfaces.mcp.server import brain_sync_finalize_missing
 
@@ -118,9 +139,16 @@ class TestBrainSyncFinalizeMissing:
             "error": "invalid_canonical_id",
             "message": "brain_sync_finalize_missing requires a canonical_id, not a URL or bulk target.",
         }
-        mock_finalize.assert_not_called()
+        mock_finalize.assert_called_once_with(
+            root=dummy_root,
+            canonical_id="https://example.com/page",
+            lifecycle_session_id="mcp:session-1",
+        )
 
-    @patch("brain_sync.interfaces.mcp.server.finalize_missing")
+    @patch(
+        "brain_sync.interfaces.mcp.server.finalize_missing",
+        side_effect=InvalidCanonicalIdError(r"C:\temp\page"),
+    )
     def test_rejects_windows_path_targeting(self, mock_finalize, dummy_root: Path) -> None:
         from brain_sync.interfaces.mcp.server import brain_sync_finalize_missing
 
@@ -132,7 +160,11 @@ class TestBrainSyncFinalizeMissing:
             "error": "invalid_canonical_id",
             "message": "brain_sync_finalize_missing requires a canonical_id, not a URL or bulk target.",
         }
-        mock_finalize.assert_not_called()
+        mock_finalize.assert_called_once_with(
+            root=dummy_root,
+            canonical_id=r"C:\temp\page",
+            lifecycle_session_id="mcp:session-1",
+        )
 
 
 class TestBrainSyncDoctorModes:

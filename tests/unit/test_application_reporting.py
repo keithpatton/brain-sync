@@ -15,12 +15,17 @@ def test_reconcile_brain_skips_knowledge_tree_when_not_requested(tmp_path):
     source_result = ReconcileResult(updated=[], not_found=[], unchanged=2)
 
     with (
+        patch(
+            "brain_sync.application.reconcile.ensure_lifecycle_session",
+            return_value="cli:session-1",
+        ) as mock_session,
         patch("brain_sync.application.reconcile.reconcile_sources", return_value=source_result) as mock_sources,
         patch("brain_sync.application.reconcile.reconcile_knowledge_tree") as mock_tree,
     ):
         report = reconcile_brain(tmp_path)
 
-    mock_sources.assert_called_once_with(root=tmp_path)
+    mock_session.assert_called_once_with(tmp_path, owner_kind="cli")
+    mock_sources.assert_called_once_with(root=tmp_path, lifecycle_session_id="cli:session-1")
     mock_tree.assert_not_called()
     assert report.unchanged == 2
     assert report.orphans_cleaned == []
@@ -41,6 +46,10 @@ def test_reconcile_brain_combines_source_and_tree_reporting(tmp_path):
     )
 
     with (
+        patch(
+            "brain_sync.application.reconcile.ensure_lifecycle_session",
+            return_value="cli:session-1",
+        ),
         patch("brain_sync.application.reconcile.reconcile_sources", return_value=source_result),
         patch("brain_sync.application.reconcile.reconcile_knowledge_tree", return_value=tree_result),
     ):
@@ -55,6 +64,20 @@ def test_reconcile_brain_combines_source_and_tree_reporting(tmp_path):
     assert report.has_source_changes is True
     assert report.has_tree_changes is True
     assert report.has_changes is True
+
+
+def test_reconcile_brain_uses_explicit_lifecycle_session_without_recreating_one(tmp_path):
+    source_result = ReconcileResult(updated=[], not_found=[], unchanged=1)
+
+    with (
+        patch("brain_sync.application.reconcile.ensure_lifecycle_session") as mock_session,
+        patch("brain_sync.application.reconcile.reconcile_sources", return_value=source_result) as mock_sources,
+    ):
+        report = reconcile_brain(tmp_path, lifecycle_session_id="mcp:session-1", lifecycle_session_owner_kind="mcp")
+
+    mock_session.assert_not_called()
+    mock_sources.assert_called_once_with(root=tmp_path, lifecycle_session_id="mcp:session-1")
+    assert report.unchanged == 1
 
 
 def test_build_status_summary_returns_typed_usage_summary(tmp_path):

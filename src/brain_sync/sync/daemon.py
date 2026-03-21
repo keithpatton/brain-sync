@@ -14,6 +14,9 @@ from brain_sync.regen.lifecycle import regen_session
 from brain_sync.regen.queue import RegenQueue
 from brain_sync.runtime.paths import ensure_safe_temp_root_runtime
 from brain_sync.runtime.repository import (
+    DaemonAlreadyRunningError,
+    ensure_lifecycle_session,
+    ensure_no_active_daemon,
     load_child_discovery_request,
     prune_token_events,
     write_daemon_status,
@@ -30,11 +33,22 @@ from brain_sync.sync.lifecycle import (
 )
 from brain_sync.sync.pipeline import SourceLifecycleLeaseConflictError, process_source
 from brain_sync.sync.reconcile import reconcile_knowledge_tree
-from brain_sync.sync.scheduler import MAX_ERROR_BACKOFF, Scheduler, compute_interval, compute_next_check_utc
-from brain_sync.sync.source_state import SyncState, load_active_sync_state, save_active_sync_state
+from brain_sync.sync.scheduler import (
+    MAX_ERROR_BACKOFF,
+    Scheduler,
+    compute_interval,
+    compute_next_check_utc,
+)
+from brain_sync.sync.source_state import (
+    SyncState,
+    load_active_sync_state,
+    save_active_sync_state,
+)
 from brain_sync.sync.watcher import KnowledgeWatcher
 
 log = logging.getLogger(__name__)
+
+__all__ = ["DaemonAlreadyRunningError", "run"]
 
 RESCAN_INTERVAL = 300  # 5 minutes
 TICK_MAX_SLEEP = 10.0  # max seconds between ticks
@@ -98,16 +112,18 @@ def _log_reconcile_result(result) -> None:
 async def run(root: Path) -> None:
     ensure_safe_temp_root_runtime(root, operation="run daemon")
     log.info("brain-sync starting, root: %s", root)
+    pid = os.getpid()
+    ensure_no_active_daemon()
+    write_daemon_status(pid, "starting")
+    lifecycle_session_id = ensure_lifecycle_session(root, owner_kind="daemon")
 
     # Reconcile target_paths with filesystem before loading state for sync.
     # This handles files moved while the daemon was not running.
     # INVARIANT: reconcile must run before _sync_scheduler_state() because
     # reconcile repairs manifest-backed placement before the scheduler loads
     # source state for the sync loop.
-    pid = os.getpid()
-    reconcile_result = reconcile_sources(root, finalize_missing=False)
+    reconcile_result = reconcile_sources(root, finalize_missing=False, lifecycle_session_id=lifecycle_session_id)
     tree_result = reconcile_knowledge_tree(root)
-    write_daemon_status(pid, "starting")
 
     _log_reconcile_result(reconcile_result)
 
@@ -167,7 +183,11 @@ async def run(root: Path) -> None:
                         # Live watcher churn may mark first-stage missing or
                         # repair stale paths, but it must not collapse the
                         # grace period into second-stage deregistration.
-                        reconcile_result = reconcile_sources(root, finalize_missing=False)
+                        reconcile_result = reconcile_sources(
+                            root,
+                            finalize_missing=False,
+                            lifecycle_session_id=lifecycle_session_id,
+                        )
                         _log_reconcile_result(reconcile_result)
                         if (
                             reconcile_result.updated
@@ -231,7 +251,12 @@ async def run(root: Path) -> None:
                                 state=state,
                             )
                         except RemoteSourceMissingError as e:
-                            marked = observe_missing_source(root, canonical_id=key, outcome="remote_missing")
+                            marked = observe_missing_source(
+                                root,
+                                canonical_id=key,
+                                outcome="remote_missing",
+                                lifecycle_session_id=lifecycle_session_id,
+                            )
                             scheduler.remove(key)
                             state.sources.pop(key, None)
                             if marked:

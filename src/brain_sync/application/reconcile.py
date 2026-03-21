@@ -7,6 +7,7 @@ from pathlib import Path
 
 from brain_sync.application.query_index import invalidate_area_index
 from brain_sync.application.sources import ReconcileEntry, reconcile_sources
+from brain_sync.runtime.repository import ensure_lifecycle_session
 from brain_sync.sync.reconcile import TreeReconcileResult
 from brain_sync.sync.reconcile import reconcile_knowledge_tree as reconcile_knowledge_tree_sync
 
@@ -41,7 +42,13 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
     return result
 
 
-def reconcile_brain(root: Path, *, include_knowledge_tree: bool = False) -> ReconcileReport:
+def reconcile_brain(
+    root: Path,
+    *,
+    include_knowledge_tree: bool = False,
+    lifecycle_session_id: str | None = None,
+    lifecycle_session_owner_kind: str = "cli",
+) -> ReconcileReport:
     """Run the shared reconcile workflow and return a flattened report.
 
     CLI and MCP both need the same source-reconcile result shaping. Some
@@ -49,7 +56,14 @@ def reconcile_brain(root: Path, *, include_knowledge_tree: bool = False) -> Reco
     same workflow, while narrower callers can skip it.
     """
 
-    source_result = reconcile_sources(root=root)
+    current_lifecycle_session_id = lifecycle_session_id or ensure_lifecycle_session(
+        root,
+        owner_kind=lifecycle_session_owner_kind,
+    )
+    source_result = reconcile_sources(
+        root=root,
+        lifecycle_session_id=current_lifecycle_session_id,
+    )
     tree_result = reconcile_knowledge_tree(root) if include_knowledge_tree else TreeReconcileResult()
 
     has_source_changes = bool(

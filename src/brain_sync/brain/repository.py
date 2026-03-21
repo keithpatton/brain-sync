@@ -578,6 +578,36 @@ class BrainRepository:
                 )
         return updates
 
+    def apply_folder_move_to_manifest(self, canonical_id: str, src_rel: str, dest_rel: str) -> ManifestMove | None:
+        """Update one source manifest after a knowledge-folder move."""
+        src_rel = self._normalize_relative_knowledge_path(src_rel, operation="apply_folder_move_to_manifest(src_rel)")
+        dest_rel = self._normalize_relative_knowledge_path(
+            dest_rel,
+            operation="apply_folder_move_to_manifest(dest_rel)",
+        )
+        if not src_rel or not dest_rel:
+            raise BrainRepositoryInvariantError("apply_folder_move_to_manifest: folder move paths must be non-empty")
+
+        manifest = read_source_manifest(self.root, canonical_id)
+        if manifest is None:
+            return None
+
+        old_kp = manifest.knowledge_path
+        old_tp = manifest.target_path
+        if old_kp != src_rel and not old_kp.startswith(src_rel + "/"):
+            return None
+
+        manifest.knowledge_path = dest_rel + old_kp[len(src_rel) :]
+        if manifest.knowledge_state not in {"awaiting", "missing"}:
+            manifest.knowledge_state = "stale"
+        write_source_manifest(self.root, manifest)
+        return ManifestMove(
+            canonical_id=manifest.canonical_id,
+            old_target_path=old_tp,
+            new_target_path=manifest.target_path,
+            knowledge_path=manifest.knowledge_path,
+        )
+
     def write_attachment_bytes(self, *, target_dir: Path, local_path: str, data: bytes) -> bool:
         """Persist attachment bytes under one managed area path."""
         safe_target_dir = self._require_dir_under_knowledge_root(

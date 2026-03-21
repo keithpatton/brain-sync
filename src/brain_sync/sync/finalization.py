@@ -13,6 +13,7 @@ from brain_sync.runtime.repository import (
     clear_source_lifecycle_lease,
     delete_source,
     delete_source_lifecycle_runtime,
+    ensure_lifecycle_session,
     ensure_source_polling,
     load_source_lifecycle_runtime,
     record_operational_event,
@@ -31,6 +32,7 @@ class FinalizationResult:
     eligible: bool | None = None
     message: str | None = None
     error: str | None = None
+    lease_owner: str | None = None
 
 
 def _owner_id() -> str:
@@ -46,8 +48,14 @@ def _lease_expiry() -> str:
     return (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
 
 
-def finalize_missing(root: Path, *, canonical_id: str) -> FinalizationResult:
+def finalize_missing(
+    root: Path,
+    *,
+    canonical_id: str,
+    lifecycle_session_id: str | None = None,
+) -> FinalizationResult:
     repository = BrainRepository(root)
+    current_lifecycle_session_id = lifecycle_session_id or ensure_lifecycle_session(root, owner_kind="cli")
     owner_id = _owner_id()
     acquired, existing = acquire_source_lifecycle_lease(
         root,
@@ -68,6 +76,7 @@ def finalize_missing(root: Path, *, canonical_id: str) -> FinalizationResult:
             finalized=False,
             eligible=False,
             message=f"Source lifecycle lease is already held for {canonical_id}",
+            lease_owner=existing.lease_owner if existing is not None else None,
         )
 
     try:
@@ -119,6 +128,10 @@ def finalize_missing(root: Path, *, canonical_id: str) -> FinalizationResult:
             knowledge_state=manifest.knowledge_state,
             has_runtime_row=runtime_state is not None,
             missing_confirmation_count=runtime_state.missing_confirmation_count if runtime_state is not None else 0,
+            last_missing_confirmation_session_id=(
+                runtime_state.last_missing_confirmation_session_id if runtime_state is not None else None
+            ),
+            current_lifecycle_session_id=current_lifecycle_session_id,
             conflicting_lease=False,
         )
         if eligibility.reason == "not_missing":
@@ -136,8 +149,12 @@ def finalize_missing(root: Path, *, canonical_id: str) -> FinalizationResult:
                 knowledge_state=manifest.knowledge_state,
             )
 
-        refreshed_runtime = record_source_missing_confirmation(root, canonical_id)
-        if runtime_state is None or runtime_state.missing_confirmation_count < 2:
+        if not eligibility.eligible:
+            refreshed_runtime = record_source_missing_confirmation(
+                root,
+                canonical_id,
+                lifecycle_session_id=current_lifecycle_session_id,
+            )
             record_operational_event(
                 event_type="source.finalization_pending_confirmation",
                 canonical_id=canonical_id,
@@ -168,7 +185,7 @@ def finalize_missing(root: Path, *, canonical_id: str) -> FinalizationResult:
             knowledge_path=manifest.target_path,
             outcome="finalized",
             details={
-                "missing_confirmation_count": refreshed_runtime.missing_confirmation_count,
+                "missing_confirmation_count": eligibility.confirmation_count,
                 "revalidation_basis": "finalization_preflight",
             },
         )

@@ -30,6 +30,8 @@ def finalization_eligibility(
     knowledge_state: str | None,
     has_runtime_row: bool,
     missing_confirmation_count: int,
+    last_missing_confirmation_session_id: str | None,
+    current_lifecycle_session_id: str | None,
     conflicting_lease: bool,
 ) -> FinalizationEligibility:
     if not manifest_exists:
@@ -39,5 +41,7 @@ def finalization_eligibility(
     if conflicting_lease:
         return FinalizationEligibility(False, missing_confirmation_count, "lease_conflict")
     if not has_runtime_row or missing_confirmation_count < 2:
+        return FinalizationEligibility(False, missing_confirmation_count, "pending_confirmation")
+    if last_missing_confirmation_session_id != current_lifecycle_session_id:
         return FinalizationEligibility(False, missing_confirmation_count, "pending_confirmation")
     return FinalizationEligibility(True, missing_confirmation_count, "finalized")

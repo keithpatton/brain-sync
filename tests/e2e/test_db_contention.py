@@ -199,9 +199,9 @@ class TestReconcileWhileDaemonRunning:
 
 
 class TestDoubleDaemonOwnership:
-    """Two daemons against the same brain — graceful handling."""
+    """Two daemons against the same brain — second start is refused."""
 
-    def test_double_daemon_no_crash(
+    def test_second_daemon_is_refused(
         self,
         brain: BrainFixture,
         config_dir: Path,
@@ -213,14 +213,13 @@ class TestDoubleDaemonOwnership:
             d1.start()
             d1.wait_for_ready()
 
-            # Start second daemon — should either fail to start or coexist
+            # Start second daemon — should fail closed at startup.
             d2.start()
             import time
 
             time.sleep(3)
-
-            # At least one should still be running or have exited cleanly
-            # (no requirement on which one wins, just no crash)
+            assert not d2.is_running()
+            assert "already running" in d2.stderr_text.lower()
         finally:
             d2.shutdown()
             d1.shutdown()

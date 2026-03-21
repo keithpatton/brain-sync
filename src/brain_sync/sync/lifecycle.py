@@ -26,6 +26,7 @@ from brain_sync.runtime.repository import (
     clear_source_lifecycle_lease,
     delete_source,
     delete_source_lifecycle_runtime,
+    ensure_lifecycle_session,
     ensure_source_polling,
     load_all_source_lifecycle_runtime,
     load_child_discovery_request,
@@ -69,18 +70,26 @@ class AddResult:
 
 @dataclass(frozen=True)
 class RemoveResult:
-    canonical_id: str
-    source_url: str
-    target_path: str
-    files_deleted: bool
+    result_state: str
+    source: str
+    canonical_id: str | None = None
+    source_url: str | None = None
+    target_path: str | None = None
+    files_deleted: bool = False
+    lease_owner: str | None = None
+    message: str | None = None
 
 
 @dataclass(frozen=True)
 class MoveResult:
-    canonical_id: str
-    old_path: str
+    result_state: str
+    source: str
     new_path: str
-    files_moved: bool
+    canonical_id: str | None = None
+    old_path: str | None = None
+    files_moved: bool = False
+    lease_owner: str | None = None
+    message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +199,13 @@ def _resolve_source_or_manifest(state: SyncState, root: Path, source: str) -> tu
     raise SourceNotFoundError(source)
 
 
+def _try_resolve_source_or_manifest(state: SyncState, root: Path, source: str) -> tuple[str, str, str] | None:
+    try:
+        return _resolve_source_or_manifest(state, root, source)
+    except SourceNotFoundError:
+        return None
+
+
 def _lease_expiry() -> str:
     from datetime import UTC, datetime, timedelta
 
@@ -214,6 +230,30 @@ def _owner_id(kind: str) -> str:
     import uuid
 
     return f"{kind}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
+def _conflicting_active_lease(
+    root: Path,
+    canonical_id: str,
+    *,
+    owner_id: str | None = None,
+) -> SourceLifecycleRuntime | None:
+    runtime_state = load_source_lifecycle_runtime(root, canonical_id)
+    if runtime_state is None or not _lease_is_active(runtime_state):
+        return None
+    if owner_id is not None and runtime_state.lease_owner == owner_id:
+        return None
+    return runtime_state
+
+
+def _empty_lifecycle_row(runtime_state: SourceLifecycleRuntime) -> bool:
+    return (
+        runtime_state.lease_owner is None
+        and runtime_state.lease_expires_utc is None
+        and runtime_state.local_missing_first_observed_utc is None
+        and runtime_state.local_missing_last_confirmed_utc is None
+        and runtime_state.missing_confirmation_count == 0
+    )
 
 
 def _deregister_source(
@@ -346,29 +386,59 @@ def remove_source(
     source: str,
     delete_files: bool = False,
 ) -> RemoveResult:
+    owner_id = _owner_id("remove")
     state = load_active_sync_state(root)
-    canonical, source_url, target_path = _resolve_source_or_manifest(state, root, source)
-    files_deleted = _deregister_source(
+    resolved = _try_resolve_source_or_manifest(state, root, source)
+    if resolved is None:
+        return RemoveResult(
+            result_state="not_found",
+            source=source,
+            message=f"Source not found: {source}",
+        )
+    canonical, source_url, target_path = resolved
+    acquired, existing = acquire_source_lifecycle_lease(
         root,
-        canonical_id=canonical,
-        target_path=target_path,
-        delete_materialized_file=True,
-        delete_attachments=True,
+        canonical,
+        owner_id,
+        lease_expires_utc=_lease_expiry(),
     )
-    _record_query_index_invalidated(knowledge_paths=[target_path], reason="source_removed")
-    record_operational_event(
-        event_type="source.removed",
-        canonical_id=canonical,
-        knowledge_path=target_path,
-        outcome="removed",
-        details={"delete_files": delete_files, "files_deleted": files_deleted},
-    )
-    return RemoveResult(
-        canonical_id=canonical,
-        source_url=source_url,
-        target_path=target_path,
-        files_deleted=files_deleted,
-    )
+    if not acquired:
+        return RemoveResult(
+            result_state="lease_conflict",
+            source=source,
+            canonical_id=canonical,
+            source_url=source_url,
+            target_path=target_path,
+            lease_owner=existing.lease_owner if existing is not None else None,
+            message=f"Source lifecycle lease is already held for {canonical}",
+        )
+
+    try:
+        files_deleted = _deregister_source(
+            root,
+            canonical_id=canonical,
+            target_path=target_path,
+            delete_materialized_file=True,
+            delete_attachments=True,
+        )
+        _record_query_index_invalidated(knowledge_paths=[target_path], reason="source_removed")
+        record_operational_event(
+            event_type="source.removed",
+            canonical_id=canonical,
+            knowledge_path=target_path,
+            outcome="removed",
+            details={"delete_files": delete_files, "files_deleted": files_deleted},
+        )
+        return RemoveResult(
+            result_state="removed",
+            source=source,
+            canonical_id=canonical,
+            source_url=source_url,
+            target_path=target_path,
+            files_deleted=files_deleted,
+        )
+    finally:
+        clear_source_lifecycle_lease(root, canonical, owner_id=owner_id)
 
 
 def list_sources(root: Path, *, filter_path: str | None = None) -> list[SourceAdminView]:
@@ -431,16 +501,33 @@ def update_source(
     )
 
 
-def observe_missing_source(root: Path, *, canonical_id: str, outcome: str) -> MissingObservationResult | None:
+def observe_missing_source(
+    root: Path,
+    *,
+    canonical_id: str,
+    outcome: str,
+    lifecycle_session_id: str | None = None,
+) -> MissingObservationResult | None:
     repository = BrainRepository(root)
     manifest = read_source_manifest(root, canonical_id)
     if manifest is None:
         return None
+    if _conflicting_active_lease(root, canonical_id) is not None:
+        return None
+
+    manifest = read_source_manifest(root, canonical_id)
+    if manifest is None or _conflicting_active_lease(root, canonical_id) is not None:
+        return None
+
     newly_missing = manifest.knowledge_state != "missing"
     if newly_missing:
         repository.mark_source_missing(canonical_id)
 
-    runtime_state = record_source_missing_confirmation(root, canonical_id)
+    runtime_state = record_source_missing_confirmation(
+        root,
+        canonical_id,
+        lifecycle_session_id=lifecycle_session_id,
+    )
     delete_source(root, canonical_id)
 
     if newly_missing:
@@ -481,13 +568,7 @@ def _cleanup_runtime_after_materialization(
     runtime_state = load_source_lifecycle_runtime(root, canonical_id)
     if runtime_state is None:
         return
-    if (
-        runtime_state.lease_owner is None
-        and runtime_state.lease_expires_utc is None
-        and runtime_state.local_missing_first_observed_utc is None
-        and runtime_state.local_missing_last_confirmed_utc is None
-        and runtime_state.missing_confirmation_count == 0
-    ):
+    if _empty_lifecycle_row(runtime_state):
         delete_source_lifecycle_runtime(root, canonical_id)
 
 
@@ -636,7 +717,15 @@ def move_source(
 ) -> MoveResult:
     owner_id = _owner_id("move")
     state = load_active_sync_state(root)
-    canonical, _source_url, old_path = _resolve_source_or_manifest(state, root, source)
+    resolved = _try_resolve_source_or_manifest(state, root, source)
+    if resolved is None:
+        return MoveResult(
+            result_state="not_found",
+            source=source,
+            new_path=to_path,
+            message=f"Source not found: {source}",
+        )
+    canonical, _source_url, old_path = resolved
     acquired, existing = acquire_source_lifecycle_lease(
         root,
         canonical,
@@ -644,15 +733,26 @@ def move_source(
         lease_expires_utc=_lease_expiry(),
     )
     if not acquired:
-        raise RuntimeError(
-            f"Lifecycle lease conflict for {canonical}: {existing.lease_owner if existing else 'unknown'}"
+        return MoveResult(
+            result_state="lease_conflict",
+            source=source,
+            canonical_id=canonical,
+            old_path=old_path,
+            new_path=to_path,
+            lease_owner=existing.lease_owner if existing is not None else None,
+            message=f"Source lifecycle lease is already held for {canonical}",
         )
 
     repository = BrainRepository(root)
     try:
         manifest = read_source_manifest(root, canonical)
         if manifest is None:
-            raise SourceNotFoundError(source)
+            return MoveResult(
+                result_state="not_found",
+                source=source,
+                new_path=to_path,
+                message=f"Source not found: {source}",
+            )
 
         files_moved = False
         if old_path != to_path:
@@ -662,7 +762,12 @@ def move_source(
 
         manifest = read_source_manifest(root, canonical)
         if manifest is None:
-            raise SourceNotFoundError(source)
+            return MoveResult(
+                result_state="not_found",
+                source=source,
+                new_path=to_path,
+                message=f"Source not found: {source}",
+            )
         found = repository.resolve_source_file(manifest).path
         if found is not None:
             repository.sync_manifest_to_found_path(canonical, found)
@@ -678,6 +783,8 @@ def move_source(
             details={"old_path": old_path, "new_path": to_path, "files_moved": files_moved},
         )
         return MoveResult(
+            result_state="moved",
+            source=source,
             canonical_id=canonical,
             old_path=old_path,
             new_path=to_path,
@@ -762,7 +869,12 @@ def apply_folder_move(
         details={"src": src_rel, "dest": dest_rel},
     )
     rename_knowledge_path_prefix(root, src_rel, dest_rel)
-    repository.apply_folder_move_to_manifests(src_rel, dest_rel)
+    for manifest in read_all_source_manifests(root).values():
+        if manifest.knowledge_path != src_rel and not manifest.knowledge_path.startswith(src_rel + "/"):
+            continue
+        if _conflicting_active_lease(root, manifest.canonical_id) is not None:
+            continue
+        repository.apply_folder_move_to_manifest(manifest.canonical_id, src_rel, dest_rel)
     _record_query_index_invalidated(
         knowledge_paths=[src_rel, dest_rel, _parent_path(src_rel), _parent_path(dest_rel)],
         reason="folder_move",
@@ -781,9 +893,15 @@ def apply_folder_move(
             enqueue_regen_path(root, knowledge_path=src_parent, enqueue=enqueue, reason="folder_move")
 
 
-def reconcile_sources(root: Path, *, finalize_missing: bool = False) -> ReconcileResult:
+def reconcile_sources(
+    root: Path,
+    *,
+    finalize_missing: bool = False,
+    lifecycle_session_id: str | None = None,
+) -> ReconcileResult:
     del finalize_missing
 
+    current_lifecycle_session_id = lifecycle_session_id or ensure_lifecycle_session(root, owner_kind="cli")
     knowledge_root = root / "knowledge"
     repository = BrainRepository(root)
     updated: list[ReconcileEntry] = []
@@ -795,9 +913,11 @@ def reconcile_sources(root: Path, *, finalize_missing: bool = False) -> Reconcil
 
     all_manifests = read_all_source_manifests(root)
     runtime_rows = load_all_source_lifecycle_runtime(root)
-    for runtime_canonical_id, _runtime_state in runtime_rows.items():
+    for runtime_canonical_id, runtime_state in runtime_rows.items():
         manifest = all_manifests.get(runtime_canonical_id)
         if manifest is None:
+            if _lease_is_active(runtime_state):
+                continue
             delete_source_lifecycle_runtime(root, runtime_canonical_id)
             continue
         _revalidate_runtime_row(root, manifest)
@@ -812,6 +932,9 @@ def reconcile_sources(root: Path, *, finalize_missing: bool = False) -> Reconcil
 
         if manifest.knowledge_state == "missing":
             if found is not None:
+                if _conflicting_active_lease(root, manifest_canonical_id) is not None:
+                    unchanged_count += 1
+                    continue
                 repository.sync_manifest_to_found_path(manifest_canonical_id, found)
                 delete_source_lifecycle_runtime(root, manifest_canonical_id)
                 ensure_source_polling(root, manifest_canonical_id)
@@ -830,13 +953,24 @@ def reconcile_sources(root: Path, *, finalize_missing: bool = False) -> Reconcil
                     outcome="reappeared",
                 )
             else:
+                observation = observe_missing_source(
+                    root,
+                    canonical_id=manifest_canonical_id,
+                    outcome="missing",
+                    lifecycle_session_id=current_lifecycle_session_id,
+                )
+                if observation is None:
+                    unchanged_count += 1
+                    continue
                 not_found.append(manifest_canonical_id)
-                observe_missing_source(root, canonical_id=manifest_canonical_id, outcome="missing")
             continue
 
         if found is not None:
             new_target = normalize_path(found.parent.relative_to(knowledge_root))
             old_target = manifest.target_path
+            if _conflicting_active_lease(root, manifest_canonical_id) is not None:
+                unchanged_count += 1
+                continue
             repository.sync_manifest_to_found_path(manifest_canonical_id, found)
             if new_target != old_target or resolution.resolution != "direct":
                 updated.append(
@@ -860,7 +994,12 @@ def reconcile_sources(root: Path, *, finalize_missing: bool = False) -> Reconcil
             else:
                 unchanged_count += 1
         else:
-            observation = observe_missing_source(root, canonical_id=manifest_canonical_id, outcome="missing")
+            observation = observe_missing_source(
+                root,
+                canonical_id=manifest_canonical_id,
+                outcome="missing",
+                lifecycle_session_id=current_lifecycle_session_id,
+            )
             if observation is not None:
                 marked_missing.append(manifest_canonical_id)
                 not_found.append(manifest_canonical_id)
@@ -871,6 +1010,8 @@ def reconcile_sources(root: Path, *, finalize_missing: bool = False) -> Reconcil
                     outcome="missing",
                     details={"missing_confirmation_count": observation.missing_confirmation_count},
                 )
+            else:
+                unchanged_count += 1
 
     orphan_count = 0
     for runtime_canonical in load_sync_progress(root):

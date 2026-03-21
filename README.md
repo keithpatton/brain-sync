@@ -85,7 +85,8 @@ brain-sync run --root ~/my-brain
 ```
 
 The daemon reconciles offline changes, syncs sources, watches `knowledge/`,
-and regenerates summaries as needed.
+and regenerates summaries as needed. If another live brain-sync daemon is
+already attached to the same brain, the new start is refused immediately.
 
 ### Add a Source
 
@@ -242,9 +243,9 @@ Primary tools:
 | `brain_sync_add` | Register a sync source |
 | `brain_sync_add_file` | Add a local markdown or text file |
 | `brain_sync_update` | Update source settings |
-| `brain_sync_remove` | Remove a sync source |
-| `brain_sync_move` | Move a source to a new path |
-| `brain_sync_finalize_missing` | Explicitly finalize one missing registered source by canonical ID |
+| `brain_sync_remove` | Remove a sync source; may return handled `not_found` or `lease_conflict` |
+| `brain_sync_move` | Move a source to a new path; may return handled `not_found` or `lease_conflict` |
+| `brain_sync_finalize_missing` | Explicitly finalize one missing registered source by exact canonical ID |
 | `brain_sync_reconcile` | Reconcile filesystem moves |
 | `brain_sync_regen` | Regenerate summaries |
 
@@ -262,13 +263,13 @@ python -m brain_sync.interfaces.mcp.server
 | `brain-sync run [--root <path>]` | Start the daemon |
 | `brain-sync add <url> [...]` | Register a URL for sync |
 | `brain-sync add-file <file> [...]` | Import a local markdown or text file |
-| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source and its synced files (`--delete-files` is accepted for compatibility) |
+| `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source and its synced files (`--delete-files` is accepted for compatibility); may return handled `not_found` or `lease_conflict` |
 | `brain-sync remove-file <path>` | Remove a local file from `knowledge/` |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources and print `State: <knowledge_state>` for each source |
-| `brain-sync move <canonical-id> --to <new-path>` | Move a source |
+| `brain-sync move <canonical-id> --to <new-path>` | Move a source; may return handled `not_found` or `lease_conflict` |
 | `brain-sync update <canonical-id-or-url> [...]` | Update source settings |
 | `brain-sync reconcile [--root <path>]` | Reconcile filesystem moves |
-| `brain-sync finalize-missing <canonical-id>` | Explicitly finalize one missing registered source after revalidation |
+| `brain-sync finalize-missing <canonical-id>` | Explicitly finalize one missing registered source after revalidation; requires an exact canonical ID, not a URL or path |
 | `brain-sync status [--root <path>]` | Show daemon and sync status |
 | `brain-sync regen [<knowledge-path>]` | Trigger regeneration |
 | `brain-sync doctor [--fix|--rebuild-db]` | Validate or repair a brain |
@@ -348,6 +349,14 @@ On the next `brain-sync run`:
   `brain-sync finalize-missing <canonical-id>`
 - changed areas are re-queued for regeneration
 - co-located summaries and attachments already move with their folders
+
+`brain-sync finalize-missing` is intentionally conservative: it accepts one
+exact canonical ID at a time, not a URL, path, or bulk target, revalidates
+local presence first, and may return another pending confirmation before
+destructive cleanup if the current process has not yet freshly confirmed that
+the source is still missing. Likewise, `brain-sync move` and
+`brain-sync remove` now fail as handled `not_found` operations when the target
+source cannot be resolved, rather than partially entering lifecycle work.
 
 ## Development
 

@@ -103,9 +103,11 @@ Portable brains must remain valid across process restarts, runtime rebuilds,
 and later attachment by a different runtime instance over time.
 
 brain-sync supports at most one active daemon attachment to a given
-[brain root](GLOSSARY.md#brain-root) at a time. Simultaneous daemon
-attachments against the same brain are outside the supported contract and must
-not be relied on for correctness.
+[brain root](GLOSSARY.md#brain-root) at a time. A second daemon start against
+the same attached brain must be refused at startup rather than allowed to
+coexist opportunistically. Simultaneous daemon attachments against the same
+brain are outside the supported contract and must not be relied on for
+correctness.
 
 ### Managed Namespace
 
@@ -174,7 +176,7 @@ For normal subsystem modules, the allowed package directions are:
 
 - `interfaces -> application`
 - `application -> brain / runtime / sync / regen / query / sources / llm / util`
-- `sync -> brain / runtime / sources / util`
+- `sync -> brain / runtime / regen / sources / util`
 - `regen -> brain / runtime / llm / util`
 - `query -> brain / util`
 - `sources -> util`
@@ -598,6 +600,46 @@ A source in `knowledge_state = missing` is still registered during that grace
 period. Duplicate add attempts must fail until the source is either
 rediscovered or explicitly finalized.
 
+Explicit finalization is a single-source operation. CLI and MCP finalization
+entrypoints must accept exactly one registered source canonical ID and must
+reject URLs, filesystem paths, helper IDs, and bulk target syntax.
+
+Inherited runtime history is not sufficient by itself to authorize destructive
+finalization. Finalization may proceed only when all of the following are
+true:
+
+- the source manifest still exists
+- the durable `knowledge_state` is still `missing`
+- no conflicting active source-level lifecycle lease exists
+- the runtime row retains at least two missing confirmations
+- the most recent retained missing confirmation was recorded by the current
+  lifecycle session after fresh revalidation
+
+If any of those conditions are not met, explicit finalization must remain
+non-destructive and return a pending-confirmation style outcome after writing a
+fresh local missing confirmation for the current lifecycle session.
+
+### Same-Source Lifecycle Serialization
+
+For a single registered source, lifecycle-owning entrypoints must serialize
+destructive or path-mutating work through source-level runtime leases.
+
+Lease-taking lifecycle entrypoints include:
+
+- explicit finalization
+- explicit source removal
+- explicit source move
+- root-backed materialization for a registered source
+
+If one of those entrypoints encounters an active conflicting lease, it must not
+silently proceed. Command surfaces should return a handled lease-conflict
+outcome rather than mutating portable or runtime state for that source.
+
+Watcher and reconcile paths are intentionally softer. If they encounter an
+active conflicting lease for a source they were about to repair, rediscover,
+mark missing, or clean up, they must revalidate current state and skip that
+source rather than overwriting lifecycle-owned coordination.
+
 For explanatory synced-source lifecycle models, event matrices, and state
 diagrams, see [sync/README.md](sync/README.md).
 
@@ -745,8 +787,9 @@ The cross-cutting schema rules that matter here are:
   binding for materialized synced documents
 - `fetch_children` and `child_path` are operational inputs, not durable
   portable manifest fields
-- machine-local missing confirmation timing and explicit-finalization leases
-  live in runtime schema `v27`, not in portable manifests
+- machine-local missing confirmation timing, missing-confirmation session
+  freshness, and explicit-finalization leases live in runtime schema `v28`,
+  not in portable manifests
 
 ### Packaged Regen Resources
 

@@ -14,14 +14,15 @@ For the current architecture stage, one runtime config directory owns one
 active brain. If `config.json` still contains multiple registered roots, only
 the first entry is treated as active runtime state.
 
-Runtime schema `v27` splits active polling from source lifecycle coordination:
+Runtime schema `v28` splits active polling from source lifecycle coordination:
 
 - `sync_polling` is polling-only for actively scheduled registered sources
 - `source_lifecycle_runtime` stores machine-local missing confirmation history,
-  explicit-finalization leases, and restart-safe lifecycle coordination
+  lifecycle-session freshness for explicit finalization, source-level leases,
+  and restart-safe lifecycle coordination
 
 Operational events remain machine-local, append-only diagnostics. They are
-best-effort and non-authoritative.
+best-effort, may duplicate, and are non-authoritative.
 
 ## Reference Set
 

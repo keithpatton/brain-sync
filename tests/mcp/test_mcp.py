@@ -27,7 +27,6 @@ from brain_sync.application import (
     RemoveResult,
     SourceAlreadyExistsError,
     SourceInfo,
-    SourceNotFoundError,
     UpdateResult,
 )
 from brain_sync.application.init import init_brain
@@ -60,6 +59,8 @@ SAMPLE_ADD_RESULT = AddResult(
 )
 
 SAMPLE_REMOVE_RESULT = RemoveResult(
+    result_state="removed",
+    source="confluence:12345",
     canonical_id="confluence:12345",
     source_url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
     target_path="initiatives/test",
@@ -67,6 +68,8 @@ SAMPLE_REMOVE_RESULT = RemoveResult(
 )
 
 SAMPLE_MOVE_RESULT = MoveResult(
+    result_state="moved",
+    source="confluence:12345",
     canonical_id="confluence:12345",
     old_path="initiatives/test",
     new_path="initiatives/moved",
@@ -95,6 +98,7 @@ def _make_ctx(root: Path) -> MagicMock:
         root=root,
         area_index=load_area_index(root),
         regen_lock=asyncio.Lock(),
+        lifecycle_session_id="mcp:session-1",
     )
     ctx = MagicMock()
     ctx.request_context.lifespan_context = rt
@@ -531,7 +535,11 @@ class TestBrainSyncRemove:
 
     @patch(
         "brain_sync.interfaces.mcp.server.remove_source",
-        side_effect=SourceNotFoundError("confluence:99999"),
+        return_value=RemoveResult(
+            result_state="not_found",
+            source="confluence:99999",
+            message="Source not found: confluence:99999",
+        ),
     )
     def test_remove_not_found(self, mock_remove, _dummy_root):
         from brain_sync.interfaces.mcp.server import brain_sync_remove
@@ -541,6 +549,37 @@ class TestBrainSyncRemove:
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
         assert result["source"] == "confluence:99999"
+
+    @patch(
+        "brain_sync.interfaces.mcp.server.remove_source",
+        return_value=RemoveResult(
+            result_state="lease_conflict",
+            source="confluence:12345",
+            canonical_id="confluence:12345",
+            source_url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
+            target_path="initiatives/test",
+            files_deleted=False,
+            lease_owner="daemon-owner",
+            message="Source lifecycle lease is already held for confluence:12345",
+        ),
+    )
+    def test_remove_lease_conflict_is_a_handled_ok_payload(self, mock_remove, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_remove
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_remove(ctx, source="confluence:12345")
+
+        assert result == {
+            "status": "ok",
+            "result_state": "lease_conflict",
+            "canonical_id": "confluence:12345",
+            "source_url": "https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
+            "target_path": "initiatives/test",
+            "files_deleted": False,
+            "lease_owner": "daemon-owner",
+            "message": "Source lifecycle lease is already held for confluence:12345",
+        }
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
     def test_remove_delete_files_keeps_empty_area_structure_when_no_user_files_exist(self, tmp_path):
         from brain_sync.application.sources import add_source
@@ -588,7 +627,12 @@ class TestBrainSyncMove:
 
     @patch(
         "brain_sync.interfaces.mcp.server.move_source",
-        side_effect=SourceNotFoundError("confluence:99999"),
+        return_value=MoveResult(
+            result_state="not_found",
+            source="confluence:99999",
+            new_path="x",
+            message="Source not found: confluence:99999",
+        ),
     )
     def test_move_not_found(self, mock_move, _dummy_root):
         from brain_sync.interfaces.mcp.server import brain_sync_move
@@ -597,6 +641,38 @@ class TestBrainSyncMove:
         result = brain_sync_move(ctx, source="confluence:99999", to_path="x")
         assert result["status"] == "error"
         assert result["error"] == "source_not_found"
+        assert result["source"] == "confluence:99999"
+
+    @patch(
+        "brain_sync.interfaces.mcp.server.move_source",
+        return_value=MoveResult(
+            result_state="lease_conflict",
+            source="confluence:12345",
+            canonical_id="confluence:12345",
+            old_path="initiatives/test",
+            new_path="initiatives/moved",
+            files_moved=False,
+            lease_owner="daemon-owner",
+            message="Source lifecycle lease is already held for confluence:12345",
+        ),
+    )
+    def test_move_lease_conflict_is_a_handled_ok_payload(self, mock_move, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_move
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_move(ctx, source="confluence:12345", to_path="initiatives/moved")
+
+        assert result == {
+            "status": "ok",
+            "result_state": "lease_conflict",
+            "canonical_id": "confluence:12345",
+            "old_path": "initiatives/test",
+            "new_path": "initiatives/moved",
+            "files_moved": False,
+            "lease_owner": "daemon-owner",
+            "message": "Source lifecycle lease is already held for confluence:12345",
+        }
+        assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
 
 
 class TestBrainSyncUpdate:
@@ -648,6 +724,11 @@ class TestBrainSyncReconcile:
         assert result["unchanged"] == 3
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
         assert ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        mock_reconcile.assert_called_once_with(
+            _dummy_root,
+            lifecycle_session_id="mcp:session-1",
+            lifecycle_session_owner_kind="mcp",
+        )
 
     @patch(
         "brain_sync.interfaces.mcp.server.reconcile_brain",
@@ -664,6 +745,11 @@ class TestBrainSyncReconcile:
         assert result["unchanged"] == 5
         assert set(result) == {"status", "updated", "not_found", "unchanged"}
         assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+        mock_reconcile.assert_called_once_with(
+            _dummy_root,
+            lifecycle_session_id="mcp:session-1",
+            lifecycle_session_owner_kind="mcp",
+        )
 
 
 # ---------------------------------------------------------------------------

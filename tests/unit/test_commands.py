@@ -21,7 +21,6 @@ from brain_sync.application import (
     RemoveResult,
     SourceAlreadyExistsError,
     SourceInfo,
-    SourceNotFoundError,
     UpdateResult,
     add_source,
     check_source_exists,
@@ -226,9 +225,18 @@ class TestMoveAndRemove:
         assert not (target_dir / "c12345-doc.md").exists()
         assert not att_dir.exists()
 
-    def test_remove_missing_source_raises(self, brain: Path) -> None:
-        with pytest.raises(SourceNotFoundError):
-            remove_source(root=brain, source=CONFLUENCE_CID)
+    def test_remove_missing_source_returns_not_found_result(self, brain: Path) -> None:
+        result = remove_source(root=brain, source=CONFLUENCE_CID)
+
+        assert result.result_state == "not_found"
+        assert result.source == CONFLUENCE_CID
+
+    def test_move_missing_source_returns_not_found_result(self, brain: Path) -> None:
+        result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
+
+        assert result.result_state == "not_found"
+        assert result.source == CONFLUENCE_CID
+        assert result.new_path == "new-area"
 
     def test_remove_source_without_delete_files_still_removes_synced_markdown_and_attachments(
         self,

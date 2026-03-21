@@ -82,9 +82,7 @@ class TestGitCloneScenario:
 
         backend = FakeBackend(mode="stable")
         regen_config = RegenConfig(model="fake-model", effort="low", timeout=30)
-        asyncio.get_event_loop().run_until_complete(
-            regen_single_folder(orig.root, "project", config=regen_config, backend=backend)
-        )
+        asyncio.run(regen_single_folder(orig.root, "project", config=regen_config, backend=backend))
 
         # Verify originals have sidecar + summary
         orig_sidecar = orig.insights_dir("project") / INSIGHT_STATE_FILENAME

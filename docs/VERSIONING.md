@@ -8,7 +8,7 @@ brain-sync uses three version domains:
 | Domain            | Meaning                        | Current value |
 | ----------------- | ------------------------------ | ------------- |
 | Brain Format      | Portable filesystem contract   | `1.2`         |
-| Runtime DB schema | Machine-local runtime DB shape | `v27`         |
+| Runtime DB schema | Machine-local runtime DB shape | `v28`         |
 | App version       | Packaged application version   | `0.7.0`       |
 
 
@@ -73,12 +73,14 @@ The runtime DB schema version governs only machine-local runtime state.
 
 The current runtime DB schema is:
 
-- label: `v27`
-- integer value in `meta.schema_version`: `27`
+- label: `v28`
+- integer value in `meta.schema_version`: `28`
 
-Schema `v27` keeps `sync_polling` polling-only and adds
+Schema `v28` keeps `sync_polling` polling-only and keeps
 `source_lifecycle_runtime` for missing-source confirmation history,
-source-level lifecycle leases, and explicit-finalization coordination.
+source-level lifecycle leases, and explicit-finalization coordination. It adds
+`last_missing_confirmation_session_id` so destructive finalization can require
+a fresh missing confirmation from the current lifecycle session.
 
 Supported earlier runtime schemas migrate in place during normal upgrades.
 Rebuild remains the fallback for missing, corrupt, unsupported, or provisional
@@ -91,7 +93,7 @@ runtime DB state.
 The current app version is `0.7.0.0`.
 
 This is the current release identifier for the Brain Format `1.2` /
-runtime schema `v27` row.
+runtime schema `v28` row.
 
 The canonical source is `pyproject.toml`.
 
@@ -105,7 +107,7 @@ Compatibility statements should use this form:
 
 Current statement:
 
-`brain-sync 0.7.0 supports Brain Format 1.2 with runtime DB schema v27`
+`brain-sync 0.7.0 supports Brain Format 1.2 with runtime DB schema v28`
 
 See [docs/COMPATIBILITY.md](COMPATIBILITY.md) for the supported rows and
 transition guarantees.
@@ -118,5 +120,5 @@ Compatibility and migration tests should explicitly cover:
 
 - fresh Brain Format `1.2` init
 - Brain Format `1.1 -> 1.2` guided migration behavior
-- runtime DB `v23/v24/v25/v26 -> v27` in-place migration
+- runtime DB `v23/v24/v25/v26/v27 -> v28` in-place migration
 - runtime DB rebuild without changing durable source truth
