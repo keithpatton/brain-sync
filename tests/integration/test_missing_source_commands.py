@@ -28,6 +28,7 @@ from brain_sync.brain.repository import BrainRepository
 from brain_sync.runtime.repository import (
     acquire_source_lifecycle_lease,
     clear_source_lifecycle_lease,
+    load_operational_events,
     load_source_lifecycle_runtime,
 )
 from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
@@ -233,6 +234,34 @@ class TestMissingSourceCommands:
         assert runtime_state is not None
         assert runtime_state.missing_confirmation_count == 1
         clear_source_lifecycle_lease(brain, CONFLUENCE_CID, owner_id=move_owner)
+
+    def test_observe_missing_source_emits_first_stage_proof_events(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+
+        observation = observe_missing_source(
+            brain,
+            canonical_id=CONFLUENCE_CID,
+            outcome="missing",
+        )
+
+        assert observation is not None
+        assert observation.newly_missing is True
+        assert observation.missing_confirmation_count == 1
+
+        marked_events = load_operational_events(brain, event_type="source.missing_marked")
+        confirmed_events = load_operational_events(brain, event_type="source.missing_confirmed")
+
+        assert marked_events
+        assert marked_events[-1].canonical_id == CONFLUENCE_CID
+        assert marked_events[-1].knowledge_path == "area"
+        assert marked_events[-1].outcome == "missing"
+        assert json.loads(marked_events[-1].details_json or "{}") == {"source_url": CONFLUENCE_URL}
+
+        assert confirmed_events
+        assert confirmed_events[-1].canonical_id == CONFLUENCE_CID
+        assert confirmed_events[-1].knowledge_path == "area"
+        assert confirmed_events[-1].outcome == "missing"
+        assert json.loads(confirmed_events[-1].details_json or "{}") == {"missing_confirmation_count": 1}
 
     def test_reconcile_path_repair_blocks_last_moment_lease_takeover_until_commit(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-area")

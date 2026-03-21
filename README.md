@@ -246,7 +246,7 @@ Primary tools:
 | `brain_sync_add_file` | Add a local markdown or text file |
 | `brain_sync_update` | Update source settings |
 | `brain_sync_remove` | Remove a sync source; may return handled `not_found` or `lease_conflict` |
-| `brain_sync_move` | Move a source to a new path; may return handled `not_found` or `lease_conflict` |
+| `brain_sync_move` | Move one registered source by exact canonical ID to a new path; may return handled `not_found` or `lease_conflict` |
 | `brain_sync_finalize_missing` | Explicitly finalize one missing registered source by exact canonical ID |
 | `brain_sync_reconcile` | Reconcile filesystem moves |
 | `brain_sync_regen` | Regenerate summaries |
@@ -268,7 +268,7 @@ python -m brain_sync.interfaces.mcp.server
 | `brain-sync remove <canonical-id-or-url> [--delete-files]` | Remove a sync source and its synced files (`--delete-files` is accepted for compatibility); may return handled `not_found` or `lease_conflict` |
 | `brain-sync remove-file <path>` | Remove a local file from `knowledge/` |
 | `brain-sync list [--path <filter>] [--status]` | List registered sources and print `State: <knowledge_state>` for each source |
-| `brain-sync move <canonical-id> --to <new-path>` | Move a source; may return handled `not_found` or `lease_conflict` |
+| `brain-sync move <canonical-id> --to <new-path>` | Move one registered source by exact canonical ID; may return handled `not_found` or `lease_conflict` |
 | `brain-sync update <canonical-id-or-url> [...]` | Update source settings |
 | `brain-sync reconcile [--root <path>]` | Reconcile filesystem moves |
 | `brain-sync finalize-missing <canonical-id>` | Explicitly finalize one missing registered source after revalidation; requires an exact canonical ID, not a URL or path |
@@ -356,9 +356,10 @@ On the next `brain-sync run`:
 exact canonical ID at a time, not a URL, path, or bulk target, revalidates
 local presence first, and may return another pending confirmation before
 destructive cleanup if the current process has not yet freshly confirmed that
-the source is still missing. Likewise, `brain-sync move` and
-`brain-sync remove` now fail as handled `not_found` operations when the target
-source cannot be resolved, rather than partially entering lifecycle work.
+the source is still missing. Likewise, `brain-sync move` now requires an exact
+canonical ID, while `brain-sync remove` accepts either a canonical ID or URL;
+both return handled `not_found` when the target source cannot be resolved,
+rather than partially entering lifecycle work.
 
 ## Development
 
