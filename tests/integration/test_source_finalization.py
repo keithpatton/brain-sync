@@ -126,6 +126,32 @@ class TestSourceFinalization:
         assert details["revalidation_basis"] == "finalization_preflight"
         assert details["missing_confirmation_count"] >= 3
 
+    def test_finalize_missing_leaves_legacy_sync_context_leftovers_untouched(self, brain: Path) -> None:
+        _register_materialized_source(brain, create_file=False)
+        attachment_dir = (
+            brain / "knowledge" / "area" / ".brain-sync" / "attachments" / canonical_prefix(TEST_CID).rstrip("-")
+        )
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        (attachment_dir / "asset.bin").write_bytes(b"asset")
+        legacy_dir = brain / "knowledge" / "area" / "_sync-context" / "attachments"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        legacy_file = legacy_dir / "other-source.bin"
+        legacy_file.write_bytes(b"legacy")
+
+        reconcile_sources(root=brain)
+        reconcile_sources(root=brain)
+        lifecycle_session_id = ensure_lifecycle_session(brain, owner_kind="cli")
+
+        pending = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+        assert pending.result_state == "pending_confirmation"
+        result = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+
+        assert result.result_state == "finalized"
+        assert read_source_manifest(brain, TEST_CID) is None
+        assert not attachment_dir.exists()
+        assert legacy_file.exists()
+        assert legacy_file.read_bytes() == b"legacy"
+
     def test_finalize_missing_rediscovery_returns_not_missing_and_clears_runtime_coordination(
         self,
         brain: Path,

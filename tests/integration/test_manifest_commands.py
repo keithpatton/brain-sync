@@ -130,11 +130,6 @@ class TestUpdateSourceUpdatesManifest:
 
 class TestReconcileBehavior:
     def test_reconcile_does_not_bootstrap_from_runtime_only_rows(self, brain: Path) -> None:
-        state = load_state(brain)
-        state.sources[CONFLUENCE_CID] = state.sources.get(
-            CONFLUENCE_CID,
-            load_state(brain).sources.get(CONFLUENCE_CID, None),  # keep mypy quiet; not used
-        )
         from brain_sync.application.source_state import SourceState, SyncState, save_state
 
         runtime_only = SyncState(
@@ -246,3 +241,27 @@ class TestRemoveSourceDeletesManifest:
         remove_source(brain, source=result.canonical_id, delete_files=False)
 
         assert (brain / "knowledge" / "project" / "area").is_dir()
+
+    def test_remove_does_not_delete_legacy_sync_context_leftovers(self, brain: Path) -> None:
+        result = add_source(brain, url=CONFLUENCE_URL, target_path="area", sync_attachments=True)
+        doc_path = brain / "knowledge" / "area" / "c12345-test-page.md"
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(
+            prepend_managed_header(CONFLUENCE_CID, "# test", source_type="confluence", source_url=CONFLUENCE_URL),
+            encoding="utf-8",
+        )
+        att_dir = brain / "knowledge" / "area" / ".brain-sync" / "attachments" / "c12345"
+        att_dir.mkdir(parents=True)
+        (att_dir / "a789.png").write_bytes(b"png")
+        legacy_dir = brain / "knowledge" / "area" / "_sync-context" / "attachments"
+        legacy_dir.mkdir(parents=True)
+        legacy_file = legacy_dir / "other-source.bin"
+        legacy_file.write_bytes(b"legacy")
+
+        remove_source(brain, source=result.canonical_id, delete_files=False)
+
+        assert read_source_manifest(brain, result.canonical_id) is None
+        assert not doc_path.exists()
+        assert not att_dir.exists()
+        assert legacy_file.exists()
+        assert legacy_file.read_bytes() == b"legacy"

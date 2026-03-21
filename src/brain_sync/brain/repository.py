@@ -1103,12 +1103,6 @@ class BrainRepository:
         if self.remove_source_attachment_dirs(canonical_id, target_path=target_path):
             deleted = True
 
-        if path_is_dir(target_dir):
-            legacy_ctx = target_dir / "_sync-context"
-            if path_is_dir(legacy_ctx):
-                shutil.rmtree(str(win_long_path(legacy_ctx)))
-                deleted = True
-
         return deleted
 
     def _find_file_by_identity(self, canonical_id: str) -> Path | None:
