@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import brain_sync.runtime.config as runtime_config
 from brain_sync.brain.fileops import (
     TEXT_EXTENSIONS,
     iterdir_paths,
@@ -47,14 +48,13 @@ from brain_sync.brain.tree import (
 )
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
-from brain_sync.runtime.config import CONFIG_FILE
 from brain_sync.runtime.repository import (
     RegenLock,
     acquire_regen_ownership,
     delete_regen_lock,
     load_all_regen_locks,
     load_regen_lock,
-    record_operational_event,
+    record_brain_operational_event,
     record_token_event,
     release_regen_ownership,
     save_regen_lock,
@@ -340,7 +340,8 @@ def _save_area_state(
                 error_reason=error_reason,
             ),
         )
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type="query.index.invalidated",
         knowledge_path=knowledge_path,
         outcome="summary_written",
@@ -404,6 +405,7 @@ def _persist_area_state_or_fail(
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", knowledge_path or "(root)", db_err)
         _record_regen_event(
+            root=root,
             event_type="regen.failed",
             knowledge_path=knowledge_path,
             session_id=session_id,
@@ -452,7 +454,8 @@ def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: 
     """Delete portable insight state and runtime lifecycle rows for one area."""
     repository.delete_portable_insight_state(knowledge_path)
     delete_regen_lock(root, knowledge_path)
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type="query.index.invalidated",
         knowledge_path=knowledge_path,
         outcome="summary_deleted",
@@ -550,10 +553,11 @@ class RegenConfig:
     @classmethod
     def load(cls) -> RegenConfig:
         """Load regen config from ~/.brain-sync/config.json."""
-        if not CONFIG_FILE.exists():
+        config_file = runtime_config.config_file_path()
+        if not config_file.exists():
             return cls()
         try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            data = json.loads(config_file.read_text(encoding="utf-8"))
             regen = data.get("regen", {})
             if not isinstance(regen, dict):
                 regen = {}
@@ -1022,6 +1026,7 @@ def _record_telemetry(
 
 def _record_regen_event(
     *,
+    root: Path,
     event_type: str,
     knowledge_path: str,
     session_id: str | None,
@@ -1030,7 +1035,8 @@ def _record_regen_event(
     duration_ms: int | None = None,
     details: dict[str, object] | None = None,
 ) -> None:
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type=event_type,
         session_id=session_id,
         owner_id=owner_id,
@@ -1449,6 +1455,7 @@ async def regen_single_folder(
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
         delete_regen_lock(root, current_path)
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1473,6 +1480,7 @@ async def regen_single_folder(
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
         delete_regen_lock(root, current_path)
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1492,6 +1500,7 @@ async def regen_single_folder(
     if not child_summaries and not has_direct_files:
         log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1536,6 +1545,7 @@ async def regen_single_folder(
             error_reason=lock.error_reason if lock else None,
         )
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1552,6 +1562,7 @@ async def regen_single_folder(
             new_content_hash[:12],
         )
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1585,6 +1596,7 @@ async def regen_single_folder(
             release_owner_id=owner_id,
         )
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1634,6 +1646,7 @@ async def regen_single_folder(
         ),
     )
     _record_regen_event(
+        root=root,
         event_type="regen.started",
         knowledge_path=current_path,
         session_id=session_id,
@@ -1756,6 +1769,7 @@ async def regen_single_folder(
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
         _record_regen_event(
+            root=root,
             event_type="regen.failed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1789,6 +1803,7 @@ async def regen_single_folder(
         except Exception as db_err:
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
         _record_regen_event(
+            root=root,
             event_type="regen.failed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1825,6 +1840,7 @@ async def regen_single_folder(
         if journal_text:
             _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
         _record_regen_event(
+            root=root,
             event_type="regen.completed",
             knowledge_path=current_path,
             session_id=session_id,
@@ -1862,6 +1878,7 @@ async def regen_single_folder(
         result.num_turns,
     )
     _record_regen_event(
+        root=root,
         event_type="regen.completed",
         knowledge_path=current_path,
         session_id=session_id,

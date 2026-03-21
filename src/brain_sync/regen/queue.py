@@ -24,7 +24,7 @@ from brain_sync.runtime.repository import (
     RegenLock,
     acquire_regen_ownership,
     load_regen_lock,
-    record_operational_event,
+    record_brain_operational_event,
     release_regen_ownership,
     save_regen_lock,
 )
@@ -258,7 +258,8 @@ class RegenQueue:
                 MAX_RETRIES,
                 error,
             )
-            record_operational_event(
+            record_brain_operational_event(
+                self.root,
                 event_type="regen.failed",
                 session_id=self.session_id,
                 owner_id=self.owner_id,

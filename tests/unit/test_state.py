@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+import brain_sync.runtime.config as runtime_config
 import brain_sync.runtime.repository as state_module
 from brain_sync.application.insights import (
     InsightState,
@@ -52,6 +53,22 @@ def _write_manifest(root: Path, cid: str, *, target_path: str = "", knowledge_pa
 
 
 class TestRuntimeState:
+    def test_repository_runtime_db_alias_remains_a_compatibility_override(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config_db = tmp_path / "config" / "db" / "brain-sync.sqlite"
+        compat_db = tmp_path / "compat" / "db" / "brain-sync.sqlite"
+
+        monkeypatch.setattr(runtime_config, "RUNTIME_DB_FILE", config_db)
+        monkeypatch.setattr(state_module, "RUNTIME_DB_FILE", compat_db)
+
+        state_module.ensure_db(tmp_path)
+
+        assert compat_db.exists()
+        assert not config_db.exists()
+
     def test_save_and_load_round_trip_uses_runtime_db(self, tmp_path: Path) -> None:
         _write_manifest(tmp_path, "confluence:123", target_path="area", knowledge_path="area/c123-page.md")
 
@@ -73,9 +90,9 @@ class TestRuntimeState:
         assert loaded.sources["confluence:123"].content_hash == "portable-hash"
         assert loaded.sources["confluence:123"].remote_fingerprint == "portable-fp"
         assert loaded.sources["confluence:123"].last_checked_utc == "2026-01-01T00:00:00Z"
-        assert state_module.RUNTIME_DB_FILE.exists()
+        assert runtime_config.runtime_db_file_path().exists()
         assert not (tmp_path / ".sync-state.sqlite").exists()
-        assert not state_module.RUNTIME_DB_FILE.is_relative_to(tmp_path)
+        assert not runtime_config.runtime_db_file_path().is_relative_to(tmp_path)
 
     def test_load_missing_db_returns_current_schema_version(self, tmp_path: Path) -> None:
         loaded = load_state(tmp_path)
@@ -86,7 +103,7 @@ class TestRuntimeState:
         write_daemon_status(root=tmp_path, pid=1234, status="starting", daemon_id="daemon:1234:start")
         write_daemon_status(root=tmp_path, pid=1234, status="ready", daemon_id="daemon:1234:start")
 
-        data = json.loads(state_module.DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(runtime_config.daemon_status_file_path().read_text(encoding="utf-8"))
         loaded = read_daemon_status()
 
         assert data["pid"] == 1234
@@ -101,7 +118,7 @@ class TestRuntimeState:
         assert "root" not in inspect.signature(read_daemon_status).parameters
 
     def test_supported_runtime_db_is_migrated_in_place(self, tmp_path: Path) -> None:
-        db_path = state_module.RUNTIME_DB_FILE
+        db_path = runtime_config.runtime_db_file_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
         try:
@@ -175,7 +192,7 @@ class TestRuntimeState:
         ]
 
     def test_v27_runtime_db_migration_adds_missing_confirmation_session_id(self, tmp_path: Path) -> None:
-        db_path = state_module.RUNTIME_DB_FILE
+        db_path = runtime_config.runtime_db_file_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
         try:
@@ -231,7 +248,7 @@ class TestRuntimeState:
         assert row == ("confluence:123", 2, None, "daemon-owner")
 
     def test_provisional_pre_narrowing_v25_runtime_db_is_rebuilt(self, tmp_path: Path) -> None:
-        db_path = state_module.RUNTIME_DB_FILE
+        db_path = runtime_config.runtime_db_file_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
         try:

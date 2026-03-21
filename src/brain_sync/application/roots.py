@@ -52,11 +52,12 @@ def resolve_active_root() -> Path:
     Raises BrainNotFoundError if no brain is configured.
     Raises InvalidBrainRootError if the root lacks expected structure.
     """
-    if not _config.CONFIG_FILE.exists():
+    config_file = _config.config_file_path()
+    if not config_file.exists():
         raise BrainNotFoundError("No brain configured. Run: brain-sync init <path>")
     data = load_config()
     if not data:
-        raise BrainNotFoundError(f"Cannot read {_config.CONFIG_FILE}")
+        raise BrainNotFoundError(f"Cannot read {config_file}")
     root = active_brain_root(data)
     if root is None:
         raise BrainNotFoundError("No active brain root registered in config")

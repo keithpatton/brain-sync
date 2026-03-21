@@ -8,7 +8,7 @@ from pathlib import Path
 
 from brain_sync.application.roots import _require_root
 from brain_sync.brain.fileops import canonical_prefix, path_is_dir, rglob_paths
-from brain_sync.runtime.repository import record_operational_event
+from brain_sync.runtime.repository import record_brain_operational_event
 from brain_sync.sync.finalization import FinalizationResult
 from brain_sync.sync.finalization import finalize_missing as sync_finalize_missing
 from brain_sync.sync.lifecycle import (
@@ -256,7 +256,8 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
                 dirs_cleaned += 1
 
     if dirs_cleaned:
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="source.updated",
             outcome="migrated_legacy_context",
             details={"dirs_cleaned": dirs_cleaned, "sources_migrated": sources_migrated},

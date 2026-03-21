@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from tests.harness.isolation import build_subprocess_env, layout_from_config_dir
 
 
 @dataclass
@@ -27,27 +28,17 @@ class CliRunner:
     extra_env: dict[str, str] = field(default_factory=dict)
 
     def _home_dir(self) -> Path:
-        return self.config_dir.parent / "home"
+        return layout_from_config_dir(self.config_dir).home_dir
 
     def _skill_dir(self) -> Path:
-        return self._home_dir() / ".claude" / "skills" / "brain-sync"
+        return layout_from_config_dir(self.config_dir).skill_dir
 
     def _env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        home_dir = self._home_dir()
-        env["BRAIN_SYNC_CONFIG_DIR"] = str(self.config_dir)
-        env["BRAIN_SYNC_SKILL_INSTALL_DIR"] = str(self._skill_dir())
-        env["BRAIN_SYNC_LLM_BACKEND"] = "fake"
-        env["HOME"] = str(home_dir)
-        env["USERPROFILE"] = str(home_dir)
-        env["APPDATA"] = str(home_dir / "AppData" / "Roaming")
-        env["LOCALAPPDATA"] = str(home_dir / "AppData" / "Local")
-        if self.capture_dir:
-            env["BRAIN_SYNC_CAPTURE_PROMPTS"] = str(self.capture_dir)
-        # Remove CLAUDECODE to prevent unwanted CLI mode
-        env.pop("CLAUDECODE", None)
-        env.update(self.extra_env)
-        return env
+        return build_subprocess_env(
+            layout=layout_from_config_dir(self.config_dir),
+            capture_dir=self.capture_dir,
+            extra_env=self.extra_env,
+        )
 
     def run(self, *args: str, timeout: float = 30, cwd: Path | None = None) -> CliResult:
         """Run ``python -m brain_sync <args>`` as a subprocess."""

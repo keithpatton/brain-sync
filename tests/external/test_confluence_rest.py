@@ -221,7 +221,7 @@ class TestGetConfluenceAuth:
                 }
             )
         )
-        with patch("brain_sync.sources.confluence.rest.CONFIG_FILE", config):
+        with patch("brain_sync.runtime.config.CONFIG_FILE", config):
             auth = get_confluence_auth()
         assert auth is not None
         assert auth.domain == "test.atlassian.net"
@@ -232,7 +232,7 @@ class TestGetConfluenceAuth:
         monkeypatch.setenv("CONFLUENCE_DOMAIN", "env.atlassian.net")
         monkeypatch.setenv("CONFLUENCE_EMAIL", "env@b.com")
         monkeypatch.setenv("CONFLUENCE_TOKEN", "envtok")
-        with patch("brain_sync.sources.confluence.rest.CONFIG_FILE", nonexistent):
+        with patch("brain_sync.runtime.config.CONFIG_FILE", nonexistent):
             auth = get_confluence_auth()
         assert auth is not None
         assert auth.domain == "env.atlassian.net"
@@ -242,6 +242,6 @@ class TestGetConfluenceAuth:
         monkeypatch.delenv("CONFLUENCE_DOMAIN", raising=False)
         monkeypatch.delenv("CONFLUENCE_EMAIL", raising=False)
         monkeypatch.delenv("CONFLUENCE_TOKEN", raising=False)
-        with patch("brain_sync.sources.confluence.rest.CONFIG_FILE", nonexistent):
+        with patch("brain_sync.runtime.config.CONFIG_FILE", nonexistent):
             auth = get_confluence_auth()
         assert auth is None

@@ -9,6 +9,7 @@ import pytest
 from brain_sync.application.init import skill_install_dir
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess
+from tests.harness.isolation import assert_temp_test_layout
 
 pytestmark = pytest.mark.unit
 
@@ -48,3 +49,12 @@ def test_daemon_process_isolates_machine_local_env(tmp_path: Path) -> None:
     assert env["USERPROFILE"] == str(home_dir)
     assert env["APPDATA"] == str(home_dir / "AppData" / "Roaming")
     assert env["LOCALAPPDATA"] == str(home_dir / "AppData" / "Local")
+
+
+def test_temp_layout_guard_accepts_isolated_temp_paths(tmp_path: Path) -> None:
+    assert_temp_test_layout(config_dir=tmp_path / ".brain-sync", home_dir=tmp_path / "home")
+
+
+def test_temp_layout_guard_rejects_non_temp_paths() -> None:
+    with pytest.raises(AssertionError, match="non-temporary config/home path"):
+        assert_temp_test_layout(config_dir=Path("C:/Users/live-user/.brain-sync"), home_dir=Path("C:/Users/live-user"))

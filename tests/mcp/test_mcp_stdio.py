@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from brain_sync.application.init import init_brain
 from brain_sync.brain.layout import area_insights_dir
+from tests.harness.isolation import build_subprocess_env, layout_from_config_dir
 
 pytestmark = pytest.mark.mcp
 
@@ -34,15 +34,7 @@ def _seed_queryable_brain(root: Path) -> None:
 
 
 def _stdio_server(repo_root: Path, config_dir: Path) -> StdioServerParameters:
-    home_dir = config_dir.parent / "home"
-    env = os.environ.copy()
-    env["BRAIN_SYNC_CONFIG_DIR"] = str(config_dir)
-    env["BRAIN_SYNC_SKILL_INSTALL_DIR"] = str(home_dir / ".claude" / "skills" / "brain-sync")
-    env["HOME"] = str(home_dir)
-    env["USERPROFILE"] = str(home_dir)
-    env["APPDATA"] = str(home_dir / "AppData" / "Roaming")
-    env["LOCALAPPDATA"] = str(home_dir / "AppData" / "Local")
-    env["PYTHONPATH"] = str(repo_root / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    env = build_subprocess_env(layout=layout_from_config_dir(config_dir), repo_root=repo_root, llm_backend=None)
 
     return StdioServerParameters(
         command=sys.executable,

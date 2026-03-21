@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import subprocess
 import sys
@@ -13,6 +12,7 @@ import pytest
 from brain_sync.brain.layout import area_summary_path
 from brain_sync.brain.manifest import read_source_manifest
 from tests.e2e.harness.cli import CliRunner
+from tests.harness.isolation import build_subprocess_env, layout_for_base_dir
 
 pytestmark = pytest.mark.system
 
@@ -47,13 +47,12 @@ class TestInit:
         home_dir.mkdir()
         root = tmp_path / "brain"
         repo_root = Path(__file__).resolve().parents[2]
-        env = os.environ.copy()
-        env.pop("BRAIN_SYNC_CONFIG_DIR", None)
-        env["HOME"] = str(home_dir)
-        env["USERPROFILE"] = str(home_dir)
-        env["APPDATA"] = str(home_dir / "AppData" / "Roaming")
-        env["LOCALAPPDATA"] = str(home_dir / "AppData" / "Local")
-        env["PYTHONPATH"] = str(repo_root / "src") + os.pathsep + env.get("PYTHONPATH", "")
+        env = build_subprocess_env(
+            layout=layout_for_base_dir(tmp_path),
+            repo_root=repo_root,
+            include_config_dir=False,
+            llm_backend=None,
+        )
 
         result = subprocess.run(
             [sys.executable, "-m", "brain_sync", "init", str(root)],
@@ -278,6 +277,54 @@ class TestAddFile:
         r2 = cli.run("add-file", str(src_file), "--path", "area", "--root", str(brain_root))
         # Should handle gracefully (overwrite or warn)
         assert r2.returncode == 0
+
+    def test_add_file_fails_closed_without_leaking_operational_events_into_machine_local_runtime(self, tmp_path: Path):
+        """add-file fails closed without leaking machine-local operational events."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        repo_root = Path(__file__).resolve().parents[2]
+        root = tmp_path / "brain"
+        src_file = tmp_path / "notes.md"
+        src_file.write_text("# Notes\n\nContent.", encoding="utf-8")
+
+        init_env = build_subprocess_env(
+            layout=layout_for_base_dir(tmp_path),
+            repo_root=repo_root,
+            include_config_dir=False,
+            llm_backend=None,
+            extra_env={"BRAIN_SYNC_ALLOW_UNSAFE_TEMP_ROOTS": "1"},
+        )
+
+        init_result = subprocess.run(
+            [sys.executable, "-m", "brain_sync", "init", str(root)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=init_env,
+            timeout=30,
+        )
+        assert init_result.returncode == 0, f"Init failed: {init_result.stderr}"
+
+        env = build_subprocess_env(
+            layout=layout_for_base_dir(tmp_path),
+            repo_root=repo_root,
+            include_config_dir=False,
+            llm_backend=None,
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "brain_sync", "add-file", str(src_file), "--path", "area", "--root", str(root)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=env,
+            timeout=30,
+        )
+
+        assert result.returncode != 0
+        assert "Refusing to add-file" in result.stderr
+        runtime_db = home_dir / ".brain-sync" / "db" / "brain-sync.sqlite"
+        assert not runtime_db.exists()
 
 
 class TestRemoveFile:

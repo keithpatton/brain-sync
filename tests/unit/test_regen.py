@@ -1376,7 +1376,7 @@ class TestRegenConfigDefaults:
     def test_load_with_new_fields(self, tmp_path):
         config_file = tmp_path / "config.json"
         config_file.write_text('{"regen": {"max_turns": 4}}', encoding="utf-8")
-        with patch("brain_sync.regen.engine.CONFIG_FILE", config_file):
+        with patch("brain_sync.runtime.config.CONFIG_FILE", config_file):
             cfg = RegenConfig.load()
         assert cfg.max_turns == 4
         assert cfg.effort == "low"
@@ -1387,7 +1387,7 @@ class TestRegenConfigDefaults:
             '{"regen": {"disable_journal": true, "write_journal": false, "max_turns": 4}}',
             encoding="utf-8",
         )
-        with patch("brain_sync.regen.engine.CONFIG_FILE", config_file):
+        with patch("brain_sync.runtime.config.CONFIG_FILE", config_file):
             cfg = RegenConfig.load()
         assert cfg.max_turns == 4
         assert not hasattr(cfg, "write_journal")

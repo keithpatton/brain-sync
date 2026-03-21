@@ -11,7 +11,7 @@ from brain_sync.runtime.repository import get_usage_summary, prune_token_events,
 
 # Kept for test-harness monkeypatch compatibility while persistence ownership
 # remains in runtime.repository.
-RUNTIME_DB_FILE = runtime_config.RUNTIME_DB_FILE
+RUNTIME_DB_FILE = runtime_config.runtime_db_file_path()
 
 OP_REGEN = "regen"
 OP_QUERY = "query"

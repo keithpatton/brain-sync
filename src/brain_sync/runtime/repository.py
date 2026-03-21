@@ -12,17 +12,56 @@ import logging
 import os
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
 from typing import IO, ClassVar, Protocol
 
-from brain_sync.runtime.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
+import brain_sync.runtime.config as runtime_config
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION, ensure_safe_temp_root_runtime
 
 log = logging.getLogger(__name__)
+
+
+class _CompatPathAlias(PathLike[str]):
+    """Dynamic path proxy for semipublic repository compatibility aliases."""
+
+    def __init__(self, current_path: Callable[[], str | PathLike[str]] | str | PathLike[str]) -> None:
+        self._current_path = current_path
+
+    def current_path(self) -> Path:
+        current_path = self._current_path
+        if callable(current_path):
+            current_path = current_path()
+        return Path(current_path)
+
+    def __fspath__(self) -> str:
+        return str(self.current_path())
+
+    def __str__(self) -> str:
+        return str(self.current_path())
+
+    def __repr__(self) -> str:
+        return repr(self.current_path())
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.current_path(), name)
+
+    def __eq__(self, other: object) -> bool:
+        try:
+            return self.current_path() == Path(other)  # type: ignore[arg-type]
+        except TypeError:
+            return False
+
+
+# Semipublic compatibility aliases retained for tests and downstream callers
+# that still patch/read runtime.repository.* directly. The runtime.config
+# module remains the default authoritative patch surface unless these aliases
+# are explicitly overridden.
+RUNTIME_DB_FILE = _CompatPathAlias(runtime_config.runtime_db_file_path)
+DAEMON_STATUS_FILE = _CompatPathAlias(runtime_config.daemon_status_file_path)
 
 SCHEMA_VERSION = RUNTIME_DB_SCHEMA_VERSION
 _ALLOWED_RUNTIME_TABLES = frozenset(
@@ -445,8 +484,32 @@ class OperationalEvent:
     details_json: str | None = None
 
 
+def _compat_path_override(*, alias: Path, current: Path) -> Path:
+    return alias if alias != current else current
+
+
+def _runtime_db_file() -> Path:
+    alias = globals().get("RUNTIME_DB_FILE")
+    current = runtime_config.runtime_db_file_path()
+    if isinstance(alias, _CompatPathAlias):
+        return alias.current_path()
+    if isinstance(alias, PathLike):
+        return _compat_path_override(alias=Path(alias), current=current)
+    return current
+
+
+def _daemon_status_file() -> Path:
+    alias = globals().get("DAEMON_STATUS_FILE")
+    current = runtime_config.daemon_status_file_path()
+    if isinstance(alias, _CompatPathAlias):
+        return alias.current_path()
+    if isinstance(alias, PathLike):
+        return _compat_path_override(alias=Path(alias), current=current)
+    return current
+
+
 def _db_path(root: Path) -> Path:
-    return RUNTIME_DB_FILE
+    return _runtime_db_file()
 
 
 def _initialize_runtime_db(conn: sqlite3.Connection) -> None:
@@ -1803,7 +1866,8 @@ def save_child_discovery_request(
     finally:
         conn.close()
 
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type="source.child_request.saved",
         canonical_id=canonical_id,
         outcome="saved",
@@ -1819,7 +1883,8 @@ def clear_child_discovery_request(root: Path, canonical_id: str) -> None:
     finally:
         conn.close()
 
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type="source.child_request.cleared",
         canonical_id=canonical_id,
         outcome="cleared",
@@ -2000,7 +2065,8 @@ def rename_knowledge_path_prefix(root: Path, old_prefix: str, new_prefix: str) -
         conn.close()
 
 
-def record_operational_event(
+def record_brain_operational_event(
+    root: Path,
     *,
     event_type: str,
     session_id: str | None = None,
@@ -2011,10 +2077,11 @@ def record_operational_event(
     duration_ms: int | None = None,
     details: Mapping[str, object] | str | None = None,
 ) -> None:
+    """Record a brain-scoped operational event through the guarded root-aware seam."""
     global _event_failure_logged
 
     try:
-        conn = _connect_runtime()
+        conn = _connect(root)
         try:
             conn.execute(
                 "INSERT INTO operational_events "
@@ -2039,7 +2106,7 @@ def record_operational_event(
         _event_failure_logged = False
     except Exception:
         if not _event_failure_logged:
-            log.warning("Failed to record operational event", exc_info=True)
+            log.warning("Failed to record brain-scoped operational event", exc_info=True)
             _event_failure_logged = True
 
 
@@ -2425,7 +2492,8 @@ def write_daemon_status(*, root: Path, pid: int, status: str, daemon_id: str) ->
     """Write the latest daemon lifecycle snapshot to config-dir-scoped daemon.json."""
     from datetime import UTC, datetime
 
-    DAEMON_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    daemon_status_file = _daemon_status_file()
+    daemon_status_file.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "pid": pid,
         "started_at": datetime.now(UTC).isoformat() if status == "starting" else None,
@@ -2433,15 +2501,15 @@ def write_daemon_status(*, root: Path, pid: int, status: str, daemon_id: str) ->
         "brain_root": _daemon_root_id(root),
         "status": status,
     }
-    if DAEMON_STATUS_FILE.exists() and status != "starting":
+    if daemon_status_file.exists() and status != "starting":
         try:
-            current = json.loads(DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
+            current = json.loads(daemon_status_file.read_text(encoding="utf-8"))
             payload["started_at"] = current.get("started_at")
             payload["daemon_id"] = current.get("daemon_id", daemon_id)
             payload["brain_root"] = current.get("brain_root", _daemon_root_id(root))
         except (json.JSONDecodeError, OSError):
             pass
-    DAEMON_STATUS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    daemon_status_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 class DaemonAlreadyRunningError(RuntimeError):
@@ -2476,7 +2544,7 @@ def _daemon_root_id(root: Path) -> str:
 
 
 def _daemon_guard_path() -> Path:
-    return DAEMON_STATUS_FILE.parent / "daemon.lock"
+    return _daemon_status_file().parent / "daemon.lock"
 
 
 def _lock_daemon_handle(handle: IO[str]) -> bool:
@@ -2572,9 +2640,10 @@ def ensure_no_active_daemon() -> None:
 
 def read_daemon_status() -> dict | None:
     """Read daemon lifecycle state from the config-dir-scoped daemon.json."""
-    if not DAEMON_STATUS_FILE.exists():
+    daemon_status_file = _daemon_status_file()
+    if not daemon_status_file.exists():
         return None
     try:
-        return json.loads(DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
+        return json.loads(daemon_status_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None

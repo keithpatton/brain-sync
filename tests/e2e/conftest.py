@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from tests.e2e.harness.assertions import assert_brain_consistent
 from tests.e2e.harness.brain import BrainFixture, create_brain
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess
+from tests.harness.isolation import apply_in_process_isolation, layout_from_config_dir, write_active_brain_config
 
 # Thread-local-ish holder: stores the brain root path so the autouse
 # invariant fixture can access it even after the brain fixture is torn down.
@@ -21,8 +21,7 @@ _brain_root_holder: dict[str, Path] = {}
 @pytest.fixture
 def brain(tmp_path: Path, config_dir: Path) -> BrainFixture:
     """Create a fresh brain for testing."""
-    config = {"brain_root": str(tmp_path / "brain")}
-    (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    write_active_brain_config(layout_from_config_dir(config_dir), tmp_path / "brain")
     bf = create_brain(tmp_path)
     # Stash root path for the invariant fixture
     _brain_root_holder[str(tmp_path)] = bf.root
@@ -34,17 +33,7 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolated config directory."""
     d = tmp_path / ".brain-sync"
     d.mkdir(exist_ok=True)
-    runtime_db_file = d / "db" / "brain-sync.sqlite"
-    daemon_status_file = d / "daemon.json"
-    config_file = d / "config.json"
-    monkeypatch.setenv("BRAIN_SYNC_CONFIG_DIR", str(d))
-    monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", d)
-    monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-    monkeypatch.setattr("brain_sync.runtime.config.RUNTIME_DB_FILE", runtime_db_file)
-    monkeypatch.setattr("brain_sync.runtime.config.DAEMON_STATUS_FILE", daemon_status_file)
-    monkeypatch.setattr("brain_sync.runtime.repository.RUNTIME_DB_FILE", runtime_db_file)
-    monkeypatch.setattr("brain_sync.runtime.repository.DAEMON_STATUS_FILE", daemon_status_file)
-    monkeypatch.setattr("brain_sync.runtime.token_tracking.RUNTIME_DB_FILE", runtime_db_file)
+    apply_in_process_isolation(monkeypatch, layout=layout_from_config_dir(d))
     return d
 
 

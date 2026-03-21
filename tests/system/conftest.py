@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from tests.e2e.harness.cli import CliRunner
+from tests.harness.isolation import layout_from_config_dir, write_active_brain_config
 
 
 @pytest.fixture
@@ -28,7 +28,5 @@ def cli(config_dir: Path) -> CliRunner:
 def brain_root(tmp_path: Path, config_dir: Path) -> Path:
     """Path where brain will be initialised by CLI."""
     root = tmp_path / "brain"
-    # Write config so CLI can discover brain root
-    config = {"brain_root": str(root)}
-    (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    write_active_brain_config(layout_from_config_dir(config_dir), root)
     return root

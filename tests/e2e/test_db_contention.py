@@ -22,6 +22,7 @@ from tests.e2e.harness.brain import BrainFixture, seed_knowledge_tree
 from tests.e2e.harness.cli import CliRunner
 from tests.e2e.harness.daemon import DaemonProcess
 from tests.e2e.harness.scenarios import run_regen
+from tests.harness.isolation import build_subprocess_env, layout_from_config_dir
 
 pytestmark = pytest.mark.e2e
 
@@ -33,10 +34,14 @@ def _barriered_daemon_process(
     capture_dir: Path,
     start_at: float,
 ) -> subprocess.Popen[str]:
-    helper = DaemonProcess(brain_root, config_dir, capture_dir)
-    env = helper._env()
-    env["BRAIN_SYNC_TEST_ROOT"] = str(brain_root)
-    env["BRAIN_SYNC_START_AT"] = f"{start_at:.6f}"
+    env = build_subprocess_env(
+        layout=layout_from_config_dir(config_dir),
+        capture_dir=capture_dir,
+        extra_env={
+            "BRAIN_SYNC_TEST_ROOT": str(brain_root),
+            "BRAIN_SYNC_START_AT": f"{start_at:.6f}",
+        },
+    )
     code = (
         "import os, sys, time\n"
         "target = float(os.environ['BRAIN_SYNC_START_AT'])\n"

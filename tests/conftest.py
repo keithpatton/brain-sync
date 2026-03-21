@@ -8,16 +8,20 @@ from pathlib import Path
 
 import pytest
 
-_COLLECTION_CONFIG_DIR = Path(tempfile.mkdtemp(prefix="brain-sync-test-config-")) / "config"
-_COLLECTION_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-_COLLECTION_HOME_DIR = Path(tempfile.mkdtemp(prefix="brain-sync-test-home-")) / "home"
-_COLLECTION_HOME_DIR.mkdir(parents=True, exist_ok=True)
-os.environ["BRAIN_SYNC_CONFIG_DIR"] = str(_COLLECTION_CONFIG_DIR)
-os.environ["BRAIN_SYNC_SKILL_INSTALL_DIR"] = str(_COLLECTION_HOME_DIR / ".claude" / "skills" / "brain-sync")
-os.environ["HOME"] = str(_COLLECTION_HOME_DIR)
-os.environ["USERPROFILE"] = str(_COLLECTION_HOME_DIR)
-os.environ["APPDATA"] = str(_COLLECTION_HOME_DIR / "AppData" / "Roaming")
-os.environ["LOCALAPPDATA"] = str(_COLLECTION_HOME_DIR / "AppData" / "Local")
+from brain_sync.runtime.paths import brain_sync_user_dir
+from tests.harness.isolation import (
+    apply_in_process_isolation,
+    assert_temp_test_layout,
+    layout_for_base_dir,
+    populate_brain_sync_env,
+)
+
+_COLLECTION_LAYOUT = layout_for_base_dir(
+    Path(tempfile.mkdtemp(prefix="brain-sync-test-collection-")), config_dir_name="config"
+)
+_COLLECTION_LAYOUT.config_dir.mkdir(parents=True, exist_ok=True)
+_COLLECTION_LAYOUT.home_dir.mkdir(parents=True, exist_ok=True)
+populate_brain_sync_env(os.environ, layout=_COLLECTION_LAYOUT)
 
 
 @pytest.fixture(autouse=True)
@@ -29,29 +33,15 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch) -> None:
     with isolated env set by the test harness.
     """
     with tempfile.TemporaryDirectory() as td:
-        config_dir = Path(td) / "config"
-        home_dir = Path(td) / "home"
-        config_dir.mkdir()
-        home_dir.mkdir()
-        config_file = config_dir / "config.json"
-        runtime_db_file = config_dir / "db" / "brain-sync.sqlite"
-        daemon_status_file = config_dir / "daemon.json"
-        skill_dir = home_dir / ".claude" / "skills" / "brain-sync"
-        monkeypatch.setenv("BRAIN_SYNC_CONFIG_DIR", str(config_dir))
-        monkeypatch.setenv("BRAIN_SYNC_SKILL_INSTALL_DIR", str(skill_dir))
-        monkeypatch.setenv("HOME", str(home_dir))
-        monkeypatch.setenv("USERPROFILE", str(home_dir))
-        monkeypatch.setenv("APPDATA", str(home_dir / "AppData" / "Roaming"))
-        monkeypatch.setenv("LOCALAPPDATA", str(home_dir / "AppData" / "Local"))
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_DIR", config_dir)
-        monkeypatch.setattr("brain_sync.runtime.config.CONFIG_FILE", config_file)
-        monkeypatch.setattr("brain_sync.runtime.config.RUNTIME_DB_FILE", runtime_db_file)
-        monkeypatch.setattr("brain_sync.runtime.config.DAEMON_STATUS_FILE", daemon_status_file)
-        monkeypatch.setattr("brain_sync.runtime.repository.RUNTIME_DB_FILE", runtime_db_file)
-        monkeypatch.setattr("brain_sync.runtime.repository.DAEMON_STATUS_FILE", daemon_status_file)
-        monkeypatch.setattr("brain_sync.runtime.token_tracking.RUNTIME_DB_FILE", runtime_db_file)
-        monkeypatch.setattr("brain_sync.util.logging.LOG_DIR", config_dir / "logs")
-        monkeypatch.setattr("brain_sync.util.logging.LOG_FILE", config_dir / "logs" / "brain-sync.log")
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.CONFIG_DIR", config_dir)
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE", config_dir / "google_token.json")
+        layout = layout_for_base_dir(Path(td), config_dir_name="config")
+        layout.config_dir.mkdir()
+        layout.home_dir.mkdir()
+        apply_in_process_isolation(monkeypatch, layout=layout)
         yield
+
+
+@pytest.fixture(autouse=True)
+def _guard_against_live_runtime_paths(request: pytest.FixtureRequest) -> None:
+    if request.node.get_closest_marker("allow_non_temp_test_layout"):
+        return
+    assert_temp_test_layout(config_dir=brain_sync_user_dir(), home_dir=Path.home())

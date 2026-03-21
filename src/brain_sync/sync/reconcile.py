@@ -15,7 +15,7 @@ from brain_sync.brain.layout import area_insights_dir
 from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.tree import find_all_content_paths, is_readable_file
 from brain_sync.regen import classify_folder_change
-from brain_sync.runtime.repository import delete_regen_lock, load_all_regen_locks, record_operational_event
+from brain_sync.runtime.repository import delete_regen_lock, load_all_regen_locks, record_brain_operational_event
 
 log = logging.getLogger(__name__)
 
@@ -115,13 +115,15 @@ def reconcile_knowledge_tree(root: Path) -> TreeReconcileResult:
             content_changed.append(path)
 
     for orphan in scan_result.orphans_cleaned:
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="reconcile.orphan_cleaned",
             knowledge_path=orphan,
             outcome="cleaned",
         )
     for path in scan_result.enqueued_paths:
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="reconcile.path_enqueued",
             knowledge_path=path,
             outcome="enqueued",

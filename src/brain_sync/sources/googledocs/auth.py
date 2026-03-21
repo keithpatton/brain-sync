@@ -6,12 +6,13 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
 
-from brain_sync.runtime.config import CONFIG_DIR, load_config, save_config
+import brain_sync.runtime.config as runtime_config
 from brain_sync.sources.googledocs.rest import FetchError
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ _GOOGLE_CLIENT_CONFIG = {
     }
 }
 
-_LEGACY_TOKEN_FILE = CONFIG_DIR / "google_token.json"
+
+def _legacy_token_file() -> Path:
+    return runtime_config.config_dir() / "google_token.json"
 
 
 def _require_google() -> None:
@@ -109,11 +112,12 @@ def _load_cached_token() -> Credentials | None:
     _require_google()
     from google.oauth2.credentials import Credentials
 
-    config = load_config()
+    config = runtime_config.load_config()
     token_dict = config.get("google", {}).get("token")
 
     # Migration: legacy google_token.json → config.json
-    if token_dict is None and _LEGACY_TOKEN_FILE.exists():
+    legacy_token_file = _legacy_token_file()
+    if token_dict is None and legacy_token_file.exists():
         token_dict = _migrate_legacy_token(config)
 
     if token_dict is None:
@@ -132,8 +136,9 @@ def _load_cached_token() -> Credentials | None:
 
 def _migrate_legacy_token(config: dict) -> dict | None:
     """Migrate token from legacy google_token.json into config.json."""
+    legacy_token_file = _legacy_token_file()
     try:
-        token_dict = json.loads(_LEGACY_TOKEN_FILE.read_text(encoding="utf-8"))
+        token_dict = json.loads(legacy_token_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         log.debug("Failed to read legacy google_token.json for migration", exc_info=True)
         return None
@@ -141,9 +146,9 @@ def _migrate_legacy_token(config: dict) -> dict | None:
     config.setdefault("google", {})["token"] = token_dict
     # Clean up legacy googledocs.client_secrets_file if present
     config.pop("googledocs", None)
-    save_config(config)
+    runtime_config.save_config(config)
 
-    _LEGACY_TOKEN_FILE.unlink(missing_ok=True)
+    legacy_token_file.unlink(missing_ok=True)
     log.info("Migrated Google token from google_token.json into config.json")
     return token_dict
 
@@ -151,6 +156,6 @@ def _migrate_legacy_token(config: dict) -> dict | None:
 def _save_token(creds: Credentials) -> None:
     """Save token into config.json under google.token."""
     token_dict = json.loads(creds.to_json())
-    config = load_config()
+    config = runtime_config.load_config()
     config.setdefault("google", {})["token"] = token_dict
-    save_config(config)
+    runtime_config.save_config(config)

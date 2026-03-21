@@ -16,7 +16,7 @@ from brain_sync.runtime.repository import (
     ensure_lifecycle_session,
     ensure_source_polling,
     load_source_lifecycle_runtime,
-    record_operational_event,
+    record_brain_operational_event,
     record_source_missing_confirmation,
 )
 from brain_sync.sync.lifecycle_policy import finalization_eligibility
@@ -62,14 +62,16 @@ def _return_rediscovered_not_missing(
     ensure_source_polling(root, canonical_id)
     refreshed = read_source_manifest(root, canonical_id)
     knowledge_path = refreshed.target_path if refreshed is not None else manifest_target_path
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type="source.rediscovered",
         canonical_id=canonical_id,
         knowledge_path=knowledge_path,
         outcome="rediscovered",
         details={"revalidation_basis": revalidation_basis},
     )
-    record_operational_event(
+    record_brain_operational_event(
+        root,
         event_type="source.finalization_not_missing",
         canonical_id=canonical_id,
         knowledge_path=knowledge_path,
@@ -100,7 +102,8 @@ def finalize_missing(
         lease_expires_utc=_lease_expiry(),
     )
     if not acquired:
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="source.finalization_lease_conflict",
             canonical_id=canonical_id,
             outcome="lease_conflict",
@@ -119,7 +122,8 @@ def finalize_missing(
         manifest = read_source_manifest(root, canonical_id)
         if manifest is None:
             delete_source_lifecycle_runtime(root, canonical_id)
-            record_operational_event(
+            record_brain_operational_event(
+                root,
                 event_type="source.finalization_not_found",
                 canonical_id=canonical_id,
                 outcome="not_found",
@@ -156,7 +160,8 @@ def finalize_missing(
         )
         if eligibility.reason == "not_missing":
             delete_source_lifecycle_runtime(root, canonical_id)
-            record_operational_event(
+            record_brain_operational_event(
+                root,
                 event_type="source.finalization_not_missing",
                 canonical_id=canonical_id,
                 knowledge_path=manifest.target_path,
@@ -175,7 +180,8 @@ def finalize_missing(
                 canonical_id,
                 lifecycle_session_id=current_lifecycle_session_id,
             )
-            record_operational_event(
+            record_brain_operational_event(
+                root,
                 event_type="source.finalization_pending_confirmation",
                 canonical_id=canonical_id,
                 knowledge_path=manifest.target_path,
@@ -210,7 +216,8 @@ def finalize_missing(
         delete_source_lifecycle_runtime(root, canonical_id)
         clear_child_discovery_request(root, canonical_id)
         repository.delete_source_registration(canonical_id)
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="source.finalized",
             canonical_id=canonical_id,
             knowledge_path=manifest.target_path,

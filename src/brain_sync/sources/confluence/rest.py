@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from brain_sync.runtime.config import CONFIG_FILE
+import brain_sync.runtime.config as runtime_config
 from brain_sync.sources.base import RemoteSourceMissingError
 
 log = logging.getLogger(__name__)
@@ -52,7 +52,10 @@ class _AuthCache:
         with self._lock:
             self._auth = auth
         if auth is None:
-            log.warning("No Confluence REST auth available (checked %s and env vars)", CONFIG_FILE)
+            log.warning(
+                "No Confluence REST auth available (checked %s and env vars)",
+                runtime_config.config_file_path(),
+            )
         return auth
 
     def reset(self) -> None:
@@ -62,16 +65,17 @@ class _AuthCache:
 
     @staticmethod
     def _load_from_config() -> ConfluenceAuth | None:
-        if not CONFIG_FILE.exists():
+        config_file = runtime_config.config_file_path()
+        if not config_file.exists():
             return None
         try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            data = json.loads(config_file.read_text(encoding="utf-8"))
             confluence = data.get("confluence", {})
             domain = confluence.get("domain")
             email = confluence.get("email")
             token = confluence.get("token")
             if domain and email and token:
-                log.debug("Loaded Confluence auth from %s", CONFIG_FILE)
+                log.debug("Loaded Confluence auth from %s", config_file)
                 return ConfluenceAuth(domain=domain, email=email, token=token)
         except Exception as exc:
             log.debug("Failed to read brain-sync config: %s", exc)

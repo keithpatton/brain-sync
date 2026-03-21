@@ -24,16 +24,33 @@ DAEMON_STATUS_FILE: Path = daemon_status_path()
 _lock = threading.Lock()
 
 
+def config_dir() -> Path:
+    return CONFIG_DIR
+
+
+def config_file_path() -> Path:
+    return CONFIG_FILE
+
+
+def runtime_db_file_path() -> Path:
+    return RUNTIME_DB_FILE
+
+
+def daemon_status_file_path() -> Path:
+    return DAEMON_STATUS_FILE
+
+
 def load_config() -> dict:
     """Load config from CONFIG_FILE. Returns empty dict if missing or invalid.
 
     Thread-safe. No caching — the file is small and reads are infrequent.
     """
     with _lock:
-        if not CONFIG_FILE.exists():
+        cfg_file = config_file_path()
+        if not cfg_file.exists():
             return {}
         try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            return json.loads(cfg_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
 
@@ -58,5 +75,7 @@ def active_brain_root(config: Mapping[str, object] | None = None) -> Path | None
 def save_config(config: dict) -> None:
     """Write config dict to CONFIG_FILE. Thread-safe."""
     with _lock:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        cfg_dir = config_dir()
+        cfg_file = config_file_path()
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

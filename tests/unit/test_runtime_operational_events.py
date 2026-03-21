@@ -17,7 +17,7 @@ from brain_sync.regen.queue import RegenQueue
 from brain_sync.runtime.repository import (
     clear_child_discovery_request,
     load_operational_events,
-    record_operational_event,
+    record_brain_operational_event,
     save_child_discovery_request,
 )
 
@@ -32,7 +32,8 @@ def brain(tmp_path: Path) -> Path:
 
 
 def test_record_operational_event_persists_stable_fields(brain: Path) -> None:
-    record_operational_event(
+    record_brain_operational_event(
+        brain,
         event_type="regen.completed",
         session_id="session-1",
         owner_id="owner-1",
@@ -59,17 +60,17 @@ def test_record_operational_event_persists_stable_fields(brain: Path) -> None:
 
 
 def test_record_operational_event_is_non_fatal_on_db_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom():
+    def _boom(_root: Path):
         raise sqlite3.OperationalError("disk full")
 
-    monkeypatch.setattr("brain_sync.runtime.repository._connect_runtime", _boom)
+    monkeypatch.setattr("brain_sync.runtime.repository._connect", _boom)
 
-    record_operational_event(event_type="regen.failed", outcome="failed")
+    record_brain_operational_event(Path("brain"), event_type="regen.failed", outcome="failed")
 
 
 def test_operational_events_are_append_only(brain: Path) -> None:
-    record_operational_event(event_type="event.one", outcome="first")
-    record_operational_event(event_type="event.two", outcome="second")
+    record_brain_operational_event(brain, event_type="event.one", outcome="first")
+    record_brain_operational_event(brain, event_type="event.two", outcome="second")
 
     events = load_operational_events(brain)
 
@@ -141,7 +142,8 @@ def test_queue_does_not_duplicate_engine_completed_event(
     queue = RegenQueue(root=brain, owner_id="owner-1", session_id="session-1")
 
     async def _fake_regen_path(root: Path, knowledge_path: str, **_: object) -> int:
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="regen.completed",
             session_id="session-1",
             owner_id="owner-1",
@@ -169,7 +171,8 @@ def test_queue_does_not_duplicate_engine_failed_event(
     queue = RegenQueue(root=brain, owner_id="owner-1", session_id="session-1")
 
     async def _fake_regen_path(root: Path, knowledge_path: str, **_: object) -> int:
-        record_operational_event(
+        record_brain_operational_event(
+            root,
             event_type="regen.failed",
             session_id="session-1",
             owner_id="owner-1",
@@ -189,3 +192,28 @@ def test_queue_does_not_duplicate_engine_failed_event(
     assert len(events) == 1
     assert events[0].knowledge_path == "area"
     assert events[0].outcome == "failed"
+
+
+def test_brain_scoped_events_fail_closed_for_temp_root_with_machine_local_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    temp_root = tmp_path / "brain"
+
+    monkeypatch.delenv("BRAIN_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("USERPROFILE", str(home_dir))
+    monkeypatch.setenv("APPDATA", str(home_dir / "AppData" / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(home_dir / "AppData" / "Local"))
+
+    record_brain_operational_event(
+        temp_root,
+        event_type="source.local_file.added",
+        knowledge_path="area",
+        outcome="added",
+    )
+
+    runtime_db = home_dir / ".brain-sync" / "db" / "brain-sync.sqlite"
+    assert not runtime_db.exists()
