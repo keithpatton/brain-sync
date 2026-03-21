@@ -18,6 +18,12 @@ Each plan starts from the canonical root plan and then branches by outcome:
    `plan_<id>_<iteration>_<date>.md`.
 5. If the latest revision is acceptable, create
    `plan_<id>_<iteration>_approved_<datetime>.md`.
+6. The implementer executes the approved plan revision.
+7. The implementation reviewer evaluates the realized changes against the
+   approved plan.
+8. Material completion, abandonment, deferment, or return-for-replanning status
+   is recorded in `plan_<id>_<iteration>_notes.md` when that durable execution
+   context would not be obvious from repository history alone.
 
 Reviews always attach to a specific plan version. Revisions create a new plan
 file rather than overwriting the previous one. Approval is represented as a
@@ -32,7 +38,9 @@ The important clarification is that a passing evaluation round normally ends in
 an approval artifact, not in a final positive review artifact plus a separate
 approval artifact.
 
-Supporting inputs may exist alongside the plan trail when a planner needs extra implementation context. They inform a plan, but they are not part of the plan → review → revision → approval lifecycle.
+Supporting inputs may exist alongside the plan trail when a planner needs extra
+implementation context. They inform a plan, but they are not part of the
+plan → review → revision → approval lifecycle.
 
 Architecture reviews under `docs/architecture/reviews/` are one important class
 of supporting input. They diagnose and recommend; they do not authorize work by
@@ -87,7 +95,13 @@ Reviews without an iteration number refer to the canonical root plan, which is i
 
 ## Agent Roles
 
-The planning directory supports three roles: planner, reviewer, and approver.
+The planning workflow supports three pre-approval roles: planner, reviewer, and
+approver.
+
+After approval, execution may involve two post-approval roles: implementer and
+implementation reviewer. Their detailed phase guidance lives in
+[`Implementation`](#implementation) and
+[`Implementation Review`](#implementation-review).
 
 One agent may hold both the reviewer and approver roles. In that common flow,
 the agent should review first, try to find substantive problems, and then emit
@@ -164,7 +178,8 @@ Approval is represented by creating an approval artifact:
 
 The approval file is created by copying the approved plan revision and adding the `_approved_<datetime>` suffix.
 
-Only the most recent plan revision may be approved. If a review identifies issues, the planner must produce a new revision before approval can occur.
+Only the most recent plan revision may be approved. If a review identifies
+issues, the planner must produce a new revision before approval can occur.
 
 Approval must not modify the original plan file.
 
@@ -179,6 +194,36 @@ artifact unless separately asked to implement the plan.
 If the same agent is serving as reviewer and approver, do not create a
 same-pass "approval recommended" review artifact and then a second approval
 artifact. Create the approval artifact directly.
+
+### Implementer
+
+The implementer executes an approved plan revision.
+
+The implementer:
+
+- works from the approved plan artifact, approval attestation, and relevant
+  notes/supporting inputs
+- realizes the approved scope in code, tests, and docs
+- records durable execution-relevant decisions or status changes in the notes
+  file when needed
+
+The detailed execution guidance for this role lives in
+[`Implementation`](#implementation).
+
+### Implementation Reviewer
+
+The implementation reviewer evaluates realized changes against the approved
+plan.
+
+The implementation reviewer:
+
+- reviews a commit, commit range, branch tip, or working tree against the
+  approved plan
+- checks plan fidelity, acceptance-criteria coverage, proof strength, and drift
+- may perform either a `standard` or `adversarial` implementation review
+
+The detailed execution guidance and reusable review template for this role live
+in [`Implementation Review`](#implementation-review).
 
 ## One Artifact Per Evaluation Pass
 
@@ -276,7 +321,8 @@ To keep the gate unambiguous:
 - do not use verdicts such as `Approved for execution`
 - do not end a review artifact by telling the next agent to implement
 - default review verdicts should be challenge-oriented, such as `Changes required`
-- use `Approval recommended` only when the user explicitly wants separate reviewer and approver artifacts for the same passing round
+- use `Approval recommended` only when the user explicitly wants separate
+  reviewer and approver artifacts for the same passing round
 
 In the common combined reviewer/approver flow, omit the positive review artifact
 entirely and create the approval artifact instead.
@@ -314,7 +360,8 @@ concrete pattern to mirror for future approval artifacts.
 
 ## Supporting Inputs
 
-An optional supporting input may be kept in this folder when a plan needs a separate context or implementation-guidance document.
+An optional supporting input may be kept in this folder when a plan needs a
+separate context or implementation-guidance document.
 
 Supporting input file:
 
@@ -329,27 +376,53 @@ Supporting inputs:
 - are not plan revisions, reviews, or approvals
 - must not be used to represent approval
 
-When present, they should be treated as supplementary input to the planning artifacts, similar to context for the planner or reviewer.
+When present, they should be treated as supplementary input to the planning
+artifacts, similar to context for the planner or reviewer.
 
-## Implementation Notes
+## Implementation
 
-Any agent involved in the execution of an approved plan may add material
-implementation notes in the relevant notes file when one exists.
+This section defines the implementer phase of the workflow that begins after
+approval.
 
-Implementation notes are for execution-relevant context that may not be obvious
-from the commit history alone, such as:
+The append-only planning lifecycle ends at approval. After that point, the
+implementer executes the approved plan from:
 
-- approved variations from the plan
-- implementation clarifications
-- bounded deferments
-- non-obvious tradeoffs or constraints the next agent must preserve
+- the approved plan artifact
+- the approval attestation notes
+- any supporting inputs the approved plan names
+- the implementation notes file for that approved plan version, when present
+- the current code, tests, and authoritative documentation
 
-Implementation notes are not a duplicate changelog. Do not use them for:
+The implementer should:
 
-- routine summaries of code changes already clear from commits
-- validation logs already captured elsewhere
-- file-by-file implementation inventories
-- status narration with no lasting execution relevance
+- execute the approved scope without silently redesigning it
+- resolve normal code-level ambiguity from repository context rather than
+  reopening planning for every small local choice
+- keep code, tests, and docs aligned in the same change set when the plan
+  requires contract changes
+- stop and escalate when the approved plan is materially unsafe,
+  self-contradictory, or incomplete in a way that changes requirements
+- record durable execution-relevant decisions or status changes in the notes
+  file when they would not be obvious from repository history alone
+
+The implementer should not:
+
+- treat the notes file as a second plan
+- use implementation notes as a routine changelog
+- silently convert plan defects into undocumented code decisions
+
+Preferred shorthand:
+
+```text
+Implement the approved plan at <approval-artifact>. Follow the Implementer role
+in docs/plans/README.md. Use the approval artifact and notes file as
+authoritative execution inputs. Add material implementation notes and a final
+status note when done.
+```
+
+### Implementation Notes
+
+The implementer is normally the agent who writes implementation notes.
 
 Implementation notes file:
 
@@ -357,28 +430,226 @@ Implementation notes file:
 plan_<id>_<iteration>_notes.md
 ```
 
+Write a note when the information matters to a later implementer, reviewer, or
+maintainer and would not be obvious from the final code and commit history
+alone.
+
+Good note subjects:
+
+- approved variations from the plan
+- bounded deferments
+- implementation constraints that remain important after merge
+- doc-authority clarifications needed during execution
+- completion, abandonment, or return-for-replanning status
+
+Poor note subjects:
+
+- file-by-file edit summaries
+- routine test command logs
+- generic progress narration
+- findings that belong in code review rather than execution history
+
 Implementation notes should:
 
 - use one notes file per approved plan version
 - append new notes at the top so the newest entry is seen first
 - be written in date/time-descending order
-- record only material execution-relevant decisions, clarifications, approved variations, or bounded deferments
+- record only material execution-relevant decisions, clarifications, approved
+  variations, or bounded deferments
+- include a final status update when the approved plan is materially completed,
+  intentionally abandoned, or explicitly returned for replanning
+- include commit, branch, or review context when that link would not otherwise
+  be obvious from the surrounding repository history
+
+Implementation notes are the durable place to record execution state
+transitions such as:
+
+- `Status: Completed.`
+- `Status: Abandoned.`
+- `Status: Returned for replanning.`
+
+Recommended note shape:
+
+```md
+2026-03-22T16:15:00+13:00
+Change: <material execution decision or status transition>
+Reason: <why this matters after the chat and commit history are gone>
+Status: <Implemented | Clarified | Deferred | Completed | Abandoned | Returned for replanning>
+```
 
 Example:
 
 ```md
 # Plan v23.3 Implementation Notes
 
+2026-03-22T18:40:00+13:00
+Change: Approved plan implementation completed against branch `codex/example`.
+Reason: Commits `abc1234` and `def5678` satisfy the approved scope and no known
+blocking deviations remain after implementation review.
+Status: Completed.
+
 2026-03-16T09:12:00
 Change: `_core` context for non-`_core` regen now uses summary only.
 Reason: Token determinism and prompt pressure reduction.
 Status: Implemented.
-
-2026-03-15T18:40:00
-Change: Approval trail requires an `_approved_<datetime>` artifact before implementation.
-Reason: Keep the planning gate explicit.
-Status: Clarified.
 ```
+
+## Implementation Review
+
+This section defines the implementation reviewer phase that evaluates realized
+changes after implementation.
+
+Implementation review is not a new plan-review artifact by default. Deliver it
+in the review surface the user asked for, such as chat, inline review comments,
+or a separate ad hoc write-up. Do not reuse `plan_<id>_*review*` filenames for
+post-approval code review.
+
+Implementation review normally targets one of:
+
+- the latest commit
+- a named commit range
+- the current working tree
+- the current branch tip
+
+Implementation review should review against:
+
+- the approved plan artifact
+- approval attestation notes
+- the relevant notes file
+- current authoritative docs when the plan depends on them
+- the actual code and tests that landed
+
+Implementation review should answer:
+
+- did the implementation satisfy the approved plan rather than a looser
+  interpretation of it
+- which acceptance criteria are met, unproven, or missed
+- whether the implementation introduced regressions, hidden scope drift, or
+  contradictions with higher-authority docs
+- whether the implementation notes capture the non-obvious execution facts that
+  need to persist
+
+Preferred shorthand:
+
+```text
+Perform the standard plan implementation review for <approval-artifact> against
+<latest-commit|commit-range|working-tree|branch>. Follow the Implementation
+Reviewer role in docs/plans/README.md.
+```
+
+```text
+Perform the adversarial plan implementation review for <approval-artifact>
+against <latest-commit|commit-range|working-tree|branch>. Follow the
+Implementation Reviewer role in docs/plans/README.md.
+```
+
+If the review spans multiple commits, name the commit range explicitly.
+Otherwise, pointing at the latest commit or current branch changes is the
+default.
+
+### Review Modes
+
+Implementation review has two standard modes.
+
+#### Standard
+
+`standard` review is the default strong production review. It should be tough
+enough to catch most real defects and plan drift without assuming deliberate
+evasion.
+
+Standard review focuses on:
+
+- missed acceptance criteria
+- obvious or likely regressions
+- plan drift
+- missing tests or weak proof
+- missing doc updates
+- implementation notes gaps
+
+#### Adversarial
+
+`adversarial` review is the maximum-scrutiny pass. It should assume the
+implementation may appear compliant while still violating the plan's actual
+contract.
+
+Adversarial review includes everything in `standard` and adds explicit pressure
+on:
+
+- hidden requirement slippage behind superficially similar behavior
+- concurrency, migration, ordering, and restart edge cases
+- code paths that bypass the intended enforcement seam
+- partial implementations that satisfy happy-path tests only
+- compatibility drift, stale docs, or unverified operational assumptions
+- commit-boundary and branch-boundary reasoning when the change spans more than
+  one commit
+
+### Review Template
+
+Use this single template for both review modes. The `Adversarial Pass` section
+is required only for `adversarial` reviews.
+
+```md
+# Implementation Review
+
+Approved plan: <path>
+Review mode: <standard|adversarial>
+Reviewed changes: <latest commit | commit range | working tree | branch>
+Reviewer: <agent or person>
+Date: <YYYY-MM-DD>
+
+## Verdict
+
+<Pass with follow-ups | Changes required | Returned for replanning>
+
+## Findings
+
+- <finding with the concrete requirement or code path it violates>
+
+## Acceptance Criteria Coverage
+
+- Met: <criteria clearly satisfied by the implementation>
+- Unproven: <criteria that may be satisfied but are not demonstrated>
+- Missed: <criteria not satisfied or contradicted by the implementation>
+
+## Plan Drift And Unexpected Changes
+
+- <scope additions, omissions, or behavioral drift relative to the approved
+  plan>
+
+## Tests And Validation
+
+- <evidence that the implementation is or is not adequately proved>
+
+## Docs And Notes
+
+- <required doc or implementation-note updates that are missing or inaccurate>
+
+## Adversarial Pass
+
+- <only for adversarial mode: ways the implementation could look compliant
+  while still violating the contract>
+
+## Recommended Next Action
+
+- <ship as-is | fix implementation issues | add proof/docs | return to
+  planning>
+```
+
+### Escalation Rule
+
+Return work to planning when the review discovers that the approved plan
+itself, not just the implementation, is no longer sufficient. Typical triggers
+include:
+
+- contradictory requirements inside the approved plan
+- a newly discovered higher-authority rule conflict
+- a missing contract choice that would materially change implementation
+- a scope boundary that can no longer be resolved by ordinary implementation
+  judgment
+
+When that happens, the implementation notes should record the status transition
+so the next agent can see that execution stopped for a planning reason rather
+than simply going idle.
 
 ## Filename Rules
 
@@ -402,7 +673,8 @@ Keep names short and predictable so related files stay grouped together in direc
 - later revisions increase only the iteration number
 - approval stays visually obvious with the `_approved` suffix
 
-The naming scheme is designed so that standard filesystem sorting naturally groups plans, reviews, and revisions in chronological order.
+The naming scheme is designed so that standard filesystem sorting naturally
+groups plans, reviews, and revisions in chronological order.
 
 ## v23 Example
 
