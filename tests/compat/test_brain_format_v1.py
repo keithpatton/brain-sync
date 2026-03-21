@@ -25,7 +25,7 @@ def _project_version() -> str:
 def test_supported_compatibility_row_constants() -> None:
     assert _project_version() == "0.7.0.0"
     assert BRAIN_FORMAT_VERSION == "1.2"
-    assert RUNTIME_DB_SCHEMA_VERSION == 28
+    assert RUNTIME_DB_SCHEMA_VERSION == 29
 
 
 def test_pyproject_version_matches_app_version() -> None:
@@ -63,7 +63,7 @@ def test_runtime_db_can_be_rebuilt_without_invalidating_brain(tmp_path: Path) ->
     assert not (root / ".sync-state.sqlite").exists()
 
 
-def test_supported_v23_runtime_db_is_migrated_to_v28_in_place(tmp_path: Path) -> None:
+def test_supported_v23_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -141,7 +141,7 @@ def test_supported_v23_runtime_db_is_migrated_to_v28_in_place(tmp_path: Path) ->
     ]
 
 
-def test_supported_v27_runtime_db_is_migrated_to_v28_in_place(tmp_path: Path) -> None:
+def test_supported_v27_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -190,15 +190,100 @@ def test_supported_v27_runtime_db_is_migrated_to_v28_in_place(tmp_path: Path) ->
     migrated = state_module._connect(root)
     try:
         schema_version = migrated.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        columns = [row[1] for row in migrated.execute("PRAGMA table_info(source_lifecycle_runtime)").fetchall()]
         row = migrated.execute(
-            "SELECT canonical_id, missing_confirmation_count, last_missing_confirmation_session_id, lease_owner "
+            "SELECT canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, lease_owner "
             "FROM source_lifecycle_runtime WHERE canonical_id = 'test:123'"
         ).fetchone()
     finally:
         migrated.close()
 
     assert schema_version == (str(RUNTIME_DB_SCHEMA_VERSION),)
-    assert row == ("test:123", 2, None, "daemon-owner")
+    assert columns == [
+        "canonical_id",
+        "local_missing_first_observed_utc",
+        "local_missing_last_confirmed_utc",
+        "lease_owner",
+        "lease_expires_utc",
+    ]
+    assert row == ("test:123", "2026-03-20T00:00:00+00:00", "2026-03-20T01:00:00+00:00", "daemon-owner")
+
+
+def test_prerelease_v28_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    db_path = state_module.RUNTIME_DB_FILE
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '28')")
+        conn.execute(
+            "CREATE TABLE sync_polling ("
+            "canonical_id TEXT PRIMARY KEY, "
+            "last_checked_utc TEXT, "
+            "current_interval_secs INTEGER NOT NULL DEFAULT 1800, "
+            "next_check_utc TEXT, "
+            "interval_seconds INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE source_lifecycle_runtime ("
+            "canonical_id TEXT PRIMARY KEY, "
+            "local_missing_first_observed_utc TEXT, "
+            "local_missing_last_confirmed_utc TEXT, "
+            "missing_confirmation_count INTEGER NOT NULL DEFAULT 0, "
+            "last_missing_confirmation_session_id TEXT, "
+            "lease_owner TEXT, "
+            "lease_expires_utc TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO source_lifecycle_runtime "
+            "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "test:123",
+                "2026-03-20T00:00:00+00:00",
+                "2026-03-20T01:00:00+00:00",
+                2,
+                "cli:session-1",
+                "daemon-owner",
+                "2099-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = state_module._connect(root)
+    try:
+        schema_version = migrated.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        columns = [row[1] for row in migrated.execute("PRAGMA table_info(source_lifecycle_runtime)").fetchall()]
+        row = migrated.execute(
+            "SELECT canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "lease_owner, lease_expires_utc "
+            "FROM source_lifecycle_runtime WHERE canonical_id = 'test:123'"
+        ).fetchone()
+    finally:
+        migrated.close()
+
+    assert schema_version == (str(RUNTIME_DB_SCHEMA_VERSION),)
+    assert columns == [
+        "canonical_id",
+        "local_missing_first_observed_utc",
+        "local_missing_last_confirmed_utc",
+        "lease_owner",
+        "lease_expires_utc",
+    ]
+    assert row == (
+        "test:123",
+        "2026-03-20T00:00:00+00:00",
+        "2026-03-20T01:00:00+00:00",
+        "daemon-owner",
+        "2099-01-01T00:00:00+00:00",
+    )
 
 
 def test_doctor_rejects_unsupported_legacy_layout(tmp_path: Path) -> None:

@@ -19,12 +19,13 @@ startup guard: `daemon.json` is the latest daemon status snapshot for the
 config directory, while durable startup exclusion for that runtime lives in
 `daemon.lock`.
 
-Runtime schema `v28` splits active polling from source lifecycle coordination:
+Runtime schema `v29` splits active polling from source lifecycle coordination:
 
 - `sync_polling` is polling-only for actively scheduled registered sources
-- `source_lifecycle_runtime` stores machine-local missing confirmation history,
-  lifecycle-session freshness for explicit finalization, source-level leases,
-  and restart-safe lifecycle coordination
+- `source_lifecycle_runtime` stores machine-local missing-observation
+  timestamps plus source-level leases for restart-safe lifecycle coordination;
+  explicit finalization now relies on current revalidation instead of
+  lifecycle-session freshness
 
 Operational events remain machine-local, append-only diagnostics. They are
 best-effort, may duplicate, and are non-authoritative.

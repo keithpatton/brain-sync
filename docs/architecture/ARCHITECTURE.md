@@ -469,11 +469,11 @@ long-lived caches, but further performance tuning may still be worthwhile.
   replacing `__main__.py` as the owner of the daemon loop.
 - regen engine code no longer imports from command-layer modules.
 - Manifests are the authoritative durable registration layer in v23.
-- `0.7.0` / `v28` introduces Brain Format `1.2`, removing portable
+- `0.7.0.0` / `v29` introduces Brain Format `1.2`, removing portable
   `missing_since_utc`, moving missing/finalization coordination into
   `source_lifecycle_runtime`, reserving source lifecycle mutation to the
-  sync-owned lifecycle/finalization seams, and requiring current-session
-  missing confirmation before destructive finalization.
+  sync-owned lifecycle/finalization seams, and reducing destructive
+  finalization to current revalidation plus source-level lease ownership.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.

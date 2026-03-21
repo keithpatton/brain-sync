@@ -794,9 +794,8 @@ The cross-cutting schema rules that matter here are:
   binding for materialized synced documents
 - `fetch_children` and `child_path` are operational inputs, not durable
   portable manifest fields
-- machine-local missing confirmation timing, missing-confirmation session
-  freshness, and explicit-finalization leases live in runtime schema `v28`,
-  not in portable manifests
+- machine-local missing-observation timestamps and explicit-finalization leases
+  live in runtime schema `v29`, not in portable manifests
 
 ### Packaged Regen Resources
 

@@ -13,11 +13,8 @@ from brain_sync.runtime.repository import (
     clear_source_lifecycle_lease,
     delete_source,
     delete_source_lifecycle_runtime,
-    ensure_lifecycle_session,
     ensure_source_polling,
-    load_source_lifecycle_runtime,
     record_brain_operational_event,
-    record_source_missing_confirmation,
 )
 from brain_sync.sync.lifecycle_policy import finalization_eligibility
 
@@ -28,8 +25,6 @@ class FinalizationResult:
     result_state: str
     finalized: bool
     knowledge_state: str | None = None
-    missing_confirmation_count: int | None = None
-    eligible: bool | None = None
     message: str | None = None
     error: str | None = None
     lease_owner: str | None = None
@@ -93,7 +88,7 @@ def finalize_missing(
     lifecycle_session_id: str | None = None,
 ) -> FinalizationResult:
     repository = BrainRepository(root)
-    current_lifecycle_session_id = lifecycle_session_id or ensure_lifecycle_session(root, owner_kind="cli")
+    del lifecycle_session_id
     owner_id = _owner_id()
     acquired, existing = acquire_source_lifecycle_lease(
         root,
@@ -113,7 +108,6 @@ def finalize_missing(
             canonical_id=canonical_id,
             result_state="lease_conflict",
             finalized=False,
-            eligible=False,
             message=f"Source lifecycle lease is already held for {canonical_id}",
             lease_owner=existing.lease_owner if existing is not None else None,
         )
@@ -146,16 +140,9 @@ def finalize_missing(
                 revalidation_basis="finalization_preflight",
             )
 
-        runtime_state = load_source_lifecycle_runtime(root, canonical_id)
         eligibility = finalization_eligibility(
             manifest_exists=True,
             knowledge_state=manifest.knowledge_state,
-            has_runtime_row=runtime_state is not None,
-            missing_confirmation_count=runtime_state.missing_confirmation_count if runtime_state is not None else 0,
-            last_missing_confirmation_session_id=(
-                runtime_state.last_missing_confirmation_session_id if runtime_state is not None else None
-            ),
-            current_lifecycle_session_id=current_lifecycle_session_id,
             conflicting_lease=False,
         )
         if eligibility.reason == "not_missing":
@@ -172,32 +159,6 @@ def finalize_missing(
                 result_state="not_missing",
                 finalized=False,
                 knowledge_state=manifest.knowledge_state,
-            )
-
-        if not eligibility.eligible:
-            refreshed_runtime = record_source_missing_confirmation(
-                root,
-                canonical_id,
-                lifecycle_session_id=current_lifecycle_session_id,
-            )
-            record_brain_operational_event(
-                root,
-                event_type="source.finalization_pending_confirmation",
-                canonical_id=canonical_id,
-                knowledge_path=manifest.target_path,
-                outcome="pending_confirmation",
-                details={
-                    "missing_confirmation_count": refreshed_runtime.missing_confirmation_count,
-                    "revalidation_basis": "finalization_preflight",
-                },
-            )
-            return FinalizationResult(
-                canonical_id=canonical_id,
-                result_state="pending_confirmation",
-                finalized=False,
-                knowledge_state=manifest.knowledge_state,
-                missing_confirmation_count=refreshed_runtime.missing_confirmation_count,
-                eligible=False,
             )
 
         commit_resolution = repository.resolve_source_file(manifest)
@@ -223,15 +184,13 @@ def finalize_missing(
             knowledge_path=manifest.target_path,
             outcome="finalized",
             details={
-                "missing_confirmation_count": eligibility.confirmation_count,
-                "revalidation_basis": "finalization_preflight",
+                "revalidation_basis": "finalization_commit",
             },
         )
         return FinalizationResult(
             canonical_id=canonical_id,
             result_state="finalized",
             finalized=True,
-            eligible=True,
         )
     finally:
         clear_source_lifecycle_lease(root, canonical_id, owner_id=owner_id)

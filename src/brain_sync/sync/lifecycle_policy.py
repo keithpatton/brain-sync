@@ -12,7 +12,6 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class FinalizationEligibility:
     eligible: bool
-    confirmation_count: int
     reason: str
 
 
@@ -28,20 +27,12 @@ def finalization_eligibility(
     *,
     manifest_exists: bool,
     knowledge_state: str | None,
-    has_runtime_row: bool,
-    missing_confirmation_count: int,
-    last_missing_confirmation_session_id: str | None,
-    current_lifecycle_session_id: str | None,
     conflicting_lease: bool,
 ) -> FinalizationEligibility:
     if not manifest_exists:
-        return FinalizationEligibility(False, missing_confirmation_count, "not_found")
+        return FinalizationEligibility(False, "not_found")
     if knowledge_state != "missing":
-        return FinalizationEligibility(False, missing_confirmation_count, "not_missing")
+        return FinalizationEligibility(False, "not_missing")
     if conflicting_lease:
-        return FinalizationEligibility(False, missing_confirmation_count, "lease_conflict")
-    if not has_runtime_row or missing_confirmation_count < 2:
-        return FinalizationEligibility(False, missing_confirmation_count, "pending_confirmation")
-    if last_missing_confirmation_session_id != current_lifecycle_session_id:
-        return FinalizationEligibility(False, missing_confirmation_count, "pending_confirmation")
-    return FinalizationEligibility(True, missing_confirmation_count, "finalized")
+        return FinalizationEligibility(False, "lease_conflict")
+    return FinalizationEligibility(True, "finalized")

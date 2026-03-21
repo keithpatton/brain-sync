@@ -58,20 +58,19 @@ class TestFinalizeMissingCli:
         assert result.returncode == 0
         assert "State: missing" in result.stderr
 
-    def test_finalize_missing_requires_confirmation_before_cleanup(self, cli: CliRunner, brain_root: Path) -> None:
+    def test_finalize_missing_finalizes_missing_source_in_one_call(self, cli: CliRunner, brain_root: Path) -> None:
         _register_materialized_source(cli, brain_root, create_file=False)
 
         first = cli.run("reconcile", "--root", str(brain_root))
         assert first.returncode == 0, first.stderr
 
-        pending = cli.run("finalize-missing", TEST_CID, "--root", str(brain_root))
+        result = cli.run("finalize-missing", TEST_CID, "--root", str(brain_root))
 
-        assert pending.returncode == 0
-        assert "Result: pending_confirmation" in pending.stderr
-        assert "Missing confirmations: 2" in pending.stderr
-        assert read_source_manifest(brain_root, TEST_CID) is not None
+        assert result.returncode == 0
+        assert "Result: finalized" in result.stderr
+        assert read_source_manifest(brain_root, TEST_CID) is None
 
-    def test_finalize_missing_after_restart_still_requires_current_session_confirmation(
+    def test_finalize_missing_after_restart_still_finalizes_in_one_call(
         self,
         cli: CliRunner,
         brain_root: Path,
@@ -86,8 +85,24 @@ class TestFinalizeMissingCli:
         result = cli.run("finalize-missing", TEST_CID, "--root", str(brain_root))
 
         assert result.returncode == 0
-        assert "Result: pending_confirmation" in result.stderr
-        assert read_source_manifest(brain_root, TEST_CID) is not None
+        assert "Result: finalized" in result.stderr
+        assert read_source_manifest(brain_root, TEST_CID) is None
+
+    def test_finalize_missing_returns_not_missing_when_source_reappears(self, cli: CliRunner, brain_root: Path) -> None:
+        knowledge_path = _register_materialized_source(cli, brain_root, create_file=False)
+
+        reconcile = cli.run("reconcile", "--root", str(brain_root))
+        assert reconcile.returncode == 0, reconcile.stderr
+
+        _write_materialized_file(brain_root, knowledge_path)
+
+        result = cli.run("finalize-missing", TEST_CID, "--root", str(brain_root))
+
+        assert result.returncode == 1
+        assert "Result: not_missing" in result.stderr
+        manifest = read_source_manifest(brain_root, TEST_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "stale"
 
     def test_finalize_missing_rejects_url_targeting(self, cli: CliRunner, brain_root: Path) -> None:
         init_result = cli.run("init", str(brain_root))

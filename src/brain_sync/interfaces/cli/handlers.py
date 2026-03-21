@@ -571,12 +571,10 @@ def handle_finalize_missing(args) -> None:
     log.info("Result: %s", result.result_state)
     if result.knowledge_state is not None:
         log.info("  State: %s", result.knowledge_state)
-    if result.missing_confirmation_count is not None:
-        log.info("  Missing confirmations: %d", result.missing_confirmation_count)
     if result.message:
         log.info("  %s", result.message)
 
-    if result.result_state in {"lease_conflict", "not_found"}:
+    if result.result_state in {"not_missing", "lease_conflict", "not_found"}:
         sys.exit(1)
 
 

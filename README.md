@@ -354,12 +354,12 @@ On the next `brain-sync run`:
 
 `brain-sync finalize-missing` is intentionally conservative: it accepts one
 exact canonical ID at a time, not a URL, path, or bulk target, revalidates
-local presence first, and may return another pending confirmation before
-destructive cleanup if the current process has not yet freshly confirmed that
-the source is still missing. Likewise, `brain-sync move` now requires an exact
-canonical ID, while `brain-sync remove` accepts either a canonical ID or URL;
-both return handled `not_found` when the target source cannot be resolved,
-rather than partially entering lifecycle work.
+local presence first, finalizes immediately when an already-missing source is
+still absent, and returns `not_missing` instead of deleting anything if the
+source reappears during revalidation. Likewise, `brain-sync move` now requires
+an exact canonical ID, while `brain-sync remove` accepts either a canonical ID
+or URL; both return handled `not_found` when the target source cannot be
+resolved, rather than partially entering lifecycle work.
 
 ## Development
 

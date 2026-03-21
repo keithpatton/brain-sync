@@ -321,7 +321,6 @@ def _revalidate_runtime_row(root: Path, manifest: SourceManifest | None) -> Sour
             canonical_id=runtime_state.canonical_id,
             local_missing_first_observed_utc=runtime_state.local_missing_first_observed_utc,
             local_missing_last_confirmed_utc=runtime_state.local_missing_last_confirmed_utc,
-            missing_confirmation_count=runtime_state.missing_confirmation_count,
         )
         if manifest.knowledge_state == "missing" or runtime_state.missing_confirmation_count > 0:
             save_source_lifecycle_runtime(root, runtime_state)

@@ -8,8 +8,8 @@ brain-sync uses three version domains:
 | Domain            | Meaning                        | Current value |
 | ----------------- | ------------------------------ | ------------- |
 | Brain Format      | Portable filesystem contract   | `1.2`         |
-| Runtime DB schema | Machine-local runtime DB shape | `v28`         |
-| App version       | Packaged application version   | `0.7.0`       |
+| Runtime DB schema | Machine-local runtime DB shape | `v29`         |
+| App version       | Packaged application version   | `0.7.0.0`     |
 
 
 These versions must not be conflated.
@@ -31,7 +31,7 @@ Brain Format `1.2` intentionally changes the portable source-state contract by:
 
 - removing portable `missing_since_utc`
 - keeping `knowledge_path` plus `knowledge_state` as the durable source path
-  and lifecycle contract
+and lifecycle contract
 - keeping durable freshness ownership in `remote_fingerprint`
 
 The on-disk `brain.json` file remains:
@@ -73,18 +73,19 @@ The runtime DB schema version governs only machine-local runtime state.
 
 The current runtime DB schema is:
 
-- label: `v28`
-- integer value in `meta.schema_version`: `28`
+- label: `v29`
+- integer value in `meta.schema_version`: `29`
 
-Schema `v28` keeps `sync_polling` polling-only and keeps
-`source_lifecycle_runtime` for missing-source confirmation history,
-source-level lifecycle leases, and explicit-finalization coordination. It adds
-`last_missing_confirmation_session_id` so destructive finalization can require
-a fresh missing confirmation from the current lifecycle session.
+Schema `v29` keeps `sync_polling` polling-only and keeps
+`source_lifecycle_runtime` for machine-local missing-observation timestamps and
+source-level lifecycle leases. Explicit finalization is now single-call for an
+already-missing source: it depends on current revalidation and lease ownership,
+not on lifecycle-session freshness or persisted confirmation counts.
 
 Supported earlier runtime schemas migrate in place during normal upgrades.
 Rebuild remains the fallback for missing, corrupt, unsupported, or provisional
-runtime DB state.
+runtime DB state. The unreleased intermediate `v28` schema is not the shipped
+`0.7` contract; when encountered it migrates forward to `v29`.
 
 ---
 
@@ -93,7 +94,7 @@ runtime DB state.
 The current app version is `0.7.0.0`.
 
 This is the current release identifier for the Brain Format `1.2` /
-runtime schema `v28` row.
+runtime schema `v29` row.
 
 The canonical source is `pyproject.toml`.
 
@@ -107,7 +108,7 @@ Compatibility statements should use this form:
 
 Current statement:
 
-`brain-sync 0.7.0 supports Brain Format 1.2 with runtime DB schema v28`
+`brain-sync 0.7.0.0 supports Brain Format 1.2 with runtime DB schema v29`
 
 See [docs/COMPATIBILITY.md](COMPATIBILITY.md) for the supported rows and
 transition guarantees.
@@ -119,6 +120,8 @@ transition guarantees.
 Compatibility and migration tests should explicitly cover:
 
 - fresh Brain Format `1.2` init
-- Brain Format `1.1 -> 1.2` guided migration behavior
-- runtime DB `v23/v24/v25/v26/v27 -> v28` in-place migration
+- `0.5.0` / Brain Format `1.0` / runtime schema `v23` ->
+  `0.7.0.0` / Brain Format `1.2` / runtime schema `v29` guided migration behavior
+- runtime DB `v23/v24/v25/v26/v27 -> v29` in-place migration
+- unreleased runtime DB `v28 -> v29` in-place migration when encountered
 - runtime DB rebuild without changing durable source truth

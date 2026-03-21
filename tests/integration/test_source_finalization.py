@@ -15,7 +15,6 @@ from brain_sync.brain.repository import BrainRepository
 from brain_sync.runtime.repository import (
     acquire_source_lifecycle_lease,
     clear_source_lifecycle_lease,
-    ensure_lifecycle_session,
     load_child_discovery_request,
     load_operational_events,
     load_source_lifecycle_runtime,
@@ -67,35 +66,26 @@ def _register_materialized_source(
 
 
 class TestSourceFinalization:
-    def test_finalize_missing_requires_a_fresh_confirmation_before_cleanup(self, brain: Path) -> None:
+    def test_finalize_missing_finalizes_missing_source_in_one_call(self, brain: Path) -> None:
         _register_materialized_source(brain, create_file=False)
 
         reconcile_sources(root=brain)
 
         result = finalize_missing(brain, canonical_id=TEST_CID)
 
-        assert result.result_state == "pending_confirmation"
-        assert result.finalized is False
-        assert result.knowledge_state == "missing"
-        assert result.missing_confirmation_count == 2
+        assert result.result_state == "finalized"
+        assert result.finalized is True
+        assert read_source_manifest(brain, TEST_CID) is None
+        assert load_source_lifecycle_runtime(brain, TEST_CID) is None
+        assert TEST_CID not in load_sync_progress(brain)
 
-        manifest = read_source_manifest(brain, TEST_CID)
-        assert manifest is not None
-        assert manifest.knowledge_state == "missing"
+        finalized_events = load_operational_events(brain, event_type="source.finalized")
+        assert finalized_events
+        assert finalized_events[-1].canonical_id == TEST_CID
+        assert finalized_events[-1].outcome == "finalized"
+        assert json.loads(finalized_events[-1].details_json or "{}") == {"revalidation_basis": "finalization_commit"}
 
-        runtime_state = load_source_lifecycle_runtime(brain, TEST_CID)
-        assert runtime_state is not None
-        assert runtime_state.missing_confirmation_count == 2
-
-        pending_events = load_operational_events(brain, event_type="source.finalization_pending_confirmation")
-        assert pending_events
-        assert pending_events[-1].canonical_id == TEST_CID
-        assert json.loads(pending_events[-1].details_json or "{}") == {
-            "missing_confirmation_count": 2,
-            "revalidation_basis": "finalization_preflight",
-        }
-
-    def test_finalize_missing_deletes_registration_and_emits_terminal_event(self, brain: Path) -> None:
+    def test_finalize_missing_deletes_registration_and_source_owned_artifacts(self, brain: Path) -> None:
         _register_materialized_source(brain, create_file=False)
         attachment_dir = (
             brain / "knowledge" / "area" / ".brain-sync" / "attachments" / canonical_prefix(TEST_CID).rstrip("-")
@@ -105,12 +95,8 @@ class TestSourceFinalization:
         save_child_discovery_request(brain, TEST_CID, fetch_children=True, child_path="children")
 
         reconcile_sources(root=brain)
-        reconcile_sources(root=brain)
-        lifecycle_session_id = ensure_lifecycle_session(brain, owner_kind="cli")
 
-        pending = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
-        assert pending.result_state == "pending_confirmation"
-        result = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+        result = finalize_missing(brain, canonical_id=TEST_CID)
 
         assert result.result_state == "finalized"
         assert result.finalized is True
@@ -119,14 +105,6 @@ class TestSourceFinalization:
         assert TEST_CID not in load_sync_progress(brain)
         assert load_child_discovery_request(brain, TEST_CID) is None
         assert not attachment_dir.exists()
-
-        finalized_events = load_operational_events(brain, event_type="source.finalized")
-        assert finalized_events
-        assert finalized_events[-1].canonical_id == TEST_CID
-        assert finalized_events[-1].outcome == "finalized"
-        details = json.loads(finalized_events[-1].details_json or "{}")
-        assert details["revalidation_basis"] == "finalization_preflight"
-        assert details["missing_confirmation_count"] >= 3
 
     def test_finalize_missing_leaves_legacy_sync_context_leftovers_untouched(self, brain: Path) -> None:
         _register_materialized_source(brain, create_file=False)
@@ -141,12 +119,8 @@ class TestSourceFinalization:
         legacy_file.write_bytes(b"legacy")
 
         reconcile_sources(root=brain)
-        reconcile_sources(root=brain)
-        lifecycle_session_id = ensure_lifecycle_session(brain, owner_kind="cli")
 
-        pending = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
-        assert pending.result_state == "pending_confirmation"
-        result = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+        result = finalize_missing(brain, canonical_id=TEST_CID)
 
         assert result.result_state == "finalized"
         assert read_source_manifest(brain, TEST_CID) is None
@@ -160,7 +134,6 @@ class TestSourceFinalization:
     ) -> None:
         _register_materialized_source(brain, create_file=True)
         mark_manifest_missing(brain, TEST_CID, "2026-03-20T00:00:00+00:00")
-        record_source_missing_confirmation(brain, TEST_CID)
         record_source_missing_confirmation(brain, TEST_CID)
 
         result = finalize_missing(brain, canonical_id=TEST_CID)
@@ -191,11 +164,6 @@ class TestSourceFinalization:
     ) -> None:
         _register_materialized_source(brain, create_file=False)
         reconcile_sources(root=brain)
-        reconcile_sources(root=brain)
-        lifecycle_session_id = ensure_lifecycle_session(brain, owner_kind="cli")
-
-        pending = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
-        assert pending.result_state == "pending_confirmation"
 
         original_resolve = BrainRepository.resolve_source_file
         resolve_calls = 0
@@ -213,7 +181,7 @@ class TestSourceFinalization:
             autospec=True,
             side_effect=resolve_with_midflight_rediscovery,
         ):
-            result = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+            result = finalize_missing(brain, canonical_id=TEST_CID)
 
         assert result.result_state == "not_missing"
         assert result.finalized is False

@@ -170,8 +170,8 @@ class TestRemove:
         try:
             conn.execute(
                 "INSERT INTO source_lifecycle_runtime "
-                "(canonical_id, missing_confirmation_count, lease_owner, lease_expires_utc) "
-                "VALUES (?, 0, ?, ?) "
+                "(canonical_id, lease_owner, lease_expires_utc) "
+                "VALUES (?, ?, ?) "
                 "ON CONFLICT(canonical_id) DO UPDATE SET "
                 "lease_owner=excluded.lease_owner, lease_expires_utc=excluded.lease_expires_utc",
                 ("test:rm1", "daemon-owner", "2099-01-01T00:00:00+00:00"),
@@ -223,8 +223,8 @@ class TestMove:
         try:
             conn.execute(
                 "INSERT INTO source_lifecycle_runtime "
-                "(canonical_id, missing_confirmation_count, lease_owner, lease_expires_utc) "
-                "VALUES (?, 0, ?, ?) "
+                "(canonical_id, lease_owner, lease_expires_utc) "
+                "VALUES (?, ?, ?) "
                 "ON CONFLICT(canonical_id) DO UPDATE SET "
                 "lease_owner=excluded.lease_owner, lease_expires_utc=excluded.lease_expires_utc",
                 ("test:mv1", "daemon-owner", "2099-01-01T00:00:00+00:00"),

@@ -1,7 +1,7 @@
 # Runtime Schemas
 
 This document defines machine-local runtime artifacts for the supported
-Brain Format `1.2` / runtime schema `v28` release.
+Brain Format `1.2` / runtime schema `v29` release.
 
 Runtime artifacts live outside the portable brain. They support execution,
 coordination, and observability; they do not define portable brain meaning.
@@ -103,10 +103,12 @@ Runtime DB path:
 ~/.brain-sync/db/brain-sync.sqlite
 ```
 
-The current schema version is `28`, stored in `meta.schema_version`.
+The current schema version is `29`, stored in `meta.schema_version`.
 
 Supported earlier runtime schemas `v23`, `v24`, `v25`, `v26`, and `v27`
-migrate in place to `v28`. Unsupported or provisional DB shapes are rebuilt.
+migrate in place to `v29`. The unreleased interim `v28` developer schema also
+migrates in place to `v29` when encountered. Unsupported or provisional DB
+shapes are rebuilt.
 
 SQLite conventions used here:
 
@@ -185,22 +187,19 @@ source-level lifecycle lease.
 |---|---|---|
 | `canonical_id` | text | Source canonical ID; primary key. |
 | `local_missing_first_observed_utc` | text or null | UTC timestamp of the first local missing observation retained in this row. |
-| `local_missing_last_confirmed_utc` | text or null | UTC timestamp of the most recent local missing confirmation retained in this row. |
-| `missing_confirmation_count` | integer | Count of local missing confirmations retained in this row. |
-| `last_missing_confirmation_session_id` | text or null | Lifecycle session that wrote the most recent retained missing confirmation. |
+| `local_missing_last_confirmed_utc` | text or null | UTC timestamp of the most recent local missing observation retained in this row. |
 | `lease_owner` | text or null | Source-level lifecycle lease owner when one is active. |
 | `lease_expires_utc` | text or null | UTC expiry time for the current source-level lifecycle lease. |
 
 Rows are cached local history, not portable truth. After process start or
 brain re-attachment, an existing row may inform revalidation, but it must not
-by itself assert current source state, preserve cross-process finalization
-eligibility, or authorize destructive mutation.
+by itself assert current source state or authorize destructive mutation.
 
-Explicit finalization eligibility depends on fresh local revalidation in the
-current lifecycle session. In practice that means inherited confirmation counts
-alone are insufficient: the latest retained missing confirmation must have been
-recorded by the current lifecycle session before destructive finalization may
-proceed.
+In `v29`, the retained missing-observation timestamps are diagnostic and
+re-attachment aids only. They describe the first and latest local missing
+observations seen on this machine, but they do not preserve cross-process
+finalization eligibility. Explicit finalization is authorized only by current
+local revalidation plus source-level lease ownership.
 
 ### `regen_locks`
 

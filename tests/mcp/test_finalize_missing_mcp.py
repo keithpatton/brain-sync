@@ -38,14 +38,11 @@ class TestBrainSyncFinalizeMissing:
         "brain_sync.interfaces.mcp.server.finalize_missing",
         return_value=FinalizationResult(
             canonical_id="test:123",
-            result_state="pending_confirmation",
-            finalized=False,
-            knowledge_state="missing",
-            missing_confirmation_count=2,
-            eligible=False,
+            result_state="finalized",
+            finalized=True,
         ),
     )
-    def test_returns_pending_confirmation_payload(self, mock_finalize, dummy_root: Path) -> None:
+    def test_returns_finalized_payload(self, mock_finalize, dummy_root: Path) -> None:
         from brain_sync.interfaces.mcp.server import brain_sync_finalize_missing
 
         ctx = _make_ctx(dummy_root)
@@ -54,11 +51,36 @@ class TestBrainSyncFinalizeMissing:
         assert result == {
             "status": "ok",
             "canonical_id": "test:123",
-            "result_state": "pending_confirmation",
+            "result_state": "finalized",
+            "finalized": True,
+        }
+        mock_finalize.assert_called_once_with(
+            root=dummy_root,
+            canonical_id="test:123",
+            lifecycle_session_id="mcp:session-1",
+        )
+
+    @patch(
+        "brain_sync.interfaces.mcp.server.finalize_missing",
+        return_value=FinalizationResult(
+            canonical_id="test:123",
+            result_state="not_missing",
+            finalized=False,
+            knowledge_state="stale",
+        ),
+    )
+    def test_returns_not_missing_as_handled_result(self, mock_finalize, dummy_root: Path) -> None:
+        from brain_sync.interfaces.mcp.server import brain_sync_finalize_missing
+
+        ctx = _make_ctx(dummy_root)
+        result = brain_sync_finalize_missing(ctx, canonical_id="test:123")
+
+        assert result == {
+            "status": "ok",
+            "canonical_id": "test:123",
+            "result_state": "not_missing",
             "finalized": False,
-            "knowledge_state": "missing",
-            "missing_confirmation_count": 2,
-            "eligible": False,
+            "knowledge_state": "stale",
         }
         mock_finalize.assert_called_once_with(
             root=dummy_root,
@@ -72,7 +94,6 @@ class TestBrainSyncFinalizeMissing:
             canonical_id="test:123",
             result_state="lease_conflict",
             finalized=False,
-            eligible=False,
             message="lease held elsewhere",
         ),
     )
@@ -87,7 +108,6 @@ class TestBrainSyncFinalizeMissing:
             "canonical_id": "test:123",
             "result_state": "lease_conflict",
             "finalized": False,
-            "eligible": False,
             "message": "lease held elsewhere",
         }
         mock_finalize.assert_called_once_with(
