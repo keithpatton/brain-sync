@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import queue
 import shutil
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from watchdog.events import DirMovedEvent
@@ -11,7 +13,8 @@ from brain_sync.application.init import init_brain
 from brain_sync.application.insights import InsightState, load_insight_state, save_insight_state
 from brain_sync.application.sync_events import apply_folder_move
 from brain_sync.brain.manifest import MANIFEST_VERSION, SourceManifest, read_source_manifest, write_source_manifest
-from brain_sync.runtime.repository import acquire_source_lifecycle_lease
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.runtime.repository import acquire_source_lifecycle_lease, clear_source_lifecycle_lease
 from brain_sync.sync.watcher import FolderMove, KnowledgeEventHandler
 
 pytestmark = pytest.mark.unit
@@ -22,6 +25,25 @@ def brain(tmp_path: Path) -> Path:
     root = tmp_path / "brain"
     init_brain(root)
     return root
+
+
+def _start_lease_attempt(root: Path, canonical_id: str, owner_id: str) -> tuple[threading.Event, threading.Thread]:
+    finished = threading.Event()
+
+    def _runner() -> None:
+        try:
+            acquire_source_lifecycle_lease(
+                root,
+                canonical_id,
+                owner_id,
+                lease_expires_utc="2099-01-01T00:00:00+00:00",
+            )
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    return finished, thread
 
 
 class TestApplyFolderMove:
@@ -150,6 +172,54 @@ class TestApplyFolderMove:
         assert leased.knowledge_path == "old-name/c123.md"
         assert free is not None
         assert free.knowledge_path == "new-name/c456.md"
+
+    def test_last_moment_lease_takeover_waits_until_folder_move_commit_finishes(self, brain: Path) -> None:
+        write_source_manifest(
+            brain,
+            SourceManifest(
+                version=MANIFEST_VERSION,
+                canonical_id="confluence:123",
+                source_url="https://example.com/123",
+                source_type="confluence",
+                sync_attachments=False,
+                knowledge_path="old-name/c123.md",
+                knowledge_state="materialized",
+                content_hash="sha256:abc",
+                remote_fingerprint="rev-1",
+                materialized_utc="2026-03-19T09:00:00+00:00",
+            ),
+        )
+
+        old_dir = brain / "knowledge" / "old-name"
+        old_dir.mkdir(parents=True)
+        new_dir = brain / "knowledge" / "new-name"
+        shutil.move(str(old_dir), str(new_dir))
+
+        original_apply_folder_move = BrainRepository.apply_folder_move_to_manifest
+        move_owner = "move-owner"
+        finished: threading.Event | None = None
+        thread: threading.Thread | None = None
+
+        def _gated_apply_folder_move(self, canonical_id: str, src_rel: str, dest_rel: str) -> None:
+            nonlocal finished, thread
+            finished, thread = _start_lease_attempt(brain, canonical_id, move_owner)
+            assert finished.wait(0.2) is False
+            original_apply_folder_move(self, canonical_id, src_rel, dest_rel)
+
+        with patch(
+            "brain_sync.brain.repository.BrainRepository.apply_folder_move_to_manifest",
+            new=_gated_apply_folder_move,
+        ):
+            apply_folder_move(brain, move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()))
+
+        assert finished is not None and thread is not None
+        assert finished.wait(2.0) is True
+        thread.join(timeout=2.0)
+
+        moved = read_source_manifest(brain, "confluence:123")
+        assert moved is not None
+        assert moved.knowledge_path == "new-name/c123.md"
+        clear_source_lifecycle_lease(brain, "confluence:123", owner_id=move_owner)
 
 
 class TestOnMovedPreservesRawPaths:

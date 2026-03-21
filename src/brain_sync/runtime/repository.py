@@ -7,6 +7,7 @@ portable brain plane under the brain root.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import IO, ClassVar, Protocol
 
 from brain_sync.runtime.config import DAEMON_STATUS_FILE, RUNTIME_DB_FILE
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION, ensure_safe_temp_root_runtime
@@ -221,6 +222,178 @@ class SourceLifecycleRuntime:
     last_missing_confirmation_session_id: str | None = None
     lease_owner: str | None = None
     lease_expires_utc: str | None = None
+
+
+@dataclass
+class SourceLifecycleCommitFence:
+    """Short runtime-DB fence around one source lifecycle commit section."""
+
+    root: Path
+    canonical_id: str
+    _conn: sqlite3.Connection | None = None
+    runtime_state: SourceLifecycleRuntime | None = None
+
+    def __enter__(self) -> SourceLifecycleCommitFence:
+        self._conn = _connect(self.root)
+        self._conn.execute("BEGIN IMMEDIATE")
+        self.runtime_state = self._load_runtime_state()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        conn = self._require_conn()
+        try:
+            if exc_type is None:
+                conn.commit()
+            else:
+                conn.rollback()
+        finally:
+            conn.close()
+            self._conn = None
+
+    def refresh(self) -> SourceLifecycleRuntime | None:
+        self.runtime_state = self._load_runtime_state()
+        return self.runtime_state
+
+    def has_active_conflicting_lease(self, *, owner_id: str | None = None) -> bool:
+        return _source_lifecycle_runtime_has_active_lease(self.runtime_state, owner_id=owner_id)
+
+    def renew_owned_lease(self, owner_id: str, *, lease_expires_utc: str) -> bool:
+        state = self.refresh()
+        if state is None or state.lease_owner != owner_id:
+            return False
+        self._require_conn().execute(
+            "UPDATE source_lifecycle_runtime SET lease_expires_utc = ? WHERE canonical_id = ? AND lease_owner = ?",
+            (lease_expires_utc, self.canonical_id, owner_id),
+        )
+        self.runtime_state = SourceLifecycleRuntime(
+            canonical_id=state.canonical_id,
+            local_missing_first_observed_utc=state.local_missing_first_observed_utc,
+            local_missing_last_confirmed_utc=state.local_missing_last_confirmed_utc,
+            missing_confirmation_count=state.missing_confirmation_count,
+            last_missing_confirmation_session_id=state.last_missing_confirmation_session_id,
+            lease_owner=owner_id,
+            lease_expires_utc=lease_expires_utc,
+        )
+        return True
+
+    def record_missing_confirmation(
+        self,
+        *,
+        observed_utc: str | None = None,
+        lifecycle_session_id: str | None = None,
+    ) -> SourceLifecycleRuntime:
+        observed = observed_utc or _utc_now()
+        session_id = lifecycle_session_id or _ensure_lifecycle_session_in_conn(self._require_conn(), owner_kind="cli")
+        state = self.refresh()
+        if state is None:
+            next_state = SourceLifecycleRuntime(
+                canonical_id=self.canonical_id,
+                local_missing_first_observed_utc=observed,
+                local_missing_last_confirmed_utc=observed,
+                missing_confirmation_count=1,
+                last_missing_confirmation_session_id=session_id,
+            )
+        else:
+            next_state = SourceLifecycleRuntime(
+                canonical_id=self.canonical_id,
+                local_missing_first_observed_utc=state.local_missing_first_observed_utc or observed,
+                local_missing_last_confirmed_utc=observed,
+                missing_confirmation_count=max(int(state.missing_confirmation_count or 0) + 1, 1),
+                last_missing_confirmation_session_id=session_id,
+                lease_owner=state.lease_owner,
+                lease_expires_utc=state.lease_expires_utc,
+            )
+        self._upsert_runtime_state(next_state)
+        self.runtime_state = next_state
+        return next_state
+
+    def ensure_source_polling(self, *, current_interval_secs: int = 1800) -> None:
+        self._require_conn().execute(
+            "INSERT OR IGNORE INTO sync_polling (canonical_id, current_interval_secs) VALUES (?, ?)",
+            (self.canonical_id, current_interval_secs),
+        )
+
+    def delete_source_polling(self) -> None:
+        self._require_conn().execute(
+            "DELETE FROM sync_polling WHERE canonical_id = ?",
+            (self.canonical_id,),
+        )
+
+    def clear_owned_lease(self, owner_id: str) -> bool:
+        cursor = self._require_conn().execute(
+            "UPDATE source_lifecycle_runtime SET lease_owner = NULL, lease_expires_utc = NULL "
+            "WHERE canonical_id = ? AND lease_owner = ?",
+            (self.canonical_id, owner_id),
+        )
+        self.refresh()
+        return cursor.rowcount == 1
+
+    def delete_runtime_row(self) -> None:
+        self._require_conn().execute(
+            "DELETE FROM source_lifecycle_runtime WHERE canonical_id = ?",
+            (self.canonical_id,),
+        )
+        self.runtime_state = None
+
+    def prune_empty_runtime_row(self) -> bool:
+        state = self.refresh()
+        if state is None or not _source_lifecycle_row_is_empty(state):
+            return False
+        self._require_conn().execute(
+            "DELETE FROM source_lifecycle_runtime WHERE canonical_id = ?",
+            (self.canonical_id,),
+        )
+        self.runtime_state = None
+        return True
+
+    def _load_runtime_state(self) -> SourceLifecycleRuntime | None:
+        row = (
+            self._require_conn()
+            .execute(
+                "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+                "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
+                "FROM source_lifecycle_runtime WHERE canonical_id = ?",
+                (self.canonical_id,),
+            )
+            .fetchone()
+        )
+        return _row_to_source_lifecycle_runtime(self.canonical_id, row)
+
+    def _upsert_runtime_state(self, runtime_state: SourceLifecycleRuntime) -> None:
+        self._require_conn().execute(
+            "INSERT INTO source_lifecycle_runtime "
+            "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(canonical_id) DO UPDATE SET "
+            "local_missing_first_observed_utc=excluded.local_missing_first_observed_utc, "
+            "local_missing_last_confirmed_utc=excluded.local_missing_last_confirmed_utc, "
+            "missing_confirmation_count=excluded.missing_confirmation_count, "
+            "last_missing_confirmation_session_id=excluded.last_missing_confirmation_session_id, "
+            "lease_owner=excluded.lease_owner, "
+            "lease_expires_utc=excluded.lease_expires_utc",
+            (
+                runtime_state.canonical_id,
+                runtime_state.local_missing_first_observed_utc,
+                runtime_state.local_missing_last_confirmed_utc,
+                runtime_state.missing_confirmation_count,
+                runtime_state.last_missing_confirmation_session_id,
+                runtime_state.lease_owner,
+                runtime_state.lease_expires_utc,
+            ),
+        )
+
+    def _require_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("SourceLifecycleCommitFence is not active")
+        return self._conn
+
+
+@dataclass
+class DaemonStartGuard:
+    daemon_id: str
+    lock_path: Path
+    handle: IO[str]
 
 
 class _SyncProgressLike(Protocol):
@@ -981,10 +1154,11 @@ def _connect(root: Path) -> sqlite3.Connection:
     db = _db_path(root)
     db.parent.mkdir(parents=True, exist_ok=True)
     while True:
-        conn = sqlite3.connect(str(db))
+        conn = sqlite3.connect(str(db), timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
 
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -1038,22 +1212,68 @@ def _utc_now(*, timespec: str = "seconds") -> str:
     return datetime.now(UTC).isoformat(timespec=timespec)
 
 
+def _row_to_source_lifecycle_runtime(
+    canonical_id: str,
+    row: tuple[str | None, str | None, int | None, str | None, str | None, str | None] | None,
+) -> SourceLifecycleRuntime | None:
+    if row is None:
+        return None
+    return SourceLifecycleRuntime(
+        canonical_id=canonical_id,
+        local_missing_first_observed_utc=row[0],
+        local_missing_last_confirmed_utc=row[1],
+        missing_confirmation_count=row[2] or 0,
+        last_missing_confirmation_session_id=row[3],
+        lease_owner=row[4],
+        lease_expires_utc=row[5],
+    )
+
+
+def _source_lifecycle_runtime_has_active_lease(
+    runtime_state: SourceLifecycleRuntime | None,
+    *,
+    owner_id: str | None = None,
+) -> bool:
+    if runtime_state is None or runtime_state.lease_owner is None:
+        return False
+    if owner_id is not None and runtime_state.lease_owner == owner_id:
+        return False
+    if runtime_state.lease_expires_utc is None:
+        return True
+    return runtime_state.lease_expires_utc >= _utc_now()
+
+
+def _source_lifecycle_row_is_empty(runtime_state: SourceLifecycleRuntime) -> bool:
+    return (
+        runtime_state.lease_owner is None
+        and runtime_state.lease_expires_utc is None
+        and runtime_state.local_missing_first_observed_utc is None
+        and runtime_state.local_missing_last_confirmed_utc is None
+        and runtime_state.missing_confirmation_count == 0
+    )
+
+
 def _new_lifecycle_session_id(owner_kind: str) -> str:
     return f"{owner_kind}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+
+
+def _ensure_lifecycle_session_in_conn(conn: sqlite3.Connection, *, owner_kind: str) -> str:
+    session_id = _new_lifecycle_session_id(owner_kind)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        (_LIFECYCLE_SESSION_ID_META_KEY, session_id),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        (_LIFECYCLE_SESSION_OWNER_KIND_META_KEY, owner_kind),
+    )
+    return session_id
 
 
 def ensure_lifecycle_session(root: Path, *, owner_kind: str) -> str:
     conn = _connect(root)
     try:
-        session_id = _new_lifecycle_session_id(owner_kind)
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            (_LIFECYCLE_SESSION_ID_META_KEY, session_id),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            (_LIFECYCLE_SESSION_OWNER_KIND_META_KEY, owner_kind),
-        )
+        session_id = _ensure_lifecycle_session_in_conn(conn, owner_kind=owner_kind)
         conn.commit()
         return session_id
     finally:
@@ -1189,36 +1409,23 @@ def load_source_lifecycle_runtime(root: Path, canonical_id: str) -> SourceLifecy
     conn = _connect(root)
     try:
         row = conn.execute(
-            "SELECT canonical_id, local_missing_first_observed_utc, "
-            "local_missing_last_confirmed_utc, missing_confirmation_count, "
-            "last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
+            "SELECT local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime WHERE canonical_id = ?",
             (canonical_id,),
         ).fetchone()
     finally:
         conn.close()
 
-    if row is None:
-        return None
-
-    return SourceLifecycleRuntime(
-        canonical_id=row[0],
-        local_missing_first_observed_utc=row[1],
-        local_missing_last_confirmed_utc=row[2],
-        missing_confirmation_count=row[3] or 0,
-        last_missing_confirmation_session_id=row[4],
-        lease_owner=row[5],
-        lease_expires_utc=row[6],
-    )
+    return _row_to_source_lifecycle_runtime(canonical_id, row)
 
 
 def load_all_source_lifecycle_runtime(root: Path) -> dict[str, SourceLifecycleRuntime]:
     conn = _connect(root)
     try:
         rows = conn.execute(
-            "SELECT canonical_id, local_missing_first_observed_utc, "
-            "local_missing_last_confirmed_utc, missing_confirmation_count, "
-            "last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
+            "SELECT canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, "
+            "missing_confirmation_count, last_missing_confirmation_session_id, lease_owner, lease_expires_utc "
             "FROM source_lifecycle_runtime"
         ).fetchall()
     finally:
@@ -1275,6 +1482,10 @@ def delete_source_lifecycle_runtime(root: Path, canonical_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def source_lifecycle_commit_fence(root: Path, canonical_id: str) -> SourceLifecycleCommitFence:
+    return SourceLifecycleCommitFence(root=root, canonical_id=canonical_id)
 
 
 def record_source_missing_confirmation(
@@ -2211,29 +2422,36 @@ def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
 # --- daemon_status helpers ---
 
 
-def write_daemon_status(pid: int, status: str) -> None:
-    """Write daemon lifecycle state to the config-dir-scoped daemon.json."""
+def write_daemon_status(*, root: Path, pid: int, status: str, daemon_id: str) -> None:
+    """Write the latest daemon lifecycle snapshot to config-dir-scoped daemon.json."""
     from datetime import UTC, datetime
 
     DAEMON_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "pid": pid,
         "started_at": datetime.now(UTC).isoformat() if status == "starting" else None,
+        "daemon_id": daemon_id,
+        "brain_root": _daemon_root_id(root),
         "status": status,
     }
     if DAEMON_STATUS_FILE.exists() and status != "starting":
         try:
             current = json.loads(DAEMON_STATUS_FILE.read_text(encoding="utf-8"))
             payload["started_at"] = current.get("started_at")
+            payload["daemon_id"] = current.get("daemon_id", daemon_id)
+            payload["brain_root"] = current.get("brain_root", _daemon_root_id(root))
         except (json.JSONDecodeError, OSError):
             pass
     DAEMON_STATUS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 class DaemonAlreadyRunningError(RuntimeError):
-    def __init__(self, pid: int):
+    def __init__(self, pid: int | None):
         self.pid = pid
-        super().__init__(f"Another brain-sync daemon is already running (pid {pid})")
+        if pid is None:
+            super().__init__("Another brain-sync daemon is already running")
+        else:
+            super().__init__(f"Another brain-sync daemon is already running (pid {pid})")
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -2248,6 +2466,97 @@ def _pid_is_running(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _daemon_root_id(root: Path) -> str:
+    resolved = root.resolve(strict=False)
+    value = str(resolved).replace("\\", "/")
+    if os.name == "nt":
+        value = value.lower()
+    return value
+
+
+def _daemon_guard_path(root: Path) -> Path:
+    root_id = _daemon_root_id(root)
+    digest = hashlib.sha256(root_id.encode("utf-8")).hexdigest()
+    return DAEMON_STATUS_FILE.parent / "daemon-locks" / f"{digest}.lock"
+
+
+def _lock_daemon_handle(handle: IO[str]) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(" ")
+            handle.flush()
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock_daemon_handle(handle: IO[str]) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_daemon_guard_payload(lock_path: Path) -> dict | None:
+    try:
+        return json.loads(lock_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def acquire_daemon_start_guard(root: Path) -> DaemonStartGuard:
+    lock_path = _daemon_guard_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    if not _lock_daemon_handle(handle):
+        payload = _read_daemon_guard_payload(lock_path)
+        handle.close()
+        pid = payload.get("pid") if isinstance(payload, dict) and isinstance(payload.get("pid"), int) else None
+        raise DaemonAlreadyRunningError(pid)
+
+    daemon_id = f"daemon:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+    payload = {
+        "pid": os.getpid(),
+        "daemon_id": daemon_id,
+        "brain_root": _daemon_root_id(root),
+        "started_at": _utc_now(),
+    }
+    handle.seek(0)
+    handle.truncate()
+    json.dump(payload, handle, indent=2)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+    return DaemonStartGuard(daemon_id=daemon_id, lock_path=lock_path, handle=handle)
+
+
+def release_daemon_start_guard(guard: DaemonStartGuard) -> None:
+    try:
+        _unlock_daemon_handle(guard.handle)
+    finally:
+        guard.handle.close()
 
 
 def ensure_no_active_daemon() -> None:

@@ -151,14 +151,18 @@ class TestSkipGuard:
                 return_value=MagicMock(sources={_CANONICAL_ID: refreshed_state}),
             ),
             patch(
-                "brain_sync.sync.lifecycle.renew_source_lifecycle_lease",
-                return_value=(
-                    False,
-                    SourceLifecycleRuntime(
-                        canonical_id=_CANONICAL_ID,
-                        lease_owner="move-owner",
-                        lease_expires_utc="2099-01-01T00:00:00+00:00",
-                    ),
+                "brain_sync.runtime.repository.SourceLifecycleCommitFence.renew_owned_lease",
+                new=lambda self, _owner_id, *, lease_expires_utc: (
+                    setattr(
+                        self,
+                        "runtime_state",
+                        SourceLifecycleRuntime(
+                            canonical_id=_CANONICAL_ID,
+                            lease_owner="move-owner",
+                            lease_expires_utc="2099-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    or False
                 ),
             ),
         ):
@@ -229,7 +233,7 @@ class TestGoogleAttachmentHandling:
             ) as mock_attachments,
             patch("brain_sync.sync.attachments.process_inline_images", new_callable=AsyncMock) as mock_inline,
         ):
-            mock_inline.return_value = {}
+            mock_inline.return_value = ({}, [])
             changed, children = await process_source(source_state, AsyncMock(), root=root)
 
         assert changed is True

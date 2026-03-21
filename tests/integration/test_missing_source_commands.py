@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -22,13 +24,24 @@ from brain_sync.application.sources import (
 )
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
+from brain_sync.brain.repository import BrainRepository
+from brain_sync.runtime.repository import (
+    acquire_source_lifecycle_lease,
+    clear_source_lifecycle_lease,
+    load_source_lifecycle_runtime,
+)
+from brain_sync.sources.base import DiscoveredImage, SourceFetchResult, UpdateCheckResult, UpdateStatus
 from brain_sync.sources.test import register_test_root, reset_test_adapter
-from brain_sync.sync.pipeline import process_source
+from brain_sync.sync.attachments import StagedManagedArtifact
+from brain_sync.sync.lifecycle import observe_missing_source
+from brain_sync.sync.pipeline import SourceLifecycleLeaseConflictError, process_source
 
 pytestmark = pytest.mark.integration
 
 CONFLUENCE_URL = "https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test-Page"
 CONFLUENCE_CID = "confluence:12345"
+GDOC_URL = "https://docs.google.com/document/d/abc123/edit"
+GDOC_CID = "gdoc:abc123"
 
 
 @pytest.fixture
@@ -55,6 +68,32 @@ def _script_test_source(root: Path, canonical_id: str, sequence: list[dict[str, 
     adapter_dir.mkdir(exist_ok=True)
     safe_name = canonical_id.replace(":", "_")
     (adapter_dir / f"{safe_name}.json").write_text(json.dumps({"sequence": sequence}), encoding="utf-8")
+
+
+def _start_lease_attempt(
+    root: Path,
+    canonical_id: str,
+    owner_id: str,
+) -> tuple[dict[str, object], threading.Event, threading.Thread]:
+    outcome: dict[str, object] = {}
+    finished = threading.Event()
+
+    def _runner() -> None:
+        try:
+            acquired, existing = acquire_source_lifecycle_lease(
+                root,
+                canonical_id,
+                owner_id,
+                lease_expires_utc="2099-01-01T00:00:00+00:00",
+            )
+            outcome["acquired"] = acquired
+            outcome["existing"] = existing
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    return outcome, finished, thread
 
 
 class TestMissingSourceCommands:
@@ -156,3 +195,164 @@ class TestMissingSourceCommands:
             assert manifest.knowledge_path.startswith("new-area/")
         finally:
             reset_test_adapter()
+
+    def test_observe_missing_source_blocks_last_moment_lease_takeover_until_commit(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+
+        move_owner = "move-owner"
+        thread: threading.Thread | None = None
+        finished: threading.Event | None = None
+
+        original_mark_source_missing = BrainRepository.mark_source_missing
+
+        def _gated_mark_source_missing(self, canonical_id: str) -> None:
+            nonlocal thread, finished
+            _outcome, finished, thread = _start_lease_attempt(brain, canonical_id, move_owner)
+            assert finished.wait(0.2) is False
+            original_mark_source_missing(self, canonical_id)
+
+        with patch("brain_sync.brain.repository.BrainRepository.mark_source_missing", new=_gated_mark_source_missing):
+            observation = observe_missing_source(
+                brain,
+                canonical_id=CONFLUENCE_CID,
+                outcome="missing",
+            )
+
+        assert observation is not None
+        assert observation.knowledge_state == "missing"
+        assert finished is not None and thread is not None
+        assert finished.wait(2.0) is True
+        thread.join(timeout=2.0)
+
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "missing"
+        runtime_state = load_source_lifecycle_runtime(brain, CONFLUENCE_CID)
+        assert runtime_state is not None
+        assert runtime_state.missing_confirmation_count == 1
+        clear_source_lifecycle_lease(brain, CONFLUENCE_CID, owner_id=move_owner)
+
+    def test_reconcile_path_repair_blocks_last_moment_lease_takeover_until_commit(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="old-area")
+        moved = brain / "knowledge" / "new-area" / "c12345-test-page.md"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text(prepend_managed_header(CONFLUENCE_CID, "Body"), encoding="utf-8")
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "old-area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
+
+        move_owner = "move-owner"
+        thread: threading.Thread | None = None
+        finished: threading.Event | None = None
+        original_sync_manifest = BrainRepository.sync_manifest_to_found_path
+
+        def _gated_sync_manifest_to_found_path(self, canonical_id: str, found: Path) -> None:
+            nonlocal thread, finished
+            _outcome, finished, thread = _start_lease_attempt(brain, canonical_id, move_owner)
+            assert finished.wait(0.2) is False
+            original_sync_manifest(self, canonical_id, found)
+
+        with patch(
+            "brain_sync.brain.repository.BrainRepository.sync_manifest_to_found_path",
+            new=_gated_sync_manifest_to_found_path,
+        ):
+            result = reconcile_sources(brain)
+
+        assert result.updated
+        assert result.updated[0].canonical_id == CONFLUENCE_CID
+        assert finished is not None and thread is not None
+        assert finished.wait(2.0) is True
+        thread.join(timeout=2.0)
+
+        refreshed = read_source_manifest(brain, CONFLUENCE_CID)
+        assert refreshed is not None
+        assert refreshed.target_path == "new-area"
+        clear_source_lifecycle_lease(brain, CONFLUENCE_CID, owner_id=move_owner)
+
+    def test_root_backed_processing_does_not_write_staged_artifacts_after_lease_loss(self, brain: Path) -> None:
+        add_source(root=brain, url=GDOC_URL, target_path="area", sync_attachments=True)
+        source_state = load_state(brain).sources[GDOC_CID]
+        adapter = MagicMock()
+        adapter.capabilities.supports_version_check = True
+        adapter.capabilities.supports_children = False
+        adapter.capabilities.supports_attachments = True
+        adapter.capabilities.supports_comments = False
+        adapter.auth_provider.load_auth.return_value = MagicMock()
+        adapter.check_for_update = AsyncMock(
+            return_value=UpdateCheckResult(
+                status=UpdateStatus.CHANGED,
+                fingerprint="rev-2",
+                title="Lease Race",
+                adapter_state={"revisionId": "rev-2"},
+            )
+        )
+        adapter.fetch = AsyncMock(
+            return_value=SourceFetchResult(
+                body_markdown="# Lease Race\n\nBody.",
+                title="Lease Race",
+                remote_fingerprint="rev-2",
+                comments=[],
+                inline_images=[
+                    DiscoveredImage(
+                        canonical_id="gdoc-image:abc123:kix.obj1",
+                        download_url="https://example.com/image.png",
+                        title="diagram.png",
+                        mime_type="image/png",
+                    )
+                ],
+                download_headers={"Authorization": "Bearer token"},
+                attachment_parent_id=GDOC_CID,
+            )
+        )
+        staged_local_path = ".brain-sync/attachments/gabc123/a1-diagram.png"
+        move_owner = "move-owner"
+
+        async def _stage_and_lose_lease(*_args, **_kwargs):
+            clear_source_lifecycle_lease(brain, GDOC_CID, owner_id="daemon-owner")
+            acquired, _existing = acquire_source_lifecycle_lease(
+                brain,
+                GDOC_CID,
+                move_owner,
+                lease_expires_utc="2099-01-01T00:00:00+00:00",
+            )
+            assert acquired is True
+            return (
+                {"gdoc-image:abc123:kix.obj1": staged_local_path},
+                [StagedManagedArtifact(local_path=staged_local_path, data=b"PNG-DATA")],
+            )
+
+        try:
+            with (
+                patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+                patch("brain_sync.sync.attachments.process_inline_images", side_effect=_stage_and_lose_lease),
+            ):
+
+                async def _run() -> tuple[bool, list]:
+                    async with httpx.AsyncClient() as client:
+                        return await process_source(
+                            source_state,
+                            client,
+                            root=brain,
+                            lifecycle_owner_id="daemon-owner",
+                        )
+
+                with pytest.raises(SourceLifecycleLeaseConflictError):
+                    asyncio.run(_run())
+        finally:
+            clear_source_lifecycle_lease(brain, GDOC_CID, owner_id=move_owner)
+
+        assert not list((brain / "knowledge" / "area").glob("*.md"))
+        assert not (brain / "knowledge" / "area" / staged_local_path).exists()
+
+    def test_move_source_prunes_empty_runtime_row_after_success(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+
+        result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
+
+        assert result.result_state == "moved"
+        assert load_source_lifecycle_runtime(brain, CONFLUENCE_CID) is None

@@ -86,7 +86,8 @@ brain-sync run --root ~/my-brain
 
 The daemon reconciles offline changes, syncs sources, watches `knowledge/`,
 and regenerates summaries as needed. If another live brain-sync daemon is
-already attached to the same brain, the new start is refused immediately.
+already attached to the same brain, the new start is refused immediately by
+the runtime startup guard.
 
 ### Add a Source
 

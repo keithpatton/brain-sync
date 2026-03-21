@@ -107,7 +107,8 @@ brain-sync supports at most one active daemon attachment to a given
 the same attached brain must be refused at startup rather than allowed to
 coexist opportunistically. Simultaneous daemon attachments against the same
 brain are outside the supported contract and must not be relied on for
-correctness.
+correctness. `daemon.json` is runtime status only; durable startup exclusion
+must come from the same-brain guard itself.
 
 ### Managed Namespace
 

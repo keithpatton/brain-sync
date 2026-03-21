@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -299,7 +299,7 @@ def test_sync_scheduler_state_removes_stale_keys_and_restarts_reappeared_sources
         }
     )
 
-    _sync_scheduler_state(state, scheduler)
+    _sync_scheduler_state(state, cast(Any, scheduler))
 
     assert "confluence:99999" in scheduler.removed_calls
     assert scheduler.immediate_calls == ["confluence:12345"]
@@ -367,7 +367,7 @@ async def test_daemon_refuses_second_active_daemon(tmp_path: Path) -> None:
     init_brain(root)
 
     with (
-        patch("brain_sync.sync.daemon.ensure_no_active_daemon", side_effect=DaemonAlreadyRunningError(4242)),
+        patch("brain_sync.sync.daemon.acquire_daemon_start_guard", side_effect=DaemonAlreadyRunningError(4242)),
         patch("brain_sync.sync.daemon.write_daemon_status") as mock_status,
     ):
         with pytest.raises(DaemonAlreadyRunningError):

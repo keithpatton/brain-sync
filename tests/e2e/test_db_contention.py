@@ -5,8 +5,14 @@ Verify that CLI and daemon can safely share the SQLite database.
 
 from __future__ import annotations
 
+import json
+import signal
 import sqlite3
+import subprocess
+import sys
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +23,77 @@ from tests.e2e.harness.daemon import DaemonProcess
 from tests.e2e.harness.scenarios import run_regen
 
 pytestmark = pytest.mark.e2e
+
+
+def _barriered_daemon_process(
+    *,
+    brain_root: Path,
+    config_dir: Path,
+    capture_dir: Path,
+    start_at: float,
+) -> subprocess.Popen[str]:
+    helper = DaemonProcess(brain_root, config_dir, capture_dir)
+    env = helper._env()
+    env["BRAIN_SYNC_TEST_ROOT"] = str(brain_root)
+    env["BRAIN_SYNC_START_AT"] = f"{start_at:.6f}"
+    code = (
+        "import os, sys, time\n"
+        "target = float(os.environ['BRAIN_SYNC_START_AT'])\n"
+        "while time.time() < target:\n"
+        "    time.sleep(0.01)\n"
+        "from brain_sync.__main__ import main\n"
+        "sys.argv = ['brain_sync', 'run', '--root', os.environ['BRAIN_SYNC_TEST_ROOT']]\n"
+        "main()\n"
+    )
+    kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "env": env,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen([sys.executable, "-c", code], **kwargs)
+
+
+def _wait_for_ready_pid(status_path: Path, candidate_pids: set[int], *, timeout: float = 15.0) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if status_path.exists():
+            try:
+                payload = json.loads(status_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                payload = None
+            if (
+                isinstance(payload, dict)
+                and payload.get("status") == "ready"
+                and isinstance(payload.get("pid"), int)
+                and payload["pid"] in candidate_pids
+            ):
+                return int(payload["pid"])
+        time.sleep(0.1)
+    raise TimeoutError(f"daemon.json never reported ready for candidate pids {sorted(candidate_pids)}")
+
+
+def _shutdown_process(proc: subprocess.Popen[str], *, timeout: float = 10.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=timeout)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    proc.terminate()
+    try:
+        proc.wait(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5.0)
 
 
 class TestCliWhileDaemonActive:
@@ -200,6 +277,46 @@ class TestReconcileWhileDaemonRunning:
 
 class TestDoubleDaemonOwnership:
     """Two daemons against the same brain — second start is refused."""
+
+    def test_barriered_simultaneous_start_allows_only_one_ready(
+        self,
+        brain: BrainFixture,
+        config_dir: Path,
+        capture_dir: Path,
+    ):
+        start_at = time.time() + 1.5
+        p1 = _barriered_daemon_process(
+            brain_root=brain.root,
+            config_dir=config_dir,
+            capture_dir=capture_dir,
+            start_at=start_at,
+        )
+        p2 = _barriered_daemon_process(
+            brain_root=brain.root,
+            config_dir=config_dir,
+            capture_dir=capture_dir,
+            start_at=start_at,
+        )
+        try:
+            ready_pid = _wait_for_ready_pid(config_dir / "daemon.json", {p1.pid, p2.pid})
+            time.sleep(2.0)
+
+            running = [proc for proc in (p1, p2) if proc.poll() is None]
+            exited = [proc for proc in (p1, p2) if proc.poll() is not None]
+
+            assert len(running) == 1
+            assert len(exited) == 1
+            assert running[0].pid == ready_pid
+
+            loser = exited[0]
+            loser_stderr = loser.stderr.read() if loser.stderr is not None else ""
+            assert loser.returncode == 1
+            assert "already running" in loser_stderr.lower()
+        finally:
+            _shutdown_process(p1)
+            _shutdown_process(p2)
+
+        assert_brain_consistent(brain.root)
 
     def test_second_daemon_is_refused(
         self,

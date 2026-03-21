@@ -213,9 +213,11 @@ The supported runtime model is intentionally simpler than full multi-runtime
 coordination: a portable brain may be attached by different runtimes over time,
 but only one active daemon attachment to a given brain is in contract at once.
 Runtime startup now enforces that contract by refusing a second live daemon
-attachment before it enters reconcile or poll work. That keeps lifecycle
-authority and recovery logic centered on portable truth plus fresh local
-observation rather than cross-daemon coordination.
+attachment before it enters reconcile or poll work. The durable exclusion is
+the per-brain runtime guard, while `daemon.json` remains an observational
+status snapshot. That keeps lifecycle authority and recovery logic centered on
+portable truth plus fresh local observation rather than cross-daemon
+coordination.
 
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are

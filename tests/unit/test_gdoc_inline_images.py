@@ -23,7 +23,7 @@ from brain_sync.sources.googledocs.rest import (
     generate_tabs_markdown,
     image_filename,
 )
-from brain_sync.sync.attachments import ATTACHMENTS_DIR, process_inline_images
+from brain_sync.sync.attachments import process_inline_images
 
 pytestmark = pytest.mark.unit
 
@@ -421,7 +421,7 @@ class TestProcessInlineImages:
         client = AsyncMock()
         client.get.return_value = mock_response
 
-        result = await process_inline_images(
+        result_map, staged_artifacts = await process_inline_images(
             images=[img],
             headers={"Authorization": "Bearer token"},
             client=client,
@@ -430,12 +430,14 @@ class TestProcessInlineImages:
             root=root,
         )
 
-        assert len(result) == 1
+        assert len(result_map) == 1
+        assert len(staged_artifacts) == 1
         cid = "gdoc-image:doc1:kix.img1"
-        assert cid in result
-        local_path = result[cid]
-        assert (target_dir / local_path).exists()
-        assert (target_dir / local_path).read_bytes() == b"PNG-DATA"
+        assert cid in result_map
+        local_path = result_map[cid]
+        assert staged_artifacts[0].local_path == local_path
+        assert staged_artifacts[0].data == b"PNG-DATA"
+        assert not (target_dir / local_path).exists()
 
     async def test_download_failure_skips_image(self, setup_root):
         root, target_dir = setup_root
@@ -444,7 +446,7 @@ class TestProcessInlineImages:
         client = AsyncMock()
         client.get.side_effect = httpx.ConnectError("connection refused")
 
-        result = await process_inline_images(
+        result_map, staged_artifacts = await process_inline_images(
             images=[img],
             headers={},
             client=client,
@@ -454,73 +456,15 @@ class TestProcessInlineImages:
         )
 
         # The mapping is still returned, but the file is not created.
-        assert len(result) == 1
-        assert not (target_dir / result["gdoc-image:doc1:kix.img1"]).exists()
+        assert len(result_map) == 1
+        assert staged_artifacts == []
+        assert not (target_dir / result_map["gdoc-image:doc1:kix.img1"]).exists()
 
-    async def test_content_hash_skip_avoids_rewrite(self, setup_root):
+    async def test_empty_image_list_returns_no_staged_artifacts(self, setup_root):
         root, target_dir = setup_root
-        img = self._make_image()
-
-        # First sync
-        mock_response = MagicMock()
-        mock_response.content = b"PNG-DATA"
-        mock_response.raise_for_status = MagicMock()
-        mock_response.headers = {"content-type": "image/png"}
         client = AsyncMock()
-        client.get.return_value = mock_response
 
-        result1 = await process_inline_images(
-            images=[img],
-            headers={},
-            client=client,
-            target_dir=target_dir,
-            primary_canonical_id="gdoc:doc1",
-            root=root,
-        )
-
-        # Record mtime
-        local_path = result1["gdoc-image:doc1:kix.img1"]
-        mtime_before = (target_dir / local_path).stat().st_mtime
-
-        # Second sync — same content
-        import time
-
-        time.sleep(0.05)  # ensure mtime would differ if rewritten
-        await process_inline_images(
-            images=[img],
-            headers={},
-            client=client,
-            target_dir=target_dir,
-            primary_canonical_id="gdoc:doc1",
-            root=root,
-        )
-
-        mtime_after = (target_dir / local_path).stat().st_mtime
-        assert mtime_before == mtime_after  # file not rewritten
-
-    async def test_removal_of_stale_image(self, setup_root):
-        root, target_dir = setup_root
-        img = self._make_image()
-
-        mock_response = MagicMock()
-        mock_response.content = b"PNG-DATA"
-        mock_response.raise_for_status = MagicMock()
-        mock_response.headers = {"content-type": "image/png"}
-        client = AsyncMock()
-        client.get.return_value = mock_response
-
-        # First sync — add image
-        await process_inline_images(
-            images=[img],
-            headers={},
-            client=client,
-            target_dir=target_dir,
-            primary_canonical_id="gdoc:doc1",
-            root=root,
-        )
-
-        # Second sync — no images (removed from doc)
-        result = await process_inline_images(
+        result_map, staged_artifacts = await process_inline_images(
             images=[],
             headers={},
             client=client,
@@ -529,49 +473,9 @@ class TestProcessInlineImages:
             root=root,
         )
 
-        assert len(result) == 0
-        # v23 sync does not proactively prune stale inline-image files.
-        att_dir = target_dir / ATTACHMENTS_DIR / "gdoc1"
-        assert att_dir.exists()
-        assert len(list(att_dir.iterdir())) == 1
-
-    async def test_file_missing_triggers_redownload(self, setup_root):
-        root, target_dir = setup_root
-        img = self._make_image()
-
-        mock_response = MagicMock()
-        mock_response.content = b"PNG-DATA"
-        mock_response.raise_for_status = MagicMock()
-        mock_response.headers = {"content-type": "image/png"}
-        client = AsyncMock()
-        client.get.return_value = mock_response
-
-        # First sync
-        result1 = await process_inline_images(
-            images=[img],
-            headers={},
-            client=client,
-            target_dir=target_dir,
-            primary_canonical_id="gdoc:doc1",
-            root=root,
-        )
-
-        # Delete the file manually
-        local_path = result1["gdoc-image:doc1:kix.img1"]
-        (target_dir / local_path).unlink()
-
-        # Second sync — should re-download
-        result2 = await process_inline_images(
-            images=[img],
-            headers={},
-            client=client,
-            target_dir=target_dir,
-            primary_canonical_id="gdoc:doc1",
-            root=root,
-        )
-
-        assert "gdoc-image:doc1:kix.img1" in result2
-        assert (target_dir / result2["gdoc-image:doc1:kix.img1"]).exists()
+        assert result_map == {}
+        assert staged_artifacts == []
+        client.get.assert_not_called()
 
 
 # --- GoogleDocsAdapter capabilities ---

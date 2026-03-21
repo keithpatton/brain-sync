@@ -40,7 +40,9 @@ daemon, and they do not start one implicitly.
 A portable brain may be attached by different processes over time, but the
 supported contract allows only one active daemon attachment per brain at once.
 A second daemon start against the same brain is refused before it begins
-reconcile or polling work. The normative rule lives in
+reconcile or polling work. Runtime startup enforces that with a durable
+per-brain guard; `daemon.json` remains the current lifecycle snapshot rather
+than the exclusion mechanism itself. The normative rule lives in
 [../RULES.md](../RULES.md).
 
 For synced sources, the main entry paths are:

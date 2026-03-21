@@ -15,7 +15,7 @@ from brain_sync.brain.manifest import (
     read_all_source_manifests,
     read_source_manifest,
 )
-from brain_sync.brain.repository import BrainRepository
+from brain_sync.brain.repository import BrainRepository, source_dir_id
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen import classify_folder_change
 from brain_sync.runtime.repository import (
@@ -33,11 +33,10 @@ from brain_sync.runtime.repository import (
     load_source_lifecycle_runtime,
     load_sync_progress,
     record_operational_event,
-    record_source_missing_confirmation,
     rename_knowledge_path_prefix,
-    renew_source_lifecycle_lease,
     save_child_discovery_request,
     save_source_lifecycle_runtime,
+    source_lifecycle_commit_fence,
 )
 from brain_sync.sources import UnsupportedSourceError, canonical_id, detect_source_type, slugify
 from brain_sync.sync.pipeline import (
@@ -509,26 +508,17 @@ def observe_missing_source(
     lifecycle_session_id: str | None = None,
 ) -> MissingObservationResult | None:
     repository = BrainRepository(root)
-    manifest = read_source_manifest(root, canonical_id)
-    if manifest is None:
-        return None
-    if _conflicting_active_lease(root, canonical_id) is not None:
-        return None
+    with source_lifecycle_commit_fence(root, canonical_id) as fence:
+        manifest = read_source_manifest(root, canonical_id)
+        if manifest is None or fence.has_active_conflicting_lease():
+            return None
 
-    manifest = read_source_manifest(root, canonical_id)
-    if manifest is None or _conflicting_active_lease(root, canonical_id) is not None:
-        return None
+        newly_missing = manifest.knowledge_state != "missing"
+        if newly_missing:
+            repository.mark_source_missing(canonical_id)
 
-    newly_missing = manifest.knowledge_state != "missing"
-    if newly_missing:
-        repository.mark_source_missing(canonical_id)
-
-    runtime_state = record_source_missing_confirmation(
-        root,
-        canonical_id,
-        lifecycle_session_id=lifecycle_session_id,
-    )
-    delete_source(root, canonical_id)
+        runtime_state = fence.record_missing_confirmation(lifecycle_session_id=lifecycle_session_id)
+        fence.delete_source_polling()
 
     if newly_missing:
         record_operational_event(
@@ -554,24 +544,6 @@ def observe_missing_source(
     )
 
 
-def _cleanup_runtime_after_materialization(
-    root: Path,
-    canonical_id: str,
-    *,
-    lifecycle_owner_id: str | None,
-) -> None:
-    if lifecycle_owner_id is None:
-        delete_source_lifecycle_runtime(root, canonical_id)
-        return
-
-    clear_source_lifecycle_lease(root, canonical_id, owner_id=lifecycle_owner_id)
-    runtime_state = load_source_lifecycle_runtime(root, canonical_id)
-    if runtime_state is None:
-        return
-    if _empty_lifecycle_row(runtime_state):
-        delete_source_lifecycle_runtime(root, canonical_id)
-
-
 def process_prepared_source(
     root: Path,
     source_state: SourceState,
@@ -583,42 +555,56 @@ def process_prepared_source(
     if prepared.skip_materialization:
         return SourceSyncResult(changed=False, discovered_children=prepared.discovered_children)
 
-    if lifecycle_owner_id is not None:
-        renewed, existing = renew_source_lifecycle_lease(
-            root,
-            prepared.canonical_id,
+    repository = BrainRepository(root)
+    with source_lifecycle_commit_fence(root, prepared.canonical_id) as fence:
+        if lifecycle_owner_id is not None and not fence.renew_owned_lease(
             lifecycle_owner_id,
             lease_expires_utc=_lease_expiry(),
-        )
-        if not renewed:
+        ):
+            existing = fence.runtime_state
             raise SourceLifecycleLeaseConflictError(
                 canonical_id=prepared.canonical_id,
                 lease_owner=existing.lease_owner if existing is not None else None,
             )
 
-    repository = BrainRepository(root)
-    materialization = repository.materialize_markdown(
-        knowledge_path=source_state.target_path,
-        filename=prepared.filename,
-        canonical_id=prepared.canonical_id,
-        markdown=prepared.markdown,
-        source_type=prepared.source_type,
-        source_url=prepared.source_url,
-        content_hash=prepared.content_hash,
-        remote_fingerprint=prepared.remote_fingerprint,
-        materialized_utc=prepared.checked_utc,
-    )
+        if prepared.staged_managed_artifacts:
+            target_dir = repository.ensure_knowledge_dir(source_state.target_path)
+            if source_state.sync_attachments and prepared.source_type == "confluence":
+                repository.migrate_legacy_attachment_context(
+                    target_dir,
+                    source_dir=source_dir_id(prepared.canonical_id),
+                    primary_canonical_id=prepared.canonical_id,
+                )
+            for artifact in prepared.staged_managed_artifacts:
+                repository.write_attachment_bytes(
+                    target_dir=target_dir,
+                    local_path=artifact.local_path,
+                    data=artifact.data,
+                )
+
+        materialization = repository.materialize_markdown(
+            knowledge_path=source_state.target_path,
+            filename=prepared.filename,
+            canonical_id=prepared.canonical_id,
+            markdown=prepared.markdown,
+            source_type=prepared.source_type,
+            source_url=prepared.source_url,
+            content_hash=prepared.content_hash,
+            remote_fingerprint=prepared.remote_fingerprint,
+            materialized_utc=prepared.checked_utc,
+        )
+        fence.ensure_source_polling()
+        if lifecycle_owner_id is None:
+            fence.delete_runtime_row()
+        else:
+            fence.clear_owned_lease(lifecycle_owner_id)
+            fence.prune_empty_runtime_row()
+
     source_state.knowledge_path = materialization.materialized_path
     source_state.knowledge_state = "materialized"
     source_state.materialized_utc = prepared.checked_utc
     source_state.content_hash = prepared.content_hash
     source_state.remote_fingerprint = prepared.remote_fingerprint
-    ensure_source_polling(root, prepared.canonical_id)
-    _cleanup_runtime_after_materialization(
-        root,
-        prepared.canonical_id,
-        lifecycle_owner_id=lifecycle_owner_id,
-    )
     for stale_name in materialization.duplicate_files_removed:
         log.warning("Removed duplicate managed file for %s: %s", prepared.canonical_id, stale_name)
     return SourceSyncResult(changed=materialization.changed, discovered_children=prepared.discovered_children)
@@ -791,7 +777,9 @@ def move_source(
             files_moved=files_moved,
         )
     finally:
-        clear_source_lifecycle_lease(root, canonical, owner_id=owner_id)
+        with source_lifecycle_commit_fence(root, canonical) as fence:
+            fence.clear_owned_lease(owner_id)
+            fence.prune_empty_runtime_row()
 
 
 def enqueue_regen_path(
@@ -872,9 +860,17 @@ def apply_folder_move(
     for manifest in read_all_source_manifests(root).values():
         if manifest.knowledge_path != src_rel and not manifest.knowledge_path.startswith(src_rel + "/"):
             continue
-        if _conflicting_active_lease(root, manifest.canonical_id) is not None:
-            continue
-        repository.apply_folder_move_to_manifest(manifest.canonical_id, src_rel, dest_rel)
+        with source_lifecycle_commit_fence(root, manifest.canonical_id) as fence:
+            refreshed_manifest = read_source_manifest(root, manifest.canonical_id)
+            if refreshed_manifest is None:
+                continue
+            if refreshed_manifest.knowledge_path != src_rel and not refreshed_manifest.knowledge_path.startswith(
+                src_rel + "/"
+            ):
+                continue
+            if fence.has_active_conflicting_lease():
+                continue
+            repository.apply_folder_move_to_manifest(manifest.canonical_id, src_rel, dest_rel)
     _record_query_index_invalidated(
         knowledge_paths=[src_rel, dest_rel, _parent_path(src_rel), _parent_path(dest_rel)],
         reason="folder_move",
@@ -932,12 +928,19 @@ def reconcile_sources(
 
         if manifest.knowledge_state == "missing":
             if found is not None:
-                if _conflicting_active_lease(root, manifest_canonical_id) is not None:
-                    unchanged_count += 1
-                    continue
-                repository.sync_manifest_to_found_path(manifest_canonical_id, found)
-                delete_source_lifecycle_runtime(root, manifest_canonical_id)
-                ensure_source_polling(root, manifest_canonical_id)
+                with source_lifecycle_commit_fence(root, manifest_canonical_id) as fence:
+                    refreshed_manifest = read_source_manifest(root, manifest_canonical_id)
+                    if refreshed_manifest is None or fence.has_active_conflicting_lease():
+                        unchanged_count += 1
+                        continue
+                    refreshed_resolution = repository.resolve_source_file(refreshed_manifest)
+                    if refreshed_resolution.path is None:
+                        unchanged_count += 1
+                        continue
+                    found = refreshed_resolution.path
+                    repository.sync_manifest_to_found_path(manifest_canonical_id, found)
+                    fence.delete_runtime_row()
+                    fence.ensure_source_polling()
                 reappeared.append(manifest_canonical_id)
                 rediscovered_path = normalize_path(found.parent.relative_to(knowledge_root))
                 record_operational_event(
@@ -966,13 +969,21 @@ def reconcile_sources(
             continue
 
         if found is not None:
-            new_target = normalize_path(found.parent.relative_to(knowledge_root))
-            old_target = manifest.target_path
-            if _conflicting_active_lease(root, manifest_canonical_id) is not None:
-                unchanged_count += 1
-                continue
-            repository.sync_manifest_to_found_path(manifest_canonical_id, found)
-            if new_target != old_target or resolution.resolution != "direct":
+            with source_lifecycle_commit_fence(root, manifest_canonical_id) as fence:
+                refreshed_manifest = read_source_manifest(root, manifest_canonical_id)
+                if refreshed_manifest is None or fence.has_active_conflicting_lease():
+                    unchanged_count += 1
+                    continue
+                refreshed_resolution = repository.resolve_source_file(refreshed_manifest)
+                if refreshed_resolution.path is None:
+                    unchanged_count += 1
+                    continue
+                found = refreshed_resolution.path
+                new_target = normalize_path(found.parent.relative_to(knowledge_root))
+                old_target = refreshed_manifest.target_path
+                resolution_kind = refreshed_resolution.resolution
+                repository.sync_manifest_to_found_path(manifest_canonical_id, found)
+            if new_target != old_target or resolution_kind != "direct":
                 updated.append(
                     ReconcileEntry(
                         canonical_id=manifest_canonical_id,

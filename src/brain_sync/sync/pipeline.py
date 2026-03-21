@@ -34,6 +34,7 @@ from brain_sync.sources import (
 from brain_sync.sources.base import SourceStateLike, UpdateCheckResult, UpdateStatus
 from brain_sync.sources.conversion import format_comments
 from brain_sync.sources.registry import get_adapter
+from brain_sync.sync.attachments import StagedManagedArtifact
 
 __all__ = [
     "ChildDiscoveryResult",
@@ -78,6 +79,7 @@ class PreparedSourceSync:
     remote_fingerprint: str
     checked_utc: str
     discovered_children: list[ChildDiscoveryResult]
+    staged_managed_artifacts: tuple[StagedManagedArtifact, ...] = ()
     skip_materialization: bool = False
 
 
@@ -106,6 +108,7 @@ async def prepare_source_sync(
     caps = adapter.capabilities
     now = datetime.now(UTC).isoformat()
     discovered_children: list[ChildDiscoveryResult] = []
+    staged_managed_artifacts: list[StagedManagedArtifact] = []
 
     # Auth
     auth = adapter.auth_provider.load_auth()
@@ -253,7 +256,7 @@ async def prepare_source_sync(
         try:
             from brain_sync.sources.confluence.attachments import process_attachments
 
-            att_title_to_path = await process_attachments(
+            att_title_to_path, staged_artifacts = await process_attachments(
                 target_dir=target_dir,
                 primary_canonical_id=primary_cid,
                 auth=auth,  # pyright: ignore[reportArgumentType]
@@ -261,6 +264,7 @@ async def prepare_source_sync(
                 root=root,
                 sync_attachments=source_state.sync_attachments,
             )
+            staged_managed_artifacts.extend(staged_artifacts)
         except Exception as e:
             log.warning("Attachment processing failed for %s: %s", source_state.source_url, e)
 
@@ -269,7 +273,7 @@ async def prepare_source_sync(
         try:
             from brain_sync.sync.attachments import process_inline_images
 
-            inline_paths = await process_inline_images(
+            inline_paths, inline_artifacts = await process_inline_images(
                 images=result.inline_images,
                 headers=result.download_headers,
                 client=http_client,
@@ -278,6 +282,7 @@ async def prepare_source_sync(
                 root=root,
             )
             att_title_to_path.update(inline_paths)
+            staged_managed_artifacts.extend(inline_artifacts)
         except Exception as e:
             log.warning("Inline image processing failed for %s: %s", source_state.source_url, e)
 
@@ -324,6 +329,7 @@ async def prepare_source_sync(
         remote_fingerprint=remote_fingerprint,
         checked_utc=now,
         discovered_children=discovered_children,
+        staged_managed_artifacts=tuple(staged_managed_artifacts),
     )
 
 

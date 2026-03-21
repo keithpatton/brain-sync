@@ -42,6 +42,7 @@ Current runtime artifacts:
 |---|---|
 | `config.json` | machine-local config, active-brain selection, credentials, and local defaults |
 | `daemon.json` | current daemon lifecycle snapshot |
+| `daemon-locks/<sha256(brain_root)>.lock` | durable per-brain daemon startup guard plus best-effort lock metadata |
 | `db/brain-sync.sqlite` | runtime coordination, scheduling, and telemetry store |
 | `logs/` | rotating local logs |
 
@@ -80,12 +81,16 @@ they do not understand.
 ## `daemon.json`
 
 `daemon.json` is the current daemon lifecycle snapshot written in the runtime
-directory.
+directory. It is descriptive status, not the durable startup lock. Same-brain
+daemon exclusivity is enforced by the per-brain lock file under
+`daemon-locks/`.
 
 | Field | Type | Meaning |
 |---|---|---|
 | `pid` | integer | Process ID of the daemon instance that wrote the file. |
 | `started_at` | string or null | UTC time when the current daemon session started. |
+| `daemon_id` | string | Runtime-unique daemon session identifier for this process start. |
+| `brain_root` | string | Normalized attached brain-root path for the daemon that wrote the snapshot. |
 | `status` | string | Current daemon status. Typical values: `starting`, `ready`, `stopped`. |
 
 ---

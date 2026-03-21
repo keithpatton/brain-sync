@@ -7,8 +7,6 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.brain.fileops import content_hash, path_exists, read_bytes
-from brain_sync.brain.repository import BrainRepository
 from brain_sync.brain.repository import source_dir_id as repository_source_dir_id
 from brain_sync.sources.confluence.rest import (
     ConfluenceAuth,
@@ -17,9 +15,8 @@ from brain_sync.sources.confluence.rest import (
     fetch_child_pages,
 )
 from brain_sync.sync.attachments import (
+    StagedManagedArtifact,
     attachment_local_path,
-    ensure_attachment_dir,
-    migrate_legacy_context,
 )
 
 log = logging.getLogger(__name__)
@@ -88,17 +85,10 @@ def reconcile(
 async def _sync_confluence_attachment(
     *,
     url: str,
-    local_path: str,
-    target_dir: Path,
     client: httpx.AsyncClient,
-    repository: BrainRepository,
     auth: ConfluenceAuth,
-) -> bool:
-    data = await download_attachment(url, auth, client)
-    target = target_dir / local_path
-    if path_exists(target) and content_hash(read_bytes(target)) == content_hash(data):
-        return False
-    return repository.write_attachment_bytes(target_dir=target_dir, local_path=local_path, data=data)
+) -> bytes:
+    return await download_attachment(url, auth, client)
 
 
 async def process_attachments(
@@ -108,17 +98,15 @@ async def process_attachments(
     client: httpx.AsyncClient,
     root: Path,
     sync_attachments: bool = False,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], list[StagedManagedArtifact]]:
     page_id = primary_canonical_id.split(":", 1)[1]
+    del target_dir, root
     source_dir_id = repository_source_dir_id(primary_canonical_id)
     att_title_to_path: dict[str, str] = {}
-    repository = BrainRepository(root)
-
-    migrate_legacy_context(target_dir, source_dir_id, primary_canonical_id, root)
-    ensure_attachment_dir(target_dir, source_dir_id)
+    staged_artifacts: list[StagedManagedArtifact] = []
 
     if not sync_attachments:
-        return att_title_to_path
+        return att_title_to_path, staged_artifacts
 
     discovered = await discover_attachments(page_id, auth, client)
     for doc in discovered:
@@ -127,20 +115,16 @@ async def process_attachments(
         if doc.title:
             att_title_to_path[doc.title] = local_path
         try:
-            changed = await _sync_confluence_attachment(
+            data = await _sync_confluence_attachment(
                 url=doc.url,
-                local_path=local_path,
-                target_dir=target_dir,
                 client=client,
-                repository=repository,
                 auth=auth,
             )
-            if changed:
-                log.info("Synced attachment: %s → %s", doc.canonical_id, local_path)
+            staged_artifacts.append(StagedManagedArtifact(local_path=local_path, data=data))
         except Exception as exc:
             log.warning("Failed to sync attachment %s: %s", doc.canonical_id, exc)
 
-    return att_title_to_path
+    return att_title_to_path, staged_artifacts
 
 
 __all__ = [
