@@ -166,6 +166,20 @@ class TestManifestUpdates:
         assert updated.knowledge_state == "stale"
         assert updated.missing_since_utc is None
 
+    def test_sync_manifest_to_found_path_preserves_materialized_on_direct_same_path(self, brain: Path) -> None:
+        repository = BrainRepository(brain)
+        write_source_manifest(brain, _manifest("confluence:12345"))
+        direct = brain / "knowledge" / "area" / "c12345-test-page.md"
+        direct.parent.mkdir(parents=True, exist_ok=True)
+        direct.write_text(prepend_managed_header("confluence:12345", "# Test"), encoding="utf-8")
+
+        repository.sync_manifest_to_found_path("confluence:12345", direct)
+
+        updated = read_source_manifest(brain, "confluence:12345")
+        assert updated is not None
+        assert updated.knowledge_path == "area/c12345-test-page.md"
+        assert updated.knowledge_state == "materialized"
+
     def test_sync_manifest_to_found_path_raises_for_file_outside_knowledge_root(self, brain: Path) -> None:
         repository = BrainRepository(brain)
         write_source_manifest(brain, _manifest("confluence:12345"))

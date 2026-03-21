@@ -68,6 +68,21 @@ def _set_materialized_manifest(brain: Path, knowledge_path: str) -> None:
 
 
 class TestReconcileManifestReadPath:
+    def test_direct_present_materialized_source_stays_materialized(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+        _create_synced_file(brain, CONFLUENCE_CID, "area", "c12345-test-page.md")
+        _set_materialized_manifest(brain, "area/c12345-test-page.md")
+
+        result = reconcile_sources(root=brain)
+
+        assert result.updated == []
+        assert result.not_found == []
+        assert result.marked_missing == []
+        assert result.unchanged == 1
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "materialized"
+
     def test_moved_to_different_dir_and_renamed_found_via_header(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old")
         _create_synced_file(brain, CONFLUENCE_CID, "old", "c12345-test-page.md")

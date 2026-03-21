@@ -351,15 +351,19 @@ class BrainRepository:
         knowledge_path = normalize_path(found_file.relative_to(self._knowledge_root))
         target_path = normalize_path(found_file.parent.relative_to(self._knowledge_root))
         changed = False
+        path_changed = manifest.knowledge_path != knowledge_path
 
-        if manifest.knowledge_path != knowledge_path:
+        if path_changed:
             manifest.knowledge_path = knowledge_path
             changed = True
-        if manifest.knowledge_state != "awaiting" and manifest.knowledge_state != "missing":
-            if manifest.knowledge_state != "stale":
-                manifest.knowledge_state = "stale"
-                changed = True
-        elif manifest.knowledge_state == "missing":
+
+        # Reconcile should only degrade settled state when it is actually
+        # repairing portable placement or reviving a previously missing source.
+        # A direct same-path verification must preserve "materialized".
+        if manifest.knowledge_state == "missing":
+            manifest.knowledge_state = "stale"
+            changed = True
+        elif path_changed and manifest.knowledge_state not in {"awaiting", "stale"}:
             manifest.knowledge_state = "stale"
             changed = True
 
