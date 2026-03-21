@@ -415,3 +415,34 @@ class TestFilesystemLockContention:
         assert duplicate.exists()
         assert result.changed is True
         assert result.duplicate_files_removed == ()
+
+    def test_materialize_markdown_rolls_back_target_and_duplicates_when_manifest_update_fails(
+        self, brain: Path
+    ) -> None:
+        repository = BrainRepository(brain)
+        canonical_id = "confluence:12345"
+        write_source_manifest(brain, _manifest(canonical_id, knowledge_path="area/fresh.md"))
+
+        target_dir = brain / "knowledge" / "area"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "fresh.md"
+        target.write_text(prepend_managed_header(canonical_id, "Old body"), encoding="utf-8")
+        duplicate = target_dir / "duplicate.md"
+        duplicate.write_text(prepend_managed_header(canonical_id, "Duplicate body"), encoding="utf-8")
+
+        with patch("brain_sync.brain.repository.update_manifest_materialization", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                repository.materialize_markdown(
+                    knowledge_path="area",
+                    filename="fresh.md",
+                    canonical_id=canonical_id,
+                    markdown="New body",
+                    source_type="confluence",
+                    source_url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345",
+                    content_hash="abc123",
+                    remote_fingerprint="rev-2",
+                    materialized_utc="2026-03-18T00:00:00+00:00",
+                )
+
+        assert target.read_text(encoding="utf-8") == prepend_managed_header(canonical_id, "Old body")
+        assert duplicate.read_text(encoding="utf-8") == prepend_managed_header(canonical_id, "Duplicate body")

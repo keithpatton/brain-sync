@@ -762,7 +762,7 @@ def move_source(
         root,
         canonical,
         owner_id,
-        lease_expires_utc=_lease_expiry(),
+        lease_expires_utc=_long_lease_expiry(),
     )
     if not acquired:
         return MoveResult(

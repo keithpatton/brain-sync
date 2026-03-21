@@ -156,6 +156,19 @@ class AttachmentMigrationRollback:
     dest_path: Path
 
 
+@dataclass(frozen=True)
+class PortableFileRollback:
+    path: Path
+    existed: bool
+    previous_data: bytes | None = None
+
+
+@dataclass(frozen=True)
+class ManagedMarkdownRollback:
+    target: PortableFileRollback
+    duplicates_removed: tuple[PortableFileRollback, ...] = ()
+
+
 class BrainRepositoryInvariantError(RuntimeError):
     """Raised when a strict repository mutation receives invalid input."""
 
@@ -408,6 +421,8 @@ class BrainRepository:
             source_type=source_type,
             source_url=source_url,
         )
+        target_rollback = self._capture_portable_file_rollback(target)
+        duplicate_rollbacks: list[PortableFileRollback] = []
         try:
             changed = write_if_changed(target, target_markdown)
 
@@ -417,6 +432,7 @@ class BrainRepository:
                     continue
                 if extract_source_id(candidate) != canonical_id:
                     continue
+                candidate_rollback = self._capture_portable_file_rollback(candidate)
                 try:
                     candidate.unlink()
                 except PermissionError as exc:
@@ -427,21 +443,30 @@ class BrainRepository:
                         )
                         continue
                     raise
+                duplicate_rollbacks.append(candidate_rollback)
                 duplicate_files_removed.append(candidate.name)
+            if read_source_manifest(self.root, canonical_id) is not None:
+                update_manifest_materialization(
+                    self.root,
+                    canonical_id,
+                    knowledge_path=normalize_path(target.relative_to(self._knowledge_root)),
+                    content_hash=content_hash,
+                    remote_fingerprint=remote_fingerprint,
+                    materialized_utc=materialized_utc,
+                )
         except PermissionError as exc:
             _raise_if_lock_contention("materialize_markdown", target, exc)
+        except Exception:
+            self._rollback_managed_markdown(
+                ManagedMarkdownRollback(
+                    target=target_rollback,
+                    duplicates_removed=tuple(duplicate_rollbacks),
+                )
+            )
+            raise
 
         materialized_path = normalize_path(target.relative_to(self._knowledge_root))
         target_path = normalize_path(target.parent.relative_to(self._knowledge_root))
-        if read_source_manifest(self.root, canonical_id) is not None:
-            update_manifest_materialization(
-                self.root,
-                canonical_id,
-                knowledge_path=materialized_path,
-                content_hash=content_hash,
-                remote_fingerprint=remote_fingerprint,
-                materialized_utc=materialized_utc,
-            )
 
         return MaterializationResult(
             canonical_id=canonical_id,
@@ -747,6 +772,27 @@ class BrainRepository:
                 continue
             rollback.source_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(win_long_path(rollback.dest_path)), str(win_long_path(rollback.source_path)))
+
+    def _capture_portable_file_rollback(self, path: Path) -> PortableFileRollback:
+        existed = path_exists(path)
+        return PortableFileRollback(
+            path=path,
+            existed=existed,
+            previous_data=read_bytes(path) if existed else None,
+        )
+
+    def _restore_portable_file(self, rollback: PortableFileRollback) -> None:
+        if rollback.existed:
+            assert rollback.previous_data is not None
+            atomic_write_bytes(rollback.path, rollback.previous_data)
+            return
+        if path_exists(rollback.path):
+            rollback.path.unlink()
+
+    def _rollback_managed_markdown(self, rollback: ManagedMarkdownRollback) -> None:
+        self._restore_portable_file(rollback.target)
+        for duplicate in rollback.duplicates_removed:
+            self._restore_portable_file(duplicate)
 
     def migrate_legacy_attachment_context(self, target_dir: Path, *, source_dir: str, primary_canonical_id: str) -> int:
         """Best-effort migration from legacy attachment locations into .brain-sync/."""
