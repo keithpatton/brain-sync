@@ -40,6 +40,8 @@ pytestmark = pytest.mark.integration
 
 CONFLUENCE_URL = "https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test-Page"
 CONFLUENCE_CID = "confluence:12345"
+OTHER_CONFLUENCE_URL = "https://example.atlassian.net/wiki/spaces/TEAM/pages/67890/Other-Page"
+OTHER_CONFLUENCE_CID = "confluence:67890"
 GDOC_URL = "https://docs.google.com/document/d/abc123/edit"
 GDOC_CID = "gdoc:abc123"
 
@@ -185,7 +187,7 @@ class TestMissingSourceCommands:
             changed, _children = asyncio.run(_run())
 
             assert changed is True
-            assert not (brain / "knowledge" / "old-area").exists()
+            assert not (brain / "knowledge" / "old-area" / "tmove-race.md").exists()
             new_files = list((brain / "knowledge" / "new-area").glob("*.md"))
             assert len(new_files) == 1
 
@@ -357,13 +359,76 @@ class TestMissingSourceCommands:
         assert result.result_state == "moved"
         assert load_source_lifecycle_runtime(brain, CONFLUENCE_CID) is None
 
+    def test_move_source_only_moves_owned_artifacts(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area", sync_attachments=True)
+        add_source(root=brain, url=OTHER_CONFLUENCE_URL, target_path="area")
+
+        primary_file = brain / "knowledge" / "area" / "c12345-test-page.md"
+        primary_file.parent.mkdir(parents=True, exist_ok=True)
+        primary_file.write_text(prepend_managed_header(CONFLUENCE_CID, "# Primary"), encoding="utf-8")
+        primary_attachment_dir = brain / "knowledge" / "area" / ".brain-sync" / "attachments" / "c12345"
+        primary_attachment_dir.mkdir(parents=True, exist_ok=True)
+        (primary_attachment_dir / "a789.bin").write_bytes(b"primary")
+
+        sibling_file = brain / "knowledge" / "area" / "c67890-other-page.md"
+        sibling_file.write_text(prepend_managed_header(OTHER_CONFLUENCE_CID, "# Secondary"), encoding="utf-8")
+        user_note = brain / "knowledge" / "area" / "user-notes.md"
+        user_note.write_text("# Notes", encoding="utf-8")
+
+        primary_manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert primary_manifest is not None
+        primary_manifest.knowledge_state = "materialized"
+        primary_manifest.knowledge_path = "area/c12345-test-page.md"
+        primary_manifest.content_hash = "sha256:abc"
+        primary_manifest.remote_fingerprint = "rev-1"
+        primary_manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, primary_manifest)
+
+        secondary_manifest = read_source_manifest(brain, OTHER_CONFLUENCE_CID)
+        assert secondary_manifest is not None
+        secondary_manifest.knowledge_state = "materialized"
+        secondary_manifest.knowledge_path = "area/c67890-other-page.md"
+        secondary_manifest.content_hash = "sha256:def"
+        secondary_manifest.remote_fingerprint = "rev-2"
+        secondary_manifest.materialized_utc = "2026-03-19T09:00:00+00:00"
+        write_source_manifest(brain, secondary_manifest)
+
+        result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
+
+        assert result.result_state == "moved"
+        assert not primary_file.exists()
+        assert (brain / "knowledge" / "new-area" / "c12345-test-page.md").exists()
+        assert not primary_attachment_dir.exists()
+        assert (brain / "knowledge" / "new-area" / ".brain-sync" / "attachments" / "c12345" / "a789.bin").exists()
+        assert sibling_file.exists()
+        assert user_note.exists()
+
+        moved_manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert moved_manifest is not None
+        assert moved_manifest.target_path == "new-area"
+        unchanged_manifest = read_source_manifest(brain, OTHER_CONFLUENCE_CID)
+        assert unchanged_manifest is not None
+        assert unchanged_manifest.target_path == "area"
+
     def test_move_source_acquires_long_operation_lease_before_first_renewal(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+        materialized = brain / "knowledge" / "area" / "c12345-test-page.md"
+        materialized.parent.mkdir(parents=True, exist_ok=True)
+        materialized.write_text(prepend_managed_header(CONFLUENCE_CID, "Body"), encoding="utf-8")
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
 
         lease_probe: tuple[bool, object | None] | None = None
 
-        def _probe_lease_during_move(self, source_path: str, dest_path: str) -> bool:
-            del self, source_path, dest_path
+        original_move = BrainRepository.move_source_owned_markdown
+
+        def _probe_lease_during_move(self, source_file: Path, dest_path: str):
             nonlocal lease_probe
             lease_probe = acquire_source_lifecycle_lease(
                 brain,
@@ -371,13 +436,16 @@ class TestMissingSourceCommands:
                 "other-owner",
                 lease_expires_utc="2099-01-01T00:00:00+00:00",
             )
-            return False
+            return original_move(self, source_file, dest_path)
 
         try:
             with (
                 patch("brain_sync.sync.lifecycle._lease_expiry", return_value="2000-01-01T00:00:00+00:00"),
                 patch("brain_sync.sync.lifecycle._long_lease_expiry", return_value="2099-01-01T00:00:00+00:00"),
-                patch("brain_sync.brain.repository.BrainRepository.move_knowledge_tree", new=_probe_lease_during_move),
+                patch(
+                    "brain_sync.brain.repository.BrainRepository.move_source_owned_markdown",
+                    new=_probe_lease_during_move,
+                ),
             ):
                 result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
         finally:
@@ -457,10 +525,27 @@ class TestMissingSourceCommands:
         assert not (brain / "knowledge" / "area" / staged_path).exists()
 
     def test_move_source_returns_lease_conflict_after_mid_operation_lease_loss(self, brain: Path) -> None:
-        add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area", sync_attachments=True)
+        materialized = brain / "knowledge" / "area" / "c12345-test-page.md"
+        materialized.parent.mkdir(parents=True, exist_ok=True)
+        materialized.write_text(prepend_managed_header(CONFLUENCE_CID, "Body"), encoding="utf-8")
+        attachment_dir = brain / "knowledge" / "area" / ".brain-sync" / "attachments" / "c12345"
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        (attachment_dir / "a789.bin").write_bytes(b"payload")
 
-        def _lose_lease_mid_move(self, source_path: str, dest_path: str) -> bool:
-            del self, source_path, dest_path
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
+
+        original_move = BrainRepository.move_source_owned_markdown
+
+        def _lose_lease_after_real_move(self, source_file: Path, dest_path: str):
+            rollback = original_move(self, source_file, dest_path)
             clear_source_lifecycle_lease(brain, CONFLUENCE_CID)
             acquired, _existing = acquire_source_lifecycle_lease(
                 brain,
@@ -469,16 +554,59 @@ class TestMissingSourceCommands:
                 lease_expires_utc="2099-01-01T00:00:00+00:00",
             )
             assert acquired is True
-            return False
+            return rollback
 
         try:
-            with patch("brain_sync.brain.repository.BrainRepository.move_knowledge_tree", new=_lose_lease_mid_move):
+            with patch(
+                "brain_sync.brain.repository.BrainRepository.move_source_owned_markdown",
+                new=_lose_lease_after_real_move,
+            ):
                 result = move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
         finally:
             clear_source_lifecycle_lease(brain, CONFLUENCE_CID, owner_id="other-owner")
 
         assert result.result_state == "lease_conflict"
         assert result.lease_owner == "other-owner"
+        assert materialized.exists()
+        assert not (brain / "knowledge" / "new-area" / "c12345-test-page.md").exists()
+        assert attachment_dir.exists()
+        assert not (brain / "knowledge" / "new-area" / ".brain-sync" / "attachments" / "c12345").exists()
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        assert manifest.target_path == "area"
+
+    def test_move_source_rolls_back_owned_moves_when_manifest_update_fails(self, brain: Path) -> None:
+        add_source(root=brain, url=CONFLUENCE_URL, target_path="area", sync_attachments=True)
+        materialized = brain / "knowledge" / "area" / "c12345-test-page.md"
+        materialized.parent.mkdir(parents=True, exist_ok=True)
+        materialized.write_text(prepend_managed_header(CONFLUENCE_CID, "Body"), encoding="utf-8")
+        attachment_dir = brain / "knowledge" / "area" / ".brain-sync" / "attachments" / "c12345"
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        (attachment_dir / "a789.bin").write_bytes(b"payload")
+        user_note = brain / "knowledge" / "area" / "user-notes.md"
+        user_note.write_text("# Notes", encoding="utf-8")
+
+        manifest = read_source_manifest(brain, CONFLUENCE_CID)
+        assert manifest is not None
+        manifest.knowledge_state = "materialized"
+        manifest.knowledge_path = "area/c12345-test-page.md"
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = "2026-03-19T08:00:00+00:00"
+        write_source_manifest(brain, manifest)
+
+        with patch(
+            "brain_sync.brain.repository.BrainRepository.sync_manifest_to_found_path",
+            side_effect=RuntimeError("boom"),
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                move_source(root=brain, source=CONFLUENCE_CID, to_path="new-area")
+
+        assert materialized.exists()
+        assert not (brain / "knowledge" / "new-area" / "c12345-test-page.md").exists()
+        assert attachment_dir.exists()
+        assert not (brain / "knowledge" / "new-area" / ".brain-sync" / "attachments" / "c12345").exists()
+        assert user_note.exists()
         manifest = read_source_manifest(brain, CONFLUENCE_CID)
         assert manifest is not None
         assert manifest.target_path == "area"

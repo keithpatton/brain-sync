@@ -169,6 +169,12 @@ class ManagedMarkdownRollback:
     duplicates_removed: tuple[PortableFileRollback, ...] = ()
 
 
+@dataclass(frozen=True)
+class PortablePathMove:
+    source_path: Path
+    dest_path: Path
+
+
 class BrainRepositoryInvariantError(RuntimeError):
     """Raised when a strict repository mutation receives invalid input."""
 
@@ -580,11 +586,60 @@ class BrainRepository:
         dest_dir = self._knowledge_root / Path(dest_rel) if dest_rel else self._knowledge_root
         old_att = self.source_attachment_dir(source_dir, canonical_id)
         new_att = self.source_attachment_dir(dest_dir, canonical_id)
-        if not path_is_dir(old_att) or path_exists(new_att):
+        if old_att == new_att or not path_is_dir(old_att):
             return False
-        new_att.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(win_long_path(old_att)), str(win_long_path(new_att)))
+        if path_exists(new_att):
+            raise BrainRepositoryInvariantError(
+                f"move_source_attachment_dir: destination '{normalize_path(new_att.relative_to(self._knowledge_root))}'"
+                " already exists"
+            )
+        self._move_portable_path(old_att, new_att, operation="move_source_attachment_dir")
         return True
+
+    def move_source_owned_markdown(self, source_file: Path, dest_path: str) -> PortablePathMove | None:
+        """Move one resolved source markdown file into a different knowledge area."""
+        managed_file = self._require_file_under_knowledge_root(source_file, operation="move_source_owned_markdown")
+        dest_rel = self._normalize_relative_knowledge_path(dest_path, operation="move_source_owned_markdown(dest)")
+        dest_dir = self._knowledge_root / Path(dest_rel) if dest_rel else self._knowledge_root
+        dest_file = dest_dir / managed_file.name
+        return self._move_portable_path(managed_file, dest_file, operation="move_source_owned_markdown")
+
+    def move_source_attachment_dir_with_rollback(
+        self,
+        source_path: str,
+        dest_path: str,
+        canonical_id: str,
+    ) -> PortablePathMove | None:
+        """Move one source attachment directory between two areas and return rollback metadata."""
+        source_rel = self._normalize_relative_knowledge_path(
+            source_path,
+            operation="move_source_attachment_dir_with_rollback(source_path)",
+        )
+        dest_rel = self._normalize_relative_knowledge_path(
+            dest_path,
+            operation="move_source_attachment_dir_with_rollback(dest_path)",
+        )
+        source_dir = self._knowledge_root / Path(source_rel) if source_rel else self._knowledge_root
+        dest_dir = self._knowledge_root / Path(dest_rel) if dest_rel else self._knowledge_root
+        old_att = self.source_attachment_dir(source_dir, canonical_id)
+        new_att = self.source_attachment_dir(dest_dir, canonical_id)
+        if old_att == new_att or not path_is_dir(old_att):
+            return None
+        return self._move_portable_path(old_att, new_att, operation="move_source_attachment_dir_with_rollback")
+
+    def rollback_portable_path_move(self, rollback: PortablePathMove) -> None:
+        """Undo one prior portable path move."""
+        source_rel = self._require_under_knowledge_root(rollback.source_path, operation="rollback_portable_path_move")
+        dest_rel = self._require_under_knowledge_root(rollback.dest_path, operation="rollback_portable_path_move")
+        del source_rel, dest_rel
+        if not path_exists(rollback.dest_path):
+            return
+        if path_exists(rollback.source_path):
+            raise BrainRepositoryInvariantError(
+                f"rollback_portable_path_move: source path already exists during rollback ('{rollback.source_path}')"
+            )
+        rollback.source_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(win_long_path(rollback.dest_path)), str(win_long_path(rollback.source_path)))
 
     def apply_folder_move_to_manifests(self, src_rel: str, dest_rel: str) -> list[ManifestMove]:
         """Update manifest portable paths after a knowledge-folder move."""
@@ -793,6 +848,19 @@ class BrainRepository:
         self._restore_portable_file(rollback.target)
         for duplicate in rollback.duplicates_removed:
             self._restore_portable_file(duplicate)
+
+    def _move_portable_path(self, source: Path, dest: Path, *, operation: str) -> PortablePathMove | None:
+        self._require_under_knowledge_root(source, operation=f"{operation}(source)")
+        self._require_under_knowledge_root(dest, operation=f"{operation}(dest)")
+        if source == dest or not path_exists(source):
+            return None
+        if path_exists(dest):
+            raise BrainRepositoryInvariantError(
+                f"{operation}: destination '{normalize_path(dest.relative_to(self._knowledge_root))}' already exists"
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(win_long_path(source)), str(win_long_path(dest)))
+        return PortablePathMove(source_path=source, dest_path=dest)
 
     def migrate_legacy_attachment_context(self, target_dir: Path, *, source_dir: str, primary_canonical_id: str) -> int:
         """Best-effort migration from legacy attachment locations into .brain-sync/."""

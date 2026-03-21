@@ -776,6 +776,8 @@ def move_source(
         )
 
     repository = BrainRepository(root)
+    markdown_move = None
+    attachment_move = None
     try:
         manifest = read_source_manifest(root, canonical)
         if manifest is None:
@@ -787,22 +789,46 @@ def move_source(
             )
 
         files_moved = False
-        if old_path != to_path:
-            files_moved = repository.move_knowledge_tree(old_path, to_path)
+        resolved = repository.resolve_source_file(manifest)
+        current_target_path = manifest.target_path
+        if resolved.path is not None:
+            current_target_path = normalize_path(resolved.path.parent.relative_to(repository.knowledge_root))
+
+        if current_target_path != to_path:
+            if resolved.path is not None:
+                markdown_move = repository.move_source_owned_markdown(resolved.path, to_path)
+                if markdown_move is not None:
+                    files_moved = True
             _renew_owned_lease_or_raise_conflict(
                 root,
                 canonical,
                 owner_id,
                 lease_expires_utc=_long_lease_expiry(),
             )
-            if not files_moved:
-                repository.move_source_attachment_dir(old_path, to_path, canonical)
-                _renew_owned_lease_or_raise_conflict(
-                    root,
-                    canonical,
-                    owner_id,
-                    lease_expires_utc=_long_lease_expiry(),
-                )
+
+        attachment_source_paths: list[str] = []
+        if current_target_path not in attachment_source_paths:
+            attachment_source_paths.append(current_target_path)
+        if manifest.target_path not in attachment_source_paths:
+            attachment_source_paths.append(manifest.target_path)
+
+        for attachment_source_path in attachment_source_paths:
+            if attachment_source_path == to_path:
+                continue
+            attachment_move = repository.move_source_attachment_dir_with_rollback(
+                attachment_source_path,
+                to_path,
+                canonical,
+            )
+            if attachment_move is not None:
+                files_moved = True
+                break
+        _renew_owned_lease_or_raise_conflict(
+            root,
+            canonical,
+            owner_id,
+            lease_expires_utc=_long_lease_expiry(),
+        )
 
         manifest = read_source_manifest(root, canonical)
         if manifest is None:
@@ -818,9 +844,10 @@ def move_source(
             owner_id,
             lease_expires_utc=_long_lease_expiry(),
         )
-        found = repository.resolve_source_file(manifest).path
-        if found is not None:
-            repository.sync_manifest_to_found_path(canonical, found)
+        if markdown_move is not None:
+            repository.sync_manifest_to_found_path(canonical, markdown_move.dest_path)
+        elif resolved.path is not None:
+            repository.sync_manifest_to_found_path(canonical, resolved.path)
         else:
             repository.set_source_area_path(canonical, to_path)
 
@@ -841,6 +868,13 @@ def move_source(
             files_moved=files_moved,
         )
     except SourceLifecycleLeaseConflictError as exc:
+        for rollback in (attachment_move, markdown_move):
+            if rollback is None:
+                continue
+            try:
+                repository.rollback_portable_path_move(rollback)
+            except Exception:
+                log.exception("Failed to roll back move_source portable path move for %s", canonical)
         return MoveResult(
             result_state="lease_conflict",
             source=source,
@@ -850,6 +884,15 @@ def move_source(
             lease_owner=exc.lease_owner,
             message=f"Source lifecycle lease is already held for {canonical}",
         )
+    except Exception:
+        for rollback in (attachment_move, markdown_move):
+            if rollback is None:
+                continue
+            try:
+                repository.rollback_portable_path_move(rollback)
+            except Exception:
+                log.exception("Failed to roll back move_source portable path move for %s", canonical)
+        raise
     finally:
         with source_lifecycle_commit_fence(root, canonical) as fence:
             fence.clear_owned_lease(owner_id)

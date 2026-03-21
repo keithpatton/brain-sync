@@ -431,6 +431,13 @@ Explicit source removal is destructive to synced source material:
   lifecycle first and only leaves the registry through explicit finalization if
   the source is still absent
 
+Explicit source moves are source-scoped:
+
+- move source may relocate only source-owned artifacts for the addressed
+  source
+- colocated user-authored files and unrelated synced sources in the same area
+  must remain in place
+
 ### Folders
 
 | Operation | Online | Offline |
