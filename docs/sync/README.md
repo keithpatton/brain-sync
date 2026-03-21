@@ -94,7 +94,7 @@ This matrix is the applicability view of synced-source lifecycle behavior.
 | CLI/MCP | Move Source | Single File | Command | x | x | x | x |  | state-dependent | State unchanged except `materialized` -> `stale`. Only source-owned artifacts for the addressed source move; colocated user files and unrelated sources stay in place. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict` and does not mutate the source. |
 | CLI/MCP | Remove Source | Single File | Command | x | x | x | x |  | state-dependent | Unregisters the source and removes synced files from disk by default, including the materialized file and source-owned attachments when present. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict`. |
 | CLI/MCP | Reconcile | Knowledge Tree | Command | x | x | x | x |  | conservative repair | Uses the same reconcile engine as daemon startup. `awaiting` usually stays `awaiting`; direct-path present registered sources stay in their current settled state; repaired or rediscovered present sources become `stale`; absent registered sources become or remain `missing`; missing sources that reappear become `stale`. |
-| CLI/MCP | Finalize Missing | Single File | Command |  |  |  | x |  | state-dependent | Finalization rechecks local presence first. If the source file is rediscovered locally, the source is restored to `stale` instead of being unregistered. In a new lifecycle session, the first finalize call may still return `pending_confirmation` even when older missing history already exists. |
+| CLI/MCP | Finalize Missing | Single File | Command |  |  |  | x |  | state-dependent | Finalization rechecks local presence before destructive cleanup. If the source file is rediscovered during preflight or final commit revalidation, the source is restored to `stale` instead of being unregistered. In a new lifecycle session, the first finalize call may still return `pending_confirmation` even when older missing history already exists. |
 | User | Synced File Moved | Single File | Daemon Watcher |  | x | x |  |  | `stale` | The watcher observes local drift and reconcile repairs the manifest path to the found file. |
 | User | Synced File Deleted | Single File | Daemon Watcher |  | x | x |  |  | `missing` | This is first-stage missing only. Later explicit finalization may unregister the source. |
 | User | Source Area Moved | Knowledge Area | Daemon Watcher | x | x | x | x |  | state-dependent | Folder moves have a fast path. `awaiting` stays `awaiting`; `materialized` and `stale` end `stale`; `missing` stays `missing`. |
@@ -231,7 +231,8 @@ These are the main reading rules that help agents reason correctly:
 - `missing` is still registered state, not removal.
 - `Finalize Missing` is only meaningful from `missing`, and it can either
   unregister the source, remain `missing` with `pending_confirmation`, or
-  restore it to `stale` if the file is rediscovered during preflight.
+  restore it to `stale` if the file is rediscovered during preflight or final
+  commit revalidation.
 - `Remove Source` is the explicit unregistering path from any registered state.
 - if a source path changes without durable content being resettled, the normal
   result is `stale`, not immediate `materialized`.

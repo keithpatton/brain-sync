@@ -48,6 +48,42 @@ def _lease_expiry() -> str:
     return (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
 
 
+def _return_rediscovered_not_missing(
+    root: Path,
+    *,
+    repository: BrainRepository,
+    canonical_id: str,
+    manifest_target_path: str,
+    found_path: Path,
+    revalidation_basis: str,
+) -> FinalizationResult:
+    repository.sync_manifest_to_found_path(canonical_id, found_path)
+    delete_source_lifecycle_runtime(root, canonical_id)
+    ensure_source_polling(root, canonical_id)
+    refreshed = read_source_manifest(root, canonical_id)
+    knowledge_path = refreshed.target_path if refreshed is not None else manifest_target_path
+    record_operational_event(
+        event_type="source.rediscovered",
+        canonical_id=canonical_id,
+        knowledge_path=knowledge_path,
+        outcome="rediscovered",
+        details={"revalidation_basis": revalidation_basis},
+    )
+    record_operational_event(
+        event_type="source.finalization_not_missing",
+        canonical_id=canonical_id,
+        knowledge_path=knowledge_path,
+        outcome="not_missing",
+        details={"revalidation_basis": "rediscovered"},
+    )
+    return FinalizationResult(
+        canonical_id=canonical_id,
+        result_state="not_missing",
+        finalized=False,
+        knowledge_state=refreshed.knowledge_state if refreshed is not None else "stale",
+    )
+
+
 def finalize_missing(
     root: Path,
     *,
@@ -97,29 +133,13 @@ def finalize_missing(
 
         resolved = repository.resolve_source_file(manifest)
         if resolved.path is not None:
-            repository.sync_manifest_to_found_path(canonical_id, resolved.path)
-            delete_source_lifecycle_runtime(root, canonical_id)
-            ensure_source_polling(root, canonical_id)
-            refreshed = read_source_manifest(root, canonical_id)
-            record_operational_event(
-                event_type="source.rediscovered",
+            return _return_rediscovered_not_missing(
+                root,
+                repository=repository,
                 canonical_id=canonical_id,
-                knowledge_path=refreshed.target_path if refreshed is not None else manifest.target_path,
-                outcome="rediscovered",
-                details={"revalidation_basis": "finalization_preflight"},
-            )
-            record_operational_event(
-                event_type="source.finalization_not_missing",
-                canonical_id=canonical_id,
-                knowledge_path=refreshed.target_path if refreshed is not None else manifest.target_path,
-                outcome="not_missing",
-                details={"revalidation_basis": "rediscovered"},
-            )
-            return FinalizationResult(
-                canonical_id=canonical_id,
-                result_state="not_missing",
-                finalized=False,
-                knowledge_state=refreshed.knowledge_state if refreshed is not None else "stale",
+                manifest_target_path=manifest.target_path,
+                found_path=resolved.path,
+                revalidation_basis="finalization_preflight",
             )
 
         runtime_state = load_source_lifecycle_runtime(root, canonical_id)
@@ -174,7 +194,18 @@ def finalize_missing(
                 eligible=False,
             )
 
-        repository.remove_source_owned_files(manifest.target_path, canonical_id)
+        commit_resolution = repository.resolve_source_file(manifest)
+        if commit_resolution.path is not None:
+            return _return_rediscovered_not_missing(
+                root,
+                repository=repository,
+                canonical_id=canonical_id,
+                manifest_target_path=manifest.target_path,
+                found_path=commit_resolution.path,
+                revalidation_basis="finalization_commit",
+            )
+
+        repository.remove_source_managed_artifacts(manifest.target_path, canonical_id)
         delete_source(root, canonical_id)
         delete_source_lifecycle_runtime(root, canonical_id)
         clear_child_discovery_request(root, canonical_id)

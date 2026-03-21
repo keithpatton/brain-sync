@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +11,7 @@ from brain_sync.application.sources import add_source, finalize_missing, reconci
 from brain_sync.brain.fileops import canonical_prefix
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
+from brain_sync.brain.repository import BrainRepository
 from brain_sync.runtime.repository import (
     acquire_source_lifecycle_lease,
     clear_source_lifecycle_lease,
@@ -182,6 +184,50 @@ class TestSourceFinalization:
         not_missing_events = load_operational_events(brain, event_type="source.finalization_not_missing")
         assert not_missing_events
         assert json.loads(not_missing_events[-1].details_json or "{}") == {"revalidation_basis": "rediscovered"}
+
+    def test_finalize_missing_midflight_rediscovery_returns_not_missing_without_deleting_restored_file(
+        self,
+        brain: Path,
+    ) -> None:
+        _register_materialized_source(brain, create_file=False)
+        reconcile_sources(root=brain)
+        reconcile_sources(root=brain)
+        lifecycle_session_id = ensure_lifecycle_session(brain, owner_kind="cli")
+
+        pending = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+        assert pending.result_state == "pending_confirmation"
+
+        original_resolve = BrainRepository.resolve_source_file
+        resolve_calls = 0
+
+        def resolve_with_midflight_rediscovery(self: BrainRepository, manifest, *, identity_index=None):
+            nonlocal resolve_calls
+            resolve_calls += 1
+            if resolve_calls == 2:
+                _write_materialized_file(brain, manifest.knowledge_path)
+            return original_resolve(self, manifest, identity_index=identity_index)
+
+        with patch.object(
+            BrainRepository,
+            "resolve_source_file",
+            autospec=True,
+            side_effect=resolve_with_midflight_rediscovery,
+        ):
+            result = finalize_missing(brain, canonical_id=TEST_CID, lifecycle_session_id=lifecycle_session_id)
+
+        assert result.result_state == "not_missing"
+        assert result.finalized is False
+        assert resolve_calls >= 2
+
+        manifest = read_source_manifest(brain, TEST_CID)
+        assert manifest is not None
+        assert manifest.knowledge_state == "stale"
+        assert load_source_lifecycle_runtime(brain, TEST_CID) is None
+        assert (brain / "knowledge" / manifest.knowledge_path).exists()
+
+        rediscovered_events = load_operational_events(brain, event_type="source.rediscovered")
+        assert rediscovered_events
+        assert json.loads(rediscovered_events[-1].details_json or "{}") == {"revalidation_basis": "finalization_commit"}
 
     def test_finalize_missing_reports_lease_conflict(self, brain: Path) -> None:
         _register_materialized_source(brain, create_file=False)
