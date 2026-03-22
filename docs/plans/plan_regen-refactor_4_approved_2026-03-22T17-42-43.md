@@ -4,13 +4,14 @@ Approved: 2026-03-22T17:42:43+13:00
 Approved by: Codex
 
 Notes:
+
 - phase gates are now durable, non-self-approving, and tied to the approved
-  notes artifact
+notes artifact
 - Phase 1 now provides a bounded backend-capability contract before prompt
-  budgeting work begins
+budgeting work begins
 - propagation, summary/journal semantics, observability surfaces, and
-  documentation/versioning triggers are now concrete enough for phased
-  implementation without implementer guesswork
+documentation/versioning triggers are now concrete enough for phased
+implementation without implementer guesswork
 
 ---
 
@@ -41,10 +42,10 @@ The blocking issues addressed here are:
 
 - phase gates are now made durable and non-self-approving
 - backend-capability policy is moved earlier so Phase 2 has an approved source
-  of truth
+of truth
 - the target propagation contract is now explicit
 - summary/journal and observability contract choices are now pinned down
-  tightly enough for implementation and doc alignment
+tightly enough for implementation and doc alignment
 
 ## Objective
 
@@ -55,7 +56,7 @@ Raise REGEN to a state where it:
 - preserves or improves generated meaning quality
 - improves end-to-end regen latency and throughput
 - exposes cleaner seams for future artifact specialization and backend
-  expansion
+expansion
 - becomes easier to reason about, test, observe, and document correctly
 
 This is a product-and-architecture hardening plan, not a code-cleanup-only
@@ -111,22 +112,22 @@ ambiguity, and documentation drift risk on the table.
 The highest-leverage current problems are:
 
 1. prompt assembly and budgeting are deterministic but still coarse, with a
-   fixed budget and early chunking rules that leave newer long-context models
+  fixed budget and early chunking rules that leave newer long-context models
    underused
 2. dirty detection and parent propagation are good enough to avoid some churn
-   but not yet cleanly aligned around actual parent inputs
+  but not yet cleanly aligned around actual parent inputs
 3. single-path walk-up and multi-path wave execution still encode slightly
-   different continuation and propagation semantics
+  different continuation and propagation semantics
 4. `regen.engine` still mixes evaluation, prompt planning, LLM execution,
-   persistence, skip logic, and telemetry in one implementation seam
+  persistence, skip logic, and telemetry in one implementation seam
 5. observability exists but does not yet explain REGEN decisions well enough
-   for confident optimization
+  for confident optimization
 6. summary and journal are already artifact-like outputs, but the pipeline does
-   not yet make artifact boundaries explicit
+  not yet make artifact boundaries explicit
 7. scheduler and backend work should come later, but the current shape makes
-   later optimization harder than it should be
+  later optimization harder than it should be
 8. explanatory and normative docs could drift as the refactor lands unless doc
-   review and alignment are treated as first-class work
+  review and alignment are treated as first-class work
 
 ## Fixed Planning Direction
 
@@ -170,15 +171,15 @@ for that subject.
 
 - no broad redesign of sync lifecycle ownership outside REGEN-relevant seams
 - no default portable-brain format change unless later review proves it is
-  unavoidable
+unavoidable
 - no immediate rollout of same-wave parallel LLM execution in the early phases
 - no assumption that larger context windows should always be fully consumed
 - no commitment to split summary and journal into separate model calls unless
-  an explicit phase gate approves that product change
+an explicit phase gate approves that product change
 - no broad observability platform or dashboard project
 - no generic workflow engine or plugin system
 - no new runtime table for REGEN diagnostics unless a later review or approval
-  artifact explicitly authorizes it
+artifact explicitly authorizes it
 
 ## Durable Phase Gate Model
 
@@ -244,7 +245,7 @@ After each phase checkpoint, continuation may be cleared only by:
 
 - the user explicitly, or
 - an explicitly assigned reviewer / implementation reviewer acting with that
-  delegated authority
+delegated authority
 
 If a checkpoint exposes a scope change, product decision, normative rule
 change, or version/compatibility implication, the default required clearer is
@@ -267,7 +268,7 @@ true:
 In scope for the implementation stage:
 
 - establishing REGEN baselines for cost, latency, quality, and documentation
-  surfaces
+surfaces
 - establishing a bounded backend-capability contract before prompt-budget work
 - separating evaluation from execution
 - refactoring prompt assembly and context budgeting
@@ -276,9 +277,9 @@ In scope for the implementation stage:
 - strengthening REGEN observability and diagnostic explainability
 - narrowing and clarifying REGEN service seams
 - limited scheduler and backend-capability work needed to prepare later
-  optimization safely
+optimization safely
 - documentation review and updates required to keep the new behaviour
-  intentionally aligned
+intentionally aligned
 
 ## Phase Order
 
@@ -321,7 +322,7 @@ Required outcomes:
   - skip reason frequency
   - ancestor propagation frequency
 - a quality evaluation approach strong enough to catch obvious factual loss,
-  summary thinning, or structural degradation
+summary thinning, or structural degradation
 - a documentation impact inventory for at least:
   - `docs/regen/README.md`
   - `docs/architecture/ARCHITECTURE.md`
@@ -366,25 +367,25 @@ Required outcomes:
   - content-changing
   - metadata-only backfill
 - explicit execution inputs that consume evaluation results rather than
-  recomputing policy inline
+recomputing policy inline
 - a narrower REGEN public service boundary so non-REGEN packages do not depend
-  on broad engine internals
+on broad engine internals
 - one bounded capability contract that Phase 2 must consume instead of using
-  model-string or Claude-specific prompt heuristics directly
+model-string or Claude-specific prompt heuristics directly
 
 The bounded capability contract must define, at minimum:
 
 - effective prompt budget class or max prompt tokens
 - structured-output contract support for the current summary/journal shape
 - system-prompt / invocation mode expectations required for REGEN prompt
-  planning
+planning
 - any known prompt-overhead class needed for budgeting
 
 Implementation constraint:
 
 - Phase 2 may not invent new backend heuristics outside this contract
 - if the contract is insufficient, the implementer must stop and extend it via
-  checkpoint clearance before proceeding
+checkpoint clearance before proceeding
 
 Required checkpoint output:
 
@@ -394,7 +395,7 @@ Required checkpoint output:
 - any newly exposed invariants that later phases must respect
 - a doc review note describing whether:
   - `docs/regen/README.md` still matches current implementation after this
-    phase
+  phase
   - `docs/architecture/ARCHITECTURE.md` needs boundary updates
   - any normative rule appears to be changing
 
@@ -402,9 +403,9 @@ Phase 1 decision gate:
 
 - is the decision model explicit enough to safely optimize prompts next
 - is the bounded capability contract concrete enough that Phase 2 will not
-  re-encode Claude-specific policy
+re-encode Claude-specific policy
 - do any current behaviours need to be declared as intentional product rules
-  before changing them
+before changing them
 
 The implementer must pause after Phase 1 before Phase 2.
 
@@ -414,13 +415,13 @@ Goals:
 
 - reduce token burn while preserving or improving summary quality
 - stop using a single small fixed budget as the effective limit for every
-  model and every node shape
+model and every node shape
 - make context inclusion and truncation rules explicit and explainable
 
 Required outcomes:
 
 - prompt budgeting derived from the Phase 1 bounded capability contract rather
-  than one hard-coded universal budget
+than one hard-coded universal budget
 - a clearer component budget for at least:
   - instructions
   - global `_core` context
@@ -428,9 +429,9 @@ Required outcomes:
   - child summaries
   - existing summary
 - budget-aware chunking so a file is not chunked solely because it exceeds a
-  static size threshold when raw inclusion would still fit comfortably
+static size threshold when raw inclusion would still fit comfortably
 - more explicit inclusion priority rules for current node content versus child
-  summaries versus lower-value carry-forward context
+summaries versus lower-value carry-forward context
 - diagnostics explaining:
   - why a file was deferred to chunking
   - why child summaries were omitted
@@ -439,18 +440,18 @@ Required outcomes:
 Required checkpoint output:
 
 - before/after measurements for token burn, chunk rate, and latency on the
-  baseline corpus
+baseline corpus
 - a summary of which prompt components gained or lost budget
 - any quality regressions or ambiguous cases
 - any product calls exposed around long-context usage, truncation, or `_core`
-  handling
+handling
 - a doc review note describing whether prompt/context sections in
-  `docs/regen/README.md` and any architecture/runtime docs now need updates
+`docs/regen/README.md` and any architecture/runtime docs now need updates
 
 Phase 2 decision gate:
 
 - should REGEN stay conservative by default or use a materially larger budget
-  envelope
+envelope
 - are the new inclusion priorities producing the desired summary quality
 - is chunk-and-merge still correctly positioned as fallback behaviour
 - do the docs still describe reality accurately enough to proceed
@@ -472,21 +473,23 @@ single-path and wave execution.
 
 The target contract is:
 
-| Outcome | Parent-visible input changed? | Propagate upward? | Reason |
-|---|---|---|---|
-| `regenerated` | yes | yes | child summary changed on disk |
-| `skipped_no_content` | yes | yes | child summary/input disappeared |
-| `cleaned_up` | yes | yes | child summary/input disappeared |
-| `skipped_rename` | yes | yes | parent structure input changed |
-| `skipped_unchanged` | no | no | no parent input changed |
-| `skipped_similarity` | no | no | summary on disk unchanged |
-| `skipped_backfill` | no | no | metadata only; no on-disk input changed |
-| `failed` / raised failure | no | no | failed work must not dirty parent by default |
+
+| Outcome                   | Parent-visible input changed? | Propagate upward? | Reason                                       |
+| ------------------------- | ----------------------------- | ----------------- | -------------------------------------------- |
+| `regenerated`             | yes                           | yes               | child summary changed on disk                |
+| `skipped_no_content`      | yes                           | yes               | child summary/input disappeared              |
+| `cleaned_up`              | yes                           | yes               | child summary/input disappeared              |
+| `skipped_rename`          | yes                           | yes               | parent structure input changed               |
+| `skipped_unchanged`       | no                            | no                | no parent input changed                      |
+| `skipped_similarity`      | no                            | no                | summary on disk unchanged                    |
+| `skipped_backfill`        | no                            | no                | metadata only; no on-disk input changed      |
+| `failed` / raised failure | no                            | no                | failed work must not dirty parent by default |
+
 
 Implementation rule:
 
 - single-path walk-up and wave processing must converge on this matrix unless a
-  later cleared checkpoint explicitly records one intentional exception
+later cleared checkpoint explicitly records one intentional exception
 
 Required outcomes:
 
@@ -501,7 +504,7 @@ Required outcomes:
   - full-tree wave execution
   - queue wave execution
 - parent invalidation based on actual parent inputs rather than legacy
-  continuation shortcuts
+continuation shortcuts
 
 Required checkpoint output:
 
@@ -509,11 +512,11 @@ Required checkpoint output:
 - concrete examples of paths that now skip correctly
 - any cases where the desired behaviour remains product-sensitive
 - explicit confirmation that the implementation matches the target propagation
-  matrix above, or a clearly approved exception list
+matrix above, or a clearly approved exception list
 - a doc review note describing whether:
   - `docs/regen/README.md` transition tables or diagrams need changes
   - `docs/architecture/ARCHITECTURE.md` needs updated responsibility or flow
-    wording
+  wording
   - `docs/RULES.md` needs a normative rule update
 
 Phase 3 decision gate:
@@ -521,7 +524,7 @@ Phase 3 decision gate:
 - does the implementation now match the target matrix
 - are any remaining exceptions real product decisions or just legacy carryover
 - did this phase trigger any normative doc change that must be resolved before
-  continuation
+continuation
 
 The implementer must pause after Phase 3 before Phase 4.
 
@@ -541,19 +544,19 @@ guesswork.
 The intended contract is:
 
 - summary remains the primary required artifact for a successful model-backed
-  REGEN invocation
+REGEN invocation
 - journal remains a secondary durable artifact that may be committed only when
-  a valid summary payload was produced
+a valid summary payload was produced
 - malformed or journal-only structured output is invalid and must fail the run
-  without producing new durable artifacts
+without producing new durable artifacts
 - `skipped_similarity` remains a valid success case in which a non-empty
-  journal may still be written because the summary payload was valid even
-  though the summary rewrite was discarded
+journal may still be written because the summary payload was valid even
+though the summary rewrite was discarded
 - `skipped_unchanged` remains a no-call case and does not synthesize journal
-  output
+output
 - if a non-empty journal is part of the result contract for a successful run,
-  journal commit failure must be surfaced as a run failure rather than silently
-  ignored
+journal commit failure must be surfaced as a run failure rather than silently
+ignored
 
 Required outcomes:
 
@@ -570,9 +573,9 @@ Required checkpoint output:
 
 - a summary of the resulting artifact model
 - explicit confirmation that the Phase 4 fixed product contract above is what
-  the implementation now does
+the implementation now does
 - evidence that the new shape simplifies later policy rather than just adding
-  abstraction
+abstraction
 - a doc review note describing whether:
   - `docs/regen/README.md` needs artifact-model updates
   - `docs/architecture/ARCHITECTURE.md` needs subsystem-boundary updates
@@ -602,28 +605,28 @@ guesswork.
 The intended contract is:
 
 - `operational_events` is the durable surface for semantic lifecycle and
-  decision events such as why a path ran, skipped, propagated, or failed
+decision events such as why a path ran, skipped, propagated, or failed
 - `token_events` is the durable surface for per-call token, duration, and
-  chunk/non-chunk cost telemetry
+chunk/non-chunk cost telemetry
 - `regen_locks` remains the durable surface for current runtime coordination
-  and terminal lock state, not for historical decision analytics
+and terminal lock state, not for historical decision analytics
 - logs remain supplementary and may add detail, but they are not the
-  authoritative contract the plan depends on
+authoritative contract the plan depends on
 - this phase should prefer strengthening and typing those existing surfaces
-  rather than creating a new runtime table
+rather than creating a new runtime table
 - if the phase cannot satisfy its goals without changing runtime schema, the
-  implementer must stop and seek a new plan/review decision before proceeding
+implementer must stop and seek a new plan/review decision before proceeding
 
 Documentation/versioning rule for this phase:
 
 - changes that alter runtime table shape or supported runtime config shape
-  require updates to:
+require updates to:
   - `docs/runtime/README.md`
   - `docs/runtime/SCHEMAS.md`
   - `docs/VERSIONING.md`
   - `docs/COMPATIBILITY.md`
 - if no runtime schema or supported config contract changed, the checkpoint
-  must record that those docs were reviewed and intentionally left unchanged
+must record that those docs were reviewed and intentionally left unchanged
 
 Required outcomes:
 
@@ -639,12 +642,12 @@ Required outcomes:
 Required checkpoint output:
 
 - a compact diagnostic report proving the subsystem can now explain its major
-  decisions
+decisions
 - evidence that baseline and post-change comparisons are now easy to produce
 - explicit confirmation that the observability contract above is what the phase
-  now relies on
+now relies on
 - a doc review note describing whether REGEN, runtime, or architecture docs
-  needed observability wording updates
+needed observability wording updates
 
 Phase 5 decision gate:
 
@@ -659,34 +662,34 @@ The implementer must pause after Phase 5 before Phase 6.
 Goals:
 
 - clean up the remaining execution-shape debt after the decision model is
-  trustworthy
+trustworthy
 - leave the subsystem ready for later throughput optimization without forcing
-  early concurrency changes
+early concurrency changes
 
 Required outcomes:
 
 - scheduler logic that depends on explicit REGEN decisions rather than hidden
-  engine side effects
+engine side effects
 - extension of the Phase 1 bounded capability contract into a more durable
-  backend-capability seam for future policy such as:
+backend-capability seam for future policy such as:
   - context budget
   - max concurrency
   - startup overhead expectations
   - structured-output reliability
 - clearer reasoning around when a single-path walk-up should remain a special
-  case versus when one shared wave model should be used everywhere
+case versus when one shared wave model should be used everywhere
 
 Required checkpoint output:
 
 - a final phase report on what scheduler/backend work is now unblocked
 - any remaining product calls intentionally deferred from this plan
 - a final doc review note summarizing all docs reviewed and updated across the
-  implementation
+implementation
 
 Phase 6 decision gate:
 
 - is REGEN now structurally ready for later parallelism or backend expansion
-  without reopening earlier phases
+without reopening earlier phases
 - is the doc set aligned enough that the new current state is trustworthy
 
 ## Cross-Cutting Documentation Alignment Rule
@@ -697,21 +700,21 @@ At minimum, the implementer must explicitly consider:
 
 - `docs/regen/README.md` for current-state REGEN behaviour
 - `docs/architecture/ARCHITECTURE.md` for subsystem ownership, boundaries, and
-  process-flow explanation
+process-flow explanation
 - `docs/RULES.md` for cross-cutting invariants, guarantees, and precedence
-  rules
+rules
 - `docs/runtime/README.md` and `docs/runtime/SCHEMAS.md` for runtime-state or
-  telemetry contract changes
+telemetry contract changes
 - `docs/COMPATIBILITY.md` and `docs/VERSIONING.md` if compatibility or version
-  scope changes intentionally
+scope changes intentionally
 - `README.md` only if user-facing operation changes
 
 The correct rule is:
 
 - if behaviour or authority changed, update the authoritative doc for that
-  subject
+subject
 - if behaviour did not change, record that the doc was reviewed and remains
-  accurate
+accurate
 
 ## Cross-Cutting Test Fortress Expectations
 
@@ -744,29 +747,29 @@ The implementation should not be considered complete unless it demonstrates at
 least the following:
 
 1. REGEN has a durable baseline/eval harness that can compare token burn,
-   latency, chunking, and quality before and after refactor work.
+  latency, chunking, and quality before and after refactor work.
 2. The approved-plan notes file contains a durable checkpoint trail for every
-   completed phase.
+  completed phase.
 3. Phase checkpoints produced real findings that informed later phase choices,
-   rather than being treated as formality.
+  rather than being treated as formality.
 4. REGEN evaluation can be tested without invoking the active backend.
 5. Prompt budgeting is no longer governed solely by the current fixed
-   `120k`-token ceiling and static early chunking thresholds.
+  `120k`-token ceiling and static early chunking thresholds.
 6. Phase 2 relied on the bounded capability contract established in Phase 1
-   rather than on ad hoc model-string heuristics.
+  rather than on ad hoc model-string heuristics.
 7. Single-path and multi-path ancestor propagation match the target matrix in
-   this plan unless an explicitly cleared exception is recorded.
+  this plan unless an explicitly cleared exception is recorded.
 8. The REGEN pipeline models summary and journal explicitly as artifacts and
-   matches the fixed Phase 4 contract.
+  matches the fixed Phase 4 contract.
 9. REGEN diagnostics can explain why a path ran, skipped, propagated, or
-   chunked using the fixed Phase 5 contract surfaces.
+  chunked using the fixed Phase 5 contract surfaces.
 10. Baseline comparisons show material improvement in at least one of:
-    token burn, chunk rate, unnecessary parent regen rate, or wall-clock
+  token burn, chunk rate, unnecessary parent regen rate, or wall-clock
     performance, without demonstrated quality regression.
 11. REGEN remains backend-agnostic enough that later non-Claude backends can
-    use the same decision and execution architecture.
+  use the same decision and execution architecture.
 12. The authoritative doc set is reviewed and aligned across REGEN and any
-    affected adjacent docs, with explicit justification for docs that were
+  affected adjacent docs, with explicit justification for docs that were
     reviewed but did not need changes.
 
 ## Review Focus
@@ -774,13 +777,14 @@ least the following:
 The first review pass for this revision should focus especially on:
 
 - whether the phase gates are now durable and non-self-approving enough for
-  real execution control
+real execution control
 - whether Phase 1 now gives Phase 2 a sufficiently bounded backend-capability
-  contract
+contract
 - whether the target propagation matrix is explicit enough to remove
-  implementer guesswork
+implementer guesswork
 - whether the fixed Phase 4 summary/journal contract is acceptable as a product
-  direction
+direction
 - whether the fixed Phase 5 observability contract is specific enough to avoid
-  runtime-schema ambiguity
+runtime-schema ambiguity
 - whether the sequencing still makes sense under the tightened gate model
+
