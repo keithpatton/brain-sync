@@ -18,6 +18,7 @@ from brain_sync.brain.manifest import (
 from brain_sync.brain.repository import BrainRepository, source_dir_id
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen import classify_folder_change
+from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     ChildDiscoveryRequest,
     SourceLifecycleRuntime,
@@ -167,7 +168,7 @@ def _record_query_index_invalidated(root: Path, *, knowledge_paths: list[str], r
     normalized_paths = [normalize_path(path) for path in knowledge_paths]
     record_brain_operational_event(
         root,
-        event_type="query.index.invalidated",
+        event_type=OperationalEventType.QUERY_INDEX_INVALIDATED,
         knowledge_path=normalized_paths[0] if len(normalized_paths) == 1 else None,
         outcome=reason,
         details={"knowledge_paths": normalized_paths},
@@ -392,7 +393,7 @@ def add_source(
     _record_query_index_invalidated(root, knowledge_paths=[target_path], reason="source_registered")
     record_brain_operational_event(
         root,
-        event_type="source.registered",
+        event_type=OperationalEventType.SOURCE_REGISTERED,
         canonical_id=canonical,
         knowledge_path=target_path,
         outcome="registered",
@@ -452,7 +453,7 @@ def remove_source(
         _record_query_index_invalidated(root, knowledge_paths=[target_path], reason="source_removed")
         record_brain_operational_event(
             root,
-            event_type="source.removed",
+            event_type=OperationalEventType.SOURCE_REMOVED,
             canonical_id=canonical,
             knowledge_path=target_path,
             outcome="removed",
@@ -512,7 +513,7 @@ def update_source(
     )
     record_brain_operational_event(
         root,
-        event_type="source.updated",
+        event_type=OperationalEventType.SOURCE_UPDATED,
         canonical_id=canonical,
         knowledge_path=manifest.target_path,
         outcome="updated",
@@ -554,7 +555,7 @@ def observe_missing_source(
     if newly_missing:
         record_brain_operational_event(
             root,
-            event_type="source.missing_marked",
+            event_type=OperationalEventType.SOURCE_MISSING_MARKED,
             canonical_id=canonical_id,
             knowledge_path=manifest.target_path,
             outcome=outcome,
@@ -562,7 +563,7 @@ def observe_missing_source(
         )
     record_brain_operational_event(
         root,
-        event_type="source.missing_confirmed",
+        event_type=OperationalEventType.SOURCE_MISSING_CONFIRMED,
         canonical_id=canonical_id,
         knowledge_path=manifest.target_path,
         outcome="missing",
@@ -731,7 +732,7 @@ def process_discovered_children(
                 schedule_immediate(child_result.canonical_id)
                 record_brain_operational_event(
                     root,
-                    event_type="source.child_registered",
+                    event_type=OperationalEventType.SOURCE_CHILD_REGISTERED,
                     canonical_id=child_result.canonical_id,
                     knowledge_path=child_result.target_path,
                     outcome="registered",
@@ -860,7 +861,7 @@ def move_source(
         _record_query_index_invalidated(root, knowledge_paths=[old_path, to_path], reason="source_moved")
         record_brain_operational_event(
             root,
-            event_type="source.moved",
+            event_type=OperationalEventType.SOURCE_MOVED,
             canonical_id=canonical,
             knowledge_path=to_path,
             outcome="moved",
@@ -918,7 +919,7 @@ def enqueue_regen_path(
     _record_query_index_invalidated(root, knowledge_paths=[knowledge_path], reason=reason)
     record_brain_operational_event(
         root,
-        event_type="regen.enqueued",
+        event_type=OperationalEventType.REGEN_ENQUEUED,
         canonical_id=canonical_id,
         knowledge_path=knowledge_path,
         outcome=reason,
@@ -943,7 +944,7 @@ def handle_watcher_folder_change(
     if change.structural:
         record_brain_operational_event(
             root,
-            event_type="watcher.structure_observed",
+            event_type=OperationalEventType.WATCHER_STRUCTURE_OBSERVED,
             knowledge_path=knowledge_path,
             outcome="enqueued",
             details={"new_structure_hash": new_structure_hash},
@@ -978,7 +979,7 @@ def apply_folder_move(
 
     record_brain_operational_event(
         root,
-        event_type="watcher.move_observed",
+        event_type=OperationalEventType.WATCHER_MOVE_OBSERVED,
         knowledge_path=dest_rel,
         outcome="observed",
         details={"src": src_rel, "dest": dest_rel},
@@ -1005,7 +1006,7 @@ def apply_folder_move(
     )
     record_brain_operational_event(
         root,
-        event_type="watcher.move_applied",
+        event_type=OperationalEventType.WATCHER_MOVE_APPLIED,
         knowledge_path=dest_rel,
         outcome="applied",
         details={"src": src_rel, "dest": dest_rel},
@@ -1074,17 +1075,18 @@ def reconcile_sources(
                 rediscovered_path = normalize_path(found.parent.relative_to(knowledge_root))
                 record_brain_operational_event(
                     root,
-                    event_type="source.rediscovered",
+                    event_type=OperationalEventType.SOURCE_REDISCOVERED,
                     canonical_id=manifest_canonical_id,
                     knowledge_path=rediscovered_path,
                     outcome="rediscovered",
                 )
                 record_brain_operational_event(
                     root,
-                    event_type="reconcile.path_updated",
+                    event_type=OperationalEventType.RECONCILE_PATH_UPDATED,
                     canonical_id=manifest_canonical_id,
                     knowledge_path=rediscovered_path,
                     outcome="reappeared",
+                    details={"old_path": manifest.target_path, "new_path": rediscovered_path},
                 )
             else:
                 observation = observe_missing_source(
@@ -1129,7 +1131,7 @@ def reconcile_sources(
                 )
                 record_brain_operational_event(
                     root,
-                    event_type="reconcile.path_updated",
+                    event_type=OperationalEventType.RECONCILE_PATH_UPDATED,
                     canonical_id=manifest_canonical_id,
                     knowledge_path=new_target,
                     outcome="updated",
@@ -1149,7 +1151,7 @@ def reconcile_sources(
                 not_found.append(manifest_canonical_id)
                 record_brain_operational_event(
                     root,
-                    event_type="reconcile.missing_marked",
+                    event_type=OperationalEventType.RECONCILE_MISSING_MARKED,
                     canonical_id=manifest_canonical_id,
                     knowledge_path=manifest.target_path,
                     outcome="missing",

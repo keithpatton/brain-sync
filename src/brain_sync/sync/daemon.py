@@ -12,12 +12,14 @@ import httpx
 from brain_sync.brain.tree import normalize_path
 from brain_sync.regen.lifecycle import regen_session
 from brain_sync.regen.queue import RegenQueue
+from brain_sync.runtime.operational_events import load_retention_days as load_operational_event_retention_days
 from brain_sync.runtime.paths import ensure_safe_temp_root_runtime
 from brain_sync.runtime.repository import (
     DaemonAlreadyRunningError,
     acquire_daemon_start_guard,
     ensure_lifecycle_session,
     load_child_discovery_request,
+    prune_operational_events,
     prune_token_events,
     release_daemon_start_guard,
     write_daemon_status,
@@ -130,6 +132,7 @@ async def run(root: Path) -> None:
         _log_reconcile_result(reconcile_result)
 
         prune_token_events(retention_days=load_retention_days())
+        prune_operational_events(retention_days=load_operational_event_retention_days())
 
         state = load_active_sync_state(root)
         scheduler = Scheduler()

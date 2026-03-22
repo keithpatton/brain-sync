@@ -8,6 +8,7 @@ from pathlib import Path
 
 from brain_sync.application.roots import _require_root
 from brain_sync.brain.fileops import canonical_prefix, path_is_dir, rglob_paths
+from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import record_brain_operational_event
 from brain_sync.sync.finalization import FinalizationResult
 from brain_sync.sync.finalization import finalize_missing as sync_finalize_missing
@@ -235,6 +236,7 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
 
     sources_migrated = 0
     files_migrated = 0
+    migrated_sources: list[tuple[str, str, int]] = []
     for canonical_id, source_state in state.sources.items():
         target_dir = knowledge_root / source_state.target_path if source_state.target_path else knowledge_root
         source_dir_id = canonical_prefix(canonical_id).rstrip("-")
@@ -248,6 +250,7 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
         count = migrate_legacy_context(target_dir, source_dir_id, canonical_id, root)
         sources_migrated += 1
         files_migrated += count
+        migrated_sources.append((canonical_id, source_state.target_path, count))
 
     dirs_cleaned = 0
     if path_is_dir(knowledge_root):
@@ -255,12 +258,14 @@ def migrate_sources(root: Path | None = None) -> MigrateResult:
             if path_is_dir(legacy) and repository.remove_legacy_context_dir(legacy):
                 dirs_cleaned += 1
 
-    if dirs_cleaned:
+    for canonical_id, target_path, migrated_files in migrated_sources:
         record_brain_operational_event(
             root,
-            event_type="source.updated",
+            event_type=OperationalEventType.SOURCE_UPDATED,
+            canonical_id=canonical_id,
+            knowledge_path=target_path,
             outcome="migrated_legacy_context",
-            details={"dirs_cleaned": dirs_cleaned, "sources_migrated": sources_migrated},
+            details={"migrated_files": migrated_files, "dirs_cleaned": dirs_cleaned},
         )
 
     return MigrateResult(

@@ -25,7 +25,9 @@ from brain_sync.application.sources import (
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
 from brain_sync.brain.repository import BrainRepository
+from brain_sync.runtime.operational_events import FIELD_LOCKED_EVENT_FIELDS, OperationalEventType
 from brain_sync.runtime.repository import (
+    OperationalEvent,
     acquire_source_lifecycle_lease,
     clear_source_lifecycle_lease,
     load_operational_events,
@@ -99,6 +101,21 @@ def _start_lease_attempt(
     return outcome, finished, thread
 
 
+def _event_details(event: OperationalEvent) -> dict[str, object]:
+    return json.loads(event.details_json or "{}")
+
+
+def _assert_locked_fields(event: OperationalEvent) -> None:
+    required_fields = FIELD_LOCKED_EVENT_FIELDS[OperationalEventType(event.event_type)]
+    details = _event_details(event)
+
+    for field in required_fields:
+        if field.startswith("details."):
+            assert field.split(".", 1)[1] in details
+            continue
+        assert getattr(event, field) is not None
+
+
 class TestMissingSourceCommands:
     def test_remove_missing_source(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="area")
@@ -160,6 +177,19 @@ class TestMissingSourceCommands:
         assert manifest.knowledge_state == "stale"
         assert result.reappeared == [CONFLUENCE_CID]
         assert CONFLUENCE_CID in load_state(brain).sources
+
+        rediscovered_events = load_operational_events(brain, event_type="source.rediscovered")
+        assert rediscovered_events
+        assert rediscovered_events[-1].canonical_id == CONFLUENCE_CID
+        assert rediscovered_events[-1].outcome == "rediscovered"
+        _assert_locked_fields(rediscovered_events[-1])
+
+        updated_events = load_operational_events(brain, event_type="reconcile.path_updated")
+        assert updated_events
+        assert updated_events[-1].canonical_id == CONFLUENCE_CID
+        assert updated_events[-1].outcome == "reappeared"
+        assert _event_details(updated_events[-1]) == {"old_path": "area", "new_path": "area"}
+        _assert_locked_fields(updated_events[-1])
 
     def test_root_backed_processing_refreshes_target_path_after_move(self, brain: Path) -> None:
         reset_test_adapter()
@@ -255,13 +285,15 @@ class TestMissingSourceCommands:
         assert marked_events[-1].canonical_id == CONFLUENCE_CID
         assert marked_events[-1].knowledge_path == "area"
         assert marked_events[-1].outcome == "missing"
-        assert json.loads(marked_events[-1].details_json or "{}") == {"source_url": CONFLUENCE_URL}
+        assert _event_details(marked_events[-1]) == {"source_url": CONFLUENCE_URL}
+        _assert_locked_fields(marked_events[-1])
 
         assert confirmed_events
         assert confirmed_events[-1].canonical_id == CONFLUENCE_CID
         assert confirmed_events[-1].knowledge_path == "area"
         assert confirmed_events[-1].outcome == "missing"
-        assert json.loads(confirmed_events[-1].details_json or "{}") == {"missing_confirmation_count": 1}
+        assert _event_details(confirmed_events[-1]) == {"missing_confirmation_count": 1}
+        _assert_locked_fields(confirmed_events[-1])
 
     def test_reconcile_path_repair_blocks_last_moment_lease_takeover_until_commit(self, brain: Path) -> None:
         add_source(root=brain, url=CONFLUENCE_URL, target_path="old-area")
@@ -304,6 +336,16 @@ class TestMissingSourceCommands:
         assert refreshed is not None
         assert refreshed.target_path == "new-area"
         clear_source_lifecycle_lease(brain, CONFLUENCE_CID, owner_id=move_owner)
+
+        updated_events = load_operational_events(brain, event_type="reconcile.path_updated")
+        assert updated_events
+        assert updated_events[-1].canonical_id == CONFLUENCE_CID
+        assert updated_events[-1].outcome == "updated"
+        assert _event_details(updated_events[-1]) == {
+            "old_path": "old-area",
+            "new_path": "new-area",
+        }
+        _assert_locked_fields(updated_events[-1])
 
     def test_root_backed_processing_does_not_write_staged_artifacts_after_lease_loss(self, brain: Path) -> None:
         add_source(root=brain, url=GDOC_URL, target_path="area", sync_attachments=True)

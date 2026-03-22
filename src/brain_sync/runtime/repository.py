@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import IO, ClassVar, Protocol
 
 import brain_sync.runtime.config as runtime_config
+from brain_sync.runtime.operational_events import OperationalEventType, event_type_name
 from brain_sync.runtime.paths import RUNTIME_DB_SCHEMA_VERSION, ensure_safe_temp_root_runtime
 
 log = logging.getLogger(__name__)
@@ -1888,7 +1889,7 @@ def save_child_discovery_request(
 
     record_brain_operational_event(
         root,
-        event_type="source.child_request.saved",
+        event_type=OperationalEventType.SOURCE_CHILD_REQUEST_SAVED,
         canonical_id=canonical_id,
         outcome="saved",
         details={"fetch_children": fetch_children, "child_path": child_path},
@@ -1905,7 +1906,7 @@ def clear_child_discovery_request(root: Path, canonical_id: str) -> None:
 
     record_brain_operational_event(
         root,
-        event_type="source.child_request.cleared",
+        event_type=OperationalEventType.SOURCE_CHILD_REQUEST_CLEARED,
         canonical_id=canonical_id,
         outcome="cleared",
     )
@@ -2063,6 +2064,30 @@ def prune_token_events(*, retention_days: int) -> int:
         return 0
 
 
+def prune_operational_events(*, retention_days: int) -> int:
+    try:
+        cutoff = f"-{retention_days} days"
+        conn = _connect_runtime()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM operational_events WHERE created_utc < datetime('now', ?)",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if deleted:
+            log.info("Pruned %d operational_events rows older than %d days", deleted, retention_days)
+        return deleted
+    except Exception:
+        global _event_failure_logged
+        if not _event_failure_logged:
+            log.warning("Failed to prune operational events", exc_info=True)
+            _event_failure_logged = True
+        return 0
+
+
 def rename_knowledge_path_prefix(root: Path, old_prefix: str, new_prefix: str) -> None:
     old_prefix = _normalize_runtime_path(old_prefix)
     new_prefix = _normalize_runtime_path(new_prefix)
@@ -2088,7 +2113,7 @@ def rename_knowledge_path_prefix(root: Path, old_prefix: str, new_prefix: str) -
 def record_brain_operational_event(
     root: Path,
     *,
-    event_type: str,
+    event_type: OperationalEventType | str,
     session_id: str | None = None,
     owner_id: str | None = None,
     canonical_id: str | None = None,
@@ -2109,7 +2134,7 @@ def record_brain_operational_event(
                 "knowledge_path, outcome, duration_ms, details_json) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    event_type,
+                    event_type_name(event_type),
                     _utc_now(),
                     session_id,
                     owner_id,
@@ -2130,7 +2155,11 @@ def record_brain_operational_event(
             _event_failure_logged = True
 
 
-def load_operational_events(root: Path, *, event_type: str | None = None) -> list[OperationalEvent]:
+def load_operational_events(
+    root: Path,
+    *,
+    event_type: OperationalEventType | str | None = None,
+) -> list[OperationalEvent]:
     conn = _connect(root)
     try:
         if event_type is None:
@@ -2144,7 +2173,7 @@ def load_operational_events(root: Path, *, event_type: str | None = None) -> lis
                 "SELECT event_type, created_utc, session_id, owner_id, canonical_id, "
                 "knowledge_path, outcome, duration_ms, details_json "
                 "FROM operational_events WHERE event_type = ? ORDER BY id",
-                (event_type,),
+                (event_type_name(event_type),),
             ).fetchall()
     finally:
         conn.close()

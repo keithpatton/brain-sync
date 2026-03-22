@@ -62,6 +62,7 @@ Current top-level keys:
 | `regen` | object | Optional defaults for regeneration behavior. |
 | `confluence` | object | Optional Confluence credentials. |
 | `google` | object | Optional Google OAuth token cache. |
+| `operational_events` | object | Optional local operational-event retention settings. |
 | `token_events` | object | Optional local token-telemetry retention settings. |
 | `log_level` | string | Optional default CLI/MCP log level. |
 
@@ -71,6 +72,7 @@ Current nested shapes used by brain-sync:
   `max_turns` (integer), `similarity_threshold` (number)
 - `confluence`: `domain` (string), `email` (string), `token` (string)
 - `google`: `token` (object; Google authorized-user credentials payload)
+- `operational_events`: `retention_days` (integer)
 - `token_events`: `retention_days` (integer)
 
 Unknown keys may exist for forward compatibility; readers should ignore keys
@@ -238,6 +240,19 @@ local revalidation plus source-level lease ownership.
 Operational events are append-only diagnostics only. They are not a replay
 source, may be missing or duplicated, and must not become lifecycle
 authority.
+
+Current production event-type names are centralized in
+`src/brain_sync/runtime/operational_events.py`. Runtime persistence remains
+owned only by `src/brain_sync/runtime/repository.py`.
+
+Retention is machine-local via `config.json`:
+
+- `operational_events.retention_days` controls local retention and defaults to
+  `90` when unset
+- daemon startup prunes old `operational_events` rows before loading active
+  sync state
+- prune failure is non-fatal; loss or staleness of this history does not alter
+  portable or runtime lifecycle authority
 
 ### `token_events`
 

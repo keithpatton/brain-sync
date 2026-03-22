@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,9 @@ def test_process_discovered_children_registers_child_and_clears_request(brain: P
     assert events[0].canonical_id == scheduled[0]
     assert events[0].knowledge_path == "area/children"
     assert events[0].outcome == "registered"
+    details = json.loads(events[0].details_json or "{}")
+    assert details == {"parent_canonical_id": "confluence:123"}
+    assert "child_canonical_id" not in details
 
 
 def test_process_discovered_children_skips_duplicates_and_clears_request(brain: Path) -> None:

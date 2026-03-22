@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+import brain_sync.runtime.repository as runtime_repository
 from brain_sync.application.init import init_brain
 from brain_sync.application.source_state import SourceState, SyncState, load_state
 from brain_sync.application.sources import add_source
@@ -374,3 +376,97 @@ async def test_daemon_refuses_second_active_daemon(tmp_path: Path) -> None:
             await run(root)
 
     mock_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_daemon_startup_prunes_operational_events_before_loading_state(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+
+    call_order: list[str] = []
+
+    def _stop_after_state_load(_root: Path) -> Any:
+        call_order.append("load_active_sync_state")
+        raise RuntimeError("stop after startup pruning")
+
+    with (
+        patch("brain_sync.sync.daemon.acquire_daemon_start_guard", return_value=SimpleNamespace(daemon_id="daemon-1")),
+        patch("brain_sync.sync.daemon.release_daemon_start_guard"),
+        patch("brain_sync.sync.daemon.write_daemon_status"),
+        patch("brain_sync.sync.daemon.ensure_lifecycle_session", return_value="session-1"),
+        patch(
+            "brain_sync.sync.daemon.reconcile_sources",
+            return_value=_FakeSourceReconcileResult(updated=[], not_found=[]),
+        ),
+        patch(
+            "brain_sync.sync.daemon.reconcile_knowledge_tree",
+            return_value=_FakeTreeReconcileResult(orphans_cleaned=[], content_changed=[], enqueued_paths=[]),
+        ),
+        patch(
+            "brain_sync.sync.daemon.prune_token_events",
+            side_effect=lambda *, retention_days: call_order.append("prune_token_events"),
+        ),
+        patch(
+            "brain_sync.sync.daemon.prune_operational_events",
+            side_effect=lambda *, retention_days: call_order.append("prune_operational_events"),
+        ),
+        patch("brain_sync.sync.daemon.load_active_sync_state", side_effect=_stop_after_state_load),
+    ):
+        with pytest.raises(RuntimeError, match="stop after startup pruning"):
+            await run(root)
+
+    assert call_order == [
+        "prune_token_events",
+        "prune_operational_events",
+        "load_active_sync_state",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_daemon_startup_treats_operational_event_prune_failure_as_non_fatal(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+
+    call_order: list[str] = []
+    runtime_repository._event_failure_logged = False
+
+    def _stop_after_state_load(_root: Path) -> Any:
+        call_order.append("load_active_sync_state")
+        raise RuntimeError("stop after non-fatal prune failure")
+
+    def _boom() -> Any:
+        raise sqlite3.OperationalError("disk full")
+
+    def _prune_operational_events(*, retention_days: int) -> int:
+        call_order.append("prune_operational_events")
+        return runtime_repository.prune_operational_events(retention_days=retention_days)
+
+    with (
+        patch("brain_sync.sync.daemon.acquire_daemon_start_guard", return_value=SimpleNamespace(daemon_id="daemon-1")),
+        patch("brain_sync.sync.daemon.release_daemon_start_guard"),
+        patch("brain_sync.sync.daemon.write_daemon_status"),
+        patch("brain_sync.sync.daemon.ensure_lifecycle_session", return_value="session-1"),
+        patch(
+            "brain_sync.sync.daemon.reconcile_sources",
+            return_value=_FakeSourceReconcileResult(updated=[], not_found=[]),
+        ),
+        patch(
+            "brain_sync.sync.daemon.reconcile_knowledge_tree",
+            return_value=_FakeTreeReconcileResult(orphans_cleaned=[], content_changed=[], enqueued_paths=[]),
+        ),
+        patch(
+            "brain_sync.sync.daemon.prune_token_events",
+            side_effect=lambda *, retention_days: call_order.append("prune_token_events"),
+        ),
+        patch("brain_sync.sync.daemon.prune_operational_events", side_effect=_prune_operational_events),
+        patch("brain_sync.sync.daemon.load_active_sync_state", side_effect=_stop_after_state_load),
+        patch("brain_sync.runtime.repository._connect_runtime", side_effect=_boom),
+    ):
+        with pytest.raises(RuntimeError, match="stop after non-fatal prune failure"):
+            await run(root)
+
+    assert call_order == [
+        "prune_token_events",
+        "prune_operational_events",
+        "load_active_sync_state",
+    ]

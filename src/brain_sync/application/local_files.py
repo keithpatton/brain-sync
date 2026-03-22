@@ -9,6 +9,7 @@ from brain_sync.application.query_index import invalidate_area_index
 from brain_sync.brain.fileops import ADDFILE_EXTENSIONS, path_exists, path_is_file
 from brain_sync.brain.repository import BrainRepository, BrainRepositoryInvariantError
 from brain_sync.brain.tree import normalize_path
+from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import record_brain_operational_event
 
 
@@ -95,7 +96,7 @@ def add_local_file(root: Path, *, source: Path, target_path: str, copy: bool = T
     invalidate_area_index(root, knowledge_paths=[knowledge_path], reason="local_file_added")
     record_brain_operational_event(
         root,
-        event_type="source.local_file.added",
+        event_type=OperationalEventType.SOURCE_LOCAL_FILE_ADDED,
         knowledge_path=knowledge_path,
         outcome="added",
         details={"path": normalize_path(destination.relative_to(root)), "copied": copy},
@@ -125,7 +126,7 @@ def remove_local_file(root: Path, *, path: str) -> LocalFileRemoveResult:
     invalidate_area_index(root, knowledge_paths=[knowledge_path], reason="local_file_removed")
     record_brain_operational_event(
         root,
-        event_type="source.local_file.removed",
+        event_type=OperationalEventType.SOURCE_LOCAL_FILE_REMOVED,
         knowledge_path=knowledge_path,
         outcome="removed",
         details={"path": path},

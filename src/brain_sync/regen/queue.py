@@ -20,6 +20,7 @@ from pathlib import Path
 
 from brain_sync.regen.engine import regen_path, regen_single_folder
 from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
+from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     RegenLock,
     acquire_regen_ownership,
@@ -260,7 +261,7 @@ class RegenQueue:
             )
             record_brain_operational_event(
                 self.root,
-                event_type="regen.failed",
+                event_type=OperationalEventType.REGEN_FAILED,
                 session_id=self.session_id,
                 owner_id=self.owner_id,
                 knowledge_path=knowledge_path,

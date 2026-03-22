@@ -88,7 +88,9 @@ The daemon reconciles offline changes, syncs sources, watches `knowledge/`,
 and regenerates summaries as needed. The current runtime model allows only one
 active daemon per runtime config directory, so if another live brain-sync
 daemon is already using the same config dir, the new start is refused
-immediately by the runtime startup guard.
+immediately by the runtime startup guard. Startup also prunes old local
+`token_events` and `operational_events` history before it reloads active sync
+state.
 
 ### Add a Source
 
@@ -308,7 +310,13 @@ Typical fields include:
 - Confluence credentials
 - Google token
 - regen settings
+- operational event retention settings
 - token retention settings
+
+Local telemetry retention keys:
+
+- `operational_events.retention_days` defaults to `90`
+- `token_events.retention_days` defaults to `90`
 
 ## Converting .docx Files
 

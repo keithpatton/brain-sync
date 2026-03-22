@@ -87,8 +87,11 @@ the fitness test should change together.
 ## 2.1. Responsibilities And Flows
 
 **Runtime helpers** are split between `runtime/config.py`, which owns
-config-dir-scoped config access and active-brain selection, and
-`runtime/paths.py`, which owns machine-local runtime paths. The current
+config-dir-scoped config access and active-brain selection,
+`runtime/paths.py`, which owns machine-local runtime paths, and
+`runtime/operational_events.py`, which owns the shared in-code operational
+event catalog plus retention config access. `runtime/repository.py` remains
+the only runtime-plane persistence owner for `operational_events`. The current
 runtime architecture is single-brain per config directory: `config.json` may
 still carry a `brains` array for compatibility, but only the first entry is
 the active brain for that runtime directory.
@@ -139,6 +142,8 @@ the normal sync loop:
 ```text
 reconcile_sources()        -> manifest-driven file resolution and non-destructive missing-source handling
 reconcile_knowledge_tree() -> portable/filesystem cleanup and offline change detection
+prune_token_events()       -> machine-local telemetry retention
+prune_operational_events() -> machine-local operational-event retention
 load_state()               -> manifest-authoritative merge with runtime progress cache
 regen_session()            -> acquire regen ownership
 RegenQueue()               -> enqueue reconciled paths
@@ -195,6 +200,7 @@ For a synced-source lifecycle view organized around entry paths,
 |---|---|---|
 | `knowledge/` plus source manifests plus managed area artifacts | `brain/repository.py` used by sync / reconcile / doctor / regen, with watcher as edge observer | Durable portable-brain artifacts, document locations, and managed filesystem policy |
 | `regen_locks` plus `sync_polling` plus `source_lifecycle_runtime` plus daemon/runtime files | `runtime/repository.py` | Runtime coordination, polling cache, source lifecycle coordination, telemetry, and process state |
+| operational-event catalog names and field-lock contract | `runtime/operational_events.py` | Centralized event-type naming and regression-tested stable-field inventory |
 | `~/.brain-sync/` runtime DB and daemon status | runtime | Machine-local cache, telemetry, and process state |
 
 The filesystem remains authoritative. Runtime state is machine-local and

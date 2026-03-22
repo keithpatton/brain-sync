@@ -45,6 +45,22 @@ that with a durable config-dir guard; `daemon.json` remains the current
 lifecycle snapshot rather than the exclusion mechanism itself. The normative rule lives in
 [../RULES.md](../RULES.md).
 
+Daemon startup also prunes machine-local telemetry before it rebuilds active
+sync projections:
+
+```text
+reconcile_sources()
+reconcile_knowledge_tree()
+prune_token_events()
+prune_operational_events()
+load_active_sync_state()
+```
+
+That ordering matters because the daemon should trim old local history before
+it resumes scheduler and watcher behavior, but those prune steps remain
+observability-only. Failure to prune `token_events` or `operational_events`
+logs a warning and does not stop the daemon from loading active sync state.
+
 For synced sources, the main entry paths are:
 
 - `Command`: explicit CLI or MCP source-management operations.
@@ -240,7 +256,9 @@ These are the main reading rules that help agents reason correctly:
   conflicting lifecycle lease, they revalidate and skip that source instead of
   forcing a repair over the lease holder.
 - operational events are useful for diagnostics and testing, but they are
-  best-effort rather than exact-once audit records.
+  best-effort rather than exact-once audit records. Current production event
+  names are catalog-backed in `src/brain_sync/runtime/operational_events.py`,
+  while row persistence remains owned by `src/brain_sync/runtime/repository.py`.
 
 This page summarizes those interpretation rules for design and testing. The
 normative source of truth for guarantees and state contracts remains

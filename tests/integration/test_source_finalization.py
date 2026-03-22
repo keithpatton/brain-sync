@@ -12,7 +12,9 @@ from brain_sync.brain.fileops import canonical_prefix
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest, write_source_manifest
 from brain_sync.brain.repository import BrainRepository
+from brain_sync.runtime.operational_events import FIELD_LOCKED_EVENT_FIELDS, OperationalEventType
 from brain_sync.runtime.repository import (
+    OperationalEvent,
     acquire_source_lifecycle_lease,
     clear_source_lifecycle_lease,
     load_child_discovery_request,
@@ -63,6 +65,21 @@ def _register_materialized_source(
     _set_materialized_manifest(root, knowledge_path)
     if create_file:
         _write_materialized_file(root, knowledge_path)
+
+
+def _event_details(event: OperationalEvent) -> dict[str, object]:
+    return json.loads(event.details_json or "{}")
+
+
+def _assert_locked_fields(event: OperationalEvent) -> None:
+    required_fields = FIELD_LOCKED_EVENT_FIELDS[OperationalEventType(event.event_type)]
+    details = _event_details(event)
+
+    for field in required_fields:
+        if field.startswith("details."):
+            assert field.split(".", 1)[1] in details
+            continue
+        assert getattr(event, field) is not None
 
 
 class TestSourceFinalization:
@@ -150,9 +167,8 @@ class TestSourceFinalization:
 
         rediscovered_events = load_operational_events(brain, event_type="source.rediscovered")
         assert rediscovered_events
-        assert json.loads(rediscovered_events[-1].details_json or "{}") == {
-            "revalidation_basis": "finalization_preflight"
-        }
+        assert _event_details(rediscovered_events[-1]) == {"revalidation_basis": "finalization_preflight"}
+        _assert_locked_fields(rediscovered_events[-1])
 
         not_missing_events = load_operational_events(brain, event_type="source.finalization_not_missing")
         assert not_missing_events
@@ -195,7 +211,8 @@ class TestSourceFinalization:
 
         rediscovered_events = load_operational_events(brain, event_type="source.rediscovered")
         assert rediscovered_events
-        assert json.loads(rediscovered_events[-1].details_json or "{}") == {"revalidation_basis": "finalization_commit"}
+        assert _event_details(rediscovered_events[-1]) == {"revalidation_basis": "finalization_commit"}
+        _assert_locked_fields(rediscovered_events[-1])
 
     def test_finalize_missing_reports_lease_conflict(self, brain: Path) -> None:
         _register_materialized_source(brain, create_file=False)

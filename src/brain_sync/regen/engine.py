@@ -48,6 +48,7 @@ from brain_sync.brain.tree import (
 )
 from brain_sync.llm import LlmBackend, LlmResult, get_backend
 from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
+from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     RegenLock,
     acquire_regen_ownership,
@@ -342,7 +343,7 @@ def _save_area_state(
         )
     record_brain_operational_event(
         root,
-        event_type="query.index.invalidated",
+        event_type=OperationalEventType.QUERY_INDEX_INVALIDATED,
         knowledge_path=knowledge_path,
         outcome="summary_written",
         details={"knowledge_paths": [knowledge_path]},
@@ -406,7 +407,7 @@ def _persist_area_state_or_fail(
             log.error("Failed to persist 'failed' state for %s: %s", knowledge_path or "(root)", db_err)
         _record_regen_event(
             root=root,
-            event_type="regen.failed",
+            event_type=OperationalEventType.REGEN_FAILED,
             knowledge_path=knowledge_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -456,7 +457,7 @@ def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: 
     delete_regen_lock(root, knowledge_path)
     record_brain_operational_event(
         root,
-        event_type="query.index.invalidated",
+        event_type=OperationalEventType.QUERY_INDEX_INVALIDATED,
         knowledge_path=knowledge_path,
         outcome="summary_deleted",
         details={"knowledge_paths": [knowledge_path]},
@@ -1027,7 +1028,7 @@ def _record_telemetry(
 def _record_regen_event(
     *,
     root: Path,
-    event_type: str,
+    event_type: OperationalEventType,
     knowledge_path: str,
     session_id: str | None,
     owner_id: str | None,
@@ -1456,7 +1457,7 @@ async def regen_single_folder(
         delete_regen_lock(root, current_path)
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1481,7 +1482,7 @@ async def regen_single_folder(
         delete_regen_lock(root, current_path)
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1501,7 +1502,7 @@ async def regen_single_folder(
         log.debug("[%s] No child summaries or direct content for %s, skipping", regen_id, current_path or "(root)")
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1546,7 +1547,7 @@ async def regen_single_folder(
         )
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1563,7 +1564,7 @@ async def regen_single_folder(
         )
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1597,7 +1598,7 @@ async def regen_single_folder(
         )
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1647,7 +1648,7 @@ async def regen_single_folder(
     )
     _record_regen_event(
         root=root,
-        event_type="regen.started",
+        event_type=OperationalEventType.REGEN_STARTED,
         knowledge_path=current_path,
         session_id=session_id,
         owner_id=owner_id,
@@ -1770,7 +1771,7 @@ async def regen_single_folder(
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
         _record_regen_event(
             root=root,
-            event_type="regen.failed",
+            event_type=OperationalEventType.REGEN_FAILED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1804,7 +1805,7 @@ async def regen_single_folder(
             log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
         _record_regen_event(
             root=root,
-            event_type="regen.failed",
+            event_type=OperationalEventType.REGEN_FAILED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1841,7 +1842,7 @@ async def regen_single_folder(
             _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
         _record_regen_event(
             root=root,
-            event_type="regen.completed",
+            event_type=OperationalEventType.REGEN_COMPLETED,
             knowledge_path=current_path,
             session_id=session_id,
             owner_id=owner_id,
@@ -1879,7 +1880,7 @@ async def regen_single_folder(
     )
     _record_regen_event(
         root=root,
-        event_type="regen.completed",
+        event_type=OperationalEventType.REGEN_COMPLETED,
         knowledge_path=current_path,
         session_id=session_id,
         owner_id=owner_id,

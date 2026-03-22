@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -82,6 +83,17 @@ def test_apply_folder_move_updates_runtime_state_and_emits_events(brain: Path) -
     assert "watcher.move_observed" in event_types
     assert "watcher.move_applied" in event_types
     assert "query.index.invalidated" in event_types
+
+    observed = load_operational_events(brain, event_type="watcher.move_observed")[-1]
+    applied = load_operational_events(brain, event_type="watcher.move_applied")[-1]
+    observed_details = json.loads(observed.details_json or "{}")
+    applied_details = json.loads(applied.details_json or "{}")
+    assert observed_details == {"src": "old-dir", "dest": "new-dir"}
+    assert applied_details == {"src": "old-dir", "dest": "new-dir"}
+    assert "old_path" not in observed_details
+    assert "new_path" not in observed_details
+    assert "old_path" not in applied_details
+    assert "new_path" not in applied_details
 
 
 def test_apply_folder_move_enqueues_old_parent_on_cross_branch_move(brain: Path) -> None:

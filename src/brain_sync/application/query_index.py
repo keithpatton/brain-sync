@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from brain_sync.query.area_index import AreaIndex
+from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import record_brain_operational_event
 
 __all__ = ["AreaIndex", "invalidate_area_index", "load_area_index"]
@@ -18,7 +19,7 @@ def load_area_index(root: Path, current: AreaIndex | None = None) -> AreaIndex:
     rebuilt = AreaIndex.build(root)
     record_brain_operational_event(
         root,
-        event_type="query.index.rebuilt",
+        event_type=OperationalEventType.QUERY_INDEX_REBUILT,
         outcome="rebuilt",
     )
     return rebuilt
@@ -36,7 +37,7 @@ def invalidate_area_index(
     normalized_paths = ["" if path == "." else path for path in normalized_paths]
     record_brain_operational_event(
         root,
-        event_type="query.index.invalidated",
+        event_type=OperationalEventType.QUERY_INDEX_INVALIDATED,
         knowledge_path=normalized_paths[0] if len(normalized_paths) == 1 else None,
         outcome=reason,
         details={"knowledge_paths": normalized_paths},
