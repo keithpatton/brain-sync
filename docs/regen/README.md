@@ -508,6 +508,23 @@ Regen and regen-adjacent paths currently emit operational events including:
 Those events can carry `knowledge_path`, `session_id`, `owner_id`, outcome, and
 details payloads.
 
+For the current REGEN contract:
+
+- `regen.started` is the semantic "why this path ran" record
+- `regen.completed` is the semantic terminal record for skips, cleanup,
+  similarity-guard completion, and summary writes
+- `regen.failed` is the semantic terminal record for artifact-contract,
+  output-validation, execution, and commit failures
+
+Current typed REGEN details include:
+
+- run reason and evaluation outcome
+- prompt-budget class and effective prompt-budget facts
+- prompt component tokens, deferred direct files, and omitted child summaries
+- propagation decision and propagation reason
+- summary-written and journal-written facts
+- failure phase and failure reason when a run terminates unsuccessfully
+
 ### Token Telemetry
 
 Each LLM invocation may record a `token_events` row with:
@@ -525,6 +542,10 @@ Each LLM invocation may record a `token_events` row with:
 Chunk summarization calls and final merge calls are recorded separately when a
 session ID is available.
 
+`token_events` remains per-call telemetry only. It does not try to explain
+high-level REGEN decisions such as skip reasons, propagation reasons, or prompt
+component breakdowns for a whole path.
+
 ### Runtime Locks
 
 `regen_locks` is the current runtime coordination view for knowledge paths.
@@ -536,6 +557,24 @@ It records:
 - failure reason when a run ends in failed state
 
 `regen_session()` reclaims stale running rows only when the caller asks it to.
+It is not the durable REGEN analytics surface.
+
+### Diagnostic Reports
+
+`regen/diagnostics.py` builds compact REGEN reports from existing runtime
+surfaces rather than from a dedicated diagnostics table.
+
+Current report shape is intentionally compact and comparison-oriented:
+
+- per-path semantic reasons from `operational_events`
+- per-path aggregated token and duration totals from `token_events`
+- chunk-count, chunk-cost, and final-call-cost rollups
+- prompt-component coverage and high-churn path summaries
+
+This report is a reading and testing seam over the existing runtime history. It
+does not change authority: `operational_events` and `token_events` remain
+best-effort local diagnostics, while `regen_locks` remains runtime
+coordination.
 
 ## Agent Reading Guide
 

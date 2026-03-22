@@ -194,6 +194,120 @@ Recommended next action:
 
 - proceed unchanged
 
+2026-03-23T16:09:33+13:00
+Phase: Phase 5 - observability and cost diagnostics closure
+Change: Locked REGEN semantic event fields to typed reason/phase coverage, added a compact diagnostics seam over the existing runtime event surfaces, exposed loadable token-event rows for report aggregation, aligned the Phase 0 baseline harness with the fixed observability contract, and updated the authoritative docs without adding a new runtime table.
+Reason: Phase 5 required durable explanation for why REGEN ran, skipped, failed, propagated, chunked, and spent tokens, while staying inside the approved `operational_events` + `token_events` + `regen_locks` contract.
+Status: Implemented.
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/diagnostics.py`
+- `src/brain_sync/regen/__init__.py`
+- `src/brain_sync/regen/engine.py`
+- `src/brain_sync/regen/queue.py`
+- `src/brain_sync/runtime/operational_events.py`
+- `src/brain_sync/runtime/repository.py`
+- `tests/unit/test_regen_phase5.py`
+- `tests/unit/test_runtime_operational_events.py`
+- `tests/unit/test_token_tracking.py`
+- `tests/integration/regen_phase0_baseline.py`
+- `tests/integration/test_regen_phase0_baseline.py`
+- `docs/RULES.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m ruff check src/brain_sync/regen src/brain_sync/runtime tests/unit/test_regen_phase5.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py tests/integration/regen_phase0_baseline.py tests/integration/test_regen_phase0_baseline.py` -> passed
+- `python -m pyright src/brain_sync/regen src/brain_sync/runtime tests/unit/test_regen_phase5.py tests/integration/regen_phase0_baseline.py` -> 0 errors
+- `python -m pytest tests/unit/test_regen_phase5.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py -q` -> 37 passed
+- `python -m pytest tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py tests/unit/test_regen_phase5.py tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase2_budgeting.py -q` -> 249 passed
+
+Baseline-versus-current metrics relevant to the phase:
+
+- Locked REGEN semantic coverage before/after: before this phase the catalog did not require typed semantic details for all REGEN started/completed/failed events and the runtime docs did not describe a fixed REGEN observability split; current state field-locks `regen.started` on `details.reason` plus `details.evaluation_outcome`, `regen.completed` on `details.reason` plus `details.propagates_up`, and `regen.failed` on `details.error` plus `details.reason` plus `details.phase`.
+- Prompt-planner visibility before/after: before this phase the baseline harness had no durable runtime-surface proof for prompt-budget class, component token breakdown, deferred files, or omitted child summaries; current Phase 0 corpus report records `prompt_component_coverage_count = 8` and the started-event details now carry those prompt-planning facts for each model-backed REGEN run.
+- Terminal reason coverage before/after: before this phase the baseline harness did not prove that terminal REGEN rows explained why paths skipped, failed, or propagated; current Phase 0 corpus report records `terminal_reason_coverage_count = 11` with per-path `latest_reason`, `propagates_up`, and propagation details aggregated from `operational_events`.
+- Comparison-readiness before/after: before this phase the baseline harness relied on bespoke metric extraction without a compact report seam over the runtime diagnostics; current state emits a `diagnostic_report` with `comparison_ready_keys = ["outcome_counts", "path_reports[].component_tokens", "path_reports[].token_cost", "path_reports[].propagates_up", "high_churn_paths"]`.
+- Cost aggregation before/after: before this phase token telemetry was durable only at the raw row level; current report rolls those existing `token_events` rows into per-path totals including `invocations`, `chunk_invocations`, `final_invocations`, token totals, and duration totals. On the current corpus, `research/annual` reports `final_invocations = 1`, `chunk_invocations = 0`, and `final_total_tokens = 117991` under the existing application-prompt-body measurement scope.
+- Contract-boundary proof: current `diagnostic_report.observability_contract` is fixed to `semantic_events_surface = "operational_events"`, `cost_surface = "token_events"`, `coordination_surface = "regen_locks"`, and `logs_authoritative = false`, confirming the phase stayed within the approved observability surfaces and added 0 new runtime tables.
+
+Evidence bundle:
+
+- `tests/unit/test_regen_phase5.py` proves typed REGEN started/completed/failed event details, including semantic reasons, propagation outcomes, prompt-component capture, and chunk-versus-final cost aggregation in the compact report.
+- `tests/unit/test_runtime_operational_events.py` proves the field-locked runtime event catalog now requires the new REGEN semantic details, and `tests/unit/test_token_tracking.py` proves the new `load_token_events(...)` filters used by diagnostics/reporting.
+- `tests/integration/test_regen_phase0_baseline.py` now proves the Phase 0 baseline harness exports a `diagnostic_report` with the fixed observability contract, terminal reason coverage, and comparison-ready keys over the current corpus.
+- The broader REGEN/runtime regression slice still passed unchanged at `249` tests, which shows the observability work did not require a new runtime persistence surface or change the existing REGEN control flow.
+
+Findings summary:
+
+- Phase 5 closed the approved observability gap without adding a new runtime table.
+- `operational_events` is now the typed semantic trail for why a path ran, skipped, failed, or propagated, including prompt-planner facts for model-backed runs.
+- `token_events` remains per-call telemetry, but the new diagnostics seam now makes chunk cost, final-call cost, and high-churn paths easy to inspect without bespoke ad hoc queries.
+- `regen_locks` remains coordination-only runtime state and is now documented more explicitly as not being a historical analytics surface.
+- The baseline harness can now compare REGEN decisions and costs through a compact report built from the approved durable surfaces rather than through chat-only interpretation.
+
+Product calls surfaced:
+
+- No new product call was exposed in Phase 5.
+- The implementation stayed within the fixed observability contract from the approved plan: no new runtime diagnostics table, no attempt to make logs authoritative, and no migration of semantic explanations into `regen_locks`.
+
+Regressions or ambiguous results:
+
+- No regressions were found in the focused Phase 5 tests or the broader REGEN/runtime regression slice.
+- `token_events` still represents invocation-level telemetry only, so prompt-component sizes and propagation reasons remain split across `operational_events` details and the compact aggregated report rather than living in one raw runtime row.
+- The Phase 0 baseline continues to measure application-assembled prompt-body tokens rather than provider-billed totals; the new report makes that easier to compare, but it does not change that existing measurement scope.
+
+Unresolved product decisions:
+
+- None newly surfaced in this phase.
+
+Docs reviewed:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/sync/README.md`
+- `docs/regen/README.md`
+- `README.md`
+
+Docs changed:
+
+- `docs/RULES.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/regen/README.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/sync/README.md`
+- `README.md`
+
+Recommended next action:
+
+- proceed unchanged
+
 2026-03-23T09:35:00+13:00
 Implementation note: Post-Phase-3 REGEN seam extraction before Phase 4
 Change: Extracted deterministic folder evaluation into `regen/evaluation.py` and prompt assembly/chunk planning into `regen/prompt_planner.py`, while keeping `regen/engine.py` as the compatibility-preserving orchestration surface.

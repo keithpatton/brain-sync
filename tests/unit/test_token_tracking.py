@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import brain_sync.runtime.repository as state_module
-from brain_sync.runtime.repository import _connect
+from brain_sync.runtime.repository import _connect, load_token_events
 from brain_sync.runtime.token_tracking import (
     OP_CLASSIFY,
     OP_QUERY,
@@ -174,6 +174,57 @@ class TestGetUsageSummary:
         assert summary["total_invocations"] == 0
         assert summary["by_operation"] == []
         assert summary["by_day"] == []
+
+
+class TestLoadTokenEvents:
+    def test_filters_by_session_and_resource(self, brain: Path) -> None:
+        record_token_event(
+            session_id="sess-a",
+            operation_type=OP_REGEN,
+            resource_type="knowledge",
+            resource_id="area/a",
+            is_chunk=False,
+            model="claude-sonnet-4-6",
+            input_tokens=100,
+            output_tokens=20,
+            duration_ms=10,
+            num_turns=1,
+            success=True,
+        )
+        record_token_event(
+            session_id="sess-a",
+            operation_type=OP_REGEN,
+            resource_type="knowledge",
+            resource_id="area/a",
+            is_chunk=True,
+            model="claude-sonnet-4-6",
+            input_tokens=80,
+            output_tokens=10,
+            duration_ms=5,
+            num_turns=1,
+            success=True,
+        )
+        record_token_event(
+            session_id="sess-b",
+            operation_type=OP_QUERY,
+            resource_type="knowledge",
+            resource_id="area/b",
+            is_chunk=False,
+            model=None,
+            input_tokens=50,
+            output_tokens=5,
+            duration_ms=3,
+            num_turns=1,
+            success=True,
+        )
+
+        rows = load_token_events(brain, session_id="sess-a", resource_id="area/a")
+
+        assert len(rows) == 2
+        assert rows[0].session_id == "sess-a"
+        assert rows[0].resource_id == "area/a"
+        assert rows[0].is_chunk is False
+        assert rows[1].is_chunk is True
 
 
 class TestPruneTokenEvents:

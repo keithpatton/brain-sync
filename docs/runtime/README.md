@@ -30,6 +30,17 @@ Runtime schema `v29` splits active polling from source lifecycle coordination:
 Operational events remain machine-local, append-only diagnostics. They are
 best-effort, may duplicate, and are non-authoritative.
 
+The current REGEN observability contract stays within the existing runtime
+surfaces:
+
+- `operational_events` carries semantic REGEN decisions and planner details
+- `token_events` carries per-invocation token, duration, and chunk telemetry
+- `regen_locks` remains coordination-only runtime state rather than a
+  historical analytics surface
+
+Compact REGEN reports are derived from those existing surfaces rather than from
+an additional runtime table.
+
 ## Reference Set
 
 | Document | Purpose |

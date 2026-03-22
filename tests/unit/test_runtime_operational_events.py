@@ -73,7 +73,7 @@ def test_record_operational_event_persists_stable_fields(brain: Path) -> None:
         knowledge_path="area\\sub",
         outcome="regenerated",
         duration_ms=123,
-        details={"kind": "unit"},
+        details={"kind": "unit", "reason": "summary_written", "propagates_up": True},
     )
 
     events = load_operational_events(brain)
@@ -88,7 +88,11 @@ def test_record_operational_event_persists_stable_fields(brain: Path) -> None:
     assert event.knowledge_path == "area/sub"
     assert event.outcome == "regenerated"
     assert event.duration_ms == 123
-    assert json.loads(event.details_json or "{}") == {"kind": "unit"}
+    assert json.loads(event.details_json or "{}") == {
+        "kind": "unit",
+        "reason": "summary_written",
+        "propagates_up": True,
+    }
 
 
 def test_record_operational_event_is_non_fatal_on_db_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -236,6 +240,7 @@ def test_queue_does_not_duplicate_engine_completed_event(
             owner_id="owner-1",
             knowledge_path=knowledge_path,
             outcome="regenerated",
+            details={"reason": "summary_written", "propagates_up": True},
         )
         return 1
 
@@ -266,7 +271,7 @@ def test_queue_does_not_duplicate_engine_failed_event(
             owner_id="owner-1",
             knowledge_path=knowledge_path,
             outcome="failed",
-            details={"error": "boom"},
+            details={"error": "boom", "reason": "execution_failed", "phase": "execution"},
         )
         raise RuntimeError("boom")
 
@@ -345,9 +350,24 @@ def test_operational_event_catalog_matches_approved_set() -> None:
 
 def test_field_locked_operational_event_matrix_matches_approved_contract() -> None:
     assert {event_type.value: fields for event_type, fields in FIELD_LOCKED_EVENT_FIELDS.items()} == {
-        "regen.started": {"knowledge_path", "session_id", "owner_id"},
-        "regen.completed": {"knowledge_path", "session_id", "owner_id", "outcome"},
-        "regen.failed": {"knowledge_path", "session_id", "owner_id", "outcome", "details.error"},
+        "regen.started": {"knowledge_path", "session_id", "owner_id", "details.reason", "details.evaluation_outcome"},
+        "regen.completed": {
+            "knowledge_path",
+            "session_id",
+            "owner_id",
+            "outcome",
+            "details.reason",
+            "details.propagates_up",
+        },
+        "regen.failed": {
+            "knowledge_path",
+            "session_id",
+            "owner_id",
+            "outcome",
+            "details.error",
+            "details.reason",
+            "details.phase",
+        },
         "regen.enqueued": {"knowledge_path", "outcome"},
         "query.index.invalidated": {"outcome", "details.knowledge_paths"},
         "query.index.rebuilt": {"outcome"},

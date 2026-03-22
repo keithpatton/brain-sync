@@ -20,6 +20,7 @@ from brain_sync.brain.fileops import read_text
 from brain_sync.brain.layout import area_summary_path
 from brain_sync.llm import capabilities_for_model
 from brain_sync.llm.base import LlmResult
+from brain_sync.regen.diagnostics import build_regen_diagnostic_report
 from brain_sync.regen.engine import (
     CHUNK_TARGET_CHARS,
     MAX_PROMPT_TOKENS,
@@ -438,6 +439,7 @@ async def collect_phase0_baseline(root: Path) -> dict[str, Any]:
             ),
         ],
     }
+    diagnostic_report = build_regen_diagnostic_report(root)
 
     return {
         "corpus": {
@@ -464,6 +466,7 @@ async def collect_phase0_baseline(root: Path) -> dict[str, Any]:
             "latency_per_node_ms": latency_per_node_ms,
             "skip_reason_frequency": dict(skip_frequency),
             "ancestor_propagation_frequency": ancestor_frequency,
+            "diagnostic_report": diagnostic_report,
         },
         "quality_harness": {
             "anchor_checks": quality_checks,

@@ -49,6 +49,11 @@ async def test_phase0_baseline_harness_covers_required_corpus_and_metrics(brain:
     assert prompt_components["research/annual"]["prompt_budget_class"] == "extended_1m"
     assert prompt_components["research/annual"]["deferred_file_count"] == 0
     assert prompt_components["programs/ops"]["child_summaries_tokens"] > 0
+    diagnostic_report = metrics["diagnostic_report"]
+    assert diagnostic_report["observability_contract"]["semantic_events_surface"] == "operational_events"
+    assert diagnostic_report["observability_contract"]["cost_surface"] == "token_events"
+    assert diagnostic_report["terminal_reason_coverage_count"] >= 1
+    assert "path_reports[].token_cost" in diagnostic_report["comparison_ready_keys"]
 
     quality = baseline["quality_harness"]
     assert quality["all_passed"] is True, json.dumps(quality, indent=2)

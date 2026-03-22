@@ -483,6 +483,23 @@ class OperationalEvent:
     details_json: str | None = None
 
 
+@dataclass(frozen=True)
+class TokenEvent:
+    session_id: str
+    operation_type: str
+    created_utc: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+    is_chunk: bool = False
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    num_turns: int | None = None
+    success: bool = False
+
+
 def _compat_path_override(*, alias: Path, current: Path) -> Path:
     return alias if alias != current else current
 
@@ -2189,6 +2206,61 @@ def load_operational_events(
             outcome=row[6],
             duration_ms=row[7],
             details_json=row[8],
+        )
+        for row in rows
+    ]
+
+
+def load_token_events(
+    root: Path,
+    *,
+    session_id: str | None = None,
+    operation_type: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+) -> list[TokenEvent]:
+    conn = _connect(root)
+    try:
+        clauses: list[str] = []
+        params: list[str] = []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if operation_type is not None:
+            clauses.append("operation_type = ?")
+            params.append(operation_type)
+        if resource_type is not None:
+            clauses.append("resource_type = ?")
+            params.append(resource_type)
+        if resource_id is not None:
+            clauses.append("resource_id = ?")
+            params.append(resource_id)
+
+        where_clause = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            "SELECT session_id, operation_type, resource_type, resource_id, is_chunk, model, "
+            "input_tokens, output_tokens, total_tokens, duration_ms, num_turns, success, created_utc "
+            f"FROM token_events{where_clause} ORDER BY id",
+            tuple(params),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        TokenEvent(
+            session_id=row[0],
+            operation_type=row[1],
+            resource_type=row[2],
+            resource_id=row[3],
+            is_chunk=bool(row[4]),
+            model=row[5],
+            input_tokens=row[6],
+            output_tokens=row[7],
+            total_tokens=row[8],
+            duration_ms=row[9],
+            num_turns=row[10],
+            success=bool(row[11]),
+            created_utc=row[12],
         )
         for row in rows
     ]

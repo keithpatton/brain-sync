@@ -60,10 +60,14 @@ class OperationalEventSpec:
 
 
 FIELD_LOCKED_EVENT_FIELDS: Final[dict[OperationalEventType, frozenset[str]]] = {
-    OperationalEventType.REGEN_STARTED: frozenset({"knowledge_path", "session_id", "owner_id"}),
-    OperationalEventType.REGEN_COMPLETED: frozenset({"knowledge_path", "session_id", "owner_id", "outcome"}),
+    OperationalEventType.REGEN_STARTED: frozenset(
+        {"knowledge_path", "session_id", "owner_id", "details.reason", "details.evaluation_outcome"}
+    ),
+    OperationalEventType.REGEN_COMPLETED: frozenset(
+        {"knowledge_path", "session_id", "owner_id", "outcome", "details.reason", "details.propagates_up"}
+    ),
     OperationalEventType.REGEN_FAILED: frozenset(
-        {"knowledge_path", "session_id", "owner_id", "outcome", "details.error"}
+        {"knowledge_path", "session_id", "owner_id", "outcome", "details.error", "details.reason", "details.phase"}
     ),
     OperationalEventType.REGEN_ENQUEUED: frozenset({"knowledge_path", "outcome"}),
     OperationalEventType.QUERY_INDEX_INVALIDATED: frozenset({"outcome", "details.knowledge_paths"}),

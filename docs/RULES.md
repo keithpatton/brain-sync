@@ -109,6 +109,31 @@ the same config dir must be refused at startup rather than allowed to coexist
 opportunistically. `daemon.json` is runtime status only; durable startup
 exclusion must come from the config-dir daemon guard itself.
 
+### REGEN Observability Contract
+
+REGEN diagnostics must stay within the approved runtime surfaces:
+
+- `operational_events` is the durable semantic decision trail
+- `token_events` is the durable per-call cost and duration trail
+- `regen_locks` is runtime coordination only and must not become an analytics
+  or historical-diagnostics surface
+
+For REGEN specifically:
+
+- semantic reasons for why a path ran, skipped, failed, or propagated belong
+  in `operational_events`
+- prompt-planning details such as prompt-budget class, component token
+  breakdown, deferred files, and omitted child summaries belong in
+  `operational_events` details for the relevant REGEN session
+- invocation-level token, duration, success, and chunk-versus-final-call facts
+  belong in `token_events`
+- aggregated REGEN reports must be derived from those existing surfaces rather
+  than by introducing a new runtime table unless a later approved change
+  explicitly authorizes one
+
+Loss, duplication, or pruning of REGEN diagnostics must not change lifecycle
+authority or portable-brain semantics.
+
 ### Managed Namespace
 
 The folder name `.brain-sync` is reserved at every level of the brain.

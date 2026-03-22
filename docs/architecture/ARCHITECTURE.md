@@ -106,7 +106,9 @@ that subsystem, `regen/engine.py` now acts primarily as the orchestration
 surface, `regen/evaluation.py` owns deterministic node evaluation and hash
 classification, `regen/artifacts.py` owns the strict summary/journal artifact
 contract, `regen/prompt_planner.py` owns prompt assembly and chunk planning,
-and `regen/topology.py` owns parent-propagation rules.
+`regen/topology.py` owns parent-propagation rules, and
+`regen/diagnostics.py` owns compact report building over the existing runtime
+event surfaces.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
 interface-neutral operations consumed by the CLI and MCP layers. `interfaces/`
@@ -520,12 +522,13 @@ long-lived caches, but further performance tuning may still be worthwhile.
 
 ## 3.5. Telemetry
 
-### Three Independent State Systems
+### Four Independent State Systems
 
 | System | Location | Purpose | Lifetime |
 |---|---|---|---|
 | Content state | `knowledge/**/.brain-sync/insights/insight-state.json` | Content, structure, and summary hashes | Durable |
 | Concurrency lock | `regen_locks` | Regen ownership and recovery | Transient |
+| Semantic diagnostics | `operational_events` | Append-only REGEN decision trail | Local history |
 | Invocation telemetry | `token_events` | Append-only LLM accounting | Local history |
 
 `session_id` groups related regen calls for usage analysis. `owner_id` is the
@@ -549,6 +552,15 @@ whose child structure changed. REGEN no longer treats generic
 `skipped_rename` as sufficient evidence to walk up on its own.
 
 Telemetry is workflow-agnostic via `resource_type` and `resource_id`.
+
+Current REGEN observability intentionally stays within those surfaces:
+
+- `operational_events` explains semantic reasons, prompt-planning facts, and
+  propagation outcomes
+- `token_events` explains per-call cost, duration, and chunk-versus-final-call
+  splits
+- `regen/diagnostics.py` aggregates those existing surfaces into compact
+  reports without adding a new runtime table
 
 ---
 

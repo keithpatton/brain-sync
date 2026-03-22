@@ -266,7 +266,12 @@ class RegenQueue:
                 owner_id=self.owner_id,
                 knowledge_path=knowledge_path,
                 outcome=outcome,
-                details={"error": str(error), "retries": MAX_RETRIES},
+                details={
+                    "error": str(error),
+                    "retries": MAX_RETRIES,
+                    "reason": "queue_retries_exhausted",
+                    "phase": "queue_retry",
+                },
             )
             try:
                 current_lock = load_regen_lock(self.root, knowledge_path)

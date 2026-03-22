@@ -213,6 +213,10 @@ local revalidation plus source-level lease ownership.
 | `owner_id` | text or null | Runtime owner/session identifier. |
 | `error_reason` | text or null | Failure reason for failed state. |
 
+`regen_locks` is coordination-only runtime state. It is not the durable REGEN
+analytics surface and must not be treated as historical decision or cost
+telemetry.
+
 ### `child_discovery_requests`
 
 | Field | Type | Meaning |
@@ -240,6 +244,15 @@ local revalidation plus source-level lease ownership.
 Operational events are append-only diagnostics only. They are not a replay
 source, may be missing or duplicated, and must not become lifecycle
 authority.
+
+For current REGEN diagnostics, `operational_events` is the semantic trail:
+
+- `regen.started` carries the run reason, evaluation outcome, and planner
+  details such as prompt-budget class, component token breakdown, deferred
+  files, and omitted child summaries
+- `regen.completed` carries the terminal reason, propagation decision, and
+  summary/journal write facts
+- `regen.failed` carries the terminal error, typed reason, and failure phase
 
 Current production event-type names are centralized in
 `src/brain_sync/runtime/operational_events.py`. Runtime persistence remains
@@ -275,3 +288,12 @@ Retention is machine-local via `config.json`:
 
 Canonical owner:
 `src/brain_sync/runtime/repository.py`
+
+For current REGEN diagnostics, `token_events` is the per-call cost surface:
+
+- each row represents one backend invocation rather than one high-level regen
+  path decision
+- chunk summarization calls and final merge calls are recorded as separate rows
+  through `is_chunk`
+- prompt-component sizes, skip reasons, and propagation reasons do not live in
+  this table; those belong to `operational_events`

@@ -84,7 +84,7 @@ from brain_sync.regen.prompt_planner import (
 from brain_sync.regen.prompt_planner import (
     invalidate_global_context_cache as _invalidate_global_context_cache,
 )
-from brain_sync.regen.topology import compute_waves, parent_path, propagates_up
+from brain_sync.regen.topology import compute_waves, parent_path, propagates_up, propagation_rule
 from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     RegenLock,
@@ -295,7 +295,11 @@ def _persist_area_state_or_fail(
             session_id=session_id,
             owner_id=owner_id,
             outcome="failed_portable_state",
-            details={"error": str(exc)},
+            details={
+                "error": str(exc),
+                "reason": "portable_state_persist_failed",
+                "phase": "portable_state",
+            },
         )
         raise RegenFailed(knowledge_path or "(root)", str(exc)) from exc
 
@@ -365,7 +369,12 @@ def _commit_artifact_plan_or_fail(
             session_id=session_id,
             owner_id=owner_id,
             outcome="failed_artifact_commit",
-            details={"error": str(exc), "action": plan.action},
+            details={
+                "error": str(exc),
+                "action": plan.action,
+                "reason": "artifact_commit_failed",
+                "phase": "artifact_commit",
+            },
         )
         raise RegenFailed(knowledge_path or "(root)", str(exc)) from exc
 
@@ -380,17 +389,21 @@ def _save_terminal_regen_lock(
     error_reason: str | None = None,
 ) -> None:
     """Persist a terminal runtime state while explicitly releasing ownership."""
-    if owner_id is None:
+
+    def _persist_unowned_terminal_state(existing_started_utc: str | None = None) -> None:
         save_regen_lock(
             root,
             RegenLock(
                 knowledge_path=knowledge_path,
-                regen_started_utc=regen_started_utc,
+                regen_started_utc=existing_started_utc if existing_started_utc is not None else regen_started_utc,
                 regen_status=regen_status,
                 owner_id=None,
                 error_reason=error_reason,
             ),
         )
+
+    if owner_id is None:
+        _persist_unowned_terminal_state()
         return
 
     released = release_regen_ownership(
@@ -401,6 +414,13 @@ def _save_terminal_regen_lock(
         error_reason=error_reason,
     )
     if not released:
+        current_lock = load_regen_lock(root, knowledge_path)
+        if current_lock is None:
+            _persist_unowned_terminal_state()
+            return
+        if current_lock.owner_id is None:
+            _persist_unowned_terminal_state(current_lock.regen_started_utc)
+            return
         raise RuntimeError(f"failed to release regen ownership for '{knowledge_path}' owned by '{owner_id}'")
 
 
@@ -985,6 +1005,7 @@ async def regen_single_folder(
             repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path)
         delete_regen_lock(root, current_path)
+        cleaned_up_rule = propagation_rule("cleaned_up")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -992,6 +1013,16 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="cleaned_up",
+            details={
+                "reason": "knowledge_path_missing",
+                "evaluation_outcome": evaluation.outcome,
+                "propagates_up": cleaned_up_rule.propagate_upward,
+                "parent_input_changed": cleaned_up_rule.parent_input_changed,
+                "propagation_reason": cleaned_up_rule.dirty_reason,
+                "propagation_explanation": cleaned_up_rule.explanation,
+                "summary_written": False,
+                "journal_written": False,
+            },
         )
         return SingleFolderResult(action="cleaned_up", knowledge_path=current_path)
 
@@ -1005,6 +1036,7 @@ async def regen_single_folder(
             repository.clean_regenerable_insights(current_path)
             log.info("[%s] Cleaned up stale insights for %s", regen_id, current_path or "(root)")
         delete_regen_lock(root, current_path)
+        no_content_rule = propagation_rule("skipped_no_content")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1012,6 +1044,16 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="skipped_no_content",
+            details={
+                "reason": "no_direct_files_or_child_summaries",
+                "evaluation_outcome": evaluation.outcome,
+                "propagates_up": no_content_rule.propagate_upward,
+                "parent_input_changed": no_content_rule.parent_input_changed,
+                "propagation_reason": no_content_rule.dirty_reason,
+                "propagation_explanation": no_content_rule.explanation,
+                "summary_written": False,
+                "journal_written": False,
+            },
         )
         return SingleFolderResult(action="skipped_no_content", knowledge_path=current_path)
 
@@ -1048,6 +1090,7 @@ async def regen_single_folder(
             release_owner_id=owner_id,
             error_reason=lock.error_reason if lock else None,
         )
+        backfill_rule = propagation_rule("skipped_backfill")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1055,6 +1098,16 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="skipped_backfill",
+            details={
+                "reason": "metadata_backfill_only",
+                "evaluation_outcome": evaluation.outcome,
+                "propagates_up": backfill_rule.propagate_upward,
+                "parent_input_changed": backfill_rule.parent_input_changed,
+                "propagation_reason": backfill_rule.dirty_reason,
+                "propagation_explanation": backfill_rule.explanation,
+                "summary_written": False,
+                "journal_written": False,
+            },
         )
         return SingleFolderResult(action="skipped_backfill", knowledge_path=current_path)
 
@@ -1065,6 +1118,7 @@ async def regen_single_folder(
             current_path or "(root)",
             new_content_hash[:12],
         )
+        unchanged_rule = propagation_rule("skipped_unchanged")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1072,6 +1126,16 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="skipped_unchanged",
+            details={
+                "reason": "content_hash_unchanged",
+                "evaluation_outcome": evaluation.outcome,
+                "propagates_up": unchanged_rule.propagate_upward,
+                "parent_input_changed": unchanged_rule.parent_input_changed,
+                "propagation_reason": unchanged_rule.dirty_reason,
+                "propagation_explanation": unchanged_rule.explanation,
+                "summary_written": False,
+                "journal_written": False,
+            },
         )
         return SingleFolderResult(action="skipped_unchanged", knowledge_path=current_path)
 
@@ -1099,6 +1163,7 @@ async def regen_single_folder(
             regen_status="idle",
             release_owner_id=owner_id,
         )
+        rename_rule = propagation_rule("skipped_rename")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1106,6 +1171,16 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="skipped_rename",
+            details={
+                "reason": "structure_only_change",
+                "evaluation_outcome": evaluation.outcome,
+                "propagates_up": rename_rule.propagate_upward,
+                "parent_input_changed": rename_rule.parent_input_changed,
+                "propagation_reason": rename_rule.dirty_reason,
+                "propagation_explanation": rename_rule.explanation,
+                "summary_written": False,
+                "journal_written": False,
+            },
         )
         return SingleFolderResult(action="skipped_rename", knowledge_path=current_path)
 
@@ -1129,6 +1204,7 @@ async def regen_single_folder(
         root,
         capabilities=capabilities,
     )
+    prompt_diagnostics = prompt_result.diagnostics
 
     # Prompt fingerprint for forensic tracing
     prompt_hash = hashlib.sha1(prompt_result.text.encode("utf-8")).hexdigest()[:8]
@@ -1160,10 +1236,29 @@ async def regen_single_folder(
         session_id=session_id,
         owner_id=owner_id,
         outcome="started",
+        details={
+            "reason": "content_changed",
+            "evaluation_outcome": evaluation.outcome,
+            "prompt_budget_class": prompt_diagnostics.prompt_budget_class if prompt_diagnostics else None,
+            "capability_max_prompt_tokens": (
+                prompt_diagnostics.capability_max_prompt_tokens if prompt_diagnostics else None
+            ),
+            "effective_prompt_tokens": prompt_diagnostics.effective_prompt_tokens if prompt_diagnostics else None,
+            "prompt_overhead_tokens": prompt_diagnostics.prompt_overhead_tokens if prompt_diagnostics else None,
+            "component_tokens": dict(prompt_diagnostics.component_tokens) if prompt_diagnostics else {},
+            "deferred_file_count": len(prompt_diagnostics.deferred_files) if prompt_diagnostics else 0,
+            "deferred_files": [decision.name for decision in prompt_diagnostics.deferred_files]
+            if prompt_diagnostics
+            else [],
+            "omitted_child_summary_count": len(prompt_diagnostics.omitted_child_summaries) if prompt_diagnostics else 0,
+            "omitted_child_summaries": list(prompt_diagnostics.omitted_child_summaries) if prompt_diagnostics else [],
+        },
     )
 
     # Chunk-and-merge + final invoke — unified exception handler
     # ensures "failed" state is always saved on any error.
+    chunked_files: list[str] = []
+    chunk_count = 0
     try:
         # Chunk-and-merge for oversized files
         if prompt_result.oversized_files:
@@ -1176,6 +1271,8 @@ async def regen_single_folder(
                         f"{filename}: {len(chunks)} chunks exceeds limit of {MAX_CHUNKS}",
                     )
                 log.info("[%s] Chunking %s: %d chunks", regen_id, filename, len(chunks))
+                chunked_files.append(filename)
+                chunk_count += len(chunks)
                 file_summaries: list[str] = []
                 for i, chunk in enumerate(chunks, 1):
                     heading = _first_heading(chunk) or f"part {i}"
@@ -1248,7 +1345,15 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="failed",
-            details={"error": str(e)},
+            details={
+                "error": str(e),
+                "reason": "execution_failed",
+                "phase": "execution",
+                "evaluation_outcome": evaluation.outcome,
+                "chunk_count": chunk_count,
+                "chunked_file_count": len(chunked_files),
+                "chunked_files": list(chunked_files),
+            },
         )
         raise RegenFailed(current_path or "(root)", str(e)) from e
     now = datetime.now(UTC).isoformat()
@@ -1276,7 +1381,12 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="failed_artifact_contract",
-            details={"error": str(exc)},
+            details={
+                "error": str(exc),
+                "reason": "invalid_structured_output",
+                "phase": "artifact_contract",
+                "evaluation_outcome": evaluation.outcome,
+            },
         )
         raise RegenFailed(current_path or "(root)", err_msg) from exc
 
@@ -1309,7 +1419,12 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="failed",
-            details={"error": err_msg},
+            details={
+                "error": err_msg,
+                "reason": "summary_too_small",
+                "phase": "output_validation",
+                "evaluation_outcome": evaluation.outcome,
+            },
         )
         raise RegenFailed(current_path or "(root)", err_msg)
 
@@ -1339,6 +1454,7 @@ async def regen_single_folder(
             ),
             regen_id=regen_id,
         )
+        skipped_similarity_rule = propagation_rule("skipped_similarity")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1346,6 +1462,19 @@ async def regen_single_folder(
             session_id=session_id,
             owner_id=owner_id,
             outcome="skipped_similarity",
+            details={
+                "reason": "similarity_guard_kept_existing_summary",
+                "evaluation_outcome": evaluation.outcome,
+                "propagates_up": skipped_similarity_rule.propagate_upward,
+                "parent_input_changed": skipped_similarity_rule.parent_input_changed,
+                "propagation_reason": skipped_similarity_rule.dirty_reason,
+                "propagation_explanation": skipped_similarity_rule.explanation,
+                "summary_written": False,
+                "journal_written": bool(journal_text and journal_text.strip()),
+                "chunk_count": chunk_count,
+                "chunked_file_count": len(chunked_files),
+                "chunked_files": list(chunked_files),
+            },
         )
         return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
 
@@ -1377,6 +1506,7 @@ async def regen_single_folder(
         result.output_tokens,
         result.num_turns,
     )
+    regenerated_rule = propagation_rule("regenerated")
     _record_regen_event(
         root=root,
         event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1384,6 +1514,19 @@ async def regen_single_folder(
         session_id=session_id,
         owner_id=owner_id,
         outcome="regenerated",
+        details={
+            "reason": "summary_written",
+            "evaluation_outcome": evaluation.outcome,
+            "propagates_up": regenerated_rule.propagate_upward,
+            "parent_input_changed": regenerated_rule.parent_input_changed,
+            "propagation_reason": regenerated_rule.dirty_reason,
+            "propagation_explanation": regenerated_rule.explanation,
+            "summary_written": True,
+            "journal_written": bool(journal_text and journal_text.strip()),
+            "chunk_count": chunk_count,
+            "chunked_file_count": len(chunked_files),
+            "chunked_files": list(chunked_files),
+        },
     )
     return SingleFolderResult(action="regenerated", knowledge_path=current_path)
 
