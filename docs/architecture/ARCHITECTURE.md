@@ -101,7 +101,11 @@ owns the daemon loop, polling scheduler, watcher, reconcile path, and source
 materialization workflow. `brain/repository.py` owns the portable-brain
 mutation and resolution rules used by sync, reconcile, doctor, and
 regen-adjacent cleanup. `regen/` owns regeneration, lifecycle, queueing, and
-the packaged prompt/template resources used to rebuild derived meaning.
+the packaged prompt/template resources used to rebuild derived meaning. Inside
+that subsystem, `regen/engine.py` now acts primarily as the orchestration
+surface, `regen/evaluation.py` owns deterministic node evaluation and hash
+classification, `regen/prompt_planner.py` owns prompt assembly and chunk
+planning, and `regen/topology.py` owns parent-propagation rules.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
 interface-neutral operations consumed by the CLI and MCP layers. `interfaces/`
@@ -461,9 +465,10 @@ offline changes.
 **Watcher edge cases**: Windows symlink handling and rapid sequential move
 events still need hardening.
 
-**Regen complexity**: `regen/engine.py` remains one of the largest modules.
-It now has a more explicit evaluation-versus-execution seam, but further
-decomposition is still a likely follow-on.
+**Regen complexity**: `regen/engine.py` is smaller after the evaluation and
+prompt-planning extractions, but execution, parsing, and persistence helpers
+still make it larger than ideal. Further decomposition is still a likely
+follow-on.
 
 **AreaIndex cost model**: `AreaIndex.is_stale()` now rechecks portable
 structure and portable summaries on every load. This restores correctness for
@@ -473,7 +478,7 @@ long-lived caches, but further performance tuning may still be worthwhile.
 
 | View | Source of truth | Owner | Refresh trigger | Correctness role |
 |---|---|---|---|---|
-| Global context cache | `knowledge/_core/` | `regen/engine.py` | invalidated on `_core` changes | Correctness-critical |
+| Global context cache | `knowledge/_core/` | `regen/prompt_planner.py` | invalidated on `_core` changes | Correctness-critical |
 | AreaIndex | `knowledge/**/.brain-sync/insights/summary.md` plus `knowledge/` structure | `application/query_index.py` with transport-owned cached instances | every load rechecks portable structure and summaries; `mark_stale()` can force an earlier rebuild | Performance-only cache over portable truth |
 
 ### Resolved (2026-03)
@@ -551,7 +556,7 @@ Telemetry is workflow-agnostic via `resource_type` and `resource_id`.
 Planned future work:
 
 1. improve `AreaIndex` staleness detection
-2. split `regen/engine.py` into smaller focused modules
+2. continue narrowing `regen/engine.py`, especially execution and persistence helpers
 3. harden watcher event handling further
 4. narrow broad exception handling where safe
 

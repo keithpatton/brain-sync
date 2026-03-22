@@ -1,7 +1,8 @@
 """Public regeneration API.
 
-Owns the narrow cross-package REGEN surface. Engine internals stay in package
-local modules such as ``regen.engine`` and ``regen.topology``.
+Owns the narrow cross-package REGEN surface. Local modules keep orchestration,
+deterministic evaluation, prompt planning, and topology rules inside the
+subpackage rather than exposing broad engine internals upward.
 """
 
 from brain_sync.regen.engine import (

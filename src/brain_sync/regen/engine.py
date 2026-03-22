@@ -16,11 +16,9 @@ import hashlib
 import json
 import logging
 import re
-import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from importlib import resources
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -31,14 +29,10 @@ from brain_sync.brain.fileops import (
     iterdir_paths,
     path_exists,
     path_is_dir,
-    path_is_file,
-    read_bytes,
     read_text,
-    rglob_paths,
 )
-from brain_sync.brain.layout import MANAGED_DIRNAME, area_insights_dir, area_summary_path
 from brain_sync.brain.repository import BrainRepository
-from brain_sync.brain.sidecar import RegenMeta, load_regen_hashes, read_all_regen_meta
+from brain_sync.brain.sidecar import read_all_regen_meta
 from brain_sync.brain.tree import (
     find_all_content_paths,
     get_child_dirs,
@@ -47,12 +41,41 @@ from brain_sync.brain.tree import (
     normalize_path,
 )
 from brain_sync.llm import (
-    DEFAULT_SYSTEM_PROMPT,
     BackendCapabilities,
     LlmBackend,
     LlmResult,
     get_backend,
     resolve_backend_capabilities,
+)
+from brain_sync.regen.evaluation import (
+    ChangeEvent,
+    FolderEvaluation,
+    collect_child_summaries,
+    compute_content_hash,
+    compute_structure_hash,
+    evaluate_folder_state,
+)
+from brain_sync.regen.evaluation import (
+    classify_change as _classify_change,
+)
+from brain_sync.regen.prompt_planner import (
+    PROMPT_VERSION as _PROMPT_VERSION,
+)
+from brain_sync.regen.prompt_planner import (
+    REGEN_INSTRUCTIONS,
+    PromptPlannerSettings,
+    PromptResult,
+    build_chunk_prompt,
+    build_prompt,
+    build_prompt_from_chunks,
+    collect_global_context,
+    first_heading,
+    preprocess_content,
+    resolve_effective_prompt_budget,
+    split_markdown_chunks,
+)
+from brain_sync.regen.prompt_planner import (
+    invalidate_global_context_cache as _invalidate_global_context_cache,
 )
 from brain_sync.regen.topology import compute_waves, parent_path, propagates_up
 from brain_sync.runtime.operational_events import OperationalEventType
@@ -70,58 +93,6 @@ from brain_sync.runtime.repository import (
 from brain_sync.util.retry import async_retry, claude_breaker
 
 OP_REGEN = "regen"
-
-
-@dataclass
-class ChangeEvent:
-    """Classification of what changed in a folder between hash computations."""
-
-    change_type: Literal["none", "rename", "content"]
-    structural: bool  # only names/structure changed, not content
-
-
-def classify_change(
-    old_content_hash: str | None,
-    new_content_hash: str,
-    old_structure_hash: str | None,
-    new_structure_hash: str,
-) -> ChangeEvent:
-    """Classify the type of change between old and new hash pairs."""
-    content_changed = old_content_hash != new_content_hash
-    structure_changed = old_structure_hash != new_structure_hash
-    if not content_changed and not structure_changed:
-        return ChangeEvent(change_type="none", structural=False)
-    if not content_changed and structure_changed:
-        return ChangeEvent(change_type="rename", structural=True)
-    return ChangeEvent(change_type="content", structural=False)
-
-
-FolderEvaluationOutcome = Literal[
-    "missing_path",
-    "no_content",
-    "unchanged",
-    "structure_only",
-    "content_changed",
-    "metadata_backfill",
-]
-
-
-@dataclass(frozen=True)
-class FolderEvaluation:
-    """Explicit evaluation result for one knowledge path before any backend call."""
-
-    knowledge_path: str
-    knowledge_dir: Path
-    insights_dir: Path
-    outcome: FolderEvaluationOutcome
-    change: ChangeEvent
-    meta: RegenMeta | None
-    child_dirs: tuple[Path, ...]
-    child_summaries: dict[str, str]
-    has_direct_files: bool
-    content_hash: str | None
-    structure_hash: str | None
-    summary_exists: bool
 
 
 @dataclass(frozen=True)
@@ -147,16 +118,6 @@ class RegenFailed(Exception):
         super().__init__(f"Regen failed for {knowledge_path}: {reason}")
 
 
-def _load_instruction(name: str) -> str:
-    """Load an instruction file bundled with the package."""
-    ref = resources.files("brain_sync.regen.resources").joinpath(name)
-    return ref.read_text(encoding="utf-8")
-
-
-# Loaded once at import time — the single consolidated instruction set
-PROMPT_VERSION = "insight-v2"
-_REGEN_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
-
 log = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.97
@@ -169,125 +130,21 @@ MIN_CHILDREN = 5  # always include at least this many child summaries
 CHUNK_TARGET_CHARS = 160_000  # ~53K tokens — max chars per chunk (leaves margin for prompt overhead)
 MAX_CHUNKS = 30  # guard against pathological documents
 
-# Minimal system prompt for Claude CLI inference mode.
-# Replaces the ~130K-token agent system prompt with a ~35-token directive,
-# reclaiming context for actual content.
-MINIMAL_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
-
 
 # Aliases for backward compat within this module
 _is_readable_file = is_readable_file
 _is_content_dir = is_content_dir
 
-# Strict line-anchored heading regex — avoids false positives from #include etc.
-HEADING_RE = re.compile(r"^#{1,6}\s+(.+)", re.MULTILINE)
-
-# Base64 data URI regex — single-line only (no \s in payload to prevent cross-line consumption)
-_BASE64_DATA_URI_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
-# Markdown image with base64 src — captures alt text for placeholder
-_BASE64_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+\)")
-
-
-def _first_heading(text: str) -> str | None:
-    """Extract the first markdown heading from text."""
-    m = HEADING_RE.search(text)
-    return m.group(1).strip() if m else None
-
-
-def _preprocess_content(content: str, filename: str) -> str:
-    """Preprocess file content before prompt assembly.
-
-    Strips base64 embedded images and collapses excessive blank lines.
-    This is the highest-leverage optimisation for large documents — many
-    PRDs will fit in context after stripping base64 alone.
-    """
-    original_len = len(content)
-
-    # 1. Strip markdown images with base64 src → [diagram: alt_text]
-    #    (must run before bare data URI strip to capture alt text)
-    content = _BASE64_MD_IMAGE_RE.sub(
-        lambda m: f"[diagram: {m.group(1)}]" if m.group(1) else "[image removed]",
-        content,
-    )
-
-    # 2. Strip remaining bare base64 data URIs → [image removed]
-    content = _BASE64_DATA_URI_RE.sub("[image removed]", content)
-
-    # 3. Collapse 4+ consecutive newlines to 3 newlines (2 blank lines)
-    content = re.sub(r"\n{4,}", "\n\n\n", content)
-
-    new_len = len(content)
-    if new_len < original_len:
-        reduction = (1 - new_len / original_len) * 100
-        log.info("Preprocessed %s: %d → %d chars (%.0f%% reduction)", filename, original_len, new_len, reduction)
-
-    return content
-
-
-@dataclass
-class _FileEntry:
-    """A file read from the knowledge folder, pending inline/defer decision."""
-
-    name: str
-    content: str
-    size: int
-    inline: bool = True
-
-
-def _assemble_files_text(
-    inlined: list[tuple[str, str]],  # (filename, content) in display order
-    oversized_names: list[str],
-    binary_names: list[str],
-) -> str:
-    """Build the files section of the prompt."""
-    parts: list[str] = []
-    inlined_parts: list[str] = []
-    for name, content in inlined:
-        inlined_parts.append(f"### {name}\n```\n{content}\n```")
-    for name in oversized_names:
-        inlined_parts.append(f"### {name}\n(This file will be summarized in chunks — too large to inline)")
-    if inlined_parts:
-        parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
-    if binary_names:
-        file_list = "\n".join(f"- {n}" for n in binary_names)
-        parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
-    return "\n\n".join(parts) + "\n" if parts else ""
-
-
-def _assemble_prompt(
-    instructions: str,
-    global_context: str,
-    files_text: str,
-    children_text: str,
-    existing_summary: str,
-    display_path: str,
-) -> str:
-    """Assemble the full regen prompt. Single source of truth for template."""
-    output_directive = """Wrap your output in XML tags as shown below.
-If nothing is journal-worthy, leave the journal section empty.
-Return only the XML sections. Do not include any text outside the tags.
-
-<summary>
-…the updated summary…
-</summary>
-
-<journal>
-…journal entry, or empty if nothing meaningful changed…
-</journal>"""
-
-    return f"""{instructions}
-
----
-
-{global_context}
-
----
-
-You are regenerating the insight summary for knowledge area: {display_path}
-{files_text}{children_text}
-{"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
-
-{output_directive}"""
+PROMPT_VERSION = _PROMPT_VERSION
+classify_change = _classify_change
+invalidate_global_context_cache = _invalidate_global_context_cache
+_REGEN_INSTRUCTIONS = REGEN_INSTRUCTIONS
+_first_heading = first_heading
+_preprocess_content = preprocess_content
+_compute_content_hash = compute_content_hash
+_compute_structure_hash = compute_structure_hash
+_collect_child_summaries = collect_child_summaries
+_collect_global_context = collect_global_context
 
 
 # Structured output parsing for journal support
@@ -510,83 +367,6 @@ def _delete_area_state(root: Path, repository: BrainRepository, knowledge_path: 
     )
 
 
-def _split_markdown_chunks(
-    content: str,
-    target_chars: int = CHUNK_TARGET_CHARS,
-    *,
-    _level: int | None = None,
-) -> list[str]:
-    """Split markdown content into chunks at heading boundaries.
-
-    Uses lookahead regex to split at heading lines, preserving the heading
-    in each chunk. Greedy merge combines adjacent sections until the target
-    size is exceeded.
-
-    If a single section exceeds target, recursively splits at the next
-    heading level (H1 → H2 → H3 → paragraph).
-
-    Invariant: "".join(chunks).rstrip("\\n") == content.rstrip("\\n")
-    """
-    if len(content) <= target_chars:
-        return [content]
-
-    # Detect root heading level if not specified
-    if _level is None:
-        m = HEADING_RE.search(content)
-        if m:
-            _level = len(m.group(0).split()[0])  # count '#' chars
-        else:
-            _level = 1  # default, will fall through to paragraph split
-
-    # Try splitting at current heading level
-    if _level <= 3:
-        pattern = re.compile(rf"(?=^#{{1,{_level}}} )", re.MULTILINE)
-        sections = pattern.split(content)
-        # Filter empty strings from split (e.g. leading empty section)
-        sections = [s for s in sections if s]
-
-        if len(sections) > 1:
-            # Greedy merge: combine adjacent sections until target exceeded
-            chunks: list[str] = []
-            current = ""
-            for section in sections:
-                if current and len(current) + len(section) > target_chars:
-                    chunks.append(current)
-                    current = section
-                else:
-                    current += section
-            if current:
-                chunks.append(current)
-
-            # Recursively split any chunks that are still oversized
-            result: list[str] = []
-            for chunk in chunks:
-                if len(chunk) > target_chars:
-                    result.extend(_split_markdown_chunks(chunk, target_chars, _level=_level + 1))
-                else:
-                    result.append(chunk)
-            return result
-
-    # Fallback: split at paragraph boundaries (double newline)
-    paragraphs = content.split("\n\n")
-    if len(paragraphs) <= 1:
-        return [content]  # Can't split further
-
-    chunks = []
-    current = ""
-    for para in paragraphs:
-        candidate = current + "\n\n" + para if current else para
-        if current and len(candidate) > target_chars:
-            chunks.append(current)
-            current = para
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-
-    return chunks
-
-
 @dataclass
 class RegenConfig:
     """Configuration for the insights agent."""
@@ -617,62 +397,6 @@ class RegenConfig:
             )
         except (json.JSONDecodeError, OSError):
             return cls()
-
-
-def _compute_content_hash(
-    child_summaries: dict[str, str],
-    knowledge_dir: Path,
-    has_direct_files: bool,
-) -> str:
-    """Compute content-only hash for a folder.
-
-    Excludes filenames and dir names so renames don't change the hash.
-    Child summaries are sorted by content (not dir name key).
-    Files are sorted by their content hash (not filename) for determinism
-    across renames.
-    """
-    h = hashlib.sha256()
-    for content in sorted(child_summaries.values()):
-        h.update(content.encode("utf-8"))
-    if has_direct_files:
-        file_hashes: list[tuple[str, bytes]] = []
-        for p in iterdir_paths(knowledge_dir):
-            if _is_readable_file(p):
-                content = read_bytes(p)
-                if p.suffix.lower() in TEXT_EXTENSIONS:
-                    content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                file_hashes.append((hashlib.sha256(content).hexdigest(), content))
-        for _, content in sorted(file_hashes):
-            h.update(content)
-    return h.hexdigest()
-
-
-def _compute_structure_hash(
-    child_dirs: list[Path],
-    knowledge_dir: Path,
-    has_direct_files: bool,
-) -> str:
-    """Compute structural hash capturing names only (dir names + filenames).
-
-    Changes here alone (renames) don't trigger regen.
-    """
-    h = hashlib.sha256()
-    for child in sorted(child_dirs, key=lambda d: d.name):
-        h.update(b"dir:")
-        h.update(child.name.encode("utf-8"))
-    if has_direct_files:
-        for p in sorted(
-            (p for p in iterdir_paths(knowledge_dir) if _is_readable_file(p)),
-            key=lambda p: p.name,
-        ):
-            h.update(b"file:")
-            h.update(p.name.encode("utf-8"))
-    return h.hexdigest()
-
-
-# Public API for hash computation (used by doctor --adopt-baseline)
-compute_content_hash = _compute_content_hash
-compute_structure_hash = _compute_structure_hash
 
 
 def text_similarity(a: str, b: str) -> float:
@@ -724,38 +448,6 @@ class _InvokeClaudeShim:
         )
 
 
-@dataclass
-class PromptResult:
-    """Result from prompt construction."""
-
-    text: str
-    oversized_files: dict[str, str] | None = None  # filename → preprocessed content
-    diagnostics: PromptBudgetDiagnostics | None = None
-
-
-@dataclass(frozen=True)
-class DeferredFileDecision:
-    """Why a file was deferred from direct inclusion to chunk fallback."""
-
-    name: str
-    estimated_tokens: int
-    remaining_tokens_before_defer: int
-    reason: str
-
-
-@dataclass(frozen=True)
-class PromptBudgetDiagnostics:
-    """Explain how prompt budget was allocated for one regen prompt."""
-
-    prompt_budget_class: str
-    capability_max_prompt_tokens: int
-    effective_prompt_tokens: int
-    prompt_overhead_tokens: int
-    component_tokens: dict[str, int]
-    deferred_files: tuple[DeferredFileDecision, ...]
-    omitted_child_summaries: tuple[str, ...]
-
-
 def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
     """Parse token counts from Claude CLI stderr output.
 
@@ -776,139 +468,6 @@ def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
         output_tokens = int(m.group(1).replace(",", ""))
 
     return input_tokens, output_tokens
-
-
-# ---------------------------------------------------------------------------
-# Global context cache — built once, invalidated by watcher
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _GlobalContextCache:
-    """Cached global context for prompt assembly."""
-
-    mode: Literal["core_raw", "core_summary"]
-    content_hash: str
-    compiled_text: str
-
-
-_global_context_cache: _GlobalContextCache | None = None
-_context_cache_lock = threading.Lock()
-
-
-def invalidate_global_context_cache() -> None:
-    """Invalidate the cached global context. Called by the watcher."""
-    global _global_context_cache
-    with _context_cache_lock:
-        _global_context_cache = None
-    log.debug("Global context cache invalidated")
-
-
-def _hash_directory(directory: Path) -> str:
-    """Compute a hash over all readable files in a directory tree."""
-    h = hashlib.sha256()
-    if not path_is_dir(directory):
-        return h.hexdigest()
-    for p in rglob_paths(directory, "*"):
-        if path_is_file(p) and not p.name.startswith("."):
-            h.update(str(p.relative_to(directory)).encode("utf-8"))
-            h.update(read_bytes(p))
-    return h.hexdigest()
-
-
-def _iter_core_raw_context_files(core_dir: Path):
-    """Yield raw _core files eligible for inclusion in _core regen context."""
-    if not path_is_dir(core_dir):
-        return
-    for p in rglob_paths(core_dir, "*"):
-        if (
-            path_is_file(p)
-            and p.suffix.lower() in TEXT_EXTENSIONS
-            and not p.name.startswith(("_", "."))
-            and MANAGED_DIRNAME not in p.parts
-        ):
-            yield p
-
-
-def _hash_core_raw_context(core_dir: Path) -> str:
-    """Hash the raw _core files used when regenerating _core itself."""
-    h = hashlib.sha256()
-    for p in _iter_core_raw_context_files(core_dir):
-        rel = p.relative_to(core_dir)
-        h.update(str(rel).encode("utf-8"))
-        h.update(read_bytes(p))
-    return h.hexdigest()
-
-
-def _hash_core_summary_context(summary_path: Path) -> str:
-    """Hash the single _core summary file used for non-_core regen."""
-    h = hashlib.sha256()
-    if path_is_file(summary_path):
-        h.update(b"summary.md")
-        h.update(read_bytes(summary_path))
-    return h.hexdigest()
-
-
-def _collect_global_context(root: Path, current_path: str) -> str:
-    """Collect and inline global context from _core meaning.
-
-    When regenerating `_core`, inline raw files from `knowledge/_core/`.
-    For every other area, inline only `_core`'s generated meaning from its
-    co-located `summary.md`, if present.
-    """
-    global _global_context_cache
-
-    core_dir = root / "knowledge" / "_core"
-    core_summary_path = area_summary_path(root, "_core")
-    mode: Literal["core_raw", "core_summary"] = "core_raw" if current_path == "_core" else "core_summary"
-    content_hash = (
-        _hash_core_raw_context(core_dir) if mode == "core_raw" else _hash_core_summary_context(core_summary_path)
-    )
-
-    # Fast path: if cache exists, validate via content hash before rebuilding
-    with _context_cache_lock:
-        if _global_context_cache is not None and _global_context_cache.mode == mode:
-            if _global_context_cache.content_hash == content_hash:
-                log.debug("Global context cache hit")
-                return _global_context_cache.compiled_text
-
-    log.debug("Global context cache miss, rebuilding")
-    sections: list[str] = []
-
-    if mode == "core_raw" and path_is_dir(core_dir):
-        parts: list[str] = []
-        count = 0
-        for p in _iter_core_raw_context_files(core_dir):
-            try:
-                content = read_text(p, encoding="utf-8")
-                rel = p.relative_to(core_dir)
-                parts.append(f"### {rel}\n```\n{content}\n```")
-                count += 1
-            except (OSError, UnicodeDecodeError) as exc:
-                log.debug("Skipping unreadable file %s: %s", p, exc)
-        if parts:
-            sections.append("## Global Context: knowledge/_core\n" + "\n\n".join(parts))
-            log.debug("Global context: %d raw files from knowledge/_core for _core regen", count)
-
-    if mode == "core_summary" and path_is_file(core_summary_path):
-        try:
-            content = read_text(core_summary_path, encoding="utf-8")
-            sections.append(
-                "## Global Context: knowledge/_core/.brain-sync/insights/summary.md\n"
-                f"### summary.md\n```\n{content}\n```"
-            )
-            log.debug("Global context: loaded _core summary for non-_core regen")
-        except (OSError, UnicodeDecodeError) as exc:
-            log.debug("Skipping unreadable _core summary %s: %s", core_summary_path, exc)
-
-    compiled = "\n\n".join(sections)
-
-    with _context_cache_lock:
-        _global_context_cache = _GlobalContextCache(mode=mode, content_hash=content_hash, compiled_text=compiled)
-
-    total_chars = len(compiled)
-    log.debug("Global context compiled: %d chars (~%d tokens est.)", total_chars, total_chars // 3)
-    return compiled
 
 
 # ---------------------------------------------------------------------------
@@ -1169,115 +728,19 @@ def _estimate_tokens(text: str) -> int:
 def _effective_prompt_budget(capabilities: BackendCapabilities | None) -> tuple[int, str, int]:
     """Resolve the effective prompt budget for one prompt build."""
 
-    if MAX_PROMPT_TOKENS != LEGACY_MAX_PROMPT_TOKENS:
-        return MAX_PROMPT_TOKENS, "legacy_override", MAX_PROMPT_TOKENS
-    if capabilities is None:
-        return LEGACY_MAX_PROMPT_TOKENS, "legacy_fixed", LEGACY_MAX_PROMPT_TOKENS
-
-    capability_max = capabilities.max_prompt_tokens
-    if capabilities.prompt_budget_class == "extended_1m" or capability_max >= 1_000_000:
-        return min(capability_max, EXTENDED_PROMPT_BUDGET_TOKENS), capabilities.prompt_budget_class, capability_max
-    if capability_max >= 200_000:
-        return min(capability_max, STANDARD_PROMPT_BUDGET_TOKENS), capabilities.prompt_budget_class, capability_max
-    return min(capability_max, LEGACY_MAX_PROMPT_TOKENS), capabilities.prompt_budget_class, capability_max
+    return resolve_effective_prompt_budget(capabilities, _planner_settings())
 
 
-def _pack_child_summaries(
-    child_summaries: dict[str, str],
-    *,
-    remaining_tokens: int,
-    display_path: str,
-) -> tuple[str, tuple[str, ...], int]:
-    """Pack child summaries into the remaining prompt budget."""
+def _planner_settings() -> PromptPlannerSettings:
+    """Build prompt-planner settings from current engine constants."""
 
-    if not child_summaries or remaining_tokens <= 0:
-        omitted_names: tuple[str, ...] = (
-            tuple(sorted(child_summaries)) if child_summaries and remaining_tokens <= 0 else ()
-        )
-        if omitted_names:
-            log.info(
-                "Omitted %d child summaries for %s (no budget remained after higher-priority context)",
-                len(omitted_names),
-                display_path,
-            )
-        return "", omitted_names, 0
-
-    loaded_parts: list[str] = []
-    omitted: list[str] = []
-    used_tokens = 0
-    for name, content in sorted(child_summaries.items()):
-        child_part = f"\n### {name}\n{content}"
-        child_tokens = _estimate_tokens(child_part)
-        if used_tokens + child_tokens > remaining_tokens:
-            omitted.append(name)
-            continue
-        loaded_parts.append(child_part)
-        used_tokens += child_tokens
-
-    if omitted:
-        log.info(
-            "Omitted %d child summaries for %s (remaining prompt budget=%d tokens after higher-priority context)",
-            len(omitted),
-            display_path,
-            remaining_tokens,
-        )
-    total = len(child_summaries)
-    loaded = total - len(omitted)
-    header = f"Sub-area summaries ({loaded} of {total} loaded):" if omitted else "Sub-area summaries:"
-    footer = f"\n({len(omitted)} sub-area summaries omitted — prompt budget)" if omitted else ""
-    children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n" if loaded_parts else ""
-    return children_text, tuple(omitted), used_tokens
-
-
-def _pack_direct_files(
-    entries: list[_FileEntry],
-    *,
-    remaining_tokens: int,
-    display_path: str,
-) -> tuple[list[tuple[str, str]], list[str], dict[str, str] | None, tuple[DeferredFileDecision, ...], int]:
-    """Pack direct files into the remaining prompt budget before chunk fallback."""
-
-    original_order = {entry.name: index for index, entry in enumerate(entries)}
-    deferred: list[DeferredFileDecision] = []
-    used_tokens = 0
-
-    for entry in sorted(entries, key=lambda item: item.size, reverse=True):
-        formatted_tokens = _estimate_tokens(f"### {entry.name}\n```\n{entry.content}\n```")
-        remaining_after_loaded = max(0, remaining_tokens - used_tokens)
-        if formatted_tokens <= remaining_after_loaded:
-            used_tokens += formatted_tokens
-            continue
-        entry.inline = False
-        deferred.append(
-            DeferredFileDecision(
-                name=entry.name,
-                estimated_tokens=formatted_tokens,
-                remaining_tokens_before_defer=remaining_after_loaded,
-                reason="exceeds_remaining_direct_file_budget",
-            )
-        )
-        log.info(
-            "Deferred %s (~%d tokens) to chunking for %s (remaining=%d effective budget tokens)",
-            entry.name,
-            formatted_tokens,
-            display_path,
-            remaining_after_loaded,
-        )
-
-    inlined = [
-        (entry.name, entry.content)
-        for entry in sorted(entries, key=lambda item: original_order[item.name])
-        if entry.inline
-    ]
-    oversized_names = [
-        entry.name for entry in sorted(entries, key=lambda item: original_order[item.name]) if not entry.inline
-    ]
-    oversized_files: dict[str, str] | None = {
-        entry.name: entry.content
-        for entry in sorted(entries, key=lambda item: original_order[item.name])
-        if not entry.inline
-    } or None
-    return inlined, oversized_names, oversized_files, tuple(deferred), used_tokens
+    return PromptPlannerSettings(
+        instructions=_REGEN_INSTRUCTIONS,
+        legacy_max_prompt_tokens=LEGACY_MAX_PROMPT_TOKENS,
+        max_prompt_tokens=MAX_PROMPT_TOKENS,
+        standard_prompt_budget_tokens=STANDARD_PROMPT_BUDGET_TOKENS,
+        extended_prompt_budget_tokens=EXTENDED_PROMPT_BUDGET_TOKENS,
+    )
 
 
 def _build_chunk_prompt(
@@ -1285,29 +748,22 @@ def _build_chunk_prompt(
     chunk_idx: int,
     total_chunks: int,
     filename: str,
-    first_heading: str,
+    first_heading_text: str,
 ) -> str:
-    """Build a lightweight prompt for summarizing a single chunk.
+    """Build a lightweight prompt for summarizing a single chunk."""
 
-    No global context or existing summary — keeps chunk prompts small.
-    """
-    return f"""Summarize this section while preserving all requirements, decisions,
-technical constraints, and implementation details. Do not omit
-substantive information. Maintain lists, structure, and terminology.
+    return build_chunk_prompt(chunk, chunk_idx, total_chunks, filename, first_heading_text)
 
-This document may contain [image removed] or [diagram: ...] placeholders.
-Treat [image removed] and [diagram: ...] as references to diagrams or UI screenshots.
-Preserve any functional meaning implied by surrounding text.
-Do not attempt to reconstruct the images.
 
-[Chunk {chunk_idx}/{total_chunks} — section: {first_heading}]
-File: {filename}
+def _split_markdown_chunks(
+    content: str,
+    target_chars: int = CHUNK_TARGET_CHARS,
+    *,
+    _level: int | None = None,
+) -> list[str]:
+    """Split markdown content into chunks using the extracted planner seam."""
 
----
-{chunk}
----
-
-Output a thorough summary of this section now."""
+    return split_markdown_chunks(content, target_chars, _level=_level)
 
 
 def _build_prompt_from_chunks(
@@ -1320,98 +776,19 @@ def _build_prompt_from_chunks(
     *,
     capabilities: BackendCapabilities | None = None,
 ) -> PromptResult:
-    """Build a merge prompt using chunk summaries instead of raw file content.
+    """Build a merge prompt using chunk summaries instead of raw file content."""
 
-    Reuses the exact same prompt structure as _build_prompt() — instructions,
-    global context, file content (chunk summaries), child summaries, existing
-    summary, output instruction. Not a new prompt style.
-    """
-    instructions = _REGEN_INSTRUCTIONS
-    global_context = _collect_global_context(root, knowledge_path)
-    effective_prompt_tokens, prompt_budget_class, capability_max_prompt_tokens = _effective_prompt_budget(capabilities)
-
-    # Build files section from chunk summaries (sorted for determinism)
-    files_parts: list[str] = []
-    for filename in sorted(chunk_summaries.keys()):
-        summaries = chunk_summaries[filename]
-        n = len(summaries)
-        chunk_parts: list[str] = []
-        for i, summary in enumerate(summaries, 1):
-            heading = _first_heading(summary) or f"part {i}"
-            chunk_parts.append(f"#### Chunk {i}/{n} — section: {heading}\n{summary}")
-        files_parts.append(
-            f"### {filename} (summarized in {n} chunks — original too large to inline)\n\n" + "\n\n".join(chunk_parts)
-        )
-
-    if binary_names:
-        file_list = "\n".join(f"- {n}" for n in binary_names)
-        files_parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
-
-    files_text = "The knowledge folder contains these files:\n" + "\n\n".join(files_parts) + "\n" if files_parts else ""
-
-    existing_summary = ""
-    summary_path = insights_dir / "summary.md"
-    if path_exists(summary_path):
-        existing_summary = read_text(summary_path, encoding="utf-8")
-
-    display_path = knowledge_path or "(root)"
-    base_prompt_without_children = _assemble_prompt(
-        instructions,
-        global_context,
-        files_text,
-        "",
-        existing_summary,
-        display_path,
-    )
-    remaining_for_children = max(0, effective_prompt_tokens - _estimate_tokens(base_prompt_without_children))
-    children_text, omitted_child_summaries, child_tokens_used = _pack_child_summaries(
+    return build_prompt_from_chunks(
+        knowledge_path,
+        chunk_summaries,
         child_summaries,
-        remaining_tokens=remaining_for_children,
-        display_path=display_path,
+        insights_dir,
+        root,
+        binary_names,
+        capabilities=capabilities,
+        settings=_planner_settings(),
+        collect_global_context_fn=_collect_global_context,
     )
-
-    prompt = _assemble_prompt(
-        instructions,
-        global_context,
-        files_text,
-        children_text,
-        existing_summary,
-        display_path,
-    )
-
-    estimated_tokens = _estimate_tokens(prompt)
-    log.debug(
-        "Merge prompt for %s: ~%d tokens est., %d chunked files (effective budget=%d)",
-        display_path,
-        estimated_tokens,
-        len(chunk_summaries),
-        effective_prompt_tokens,
-    )
-    if estimated_tokens > effective_prompt_tokens:
-        log.warning(
-            "Merge prompt exceeds effective budget for %s: ~%d tokens estimated vs %d effective",
-            display_path,
-            estimated_tokens,
-            effective_prompt_tokens,
-        )
-
-    diagnostics = PromptBudgetDiagnostics(
-        prompt_budget_class=prompt_budget_class,
-        capability_max_prompt_tokens=capability_max_prompt_tokens,
-        effective_prompt_tokens=effective_prompt_tokens,
-        prompt_overhead_tokens=capabilities.invocation.prompt_overhead_tokens if capabilities else 0,
-        component_tokens={
-            "instructions": _estimate_tokens(instructions),
-            "global_context": _estimate_tokens(global_context),
-            "direct_files": _estimate_tokens(files_text),
-            "child_summaries": child_tokens_used,
-            "existing_summary": _estimate_tokens(existing_summary),
-            "total": estimated_tokens,
-        },
-        deferred_files=(),
-        omitted_child_summaries=omitted_child_summaries,
-    )
-    return PromptResult(text=prompt, diagnostics=diagnostics)
 
 
 def _build_prompt(
@@ -1423,281 +800,23 @@ def _build_prompt(
     *,
     capabilities: BackendCapabilities | None = None,
 ) -> PromptResult:
-    """Build the prompt for regenerating an insight summary.
+    """Build the prompt for regenerating an insight summary."""
 
-    Sections are assembled in a fixed deterministic order — never reorder:
-    1. Instructions (INSIGHT_INSTRUCTIONS)
-    2. Global context (_core raw files for _core regen; otherwise _core summary only)
-    3. Node content (knowledge files for leaf, child summaries for parent)
-    4. Existing summary
-    5. Output path(s)
-
-    Files are packed greedily under an effective token budget derived from
-    backend capabilities when available.
-    Files that don't fit are deferred to chunk-and-merge.
-    """
-    instructions = _REGEN_INSTRUCTIONS
-    global_context = _collect_global_context(root, knowledge_path)
-    effective_prompt_tokens, prompt_budget_class, capability_max_prompt_tokens = _effective_prompt_budget(capabilities)
-
-    entries: list[_FileEntry] = []
-    binary_names: list[str] = []
-    files = [p for p in iterdir_paths(knowledge_dir) if _is_readable_file(p)]
-    if files:
-        for f in files:
-            if f.suffix.lower() in TEXT_EXTENSIONS:
-                try:
-                    content = read_text(f, encoding="utf-8")
-                    content = _preprocess_content(content, f.name)
-                    entries.append(_FileEntry(name=f.name, content=content, size=len(content)))
-                except (OSError, UnicodeDecodeError):
-                    binary_names.append(f.name)
-            else:
-                binary_names.append(f.name)
-
-    existing_summary = ""
-    summary_path = insights_dir / "summary.md"
-    if path_exists(summary_path):
-        existing_summary = read_text(summary_path, encoding="utf-8")
-
-    display_path = knowledge_path or "(root)"
-    empty_files_text = _assemble_files_text([], [], binary_names)
-    base_prompt_without_files_or_children = _assemble_prompt(
-        instructions,
-        global_context,
-        empty_files_text,
-        "",
-        existing_summary,
-        display_path,
-    )
-    remaining_for_direct_files = max(
-        0,
-        effective_prompt_tokens - _estimate_tokens(base_prompt_without_files_or_children),
-    )
-    inlined, oversized_names, oversized_files, deferred_files, direct_file_tokens = _pack_direct_files(
-        entries,
-        remaining_tokens=remaining_for_direct_files,
-        display_path=display_path,
-    )
-
-    files_text = _assemble_files_text(inlined, oversized_names, binary_names)
-    base_prompt_without_children = _assemble_prompt(
-        instructions,
-        global_context,
-        files_text,
-        "",
-        existing_summary,
-        display_path,
-    )
-    remaining_for_children = max(0, effective_prompt_tokens - _estimate_tokens(base_prompt_without_children))
-    children_text, omitted_child_summaries, child_tokens_used = _pack_child_summaries(
+    return build_prompt(
+        knowledge_path,
+        knowledge_dir,
         child_summaries,
-        remaining_tokens=remaining_for_children,
-        display_path=display_path,
+        insights_dir,
+        root,
+        capabilities=capabilities,
+        settings=_planner_settings(),
+        preprocess_content_fn=_preprocess_content,
+        collect_global_context_fn=_collect_global_context,
     )
-
-    prompt = _assemble_prompt(
-        instructions,
-        global_context,
-        files_text,
-        children_text,
-        existing_summary,
-        display_path,
-    )
-
-    estimated_tokens = _estimate_tokens(prompt)
-    if estimated_tokens > effective_prompt_tokens:
-        log.warning(
-            "Prompt still exceeds effective budget after packing for %s: ~%d tokens vs %d effective",
-            display_path,
-            estimated_tokens,
-            effective_prompt_tokens,
-        )
-
-    log.debug(
-        "Prompt build for %s: inlined=%d deferred=%d total_files=%d ~%d tokens (effective budget=%d)",
-        display_path,
-        len(inlined),
-        len(oversized_names),
-        len(entries),
-        estimated_tokens,
-        effective_prompt_tokens,
-    )
-
-    diagnostics = PromptBudgetDiagnostics(
-        prompt_budget_class=prompt_budget_class,
-        capability_max_prompt_tokens=capability_max_prompt_tokens,
-        effective_prompt_tokens=effective_prompt_tokens,
-        prompt_overhead_tokens=capabilities.invocation.prompt_overhead_tokens if capabilities else 0,
-        component_tokens={
-            "instructions": _estimate_tokens(instructions),
-            "global_context": _estimate_tokens(global_context),
-            "direct_files": direct_file_tokens,
-            "child_summaries": child_tokens_used,
-            "existing_summary": _estimate_tokens(existing_summary),
-            "scaffold": max(
-                0,
-                estimated_tokens
-                - _estimate_tokens(instructions)
-                - _estimate_tokens(global_context)
-                - direct_file_tokens
-                - child_tokens_used
-                - _estimate_tokens(existing_summary),
-            ),
-            "total": estimated_tokens,
-        },
-        deferred_files=deferred_files,
-        omitted_child_summaries=omitted_child_summaries,
-    )
-    return PromptResult(text=prompt, oversized_files=oversized_files, diagnostics=diagnostics)
 
 
 _get_child_dirs = get_child_dirs
-
-
-def _collect_child_summaries(
-    root: Path,
-    current_path: str,
-    child_dirs: list[Path],
-) -> dict[str, str]:
-    """Read existing child summaries from co-located area insights."""
-    child_summaries: dict[str, str] = {}
-    for child in child_dirs:
-        child_rel = current_path + "/" + child.name if current_path else child.name
-        child_summary_path = area_summary_path(root, child_rel)
-        if path_exists(child_summary_path):
-            child_summaries[child.name] = read_text(child_summary_path, encoding="utf-8")
-    return child_summaries
-
-
 collect_child_summaries = _collect_child_summaries
-
-
-def evaluate_folder_state(
-    root: Path,
-    knowledge_path: str,
-) -> FolderEvaluation:
-    """Evaluate one knowledge path without invoking the backend."""
-
-    normalized_path = normalize_path(knowledge_path)
-    knowledge_dir = root / "knowledge" / normalized_path if normalized_path else root / "knowledge"
-    insights_dir = area_insights_dir(root, normalized_path)
-    if not path_is_dir(knowledge_dir):
-        return FolderEvaluation(
-            knowledge_path=normalized_path,
-            knowledge_dir=knowledge_dir,
-            insights_dir=insights_dir,
-            outcome="missing_path",
-            change=ChangeEvent(change_type="content", structural=False),
-            meta=None,
-            child_dirs=(),
-            child_summaries={},
-            has_direct_files=False,
-            content_hash=None,
-            structure_hash=None,
-            summary_exists=False,
-        )
-
-    meta = load_regen_hashes(root, normalized_path)
-    child_dirs = tuple(_get_child_dirs(knowledge_dir))
-    has_direct_files = any(_is_readable_file(p) for p in iterdir_paths(knowledge_dir))
-    if not child_dirs and not has_direct_files:
-        return FolderEvaluation(
-            knowledge_path=normalized_path,
-            knowledge_dir=knowledge_dir,
-            insights_dir=insights_dir,
-            outcome="no_content",
-            change=ChangeEvent(change_type="content", structural=False),
-            meta=meta,
-            child_dirs=child_dirs,
-            child_summaries={},
-            has_direct_files=False,
-            content_hash=None,
-            structure_hash=None,
-            summary_exists=path_exists(insights_dir / "summary.md"),
-        )
-
-    child_summaries = _collect_child_summaries(root, normalized_path, list(child_dirs))
-    if not child_summaries and not has_direct_files:
-        return FolderEvaluation(
-            knowledge_path=normalized_path,
-            knowledge_dir=knowledge_dir,
-            insights_dir=insights_dir,
-            outcome="no_content",
-            change=ChangeEvent(change_type="content", structural=False),
-            meta=meta,
-            child_dirs=child_dirs,
-            child_summaries={},
-            has_direct_files=False,
-            content_hash=None,
-            structure_hash=None,
-            summary_exists=path_exists(insights_dir / "summary.md"),
-        )
-
-    content_hash = _compute_content_hash(child_summaries, knowledge_dir, has_direct_files)
-    structure_hash = _compute_structure_hash(list(child_dirs), knowledge_dir, has_direct_files)
-    summary_exists = path_exists(insights_dir / "summary.md")
-
-    if not meta or not meta.content_hash:
-        return FolderEvaluation(
-            knowledge_path=normalized_path,
-            knowledge_dir=knowledge_dir,
-            insights_dir=insights_dir,
-            outcome="content_changed",
-            change=ChangeEvent(change_type="content", structural=False),
-            meta=meta,
-            child_dirs=child_dirs,
-            child_summaries=child_summaries,
-            has_direct_files=has_direct_files,
-            content_hash=content_hash,
-            structure_hash=structure_hash,
-            summary_exists=summary_exists,
-        )
-
-    if meta.structure_hash is None and summary_exists:
-        return FolderEvaluation(
-            knowledge_path=normalized_path,
-            knowledge_dir=knowledge_dir,
-            insights_dir=insights_dir,
-            outcome="metadata_backfill",
-            change=ChangeEvent(change_type="none", structural=False),
-            meta=meta,
-            child_dirs=child_dirs,
-            child_summaries=child_summaries,
-            has_direct_files=has_direct_files,
-            content_hash=content_hash,
-            structure_hash=structure_hash,
-            summary_exists=True,
-        )
-
-    event = classify_change(
-        meta.content_hash,
-        content_hash,
-        meta.structure_hash,
-        structure_hash,
-    )
-    outcome: FolderEvaluationOutcome
-    if event.change_type == "none":
-        outcome = "unchanged"
-    elif event.structural:
-        outcome = "structure_only"
-    else:
-        outcome = "content_changed"
-
-    return FolderEvaluation(
-        knowledge_path=normalized_path,
-        knowledge_dir=knowledge_dir,
-        insights_dir=insights_dir,
-        outcome=outcome,
-        change=event,
-        meta=meta,
-        child_dirs=child_dirs,
-        child_summaries=child_summaries,
-        has_direct_files=has_direct_files,
-        content_hash=content_hash,
-        structure_hash=structure_hash,
-        summary_exists=summary_exists,
-    )
 
 
 def _persist_structure_hash_backfill(root: Path, evaluation: FolderEvaluation) -> None:

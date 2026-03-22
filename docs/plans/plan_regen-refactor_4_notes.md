@@ -90,6 +90,74 @@ Recommended next action:
 
 - proceed unchanged
 
+2026-03-23T09:35:00+13:00
+Implementation note: Post-Phase-3 REGEN seam extraction before Phase 4
+Change: Extracted deterministic folder evaluation into `regen/evaluation.py` and prompt assembly/chunk planning into `regen/prompt_planner.py`, while keeping `regen/engine.py` as the compatibility-preserving orchestration surface.
+Reason: The approved implementation work left `regen/engine.py` too large to carry comfortably into later artifact and observability phases; this bounded refactor creates clearer seams for later execution/persistence extraction and for a future deterministic generation gate.
+Status: Implemented.
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/engine.py`
+- `src/brain_sync/regen/evaluation.py`
+- `src/brain_sync/regen/prompt_planner.py`
+- `src/brain_sync/regen/__init__.py`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/regen/README.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m ruff check src/brain_sync/regen/engine.py src/brain_sync/regen/evaluation.py src/brain_sync/regen/prompt_planner.py --fix` -> passed after import/format cleanup
+- `pyright src/brain_sync/regen/engine.py src/brain_sync/regen/evaluation.py src/brain_sync/regen/prompt_planner.py` -> passed
+- `python -m pytest tests/unit/test_regen.py tests/unit/test_regen_phase1.py tests/unit/test_regen_phase2.py -q` -> 193 passed
+- `python -m pytest tests/unit/test_regen_queue.py -q` -> 21 passed
+- `python -m pytest tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase2_budgeting.py -q` -> 9 passed
+
+Baseline-versus-current metrics relevant to the note:
+
+- `src/brain_sync/regen/engine.py` moved from roughly 2390 lines before the refactor to 1290 lines after the extraction.
+- New focused seams added: 1 deterministic evaluation module (`regen/evaluation.py`) and 1 prompt-planning module (`regen/prompt_planner.py`).
+- Compatibility preservation remained explicit: existing tests that patch `brain_sync.regen.engine.MAX_PROMPT_TOKENS`, `brain_sync.regen.engine.invoke_claude`, `brain_sync.regen.engine._preprocess_content`, and `brain_sync.regen.engine._split_markdown_chunks` still passed unchanged.
+
+Findings summary:
+
+- The extraction materially reduced `regen/engine.py` size and made evaluation and prompt-planning ownership explicit without changing phase behavior.
+- `regen_single_folder()` remains the orchestration seam and still carries execution, output parsing, and persistence responsibilities.
+- The current split creates a clean future seam for a deterministic "should generation run?" policy gate between evaluation and backend execution.
+
+Product calls surfaced:
+
+- No new product decisions were introduced by this bounded structural refactor.
+
+Regressions or ambiguous results:
+
+- No regressions were found in the targeted regen unit, queue, or integration slices.
+- `regen/engine.py` is still larger than ideal, so the seam extraction should be treated as partial completion rather than the end of regen modularization.
+
+Unresolved product decisions:
+
+- None added by this refactor note.
+
+Docs reviewed:
+
+- `AGENTS.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/regen/README.md`
+- `docs/plans/README.md`
+
+Docs changed:
+
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/regen/README.md`
+- `src/brain_sync/regen/__init__.py`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+
 2026-03-23T07:53:54.0198904+13:00
 Phase: Phase 3 - dirty detection and propagation precision
 Change: Converged single-path, wave, and queue propagation on one shared contract for actual parent inputs, removed false-positive walk-up from local-only structure churn and metadata backfill, and moved parent-visible folder-rename propagation to the sync-owned move enqueue path.

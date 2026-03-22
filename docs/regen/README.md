@@ -52,6 +52,15 @@ Today that includes:
 - summary and journal artifact generation
 - regen token telemetry and operational events
 
+Internally, the current split is:
+
+- `regen/evaluation.py` for deterministic node evaluation and hash
+  classification
+- `regen/prompt_planner.py` for prompt assembly, context budgeting, and chunk
+  fallback planning
+- `regen/topology.py` for shared propagation rules
+- `regen/engine.py` for orchestration, backend invocation, and persistence
+
 It does not own:
 
 - source sync and provider polling
@@ -184,6 +193,8 @@ Current implementation now separates node evaluation from execution:
 
 - `evaluate_folder_state()` computes the current node inputs and returns an
   explicit evaluation outcome without invoking the backend
+- `regen/evaluation.py` owns that deterministic folder-state work and its hash
+  helpers
 - `regen_single_folder()` consumes that evaluation result rather than
   recomputing the same policy inline
 - `classify_folder_change()` remains the compatibility wrapper used by
@@ -231,6 +242,10 @@ A few current reading rules matter:
 
 Prompt assembly is deterministic today. The prompt is built in a fixed order
 and does not depend on backend-side file discovery.
+
+`regen/prompt_planner.py` now owns the prompt-construction and chunk-planning
+helpers, while `regen/engine.py` keeps the orchestration and compatibility
+wrappers that older tests and callers still import.
 
 The current prompt shape is:
 
