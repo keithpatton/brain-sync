@@ -25,6 +25,7 @@ def _source_state(
     knowledge_path: str = "area/gabc123-my-doc.md",
     knowledge_state: str = "materialized",
     remote_fingerprint: str | None = _FINGERPRINT,
+    sync_attachments: bool = False,
 ) -> SourceState:
     return SourceState(
         canonical_id=_CANONICAL_ID,
@@ -33,6 +34,7 @@ def _source_state(
         knowledge_path=knowledge_path,
         knowledge_state=knowledge_state,
         remote_fingerprint=remote_fingerprint,
+        sync_attachments=sync_attachments,
     )
 
 
@@ -123,6 +125,47 @@ class TestSkipGuard:
         adapter.fetch.assert_not_awaited()
         assert source_state.knowledge_state == "awaiting"
         assert source_state.materialized_utc is None
+
+    async def test_sync_attachments_does_not_block_unchanged_skip_when_markdown_has_no_attachment_refs(
+        self, unchanged_check: UpdateCheckResult, tmp_path: Path
+    ) -> None:
+        source_state = _source_state(sync_attachments=True)
+        discovered = tmp_path / "knowledge" / "area" / "gabc123-my-doc.md"
+        discovered.parent.mkdir(parents=True)
+        discovered.write_text("# My Doc\n\nContent.\n", encoding="utf-8")
+        adapter = _make_adapter(unchanged_check)
+
+        with (
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=discovered),
+        ):
+            changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
+
+        assert changed is False
+        assert children == []
+        adapter.fetch.assert_not_called()
+
+    async def test_sync_attachments_forces_fetch_when_existing_markdown_references_missing_attachment_context(
+        self, unchanged_check: UpdateCheckResult, fetch_result: SourceFetchResult, tmp_path: Path
+    ) -> None:
+        source_state = _source_state(sync_attachments=True)
+        discovered = tmp_path / "knowledge" / "area" / "gabc123-my-doc.md"
+        discovered.parent.mkdir(parents=True)
+        discovered.write_text(
+            "# My Doc\n\n![diagram](./.brain-sync/attachments/gabc123/a1-diagram.png)\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter(unchanged_check, fetch_result)
+
+        with (
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=discovered),
+        ):
+            changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
+
+        assert changed is True
+        assert children == []
+        adapter.fetch.assert_awaited_once()
 
     async def test_root_backed_processing_fails_closed_when_lease_changes_before_materialization(
         self, fetch_result: SourceFetchResult, tmp_path: Path

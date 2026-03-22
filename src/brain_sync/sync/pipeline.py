@@ -22,7 +22,7 @@ from pathlib import Path
 
 import httpx
 
-from brain_sync.brain.fileops import content_hash, path_exists, rediscover_local_path
+from brain_sync.brain.fileops import content_hash, path_exists, read_text, rediscover_local_path
 from brain_sync.brain.layout import ATTACHMENTS_DIRNAME, MANAGED_DIRNAME
 from brain_sync.brain.managed_markdown import extract_source_id, prepend_managed_header, strip_managed_header
 from brain_sync.sources import (
@@ -47,6 +47,9 @@ __all__ = [
 ]
 
 log = logging.getLogger(__name__)
+_ATTACHMENT_CONTEXT_REF_RE = re.compile(
+    rf"\]\((?:\./)?{re.escape(MANAGED_DIRNAME)}/{re.escape(ATTACHMENTS_DIRNAME)}/|\]\(attachment-ref:"
+)
 
 
 class SourceLifecycleLeaseConflictError(RuntimeError):
@@ -85,6 +88,16 @@ class PreparedSourceSync:
 
 def _has_context_flags(ss: SourceStateLike) -> bool:
     return ss.sync_attachments
+
+
+def _references_attachment_context(existing_file: Path | None) -> bool:
+    if existing_file is None:
+        return False
+    try:
+        return _ATTACHMENT_CONTEXT_REF_RE.search(read_text(existing_file)) is not None
+    except OSError:
+        log.debug("Failed to inspect attachment refs for %s", existing_file, exc_info=True)
+        return True
 
 
 def _resolve_target_dir(root: Path | None, source_state: SourceStateLike) -> Path:
@@ -143,12 +156,16 @@ async def prepare_source_sync(
     target = target_dir / filename
 
     # Skip if unchanged
-    attachments_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME
-    context_missing = _has_context_flags(source_state) and not path_exists(attachments_dir)
     if root is not None:
         existing_file = rediscover_local_path(root / "knowledge", source_state.canonical_id)
     else:
         existing_file = target if path_exists(target) else None
+    attachments_dir = target_dir / MANAGED_DIRNAME / ATTACHMENTS_DIRNAME
+    context_missing = (
+        _has_context_flags(source_state)
+        and _references_attachment_context(existing_file)
+        and not path_exists(attachments_dir)
+    )
     if check:
         log.debug(
             "Version check for %s: status=%s, fingerprint=%s, stored=%s, target=%s, found=%s",
