@@ -5,8 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from brain_sync.brain.tree import normalize_path
-from brain_sync.regen import RegenFailed, classify_folder_change, regen_all, regen_path
-from brain_sync.regen.engine import invalidate_global_context_cache as _invalidate_global_context_cache
+from brain_sync.regen import (
+    RegenFailed,
+    classify_folder_change,
+    regen_all,
+    regen_path,
+)
+from brain_sync.regen import (
+    invalidate_global_context_cache as _invalidate_global_context_cache,
+)
 from brain_sync.regen.lifecycle import regen_session
 
 __all__ = [

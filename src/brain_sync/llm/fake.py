@@ -16,7 +16,7 @@ import random
 import time
 from pathlib import Path
 
-from brain_sync.llm.base import LlmResult
+from brain_sync.llm.base import BackendCapabilities, LlmResult, capabilities_for_model
 
 TOPIC_FRAGMENTS = [
     "cross-functional alignment",
@@ -58,6 +58,9 @@ class FakeBackend:
         self.call_count = 0
         self.last_prompt: str | None = None
         self.prompts: list[str] = []
+
+    def get_capabilities(self, *, model: str = "") -> BackendCapabilities:
+        return capabilities_for_model(model)
 
     async def invoke(
         self,

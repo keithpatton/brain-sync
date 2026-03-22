@@ -42,6 +42,7 @@ knowledge tree.
 
 Today that includes:
 
+- explicit per-node evaluation before execution
 - change classification for one knowledge path
 - single-folder regeneration
 - leaf-to-root walk-up regeneration
@@ -122,13 +123,14 @@ written when the model returns non-empty journal content.
 
 The single-folder regen flow is the core unit of behaviour. Both single-path
 walk-up and multi-path wave execution eventually call the same
-`regen_single_folder()` logic.
+`regen_single_folder()` logic after first evaluating the node with
+`evaluate_folder_state()`.
 
 At a high level, the current pipeline is:
 
 1. Resolve the knowledge path and load current portable and runtime state.
-2. Classify the folder as missing, empty, unchanged, structure-only, or
-   content-changing.
+2. Evaluate the folder as missing, empty, unchanged, structure-only,
+   content-changing, or metadata-backfill.
 3. Skip or clean up immediately when no LLM work is needed.
 4. Assemble prompt context for content-changing folders.
 5. Chunk oversized files when needed, then rebuild a merge prompt.
@@ -178,6 +180,15 @@ flowchart TD
 
 ## Change Classification
 
+Current implementation now separates node evaluation from execution:
+
+- `evaluate_folder_state()` computes the current node inputs and returns an
+  explicit evaluation outcome without invoking the backend
+- `regen_single_folder()` consumes that evaluation result rather than
+  recomputing the same policy inline
+- `classify_folder_change()` remains the compatibility wrapper used by
+  watcher and reconcile entry paths
+
 Current dirty detection is based on two hashes:
 
 - `content_hash`: captures readable file content plus child summary content
@@ -194,6 +205,17 @@ The current classification outcomes are:
 | `none` | content and structure both match current managed state | no | no summary rewrite |
 | `rename` | content matches but structure differs | no | structure hash updated |
 | `content` | content differs, or no prior managed state exists | yes | summary may be regenerated |
+
+The richer evaluation outcomes now used inside regen are:
+
+| Evaluation outcome | Meaning |
+|---|---|
+| `missing_path` | knowledge area path is gone and stale managed state should be cleaned |
+| `no_content` | no direct files and no currently usable child-summary input |
+| `unchanged` | content and structure both match current managed state |
+| `structure_only` | parent-visible structure changed but semantic content did not |
+| `content_changed` | model-backed regeneration is required |
+| `metadata_backfill` | managed hashes need migration/backfill with no durable content change |
 
 A few current reading rules matter:
 
@@ -267,6 +289,14 @@ When a direct file is too large to inline, regen switches to a two-stage flow:
    content
 
 The merge prompt still uses the same overall structure as the normal prompt.
+
+Current implementation also has a bounded backend-capability seam in `llm/`:
+
+- the backend contract reports a max prompt-token capability and invocation
+  settings such as system prompt and tool mode
+- regen execution now consumes that contract for invocation expectations
+- prompt budgeting itself still uses the current conservative planner and is
+  intentionally left for the later budgeting phase
 
 ## Structured Output And Journaling
 

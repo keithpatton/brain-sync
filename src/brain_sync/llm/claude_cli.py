@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from brain_sync.llm.base import LlmResult
+from brain_sync.llm.base import BackendCapabilities, LlmResult, capabilities_for_model
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +176,9 @@ def _capture_prompt(prompt: str) -> None:
 
 class ClaudeCliBackend:
     """LLM backend that invokes the Claude CLI as a subprocess."""
+
+    def get_capabilities(self, *, model: str = "") -> BackendCapabilities:
+        return capabilities_for_model(model)
 
     async def invoke(
         self,

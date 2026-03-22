@@ -1,7 +1,8 @@
 """LLM backend abstraction and backend resolution.
 
-Owns the model/backend protocol and concrete backend selection.
-Does not own regen policy, prompt semantics, or telemetry persistence.
+Owns the model/backend protocol, the bounded capability contract, and
+concrete backend selection. It does not own regen policy or telemetry
+persistence.
 
 Usage::
 
@@ -15,9 +16,30 @@ from __future__ import annotations
 
 import os
 
-from brain_sync.llm.base import LlmBackend, LlmResult
+from brain_sync.llm.base import (
+    DEFAULT_BACKEND_CAPABILITIES,
+    DEFAULT_SYSTEM_PROMPT,
+    BackendCapabilities,
+    InvocationContract,
+    LlmBackend,
+    LlmResult,
+    StructuredOutputContract,
+    capabilities_for_model,
+    resolve_backend_capabilities,
+)
 
-__all__ = ["LlmBackend", "LlmResult", "get_backend"]
+__all__ = [
+    "DEFAULT_BACKEND_CAPABILITIES",
+    "DEFAULT_SYSTEM_PROMPT",
+    "BackendCapabilities",
+    "InvocationContract",
+    "LlmBackend",
+    "LlmResult",
+    "StructuredOutputContract",
+    "capabilities_for_model",
+    "get_backend",
+    "resolve_backend_capabilities",
+]
 
 
 def get_backend() -> LlmBackend:

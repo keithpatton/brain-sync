@@ -294,9 +294,15 @@ migration, and test/SUT code are the only expected exceptions.
 ### LLM Backend Abstraction
 
 All LLM invocations go through `LlmBackend.invoke()` in `llm/base.py`.
+That package also owns the bounded backend-capability contract used by regen
+to learn model ceilings and invocation expectations without encoding those
+heuristics directly in the regen package.
 
 - `ClaudeCliBackend` is the production backend.
 - `FakeBackend` is the deterministic test backend.
+- backend capabilities currently expose prompt-token ceilings, structured
+  output expectations, and invocation settings such as system prompt and tool
+  mode
 
 Backend resolution happens at regen entry points and is then threaded through
 the call chain. Telemetry is recorded alongside backend results but is not part
@@ -450,8 +456,9 @@ offline changes.
 **Watcher edge cases**: Windows symlink handling and rapid sequential move
 events still need hardening.
 
-**Regen complexity**: `regen/engine.py` remains one of the largest modules and is a
-candidate for further decomposition.
+**Regen complexity**: `regen/engine.py` remains one of the largest modules.
+It now has a more explicit evaluation-versus-execution seam, but further
+decomposition is still a likely follow-on.
 
 **AreaIndex cost model**: `AreaIndex.is_stale()` now rechecks portable
 structure and portable summaries on every load. This restores correctness for
