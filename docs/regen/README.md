@@ -263,8 +263,19 @@ For direct files in the current knowledge area, regen currently:
 - collapses excessive blank lines
 - records binary readable files by name without inlining their content
 
-Files are packed under a single estimated prompt budget. Oversized files are
-deferred out of the main prompt rather than partially inlined.
+Prompt budgeting is backend-capability-aware but conservative by default:
+
+- regen reads a bounded capability contract from `llm/` rather than hardcoding
+  model-name heuristics in the prompt planner
+- unknown or standard-capability models stay on a smaller effective planner
+  budget
+- current `extended_1m` models use a larger effective planner budget, but regen
+  still does not treat the full context window as the default target
+
+Direct files are packed before child summaries under that effective budget.
+Files are deferred out of the main prompt only when they cannot fit within the
+remaining direct-file budget; a file is no longer chunked solely because its
+raw character count exceeds `CHUNK_TARGET_CHARS`.
 
 ### Child Summaries
 
@@ -272,12 +283,15 @@ Child summaries are loaded from co-located managed summaries under child
 areas. They are sorted deterministically and then packed under the same
 estimated token budget.
 
-Current truncation is simple:
+Current loading priority is:
 
-- always try to include at least a minimum number of child summaries
-- then stop loading additional child summaries once the budget would be
-  exceeded
-- log when child summaries are omitted due to budget
+1. packaged instructions and other fixed scaffold
+2. direct files for the current node
+3. child summaries
+
+Child summaries are omitted when the remaining budget would be exceeded. Regen
+logs those omissions and exposes them through prompt-planner diagnostics for
+tests and baseline measurement.
 
 ### Oversized File Chunking
 
@@ -294,9 +308,12 @@ Current implementation also has a bounded backend-capability seam in `llm/`:
 
 - the backend contract reports a max prompt-token capability and invocation
   settings such as system prompt and tool mode
-- regen execution now consumes that contract for invocation expectations
-- prompt budgeting itself still uses the current conservative planner and is
-  intentionally left for the later budgeting phase
+- regen execution consumes that contract for invocation expectations
+- prompt planning also consumes that contract to choose a conservative
+  effective budget envelope
+- current planner envelopes are intentionally smaller than the reported
+  backend ceiling; long context is treated as selective headroom rather than
+  a blanket "fill the window" policy
 
 ## Structured Output And Journaling
 

@@ -16,21 +16,16 @@ import pytest
 
 from brain_sync.application.init import init_brain
 from brain_sync.application.insights import InsightState, save_insight_state
-from brain_sync.brain.fileops import TEXT_EXTENSIONS, iterdir_paths, path_exists, read_text
+from brain_sync.brain.fileops import read_text
 from brain_sync.brain.layout import area_summary_path
+from brain_sync.llm import capabilities_for_model
 from brain_sync.llm.base import LlmResult
 from brain_sync.regen.engine import (
-    _REGEN_INSTRUCTIONS,
     CHUNK_TARGET_CHARS,
     MAX_PROMPT_TOKENS,
-    MIN_CHILDREN,
-    _assemble_files_text,
-    _assemble_prompt,
+    _build_prompt,
     _collect_child_summaries,
-    _collect_global_context,
     _get_child_dirs,
-    _is_readable_file,
-    _preprocess_content,
     regen_path,
     regen_single_folder,
 )
@@ -40,6 +35,22 @@ from brain_sync.runtime.repository import _connect, load_operational_events
 from tests.harness.isolation import apply_in_process_isolation, layout_for_base_dir
 
 _ANCHOR_RE = re.compile(r"ANCHOR:\s*([a-z0-9][a-z0-9-]*)")
+_TOKEN_MEASUREMENT_SCOPE = {
+    "kind": "application_prompt_body_only",
+    "input_token_formula": "len(prompt)//4",
+    "included_prompt_parts": [
+        "packaged regen instructions assembled into the main prompt body",
+        "_core global context assembled by regen",
+        "direct file content or chunk summaries assembled by regen",
+        "child summaries when present",
+        "existing summary when present",
+    ],
+    "excluded_prompt_parts": [
+        "backend system prompt",
+        "backend tools or invocation framing outside the assembled prompt body",
+        "provider-specific transport overhead or billed-token adjustments",
+    ],
+}
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,11 @@ class Phase0EvalBackend:
     generated summary. This gives Phase 0 a factual-loss harness: if later
     prompt assembly or chunking drops those anchors, the generated summary
     drops them too.
+
+    Token telemetry in this harness is intentionally prompt-body-only:
+    `input_tokens` is recorded as `len(prompt)//4` and excludes backend-owned
+    system-prompt content, tool framing, and provider-specific billed-token
+    overhead.
     """
 
     def __init__(self, latency_ms: int = 2) -> None:
@@ -89,6 +105,9 @@ class Phase0EvalBackend:
         tools: str | None = None,
         is_chunk: bool = False,
     ) -> LlmResult:
+        # This deterministic harness measures only the application-assembled
+        # prompt body. Backend-owned system-prompt content and invocation
+        # framing are intentionally excluded from `input_tokens`.
         del cwd, timeout, model, effort, max_turns, system_prompt, tools
 
         self.call_count += 1
@@ -410,12 +429,12 @@ async def collect_phase0_baseline(root: Path) -> dict[str, Any]:
         "product_calls": [
             (
                 "walk-up backfill continuation remains inconsistent with wave propagation "
-                "and needs an explicit Phase 1 decision"
+                "and still needs an explicit propagation-phase decision"
             ),
             (
-                "the wide-parent case shows current child-summary loading stays under the "
-                "fixed 120k budget here, but the instructions block is still a dominant "
-                "fixed cost"
+                "the wide-parent case shows child summaries still dominate variable prompt "
+                "cost after direct-file packing, while the instructions block remains a "
+                "stable fixed cost"
             ),
         ],
     }
@@ -434,6 +453,7 @@ async def collect_phase0_baseline(root: Path) -> dict[str, Any]:
             },
         },
         "baseline": {
+            "token_measurement_scope": _TOKEN_MEASUREMENT_SCOPE,
             "token_usage_per_node": token_usage_per_node,
             "chunked_run_count": len(chunked_nodes),
             "chunked_nodes": chunked_nodes,
@@ -451,9 +471,8 @@ async def collect_phase0_baseline(root: Path) -> dict[str, Any]:
         },
         "findings": findings,
         "current_contract": {
-            "max_prompt_tokens": MAX_PROMPT_TOKENS,
+            "legacy_prompt_override_tokens": MAX_PROMPT_TOKENS,
             "chunk_target_chars": CHUNK_TARGET_CHARS,
-            "min_children": MIN_CHILDREN,
             "propagates_up": sorted(PROPAGATES_UP),
         },
     }
@@ -480,113 +499,37 @@ def main() -> None:
 
 def _estimate_prompt_components(root: Path, knowledge_path: str) -> dict[str, Any]:
     knowledge_dir = root / "knowledge" / knowledge_path if knowledge_path else root / "knowledge"
-    instructions = _REGEN_INSTRUCTIONS
-    global_context = _collect_global_context(root, knowledge_path)
     child_dirs = _get_child_dirs(knowledge_dir)
     child_summaries = _collect_child_summaries(root, knowledge_path, child_dirs)
-
-    entries: list[tuple[str, str, int, bool]] = []
-    binary_names: list[str] = []
-    for file_path in [path for path in iterdir_paths(knowledge_dir) if _is_readable_file(path)]:
-        if file_path.suffix.lower() in TEXT_EXTENSIONS:
-            content = _preprocess_content(read_text(file_path, encoding="utf-8"), file_path.name)
-            entries.append((file_path.name, content, len(content), True))
-        else:
-            binary_names.append(file_path.name)
-
-    children_text = ""
-    omitted_children = 0
-    if child_summaries:
-        loaded_parts: list[str] = []
-        current_tokens = len(instructions + global_context) // 3
-        for index, (name, content) in enumerate(sorted(child_summaries.items())):
-            child_tokens = len(content) // 3
-            if index >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
-                omitted_children += 1
-                continue
-            loaded_parts.append(f"\n### {name}\n{content}")
-            current_tokens += child_tokens
-        total = len(child_summaries)
-        loaded = total - omitted_children
-        header = f"Sub-area summaries ({loaded} of {total} loaded):" if omitted_children else "Sub-area summaries:"
-        footer = f"\n({omitted_children} sub-area summaries omitted — token budget)" if omitted_children else ""
-        children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n"
-
-    existing_summary = ""
-    summary_path = area_summary_path(root, knowledge_path)
-    if path_exists(summary_path):
-        existing_summary = read_text(summary_path, encoding="utf-8")
-
-    display_path = knowledge_path or "(root)"
-    empty_files_text = _assemble_files_text([], [], binary_names)
-    overhead_chars = len(
-        _assemble_prompt(
-            instructions,
-            global_context,
-            empty_files_text,
-            children_text,
-            existing_summary,
-            display_path,
-        )
+    prompt_result = _build_prompt(
+        knowledge_path,
+        knowledge_dir,
+        child_summaries,
+        area_summary_path(root, knowledge_path).parent,
+        root,
+        capabilities=capabilities_for_model("claude-sonnet-4-6"),
     )
-    remaining_chars = (MAX_PROMPT_TOKENS * 3) - overhead_chars
-
-    packed_entries: list[tuple[str, str, int, bool]] = []
-    for name, content, size, _ in sorted(entries, key=lambda value: value[2], reverse=True):
-        inline = True
-        if size > CHUNK_TARGET_CHARS:
-            inline = False
-        else:
-            formatted_size = len(f"### {name}\n```\n{content}\n```\n\n")
-            if formatted_size <= remaining_chars:
-                remaining_chars -= formatted_size
-            else:
-                inline = False
-        packed_entries.append((name, content, size, inline))
-
-    original_order = {name: index for index, (name, _, _, _) in enumerate(entries)}
-    inlined = [
-        (name, content)
-        for name, content, _, inline in sorted(packed_entries, key=lambda value: original_order[value[0]])
-        if inline
-    ]
-    oversized_names = [
-        name for name, _, _, inline in sorted(packed_entries, key=lambda value: original_order[value[0]]) if not inline
-    ]
-    files_text = _assemble_files_text(inlined, oversized_names, binary_names)
-    prompt = _assemble_prompt(
-        instructions,
-        global_context,
-        files_text,
-        children_text,
-        existing_summary,
-        display_path,
-    )
+    diagnostics = prompt_result.diagnostics
+    assert diagnostics is not None
     return {
-        "instructions_tokens": len(instructions) // 3,
-        "global_context_tokens": len(global_context) // 3,
-        "direct_files_tokens": len(files_text) // 3,
-        "child_summaries_tokens": len(children_text) // 3,
-        "existing_summary_tokens": len(existing_summary) // 3,
-        "scaffold_tokens": max(
-            0,
-            (
-                len(prompt)
-                - len(instructions)
-                - len(global_context)
-                - len(files_text)
-                - len(children_text)
-                - len(existing_summary)
-            )
-            // 3,
-        ),
-        "total_prompt_tokens": len(prompt) // 3,
-        "deferred_file_count": len(oversized_names),
-        "omitted_child_summary_count": omitted_children,
+        "prompt_budget_class": diagnostics.prompt_budget_class,
+        "capability_max_prompt_tokens": diagnostics.capability_max_prompt_tokens,
+        "effective_prompt_tokens": diagnostics.effective_prompt_tokens,
+        "instructions_tokens": diagnostics.component_tokens["instructions"],
+        "global_context_tokens": diagnostics.component_tokens["global_context"],
+        "direct_files_tokens": diagnostics.component_tokens["direct_files"],
+        "child_summaries_tokens": diagnostics.component_tokens["child_summaries"],
+        "existing_summary_tokens": diagnostics.component_tokens["existing_summary"],
+        "scaffold_tokens": diagnostics.component_tokens.get("scaffold", 0),
+        "total_prompt_tokens": diagnostics.component_tokens["total"],
+        "deferred_file_count": len(diagnostics.deferred_files),
+        "omitted_child_summary_count": len(diagnostics.omitted_child_summaries),
     }
 
 
 def _aggregate_token_usage(token_rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Aggregate prompt-body token telemetry emitted by the baseline backend."""
+
     by_node: dict[str, dict[str, int]] = defaultdict(
         lambda: {
             "invocations": 0,

@@ -22,7 +22,7 @@ Tests run and results:
 Baseline-versus-current metrics relevant to the phase:
 
 - Harness coverage before/after: before this phase there was no dedicated REGEN Phase 0 corpus, no repeatable baseline collector, and no phase-specific proof; current state has 6 required fictional corpus shapes, 1 standalone baseline collector, and 1 integration proof file covering the corpus and metrics contract.
-- Current token usage per node on the Phase 0 corpus: `research/annual` 118961 total tokens across 5 invocations (4 chunk + 1 merge), `programs/ops` 8371, `_core` 1319, `product/atlas` 1271, `operations` 1251, `legacy` 1251, `operations/rename-demo` 1220.
+- Current token usage per node on the Phase 0 corpus, measured as application-assembled prompt-body telemetry from the deterministic evaluation backend and excluding backend system-prompt content, backend invocation framing, and provider-billed-token adjustments: `research/annual` 118961 total tokens across 5 invocations (4 chunk + 1 merge), `programs/ops` 8371, `_core` 1319, `product/atlas` 1271, `operations` 1251, `legacy` 1251, `operations/rename-demo` 1220.
 - Current chunked vs non-chunked run counts: 1 chunked node (`research/annual`), 6 non-chunked nodes (`_core`, `product/atlas`, `programs/ops`, `operations/rename-demo`, `operations`, `legacy`).
 - Current prompt size by major component: `_core` total ~1723 tokens with instructions ~1329 and global context ~112; `product/atlas` total ~1659 with instructions ~1329; `programs/ops` total ~11095 with child summaries ~9444 and instructions ~1329; `research/annual` total ~1745 with 1 deferred file and instructions ~1329.
 - Current latency per node on the collector run: `research/annual` 68 ms total across 5 invocations; `programs/ops` 14 ms; `operations/rename-demo` 11 ms; `legacy` 5 ms; `operations` 8 ms; `_core` 7 ms; `product/atlas` 9 ms.
@@ -38,7 +38,7 @@ Evidence bundle:
 Findings summary:
 
 - The planned phase ordering still looks correct: prompt budgeting and dirty-propagation behavior remain the highest-leverage next targets.
-- The large-leaf case confirms current chunk fallback is active and expensive under the fixed budget: `research/annual` alone consumed 118961 tokens across 5 calls.
+- The large-leaf case confirms current chunk fallback is active and expensive under the fixed budget: `research/annual` alone consumed 118961 prompt-body tokens across 5 calls in the deterministic baseline harness.
 - The wide-parent case shows child summaries are already a larger prompt cost than direct files on representative parent nodes: `programs/ops` spent ~9444 prompt tokens on child summaries versus ~57 on direct files.
 - The instructions block is a dominant fixed prompt cost on every measured node at ~1329 estimated tokens, including small leaves and `_core`.
 - Rename-only and metadata-backfill follow-ups both continued one level upward in walk-up mode and reached an unchanged parent, which is a concrete false-positive ancestor-evaluation driver.
@@ -85,6 +85,119 @@ Docs reviewed but intentionally unchanged:
 - `docs/runtime/SCHEMAS.md`
 - `docs/COMPATIBILITY.md`
 - `docs/VERSIONING.md`
+
+Recommended next action:
+
+- proceed unchanged
+
+2026-03-23T07:21:03+13:00
+Phase: Phase 2 - prompt assembly and budgeting refactor
+Change: Reworked REGEN prompt assembly to consume the Phase 1 backend-capability contract, use conservative model-aware effective budgets, prioritize stable scaffold then direct files then child summaries, and defer chunking until remaining direct-file budget truly requires it.
+Reason: Phase 2 required prompt planning to stop treating long context as either unavailable or blanket-default, while materially reducing unnecessary chunk-and-merge work under the approved inclusion priorities.
+Status: Implemented.
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/engine.py`
+- `tests/unit/test_regen_phase2.py`
+- `tests/integration/test_regen_phase2_budgeting.py`
+- `tests/unit/test_regen.py`
+- `tests/integration/regen_phase0_baseline.py`
+- `tests/integration/test_regen_phase0_baseline.py`
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m pytest tests/unit/test_regen_phase2.py tests/integration/test_regen_phase2_budgeting.py -q` -> 4 passed
+- `ruff check src/brain_sync/regen/engine.py tests/unit/test_regen_phase2.py tests/integration/test_regen_phase2_budgeting.py tests/integration/regen_phase0_baseline.py` -> passed
+- `pyright src/brain_sync/regen/engine.py tests/unit/test_regen_phase2.py tests/integration/test_regen_phase2_budgeting.py tests/integration/regen_phase0_baseline.py` -> passed
+- `python -m pytest tests/unit/test_regen.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase0_baseline.py -q` -> 185 passed
+- `ruff check src/brain_sync/regen/engine.py tests/unit/test_regen.py tests/unit/test_regen_phase2.py tests/integration/test_regen_phase2_budgeting.py tests/integration/test_regen_phase0_baseline.py tests/integration/regen_phase0_baseline.py` -> passed
+- `python -m pytest tests/unit/test_regen_phase2.py tests/integration/test_regen_phase2_budgeting.py tests/unit/test_regen.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase0_baseline.py -q` -> 189 passed
+- `python -c "import json; from tests.integration.regen_phase0_baseline import run_phase0_baseline; print(json.dumps(run_phase0_baseline(), sort_keys=True))"` -> completed and emitted the current Phase 2 baseline evidence bundle used below
+
+Baseline-versus-current metrics relevant to the phase:
+
+- Planner contract before/after: before this phase prompt assembly used 1 fixed planner budget (`120000`) plus earlier char-threshold-driven chunk fallback; current state uses capability-aware effective planner budgets with 1 explicit legacy override hook, `160000` for standard-capability models, and `320000` for current `extended_1m` models while still treating long context as selective headroom rather than "use 1M".
+- Inclusion priority before/after: before this phase direct files and child summaries were packed under one coarse budget with earlier file deferral; current state preserves the approved priority order of stable scaffold first, direct files second, child summaries third.
+- Large-leaf chunking delta on the fictional corpus: `research/annual` moved from 5 LLM invocations (4 chunk + 1 merge) to 1 invocation, and from 1 deferred file to 0 deferred files.
+- Large-leaf prompt-shape delta on the fictional corpus: `research/annual` prompt tokens moved from ~1745 estimated tokens with chunk summaries in the merge prompt to ~157253 estimated tokens with the direct file inlined under the `extended_1m` budget.
+- Large-leaf prompt-body-token delta on the fictional corpus: `research/annual` moved from 118961 total prompt-body tokens to 117991 total prompt-body tokens in the deterministic baseline harness, a reduction of 970 tokens (about 0.8%) despite eliminating 4 extra chunk calls. This comparison excludes backend system-prompt content, backend invocation framing, and provider-billed-token adjustments.
+- Large-leaf latency delta on the fictional corpus: `research/annual` collector latency moved from 68 ms total to 3 ms total in the deterministic baseline backend run because the path no longer performs chunk-and-merge fan-out.
+- Chunked versus non-chunked corpus delta: the Phase 0 corpus moved from 1 chunked node / 6 non-chunked nodes to 0 chunked nodes / 7 non-chunked nodes.
+- Wide-parent prompt cost remains child-summary dominated after the refactor: `programs/ops` currently spends ~9432 estimated tokens on child summaries versus ~43 on direct files, which matches the approved budget priority while preserving all child summaries in this representative case.
+
+Evidence bundle:
+
+- `tests/unit/test_regen_phase2.py` proves three key planner contracts directly: extended-context models can inline a large file without chunking, the legacy `MAX_PROMPT_TOKENS` override still forces deferral in bounded-budget tests, and omitted child summaries are surfaced in planner diagnostics.
+- `tests/integration/test_regen_phase2_budgeting.py` proves the end-to-end large-leaf path on `claude-sonnet-4-6` now completes in a single regen call with no chunk fallback.
+- The Phase 0 baseline harness now consumes real prompt-planner diagnostics rather than a hand-maintained estimator, and the current baseline confirms anchor-quality checks still pass for `_core`, `product/atlas`, `programs/ops`, and `research/annual`.
+- The baseline harness now states its token-accounting scope explicitly: it measures application-assembled prompt-body tokens only, including packaged instructions, `_core` context, direct-file or chunk-summary body content, child summaries when present, and existing summary when present, while excluding backend system prompt, backend invocation framing, and provider-specific billed-token adjustments.
+- The before/after improvement claimed in this phase is concrete and measured: on the representative large-leaf corpus path, REGEN now avoids chunk fan-out entirely while preserving the large-file anchors in the generated summary.
+
+Findings summary:
+
+- Phase 2 successfully moved prompt planning onto the bounded backend-capability seam from Phase 1 instead of keeping model-string budgeting logic local to REGEN execution.
+- The approved inclusion priority is now reflected in implementation and docs: stable scaffold, then direct files, then child summaries.
+- On current `extended_1m` capability models such as Sonnet 4.6, REGEN now uses materially larger single-pass prompts when that avoids unnecessary chunking, but still stops well short of treating the full context window as default budget.
+- The largest measurable gain on the fictional corpus is chunk-rate and invocation-count reduction, not dramatic raw token savings.
+- `regen/engine.py` gained clearer prompt-planner helper seams, but it remains a large module; this phase improved modularity inside the file rather than splitting ownership across new modules.
+
+Product calls surfaced:
+
+- No new blocking product decision was exposed in Phase 2; the approved Phase 2 guidance on conservative model-aware budgeting and prompt inclusion priority was implemented as directed.
+- The still-open later-phase product call remains the propagation mismatch around `skipped_backfill`, which is intentionally left for Phase 3.
+
+Regressions or ambiguous results:
+
+- No quality regression was found in the Phase 2 proof bundle; all Phase 0 anchor checks still passed after the planner change.
+- Raw token reduction on the large-leaf corpus case was modest even though chunking collapsed from 5 calls to 1. That is an intentional and acceptable trade in this phase, but it means the strongest current evidence is lower chunk fan-out and latency rather than major token-elimination on this specific corpus.
+- Existing regen tests that had implicitly equated "large file" with "must chunk" had to be updated to assert budget-driven chunking instead. This was expected behavior drift from the approved Phase 2 refactor, not an accidental regression.
+
+Unresolved product decisions:
+
+- Whether `skipped_backfill` should converge fully to the approved wave propagation contract remains unresolved until Phase 3 implementation.
+- Whether the generalized baseline harness should eventually be renamed beyond `regen_phase0_baseline.py` remains intentionally deferred; it is useful now, but no naming/product decision is needed before later phases.
+
+Docs reviewed:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/sync/README.md`
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `README.md`
+
+Docs changed:
+
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/sync/README.md`
+- `README.md`
 
 Recommended next action:
 

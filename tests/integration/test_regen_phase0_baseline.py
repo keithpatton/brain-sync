@@ -26,7 +26,12 @@ async def test_phase0_baseline_harness_covers_required_corpus_and_metrics(brain:
     }
 
     metrics = baseline["baseline"]
-    assert metrics["chunked_run_count"] >= 1
+    token_scope = metrics["token_measurement_scope"]
+    assert token_scope["kind"] == "application_prompt_body_only"
+    assert token_scope["input_token_formula"] == "len(prompt)//4"
+    assert "backend system prompt" in token_scope["excluded_prompt_parts"]
+    assert "provider-specific transport overhead or billed-token adjustments" in token_scope["excluded_prompt_parts"]
+    assert "direct file content or chunk summaries assembled by regen" in token_scope["included_prompt_parts"]
     assert metrics["non_chunked_run_count"] >= 3
     assert metrics["skip_reason_frequency"]["skipped_unchanged"] >= 1
     assert metrics["skip_reason_frequency"]["skipped_rename"] >= 1
@@ -41,7 +46,8 @@ async def test_phase0_baseline_harness_covers_required_corpus_and_metrics(brain:
 
     prompt_components = metrics["prompt_size_by_major_component"]
     assert prompt_components["_core"]["global_context_tokens"] > 0
-    assert prompt_components["research/annual"]["deferred_file_count"] >= 1
+    assert prompt_components["research/annual"]["prompt_budget_class"] == "extended_1m"
+    assert prompt_components["research/annual"]["deferred_file_count"] == 0
     assert prompt_components["programs/ops"]["child_summaries_tokens"] > 0
 
     quality = baseline["quality_harness"]

@@ -1774,8 +1774,8 @@ class TestChunking:
         assert len(chunks) == 1
         assert chunks[0] == content
 
-    def test_chunk_count_guard(self, brain):
-        """More than MAX_CHUNKS raises RegenFailed."""
+    def test_chunk_count_guard(self, brain, monkeypatch):
+        """More than MAX_CHUNKS raises RegenFailed when budget pressure forces chunking."""
         # Create content that will produce many chunks
         sections = [f"# Section {i}\n{'x' * 100}" for i in range(40)]
         content = "\n\n".join(sections)
@@ -1793,6 +1793,7 @@ class TestChunking:
 
         # Patch _split_markdown_chunks to return >30 chunks
         fake_chunks = ["chunk"] * (MAX_CHUNKS + 1)
+        monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000)
         with (
             patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
             patch("brain_sync.regen.engine._split_markdown_chunks", return_value=fake_chunks),
@@ -1819,14 +1820,15 @@ class TestChunking:
 class TestOversizedDetection:
     """Tests for oversized file detection in _build_prompt()."""
 
-    def test_oversized_files_detected(self, brain):
-        """Files larger than CHUNK_TARGET_CHARS go to oversized_files."""
+    def test_oversized_files_detected(self, brain, monkeypatch):
+        """Files are deferred when the effective prompt budget cannot inline them."""
         kdir = brain / "knowledge" / "big"
         kdir.mkdir(parents=True)
         (kdir / "huge.md").write_text("# Huge\n" + "x" * (CHUNK_TARGET_CHARS + 1000), encoding="utf-8")
         idir = managed_insights(brain, "big")
         idir.mkdir(parents=True)
 
+        monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000)
         invalidate_global_context_cache()
         result = _build_prompt("big", kdir, {}, idir, brain)
         assert result.oversized_files is not None
@@ -1866,8 +1868,8 @@ class TestOversizedDetection:
 class TestChunkedRegenFlow:
     """End-to-end test for chunk-and-merge regen path."""
 
-    def test_regen_path_chunked_flow(self, brain):
-        """Oversized file triggers chunk calls then merge call."""
+    def test_regen_path_chunked_flow(self, brain, monkeypatch):
+        """Budget-driven deferral triggers chunk calls then a merge call."""
         kdir = brain / "knowledge" / "prd"
         kdir.mkdir(parents=True)
         # Create oversized file (no base64, just big)
@@ -1886,6 +1888,7 @@ class TestChunkedRegenFlow:
                 output_tokens=500,
             )
 
+        monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000)
         with (
             patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
             patch("brain_sync.regen.engine.CHUNK_TARGET_CHARS", 2000),
@@ -1898,7 +1901,7 @@ class TestChunkedRegenFlow:
         summary_path = managed_summary(brain, "prd")
         assert summary_path.exists()
 
-    def test_token_tracking_across_chunks(self, brain):
+    def test_token_tracking_across_chunks(self, brain, monkeypatch):
         """Token telemetry params are passed through chunk + merge calls."""
         kdir = brain / "knowledge" / "tok"
         kdir.mkdir(parents=True)
@@ -1919,6 +1922,7 @@ class TestChunkedRegenFlow:
         def capture_telemetry(result, **kwargs):
             telemetry_calls.append(kwargs)
 
+        monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 2_000)
         with (
             patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
             patch("brain_sync.regen.engine._record_telemetry", side_effect=capture_telemetry),

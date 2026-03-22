@@ -303,6 +303,11 @@ heuristics directly in the regen package.
 - backend capabilities currently expose prompt-token ceilings, structured
   output expectations, and invocation settings such as system prompt and tool
   mode
+- regen prompt planning consumes that contract to choose a conservative
+  effective budget envelope rather than using a single fixed planner budget
+- current planner policy preserves stable scaffold first, then direct files,
+  then child summaries, and only falls back to chunking when the remaining
+  direct-file budget cannot inline a file
 
 Backend resolution happens at regen entry points and is then threaded through
 the call chain. Telemetry is recorded alongside backend results but is not part

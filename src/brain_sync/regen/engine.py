@@ -161,7 +161,10 @@ log = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.97
 CLAUDE_TIMEOUT = 300  # seconds
-MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 3
+LEGACY_MAX_PROMPT_TOKENS = 120_000  # estimated via len(text) // 3
+MAX_PROMPT_TOKENS = LEGACY_MAX_PROMPT_TOKENS  # legacy override hook used by older tests
+STANDARD_PROMPT_BUDGET_TOKENS = 160_000
+EXTENDED_PROMPT_BUDGET_TOKENS = 320_000
 MIN_CHILDREN = 5  # always include at least this many child summaries
 CHUNK_TARGET_CHARS = 160_000  # ~53K tokens — max chars per chunk (leaves margin for prompt overhead)
 MAX_CHUNKS = 30  # guard against pathological documents
@@ -727,6 +730,30 @@ class PromptResult:
 
     text: str
     oversized_files: dict[str, str] | None = None  # filename → preprocessed content
+    diagnostics: PromptBudgetDiagnostics | None = None
+
+
+@dataclass(frozen=True)
+class DeferredFileDecision:
+    """Why a file was deferred from direct inclusion to chunk fallback."""
+
+    name: str
+    estimated_tokens: int
+    remaining_tokens_before_defer: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class PromptBudgetDiagnostics:
+    """Explain how prompt budget was allocated for one regen prompt."""
+
+    prompt_budget_class: str
+    capability_max_prompt_tokens: int
+    effective_prompt_tokens: int
+    prompt_overhead_tokens: int
+    component_tokens: dict[str, int]
+    deferred_files: tuple[DeferredFileDecision, ...]
+    omitted_child_summaries: tuple[str, ...]
 
 
 def _parse_token_counts(stderr_text: str) -> tuple[int | None, int | None]:
@@ -1133,6 +1160,126 @@ def _record_regen_event(
 # ---------------------------------------------------------------------------
 
 
+def _estimate_tokens(text: str) -> int:
+    """Return the planner's lightweight token estimate for *text*."""
+
+    return len(text) // 3
+
+
+def _effective_prompt_budget(capabilities: BackendCapabilities | None) -> tuple[int, str, int]:
+    """Resolve the effective prompt budget for one prompt build."""
+
+    if MAX_PROMPT_TOKENS != LEGACY_MAX_PROMPT_TOKENS:
+        return MAX_PROMPT_TOKENS, "legacy_override", MAX_PROMPT_TOKENS
+    if capabilities is None:
+        return LEGACY_MAX_PROMPT_TOKENS, "legacy_fixed", LEGACY_MAX_PROMPT_TOKENS
+
+    capability_max = capabilities.max_prompt_tokens
+    if capabilities.prompt_budget_class == "extended_1m" or capability_max >= 1_000_000:
+        return min(capability_max, EXTENDED_PROMPT_BUDGET_TOKENS), capabilities.prompt_budget_class, capability_max
+    if capability_max >= 200_000:
+        return min(capability_max, STANDARD_PROMPT_BUDGET_TOKENS), capabilities.prompt_budget_class, capability_max
+    return min(capability_max, LEGACY_MAX_PROMPT_TOKENS), capabilities.prompt_budget_class, capability_max
+
+
+def _pack_child_summaries(
+    child_summaries: dict[str, str],
+    *,
+    remaining_tokens: int,
+    display_path: str,
+) -> tuple[str, tuple[str, ...], int]:
+    """Pack child summaries into the remaining prompt budget."""
+
+    if not child_summaries or remaining_tokens <= 0:
+        omitted_names: tuple[str, ...] = (
+            tuple(sorted(child_summaries)) if child_summaries and remaining_tokens <= 0 else ()
+        )
+        if omitted_names:
+            log.info(
+                "Omitted %d child summaries for %s (no budget remained after higher-priority context)",
+                len(omitted_names),
+                display_path,
+            )
+        return "", omitted_names, 0
+
+    loaded_parts: list[str] = []
+    omitted: list[str] = []
+    used_tokens = 0
+    for name, content in sorted(child_summaries.items()):
+        child_part = f"\n### {name}\n{content}"
+        child_tokens = _estimate_tokens(child_part)
+        if used_tokens + child_tokens > remaining_tokens:
+            omitted.append(name)
+            continue
+        loaded_parts.append(child_part)
+        used_tokens += child_tokens
+
+    if omitted:
+        log.info(
+            "Omitted %d child summaries for %s (remaining prompt budget=%d tokens after higher-priority context)",
+            len(omitted),
+            display_path,
+            remaining_tokens,
+        )
+    total = len(child_summaries)
+    loaded = total - len(omitted)
+    header = f"Sub-area summaries ({loaded} of {total} loaded):" if omitted else "Sub-area summaries:"
+    footer = f"\n({len(omitted)} sub-area summaries omitted — prompt budget)" if omitted else ""
+    children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n" if loaded_parts else ""
+    return children_text, tuple(omitted), used_tokens
+
+
+def _pack_direct_files(
+    entries: list[_FileEntry],
+    *,
+    remaining_tokens: int,
+    display_path: str,
+) -> tuple[list[tuple[str, str]], list[str], dict[str, str] | None, tuple[DeferredFileDecision, ...], int]:
+    """Pack direct files into the remaining prompt budget before chunk fallback."""
+
+    original_order = {entry.name: index for index, entry in enumerate(entries)}
+    deferred: list[DeferredFileDecision] = []
+    used_tokens = 0
+
+    for entry in sorted(entries, key=lambda item: item.size, reverse=True):
+        formatted_tokens = _estimate_tokens(f"### {entry.name}\n```\n{entry.content}\n```")
+        remaining_after_loaded = max(0, remaining_tokens - used_tokens)
+        if formatted_tokens <= remaining_after_loaded:
+            used_tokens += formatted_tokens
+            continue
+        entry.inline = False
+        deferred.append(
+            DeferredFileDecision(
+                name=entry.name,
+                estimated_tokens=formatted_tokens,
+                remaining_tokens_before_defer=remaining_after_loaded,
+                reason="exceeds_remaining_direct_file_budget",
+            )
+        )
+        log.info(
+            "Deferred %s (~%d tokens) to chunking for %s (remaining=%d effective budget tokens)",
+            entry.name,
+            formatted_tokens,
+            display_path,
+            remaining_after_loaded,
+        )
+
+    inlined = [
+        (entry.name, entry.content)
+        for entry in sorted(entries, key=lambda item: original_order[item.name])
+        if entry.inline
+    ]
+    oversized_names = [
+        entry.name for entry in sorted(entries, key=lambda item: original_order[item.name]) if not entry.inline
+    ]
+    oversized_files: dict[str, str] | None = {
+        entry.name: entry.content
+        for entry in sorted(entries, key=lambda item: original_order[item.name])
+        if not entry.inline
+    } or None
+    return inlined, oversized_names, oversized_files, tuple(deferred), used_tokens
+
+
 def _build_chunk_prompt(
     chunk: str,
     chunk_idx: int,
@@ -1170,6 +1317,8 @@ def _build_prompt_from_chunks(
     insights_dir: Path,
     root: Path,
     binary_names: list[str],
+    *,
+    capabilities: BackendCapabilities | None = None,
 ) -> PromptResult:
     """Build a merge prompt using chunk summaries instead of raw file content.
 
@@ -1179,6 +1328,7 @@ def _build_prompt_from_chunks(
     """
     instructions = _REGEN_INSTRUCTIONS
     global_context = _collect_global_context(root, knowledge_path)
+    effective_prompt_tokens, prompt_budget_class, capability_max_prompt_tokens = _effective_prompt_budget(capabilities)
 
     # Build files section from chunk summaries (sorted for determinism)
     files_parts: list[str] = []
@@ -1199,34 +1349,26 @@ def _build_prompt_from_chunks(
 
     files_text = "The knowledge folder contains these files:\n" + "\n\n".join(files_parts) + "\n" if files_parts else ""
 
-    # Child summaries (same logic as _build_prompt)
-    children_text = ""
-    if child_summaries:
-        loaded_parts: list[str] = []
-        skipped = 0
-        total = len(child_summaries)
-        current_tokens = len(instructions + global_context + files_text) // 3
-        for i, (name, content) in enumerate(sorted(child_summaries.items())):
-            child_tokens = len(content) // 3
-            if i >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
-                skipped += 1
-                continue
-            loaded_parts.append(f"\n### {name}\n{content}")
-            current_tokens += child_tokens
-        if skipped:
-            log.info("Truncated %d child summaries for %s (token budget)", skipped, knowledge_path or "(root)")
-        loaded = total - skipped
-        header = f"Sub-area summaries ({loaded} of {total} loaded):" if skipped else "Sub-area summaries:"
-        footer = f"\n({skipped} sub-area summaries omitted — token budget)" if skipped else ""
-        children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n"
-
-    # Existing summary
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
     if path_exists(summary_path):
         existing_summary = read_text(summary_path, encoding="utf-8")
 
     display_path = knowledge_path or "(root)"
+    base_prompt_without_children = _assemble_prompt(
+        instructions,
+        global_context,
+        files_text,
+        "",
+        existing_summary,
+        display_path,
+    )
+    remaining_for_children = max(0, effective_prompt_tokens - _estimate_tokens(base_prompt_without_children))
+    children_text, omitted_child_summaries, child_tokens_used = _pack_child_summaries(
+        child_summaries,
+        remaining_tokens=remaining_for_children,
+        display_path=display_path,
+    )
 
     prompt = _assemble_prompt(
         instructions,
@@ -1237,14 +1379,39 @@ def _build_prompt_from_chunks(
         display_path,
     )
 
-    estimated_tokens = len(prompt) // 3
+    estimated_tokens = _estimate_tokens(prompt)
     log.debug(
-        "Merge prompt for %s: ~%d tokens est., %d chunked files", display_path, estimated_tokens, len(chunk_summaries)
+        "Merge prompt for %s: ~%d tokens est., %d chunked files (effective budget=%d)",
+        display_path,
+        estimated_tokens,
+        len(chunk_summaries),
+        effective_prompt_tokens,
     )
-    if estimated_tokens > 100_000:
-        log.warning("Large merge prompt for %s: ~%d tokens estimated", display_path, estimated_tokens)
+    if estimated_tokens > effective_prompt_tokens:
+        log.warning(
+            "Merge prompt exceeds effective budget for %s: ~%d tokens estimated vs %d effective",
+            display_path,
+            estimated_tokens,
+            effective_prompt_tokens,
+        )
 
-    return PromptResult(text=prompt)
+    diagnostics = PromptBudgetDiagnostics(
+        prompt_budget_class=prompt_budget_class,
+        capability_max_prompt_tokens=capability_max_prompt_tokens,
+        effective_prompt_tokens=effective_prompt_tokens,
+        prompt_overhead_tokens=capabilities.invocation.prompt_overhead_tokens if capabilities else 0,
+        component_tokens={
+            "instructions": _estimate_tokens(instructions),
+            "global_context": _estimate_tokens(global_context),
+            "direct_files": _estimate_tokens(files_text),
+            "child_summaries": child_tokens_used,
+            "existing_summary": _estimate_tokens(existing_summary),
+            "total": estimated_tokens,
+        },
+        deferred_files=(),
+        omitted_child_summaries=omitted_child_summaries,
+    )
+    return PromptResult(text=prompt, diagnostics=diagnostics)
 
 
 def _build_prompt(
@@ -1253,6 +1420,8 @@ def _build_prompt(
     child_summaries: dict[str, str],
     insights_dir: Path,
     root: Path,
+    *,
+    capabilities: BackendCapabilities | None = None,
 ) -> PromptResult:
     """Build the prompt for regenerating an insight summary.
 
@@ -1263,16 +1432,14 @@ def _build_prompt(
     4. Existing summary
     5. Output path(s)
 
-    Files are packed greedily under a total token budget (MAX_PROMPT_TOKENS).
+    Files are packed greedily under an effective token budget derived from
+    backend capabilities when available.
     Files that don't fit are deferred to chunk-and-merge.
     """
-    # 1. Instructions
     instructions = _REGEN_INSTRUCTIONS
-
-    # 2. Global context (inlined by Python, not discovered by agent)
     global_context = _collect_global_context(root, knowledge_path)
+    effective_prompt_tokens, prompt_budget_class, capability_max_prompt_tokens = _effective_prompt_budget(capabilities)
 
-    # 3a. Read and preprocess all files into _FileEntry list
     entries: list[_FileEntry] = []
     binary_names: list[str] = []
     files = [p for p in iterdir_paths(knowledge_dir) if _is_readable_file(p)]
@@ -1288,80 +1455,47 @@ def _build_prompt(
             else:
                 binary_names.append(f.name)
 
-    # 3b. Child summaries section — adaptive loading with token budget
-    children_text = ""
-    if child_summaries:
-        loaded_parts: list[str] = []
-        skipped = 0
-        total = len(child_summaries)
-        current_tokens = len(instructions + global_context) // 3
-        for i, (name, content) in enumerate(sorted(child_summaries.items())):
-            child_tokens = len(content) // 3
-            if i >= MIN_CHILDREN and current_tokens + child_tokens > MAX_PROMPT_TOKENS:
-                skipped += 1
-                continue
-            loaded_parts.append(f"\n### {name}\n{content}")
-            current_tokens += child_tokens
-        if skipped:
-            log.info("Truncated %d child summaries for %s (token budget)", skipped, knowledge_path or "(root)")
-        loaded = total - skipped
-        header = f"Sub-area summaries ({loaded} of {total} loaded):" if skipped else "Sub-area summaries:"
-        footer = f"\n({skipped} sub-area summaries omitted — token budget)" if skipped else ""
-        children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n"
-
-    # 4. Existing summary
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
     if path_exists(summary_path):
         existing_summary = read_text(summary_path, encoding="utf-8")
 
     display_path = knowledge_path or "(root)"
-
-    # 5. Compute overhead (prompt with no files) to determine file budget
     empty_files_text = _assemble_files_text([], [], binary_names)
-    overhead_chars = len(
-        _assemble_prompt(
-            instructions,
-            global_context,
-            empty_files_text,
-            children_text,
-            existing_summary,
-            display_path,
-        )
+    base_prompt_without_files_or_children = _assemble_prompt(
+        instructions,
+        global_context,
+        empty_files_text,
+        "",
+        existing_summary,
+        display_path,
     )
-    remaining_chars = (MAX_PROMPT_TOKENS * 3) - overhead_chars
+    remaining_for_direct_files = max(
+        0,
+        effective_prompt_tokens - _estimate_tokens(base_prompt_without_files_or_children),
+    )
+    inlined, oversized_names, oversized_files, deferred_files, direct_file_tokens = _pack_direct_files(
+        entries,
+        remaining_tokens=remaining_for_direct_files,
+        display_path=display_path,
+    )
 
-    # 6. Greedy packing — largest files first (biases toward keeping most
-    #    informative files in full context rather than lossy chunked summaries)
-    for entry in sorted(entries, key=lambda e: e.size, reverse=True):
-        if entry.size > CHUNK_TARGET_CHARS:
-            entry.inline = False
-        else:
-            formatted_size = len(f"### {entry.name}\n```\n{entry.content}\n```\n\n")
-            if formatted_size <= remaining_chars:
-                remaining_chars -= formatted_size
-            else:
-                entry.inline = False
-                log.info(
-                    "Deferred %s (%d chars) to chunking for %s (remaining=%d budget=%d)",
-                    entry.name,
-                    entry.size,
-                    display_path,
-                    remaining_chars,
-                    MAX_PROMPT_TOKENS * 3,
-                )
-
-    # 7. Restore original file order for deterministic prompts
-    original_order = {e.name: i for i, e in enumerate(entries)}
-    order_key = lambda e: original_order[e.name]  # noqa: E731
-    inlined = [(e.name, e.content) for e in sorted(entries, key=order_key) if e.inline]
-    oversized_names = [e.name for e in sorted(entries, key=order_key) if not e.inline]
-    oversized_files: dict[str, str] | None = {
-        e.name: e.content for e in sorted(entries, key=order_key) if not e.inline
-    } or None
-
-    # 8. Assemble final prompt
     files_text = _assemble_files_text(inlined, oversized_names, binary_names)
+    base_prompt_without_children = _assemble_prompt(
+        instructions,
+        global_context,
+        files_text,
+        "",
+        existing_summary,
+        display_path,
+    )
+    remaining_for_children = max(0, effective_prompt_tokens - _estimate_tokens(base_prompt_without_children))
+    children_text, omitted_child_summaries, child_tokens_used = _pack_child_summaries(
+        child_summaries,
+        remaining_tokens=remaining_for_children,
+        display_path=display_path,
+    )
+
     prompt = _assemble_prompt(
         instructions,
         global_context,
@@ -1371,25 +1505,51 @@ def _build_prompt(
         display_path,
     )
 
-    # 9. Defensive assertion + instrumentation
-    estimated_tokens = len(prompt) // 3
-    if estimated_tokens > MAX_PROMPT_TOKENS:
+    estimated_tokens = _estimate_tokens(prompt)
+    if estimated_tokens > effective_prompt_tokens:
         log.warning(
-            "Prompt still exceeds budget after packing for %s: ~%d tokens",
+            "Prompt still exceeds effective budget after packing for %s: ~%d tokens vs %d effective",
             display_path,
             estimated_tokens,
+            effective_prompt_tokens,
         )
 
     log.debug(
-        "Prompt build for %s: inlined=%d deferred=%d total_files=%d ~%d tokens",
+        "Prompt build for %s: inlined=%d deferred=%d total_files=%d ~%d tokens (effective budget=%d)",
         display_path,
         len(inlined),
         len(oversized_names),
         len(entries),
         estimated_tokens,
+        effective_prompt_tokens,
     )
 
-    return PromptResult(text=prompt, oversized_files=oversized_files)
+    diagnostics = PromptBudgetDiagnostics(
+        prompt_budget_class=prompt_budget_class,
+        capability_max_prompt_tokens=capability_max_prompt_tokens,
+        effective_prompt_tokens=effective_prompt_tokens,
+        prompt_overhead_tokens=capabilities.invocation.prompt_overhead_tokens if capabilities else 0,
+        component_tokens={
+            "instructions": _estimate_tokens(instructions),
+            "global_context": _estimate_tokens(global_context),
+            "direct_files": direct_file_tokens,
+            "child_summaries": child_tokens_used,
+            "existing_summary": _estimate_tokens(existing_summary),
+            "scaffold": max(
+                0,
+                estimated_tokens
+                - _estimate_tokens(instructions)
+                - _estimate_tokens(global_context)
+                - direct_file_tokens
+                - child_tokens_used
+                - _estimate_tokens(existing_summary),
+            ),
+            "total": estimated_tokens,
+        },
+        deferred_files=deferred_files,
+        omitted_child_summaries=omitted_child_summaries,
+    )
+    return PromptResult(text=prompt, oversized_files=oversized_files, diagnostics=diagnostics)
 
 
 _get_child_dirs = get_child_dirs
@@ -1798,6 +1958,7 @@ async def regen_single_folder(
         child_summaries,
         insights_dir,
         root,
+        capabilities=capabilities,
     )
 
     # Prompt fingerprint for forensic tracing
@@ -1881,6 +2042,7 @@ async def regen_single_folder(
                 insights_dir,
                 root,
                 binary_names,
+                capabilities=capabilities,
             )
 
         # Invoke Claude in inference mode (minimal system prompt, no tools)
