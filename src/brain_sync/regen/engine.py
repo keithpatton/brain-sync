@@ -7,7 +7,7 @@ Deterministic incremental recomputation loop (Make/Bazel model):
 
 Architectural boundary: Python handles all orchestration (context assembly,
 hash comparison, scheduling, validation). The LLM is a pure function:
-assembled context in → summary.md out.
+assembled context in → structured summary/journal artifacts out.
 """
 
 from __future__ import annotations
@@ -46,6 +46,13 @@ from brain_sync.llm import (
     LlmResult,
     get_backend,
     resolve_backend_capabilities,
+)
+from brain_sync.regen.artifacts import (
+    ArtifactCommitPlan,
+    ArtifactContractError,
+    ParsedArtifacts,
+    append_journal_entry,
+    parse_structured_output,
 )
 from brain_sync.regen.evaluation import (
     ChangeEvent,
@@ -147,37 +154,10 @@ _collect_child_summaries = collect_child_summaries
 _collect_global_context = collect_global_context
 
 
-# Structured output parsing for journal support
-_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
-_JOURNAL_RE = re.compile(r"<journal>(.*?)</journal>", re.DOTALL)
-_STRUCTURED_OUTPUT_RE = re.compile(
-    r"\A\s*<summary>(?P<summary>.*?)</summary>\s*<journal>(?P<journal>.*?)</journal>\s*\Z",
-    re.DOTALL,
-)
-
-
 def _parse_structured_output(raw: str) -> tuple[str, str | None]:
-    """Extract summary and optional journal from Claude's structured output."""
-    raw = raw.strip()
-
-    has_structured_markers = any(marker in raw for marker in ("<summary", "</summary>", "<journal", "</journal>"))
-    structured_match = _STRUCTURED_OUTPUT_RE.fullmatch(raw)
-
-    if not structured_match:
-        if has_structured_markers:
-            log.warning("Structured output is malformed or does not match the required XML envelope")
-            return "", None
-        log.warning("Structured output missing <summary> tags, treating entire output as summary")
-        return raw, None
-
-    summary = structured_match.group("summary").strip()
-    journal = structured_match.group("journal").strip()
-
-    # Empty journal = no journal
-    if not journal:
-        journal = None
-
-    return summary, journal
+    """Backward-compat wrapper around the strict artifact parser."""
+    artifacts = parse_structured_output(raw)
+    return artifacts.summary_text, artifacts.journal_text
 
 
 def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, display_path: str) -> None:
@@ -192,7 +172,7 @@ def _write_journal_entry(insights_dir: Path, journal_text: str, regen_id: str, d
     root = knowledge_root.parent
     rel = area_dir.relative_to(knowledge_root)
     knowledge_path = "" if str(rel) == "." else normalize_path(rel)
-    journal_path = BrainRepository(root).append_journal_entry(knowledge_path, journal_text)
+    journal_path = append_journal_entry(BrainRepository(root), knowledge_path=knowledge_path, journal_text=journal_text)
     log.info("[%s] Wrote journal entry for %s at %s", regen_id, display_path, journal_path)
 
 
@@ -316,6 +296,76 @@ def _persist_area_state_or_fail(
             owner_id=owner_id,
             outcome="failed_portable_state",
             details={"error": str(exc)},
+        )
+        raise RegenFailed(knowledge_path or "(root)", str(exc)) from exc
+
+
+def _commit_artifact_plan_or_fail(
+    root: Path,
+    repository: BrainRepository,
+    *,
+    knowledge_path: str,
+    session_id: str | None,
+    owner_id: str | None,
+    regen_started_utc: str | None,
+    content_hash: str,
+    structure_hash: str,
+    last_regen_utc: str,
+    plan: ArtifactCommitPlan,
+    regen_id: str,
+) -> None:
+    """Persist summary/journal artifacts and only finalize runtime state after both succeed."""
+    try:
+        repository.persist_regen_portable_state(
+            knowledge_path,
+            content_hash=content_hash,
+            summary_hash=plan.summary_hash,
+            structure_hash=structure_hash,
+            last_regen_utc=last_regen_utc,
+            summary_text=plan.summary_text,
+        )
+        if plan.journal_text:
+            journal_path = append_journal_entry(
+                repository,
+                knowledge_path=knowledge_path,
+                journal_text=plan.journal_text,
+            )
+            log.info("[%s] Wrote journal entry for %s at %s", regen_id, knowledge_path or "(root)", journal_path)
+        _save_terminal_regen_lock(
+            root,
+            knowledge_path=knowledge_path,
+            owner_id=owner_id,
+            regen_started_utc=regen_started_utc,
+            regen_status="idle",
+        )
+        record_brain_operational_event(
+            root,
+            event_type=OperationalEventType.QUERY_INDEX_INVALIDATED,
+            knowledge_path=knowledge_path,
+            outcome="summary_written",
+            details={"knowledge_paths": [knowledge_path]},
+        )
+    except Exception as exc:
+        log.error("Failed to commit regen artifacts for %s: %s", knowledge_path or "(root)", exc, exc_info=True)
+        try:
+            _save_terminal_regen_lock(
+                root,
+                knowledge_path=knowledge_path,
+                owner_id=owner_id,
+                regen_started_utc=regen_started_utc,
+                regen_status="failed",
+                error_reason=str(exc),
+            )
+        except Exception as db_err:
+            log.error("Failed to persist 'failed' state for %s: %s", knowledge_path or "(root)", db_err)
+        _record_regen_event(
+            root=root,
+            event_type=OperationalEventType.REGEN_FAILED,
+            knowledge_path=knowledge_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="failed_artifact_commit",
+            details={"error": str(exc), "action": plan.action},
         )
         raise RegenFailed(knowledge_path or "(root)", str(exc)) from exc
 
@@ -1203,8 +1253,35 @@ async def regen_single_folder(
         raise RegenFailed(current_path or "(root)", str(e)) from e
     now = datetime.now(UTC).isoformat()
 
-    # Parse structured output (summary + optional journal)
-    new_summary, journal_text = _parse_structured_output(result.output.strip() if result.output else "")
+    # Parse structured output (summary required, journal optional)
+    try:
+        parsed_artifacts: ParsedArtifacts = parse_structured_output(result.output.strip() if result.output else "")
+    except ArtifactContractError as exc:
+        err_msg = f"invalid structured output: {exc}"
+        try:
+            _save_terminal_regen_lock(
+                root,
+                knowledge_path=current_path,
+                owner_id=owner_id,
+                regen_started_utc=started,
+                regen_status="failed",
+                error_reason=err_msg,
+            )
+        except Exception as db_err:
+            log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+        _record_regen_event(
+            root=root,
+            event_type=OperationalEventType.REGEN_FAILED,
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="failed_artifact_contract",
+            details={"error": str(exc)},
+        )
+        raise RegenFailed(current_path or "(root)", err_msg) from exc
+
+    new_summary = parsed_artifacts.summary_text
+    journal_text = parsed_artifacts.journal_text
     if len(new_summary) < 20:
         log.warning(
             "[%s] Claude returned empty/tiny output for %s (%d chars). Output: %s",
@@ -1244,8 +1321,7 @@ async def regen_single_folder(
             current_path or "(root)",
             similarity_threshold * 100,
         )
-        summary_hash = hashlib.sha256(old_summary.encode("utf-8")).hexdigest()
-        _persist_area_state_or_fail(
+        _commit_artifact_plan_or_fail(
             root,
             repository,
             knowledge_path=current_path,
@@ -1253,15 +1329,16 @@ async def regen_single_folder(
             owner_id=owner_id,
             regen_started_utc=started,
             content_hash=new_content_hash,
-            summary_hash=summary_hash,
             structure_hash=new_structure_hash,
             last_regen_utc=now,
-            regen_status="idle",
-            release_owner_id=owner_id,
+            plan=ArtifactCommitPlan(
+                action="skipped_similarity",
+                summary_hash=hashlib.sha256(old_summary.encode("utf-8")).hexdigest(),
+                summary_text=None,
+                journal_text=journal_text,
+            ),
+            regen_id=regen_id,
         )
-        # Journal is independent of summary similarity — temporal events matter
-        if journal_text:
-            _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
         _record_regen_event(
             root=root,
             event_type=OperationalEventType.REGEN_COMPLETED,
@@ -1273,24 +1350,24 @@ async def regen_single_folder(
         return SingleFolderResult(action="skipped_similarity", knowledge_path=current_path)
 
     # Summary changed — repository owns durable summary persistence.
-    summary_hash = hashlib.sha256(new_summary.encode("utf-8")).hexdigest()
-    _persist_area_state_or_fail(
+    _commit_artifact_plan_or_fail(
         root,
         repository,
         knowledge_path=current_path,
         session_id=session_id,
         owner_id=owner_id,
         regen_started_utc=started,
-        summary_text=new_summary,
         content_hash=new_content_hash,
-        summary_hash=summary_hash,
         structure_hash=new_structure_hash,
         last_regen_utc=now,
-        regen_status="idle",
-        release_owner_id=owner_id,
+        plan=ArtifactCommitPlan(
+            action="regenerated",
+            summary_hash=hashlib.sha256(new_summary.encode("utf-8")).hexdigest(),
+            summary_text=new_summary,
+            journal_text=journal_text,
+        ),
+        regen_id=regen_id,
     )
-    if journal_text:
-        _write_journal_entry(insights_dir, journal_text, regen_id, current_path or "(root)")
     log.info(
         "[%s] Regenerated summary for %s (model=%s in=%s out=%s tokens turns=%s)",
         regen_id,

@@ -21,6 +21,7 @@ from brain_sync.regen import (
     regen_all,
     regen_path,
 )
+from brain_sync.regen.artifacts import ArtifactContractError
 from brain_sync.regen.engine import (
     _REGEN_INSTRUCTIONS,
     CHUNK_TARGET_CHARS,
@@ -105,6 +106,12 @@ def managed_summary(root: Path, knowledge_path: str = "") -> Path:
 
 def managed_journal(root: Path, knowledge_path: str = "") -> Path:
     return area_journal_dir(root, knowledge_path)
+
+
+def _structured_output(summary: str, journal: str = "") -> str:
+    if "<summary>" in summary and "<journal>" in summary:
+        return summary
+    return f"<summary>\n{summary}\n</summary>\n\n<journal>\n{journal}\n</journal>"
 
 
 class TestComputeContentHash:
@@ -494,7 +501,7 @@ class TestRegenPath:
         """Create a mock invoke_claude that returns summary text."""
 
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            return ClaudeResult(success=True, output=content)
+            return ClaudeResult(success=True, output=_structured_output(content))
 
         return fake_invoke
 
@@ -606,7 +613,7 @@ class TestRegenPath:
 
         async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            return ClaudeResult(success=True, output="# Parent Summary\nOverview.")
+            return ClaudeResult(success=True, output=_structured_output("# Parent Summary\nOverview."))
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             count = asyncio.run(regen_path(brain, "parent"))
@@ -686,7 +693,10 @@ class TestRegenPath:
 
         async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            return ClaudeResult(success=True, output="# Initiative Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Initiative Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             asyncio.run(regen_path(brain, "initiative"))
@@ -844,7 +854,10 @@ class TestRegenPath:
 
         async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             asyncio.run(regen_path(brain, "project"))
@@ -865,7 +878,10 @@ class TestRegenPath:
 
         async def capture_and_return(prompt: str, cwd: Path, **kwargs):
             prompts.append(prompt)
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture_and_return):
             count = asyncio.run(regen_path(brain, "area"))
@@ -887,7 +903,10 @@ class TestRegenPath:
 
         async def capture(prompt: str, cwd: Path, **kwargs):
             prompt_captured.append(prompt)
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=capture):
             asyncio.run(regen_path(brain, "leaf"))
@@ -980,7 +999,10 @@ class TestRegenPath:
         (leaf / "old-name.md").write_text("# Leaf", encoding="utf-8")
 
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=fake_invoke):
             asyncio.run(regen_single_folder(brain, "parent"))
@@ -1333,7 +1355,7 @@ class TestRegenAll:
         """Create a mock invoke_claude that returns summary text."""
 
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            return ClaudeResult(success=True, output=content)
+            return ClaudeResult(success=True, output=_structured_output(content))
 
         return fake_invoke
 
@@ -1357,7 +1379,10 @@ class TestRegenAll:
                     area = line.split(":")[-1].strip()
                     call_order.append(area)
                     break
-            return ClaudeResult(success=True, output=f"# Summary for {area}\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output(f"# Summary for {area}\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=track_and_return):
             total = asyncio.run(regen_all(brain))
@@ -1649,7 +1674,7 @@ class TestOutputValidation:
         (kdir / "doc.md").write_text("# Doc", encoding="utf-8")
 
         async def valid_output(prompt, cwd, **kwargs):
-            return ClaudeResult(success=True, output="# Summary\n\nThis is a valid summary.")
+            return ClaudeResult(success=True, output=_structured_output("# Summary\n\nThis is a valid summary."))
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=valid_output):
             asyncio.run(regen_path(brain, "project"))
@@ -1668,7 +1693,7 @@ class TestOutputValidation:
             return ClaudeResult(success=True, output="<journal>\nOnly journal\n</journal>")
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=malformed_output):
-            with pytest.raises(RegenFailed, match="suspiciously small output"):
+            with pytest.raises(RegenFailed, match="invalid structured output"):
                 asyncio.run(regen_path(brain, "project"))
 
         assert not managed_summary(brain, "project").exists()
@@ -1687,7 +1712,7 @@ class TestOutputValidation:
             )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=malformed_output):
-            with pytest.raises(RegenFailed, match="suspiciously small output"):
+            with pytest.raises(RegenFailed, match="invalid structured output"):
                 asyncio.run(regen_path(brain, "project"))
 
         assert not managed_summary(brain, "project").exists()
@@ -1707,7 +1732,7 @@ class TestOutputValidation:
             )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=malformed_output):
-            with pytest.raises(RegenFailed, match="suspiciously small output"):
+            with pytest.raises(RegenFailed, match="invalid structured output"):
                 asyncio.run(regen_path(brain, "project"))
 
         assert not managed_summary(brain, "project").exists()
@@ -1917,7 +1942,7 @@ class TestChunkedRegenFlow:
             call_count += 1
             return ClaudeResult(
                 success=True,
-                output="# Summary\n\nThis is a thorough summary of the content.",
+                output=_structured_output("# Summary\n\nThis is a thorough summary of the content."),
                 input_tokens=1000,
                 output_tokens=500,
             )
@@ -1945,7 +1970,7 @@ class TestChunkedRegenFlow:
         async def mock_invoke(prompt, cwd, **kwargs):
             return ClaudeResult(
                 success=True,
-                output="# Summary\n\nDetailed summary of this section or merge.",
+                output=_structured_output("# Summary\n\nDetailed summary of this section or merge."),
                 input_tokens=500,
                 output_tokens=200,
                 duration_ms=1000,
@@ -2094,7 +2119,7 @@ class TestTokenBudgetEnforcement:
             call_count += 1
             return ClaudeResult(
                 success=True,
-                output="# Summary\n\nThis is a thorough summary of the content.",
+                output=_structured_output("# Summary\n\nThis is a thorough summary of the content."),
                 input_tokens=1000,
                 output_tokens=500,
             )
@@ -2135,39 +2160,34 @@ class TestParseStructuredOutput:
         assert journal is None
 
     def test_no_tags_fallback(self):
-        """Raw text without XML tags falls back to entire output as summary."""
+        """Plain output without the required XML envelope is invalid."""
         raw = "# Summary\nJust plain text"
-        summary, journal = _parse_structured_output(raw)
-        assert summary == raw
-        assert journal is None
+        with pytest.raises(ArtifactContractError, match="expected exactly one"):
+            _parse_structured_output(raw)
 
     def test_journal_only_xml_is_rejected(self):
         """Malformed structured output without <summary> is rejected."""
         raw = "<journal>\nOnly journal\n</journal>"
-        summary, journal = _parse_structured_output(raw)
-        assert summary == ""
-        assert journal is None
+        with pytest.raises(ArtifactContractError, match="expected exactly one"):
+            _parse_structured_output(raw)
 
     def test_malformed_summary_tag_is_rejected(self):
         """Structured markers without a valid closed <summary> are rejected."""
         raw = "<summary>\nUnclosed summary\n<journal>\nEntry\n</journal>"
-        summary, journal = _parse_structured_output(raw)
-        assert summary == ""
-        assert journal is None
+        with pytest.raises(ArtifactContractError, match="expected exactly one"):
+            _parse_structured_output(raw)
 
     def test_malformed_journal_tag_is_rejected(self):
         """Structured markers without a valid closed <journal> are rejected."""
         raw = "<summary>\nContent\n</summary>\n<journal>\nBroken"
-        summary, journal = _parse_structured_output(raw)
-        assert summary == ""
-        assert journal is None
+        with pytest.raises(ArtifactContractError, match="expected exactly one"):
+            _parse_structured_output(raw)
 
     def test_text_outside_xml_envelope_is_rejected(self):
         """Any text outside the required XML sections is rejected."""
         raw = "prefix\n<summary>\nContent\n</summary>\n<journal>\nEntry\n</journal>\nsuffix"
-        summary, journal = _parse_structured_output(raw)
-        assert summary == ""
-        assert journal is None
+        with pytest.raises(ArtifactContractError, match="expected exactly one"):
+            _parse_structured_output(raw)
 
     def test_leading_whitespace_stripped(self):
         """Leading/trailing whitespace on raw input is stripped before parsing."""
@@ -2277,6 +2297,29 @@ class TestJournalWriting:
         # No journal directory created
         journal_dir = managed_journal(brain, "project")
         assert not journal_dir.exists()
+
+    def test_journal_write_failure_surfaces_run_failure(self, brain):
+        """Journal commit failures fail the run instead of being silently ignored."""
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\nContent.", encoding="utf-8")
+
+        structured_output = (
+            "<summary>\n# Project Summary\nA valid summary.\n</summary>\n\n<journal>\nEntry.\n</journal>"
+        )
+
+        async def mock_invoke(prompt, cwd, **kwargs):
+            return ClaudeResult(success=True, output=structured_output)
+
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke):
+            with patch("brain_sync.regen.engine.append_journal_entry", side_effect=OSError("disk full")):
+                with pytest.raises(RegenFailed, match="disk full"):
+                    asyncio.run(regen_path(brain, "project"))
+
+        assert managed_summary(brain, "project").exists()
+        state = load_insight_state(brain, "project")
+        assert state is not None
+        assert state.regen_status == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -2526,7 +2569,7 @@ class TestRegenSingleFolder:
 
     def _mock_claude(self, content: str = "# Summary\n\nGenerated insight summary content."):
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            return ClaudeResult(success=True, output=content)
+            return ClaudeResult(success=True, output=_structured_output(content))
 
         return fake_invoke
 
@@ -2700,7 +2743,7 @@ class TestRegenAllWave:
 
     def _mock_claude(self, content: str = "# Summary\n\nGenerated insight summary content."):
         async def fake_invoke(prompt: str, cwd: Path, **kwargs):
-            return ClaudeResult(success=True, output=content)
+            return ClaudeResult(success=True, output=_structured_output(content))
 
         return fake_invoke
 
@@ -2722,7 +2765,10 @@ class TestRegenAllWave:
                     area = line.split(":")[-1].strip()
                     call_paths.append(area)
                     break
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke):
             total = asyncio.run(regen_all(brain))
@@ -2754,7 +2800,10 @@ class TestRegenAllWave:
         async def count_invoke(prompt: str, cwd: Path, **kwargs):
             nonlocal call_count
             call_count += 1
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=count_invoke):
             total = asyncio.run(regen_all(brain))
@@ -2780,7 +2829,10 @@ class TestRegenAllWave:
         async def unique_invoke(prompt: str, cwd: Path, **kwargs):
             nonlocal call_idx
             call_idx += 1
-            return ClaudeResult(success=True, output=f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output(f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=unique_invoke):
             asyncio.run(regen_all(brain))
@@ -2798,7 +2850,10 @@ class TestRegenAllWave:
                     area = line.split(":")[-1].strip()
                     call_paths.append(area)
                     break
-            return ClaudeResult(success=True, output=f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output(f"# Summary v{call_idx}\n\nGenerated insight content v{call_idx}."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=track_invoke):
             total = asyncio.run(regen_all(brain))
@@ -2828,7 +2883,10 @@ class TestRegenAllWave:
                     if area == "area/sub1":
                         return ClaudeResult(success=False, output="")
                     break
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=fail_on_sub1):
             asyncio.run(regen_all(brain))
@@ -2882,7 +2940,10 @@ class TestRegenAllWave:
         async def count_invoke(prompt: str, cwd: Path, **kwargs):
             nonlocal call_count
             call_count += 1
-            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+            return ClaudeResult(
+                success=True,
+                output=_structured_output("# Summary\n\nGenerated insight summary content."),
+            )
 
         with patch("brain_sync.regen.engine.invoke_claude", side_effect=count_invoke):
             asyncio.run(regen_all(brain))

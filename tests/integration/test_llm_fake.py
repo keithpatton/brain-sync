@@ -35,6 +35,8 @@ class TestFakeStable:
         backend = FakeBackend(mode="stable")
         r = await backend.invoke("test prompt", cwd=Path("."))
         assert "[fake-" in r.output
+        assert "<summary>" in r.output
+        assert "<journal>" in r.output
 
     async def test_token_counts_proportional(self):
         """Token counts should be proportional to content length."""

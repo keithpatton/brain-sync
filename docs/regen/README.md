@@ -56,6 +56,8 @@ Internally, the current split is:
 
 - `regen/evaluation.py` for deterministic node evaluation and hash
   classification
+- `regen/artifacts.py` for strict summary/journal artifact parsing and commit
+  planning
 - `regen/prompt_planner.py` for prompt assembly, context budgeting, and chunk
   fallback planning
 - `regen/topology.py` for shared propagation rules
@@ -126,7 +128,7 @@ For each knowledge area, regen currently manages these co-located artifacts:
 - runtime regen lifecycle rows in `regen_locks`
 
 The summary is the main derived artifact. The journal is optional and only
-written when the model returns non-empty journal content.
+written when the model returns a valid non-empty journal payload.
 
 ## Current Pipeline
 
@@ -144,10 +146,11 @@ At a high level, the current pipeline is:
 4. Assemble prompt context for content-changing folders.
 5. Chunk oversized files when needed, then rebuild a merge prompt.
 6. Invoke the configured LLM backend.
-7. Parse structured output into summary and optional journal text.
+7. Parse the fixed structured-output contract into summary and optional journal
+   text.
 8. Apply the similarity guard.
-9. Persist the final summary and updated hashes, then append any journal
-   entry.
+9. Persist the final artifact plan: required summary state first, then any
+   journal entry, and only then finalize runtime success.
 
 ```mermaid
 flowchart TD
@@ -174,8 +177,10 @@ flowchart TD
     BIG -- "no" --> CALL["invoke backend"]
     MERGE --> CALL
 
-    CALL --> PARSE["parse <summary> and <journal>"]
-    PARSE --> SMALL{"summary too small or call failed?"}
+    CALL --> PARSE["parse required <summary> and <journal> envelope"]
+    PARSE --> CONTRACT{"invalid artifact payload?"}
+    CONTRACT -- "yes" --> FAIL["persist failed runtime state"]
+    CONTRACT -- "no" --> SMALL{"summary too small or call failed?"}
     SMALL -- "yes" --> FAIL["persist failed runtime state"]
     FAIL --> OUTF["raise RegenFailed"]
 
@@ -343,9 +348,19 @@ Regen parses those sections after invocation:
 - the summary becomes the candidate new `summary.md`
 - an empty journal section means "no journal entry"
 - a non-empty journal section is appended to the area's daily journal file
+- plain-text fallback is not accepted
+- malformed XML or journal-only output is treated as an invalid run result and
+  fails the run without producing new durable artifacts
+
+The current code models that contract explicitly:
+
+- `ParsedArtifacts` is the validated summary/journal payload from one model call
+- `ArtifactCommitPlan` is the durable write decision after similarity handling
 
 Journal writing is independent of summary replacement. Today a journal entry
 may still be written even when the similarity guard keeps the existing summary.
+If journal commit itself fails after a valid payload was produced, the run is
+surfaced as failed rather than silently ignoring the journal error.
 
 ## Similarity Guard
 

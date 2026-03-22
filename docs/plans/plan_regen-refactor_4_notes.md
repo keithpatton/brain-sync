@@ -90,6 +90,110 @@ Recommended next action:
 
 - proceed unchanged
 
+2026-03-23T08:55:08+13:00
+Phase: Phase 4 - artifact-aware pipeline hardening
+Change: Introduced an explicit REGEN artifact contract for required summary payloads and optional journal payloads, hardened execution to fail invalid structured output at the artifact boundary, delayed runtime success finalization until journal commit succeeds, aligned the fake backend with the fixed contract, and updated the explanatory docs.
+Reason: Phase 4 required a fixed summary/journal contract with explicit handling for malformed output, summary-retained similarity success, and journal-write failure without creating a new diagnostics table.
+Status: Implemented.
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/artifacts.py`
+- `src/brain_sync/regen/engine.py`
+- `src/brain_sync/llm/fake.py`
+- `tests/unit/test_regen.py`
+- `tests/integration/test_llm_fake.py`
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m ruff check src/brain_sync/regen/artifacts.py src/brain_sync/regen/engine.py src/brain_sync/llm/fake.py tests/unit/test_regen.py tests/integration/test_llm_fake.py tests/integration/test_regen_pipeline.py docs/regen/README.md docs/architecture/ARCHITECTURE.md` -> passed
+- `pyright src/brain_sync/regen/artifacts.py src/brain_sync/regen/engine.py src/brain_sync/llm/fake.py tests/unit/test_regen.py tests/integration/test_llm_fake.py tests/integration/test_regen_pipeline.py` -> passed
+- `python -m pytest tests/unit/test_regen.py -q` -> 182 passed
+- `python -m pytest tests/integration/test_llm_fake.py tests/integration/test_regen_pipeline.py -q` -> 19 passed
+- `python -m pytest tests/unit/test_regen.py tests/integration/test_llm_fake.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_phase2_budgeting.py -q` -> 203 passed
+
+Baseline-versus-current metrics relevant to the phase:
+
+- Invalid plain-output acceptance before/after: before this phase `_parse_structured_output()` accepted 1 no-tag fallback path and treated raw text as summary; current state accepts 0 plain-output fallback paths and requires exactly 1 `<summary>...</summary><journal>...</journal>` envelope.
+- Invalid-output classification before/after: before this phase journal-only or malformed XML surfaced indirectly through the tiny-summary guard after parsing to `("", None)`; current state fails those cases at the explicit artifact-contract boundary with `failed_artifact_contract`.
+- Fake-backend final-output alignment before/after: before this phase deterministic fake `stable`, `rewrite`, and `large-output` modes emitted plain summary bodies; current state emits the fixed summary/journal XML contract in those modes so final-output integration coverage exercises the same artifact shape as production REGEN. Chunk intermediates remain plain-text merge inputs rather than a separately proven XML artifact path in this phase.
+- Success finalization ordering before/after: before this phase successful runtime finalization and owner release happened before journal append; current state finalizes runtime success only after summary persistence and any journal append both succeed.
+- Broad regen regression slice: 203 targeted unit/integration tests passed after the change, compared with 0 passing at the midpoint when older plain-output test doubles still violated the new contract; all required fixtures were updated to the fixed envelope.
+
+Evidence bundle:
+
+- `tests/unit/test_regen.py::TestParseStructuredOutput` now proves valid summary/journal parsing, empty-journal handling, and strict rejection of plain output, malformed tags, journal-only output, and text outside the XML envelope.
+- `tests/unit/test_regen.py::TestJournalWriting::test_journal_write_failure_surfaces_run_failure` proves a valid summary payload plus a failed journal append surfaces as `RegenFailed` and leaves runtime state marked `failed` rather than silently succeeding.
+- `tests/integration/test_llm_fake.py` now proves the stable fake backend emits `<summary>` and `<journal>` sections for final successful outputs, and `tests/integration/test_regen_pipeline.py` still passes end-to-end with the stricter artifact parser. This evidence does not claim separate XML alignment for chunk-call intermediates.
+
+Findings summary:
+
+- REGEN now has an explicit artifact model: `ParsedArtifacts` for validated model output and `ArtifactCommitPlan` for the durable write decision after similarity handling.
+- Summary remains the primary required artifact for model-backed REGEN; journal remains optional and only commits when a valid summary payload exists.
+- `skipped_similarity` remains a successful run and may still append journal content because the summary payload was valid even though the summary rewrite was discarded.
+- `skipped_unchanged` still performs no LLM call and does not synthesize journal output.
+- Journal commit failure is now surfaced as a failed run before runtime success is finalized.
+
+Product calls surfaced:
+
+- No new blocking product call was exposed in Phase 4.
+- The approved fixed contract was implemented as written: no raw-summary fallback, no journal-only success path, and no new runtime diagnostics table.
+
+Regressions or ambiguous results:
+
+- No regressions were found in the targeted regen unit/integration slice after the contract hardening and fake-backend alignment.
+- Journal append failure now fails the run after summary persistence may already have happened; the current implementation does not attempt summary rollback because the approved Phase 4 contract required failure surfacing, not transactional rollback semantics.
+- Chunked-flow proof in this phase is limited to preserving the final artifact contract. Forced-chunk fake-backend runs still treat chunk-call outputs as plain-text intermediate summaries in the merge prompt, so Phase 4 should not be read as proving XML artifact handling for chunk intermediates.
+
+Unresolved product decisions:
+
+- None newly surfaced in this phase.
+
+Docs reviewed:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/sync/README.md`
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `README.md`
+
+Docs changed:
+
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/sync/README.md`
+- `README.md`
+
+Recommended next action:
+
+- proceed unchanged
+
 2026-03-23T09:35:00+13:00
 Implementation note: Post-Phase-3 REGEN seam extraction before Phase 4
 Change: Extracted deterministic folder evaluation into `regen/evaluation.py` and prompt assembly/chunk planning into `regen/prompt_planner.py`, while keeping `regen/engine.py` as the compatibility-preserving orchestration surface.

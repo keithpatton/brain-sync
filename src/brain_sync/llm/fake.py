@@ -48,7 +48,7 @@ class FakeBackend:
         fail         — returns LlmResult(success=False)
         timeout      — exceeds caller's timeout (async, non-blocking)
         large-output — returns ~10KB body
-        partial-stream — returns truncated output
+        partial-stream — returns truncated structured output
         malformed    — returns invalid structure
     """
 
@@ -102,8 +102,8 @@ class FakeBackend:
             )
 
         if self.mode == "partial-stream":
-            # Truncated output — starts a heading but cuts off
-            output = "# Summary\n\nThis analysis covers the key th"
+            # Truncated structured output — starts the required envelope but cuts off
+            output = "<summary>\n# Summary\n\nThis analysis covers the key th"
             return LlmResult(
                 success=True,
                 output=output,
@@ -148,7 +148,8 @@ def _generate(prompt: str, seed_offset: int = 0) -> str:
     phrase = rng.choice(PHRASES)
     topic = rng.choice(TOPIC_FRAGMENTS)
     detail = rng.choice(TOPIC_FRAGMENTS)
-    return f"# Summary\n\n[fake-{h}] {phrase} {topic}. Further analysis shows {detail}."
+    summary = f"# Summary\n\n[fake-{h}] {phrase} {topic}. Further analysis shows {detail}."
+    return f"<summary>\n{summary}\n</summary>\n<journal>\n</journal>"
 
 
 def _generate_large(prompt: str) -> str:
@@ -160,7 +161,8 @@ def _generate_large(prompt: str) -> str:
         phrase = rng.choice(PHRASES)
         topic = rng.choice(TOPIC_FRAGMENTS)
         sections.append(f"\n## Section {i + 1}\n\n[fake-{h}] {phrase} {topic}. " * 5)
-    return "\n".join(sections)
+    summary = "\n".join(sections)
+    return f"<summary>\n{summary}\n</summary>\n<journal>\n</journal>"
 
 
 def _capture_prompt(prompt: str) -> None:
