@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,8 +36,27 @@ _GOOGLE_CLIENT_CONFIG = {
 }
 
 
-def _legacy_token_file() -> Path:
-    return runtime_config.config_dir() / "google_token.json"
+class _LegacyTokenFileAlias(PathLike[str]):
+    """Dynamic compatibility alias for the legacy token-file path."""
+
+    def current_path(self) -> Path:
+        return runtime_config.config_dir() / "google_token.json"
+
+    def __fspath__(self) -> str:
+        return str(self.current_path())
+
+    def __str__(self) -> str:
+        return str(self.current_path())
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.current_path(), name)
+
+
+# Semipublic compatibility aliases retained for tests and older callers that
+# still patch brain_sync.sources.googledocs.auth.* directly.
+load_config = runtime_config.load_config
+save_config = runtime_config.save_config
+_LEGACY_TOKEN_FILE = _LegacyTokenFileAlias()
 
 
 def _require_google() -> None:
@@ -112,11 +132,11 @@ def _load_cached_token() -> Credentials | None:
     _require_google()
     from google.oauth2.credentials import Credentials
 
-    config = runtime_config.load_config()
+    config = load_config()
     token_dict = config.get("google", {}).get("token")
 
     # Migration: legacy google_token.json → config.json
-    legacy_token_file = _legacy_token_file()
+    legacy_token_file = _LEGACY_TOKEN_FILE
     if token_dict is None and legacy_token_file.exists():
         token_dict = _migrate_legacy_token(config)
 
@@ -136,7 +156,7 @@ def _load_cached_token() -> Credentials | None:
 
 def _migrate_legacy_token(config: dict) -> dict | None:
     """Migrate token from legacy google_token.json into config.json."""
-    legacy_token_file = _legacy_token_file()
+    legacy_token_file = _LEGACY_TOKEN_FILE
     try:
         token_dict = json.loads(legacy_token_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -146,7 +166,7 @@ def _migrate_legacy_token(config: dict) -> dict | None:
     config.setdefault("google", {})["token"] = token_dict
     # Clean up legacy googledocs.client_secrets_file if present
     config.pop("googledocs", None)
-    runtime_config.save_config(config)
+    save_config(config)
 
     legacy_token_file.unlink(missing_ok=True)
     log.info("Migrated Google token from google_token.json into config.json")
@@ -156,6 +176,6 @@ def _migrate_legacy_token(config: dict) -> dict | None:
 def _save_token(creds: Credentials) -> None:
     """Save token into config.json under google.token."""
     token_dict = json.loads(creds.to_json())
-    config = runtime_config.load_config()
+    config = load_config()
     config.setdefault("google", {})["token"] = token_dict
-    runtime_config.save_config(config)
+    save_config(config)

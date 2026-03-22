@@ -195,10 +195,10 @@ def _resolve_root(source_state: SourceStateLike) -> Path | None:
 
     # Fallback: resolve from config (works in subprocess contexts)
     try:
-        from brain_sync.runtime.config import load_config
+        from brain_sync.runtime.config import active_brain_root, load_config
 
         cfg = load_config()
-        brain_root = cfg.get("brain_root")
+        brain_root = active_brain_root(cfg) or cfg.get("brain_root")
         if brain_root:
             return Path(brain_root)
     except Exception:
