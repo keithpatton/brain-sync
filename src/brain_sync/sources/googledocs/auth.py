@@ -48,6 +48,15 @@ class _LegacyTokenFileAlias(PathLike[str]):
     def __str__(self) -> str:
         return str(self.current_path())
 
+    def exists(self) -> bool:
+        return self.current_path().exists()
+
+    def read_text(self, encoding: str | None = None, errors: str | None = None) -> str:
+        return self.current_path().read_text(encoding=encoding, errors=errors)
+
+    def unlink(self, missing_ok: bool = False) -> None:
+        self.current_path().unlink(missing_ok=missing_ok)
+
     def __getattr__(self, name: str) -> object:
         return getattr(self.current_path(), name)
 
