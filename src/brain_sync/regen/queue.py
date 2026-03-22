@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from brain_sync.regen.engine import regen_path, regen_single_folder
-from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
+from brain_sync.regen.topology import compute_waves, parent_path, propagates_up
 from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     RegenLock,
@@ -207,7 +207,7 @@ class RegenQueue:
                     )
                     if result.action == "regenerated":
                         total += 1
-                    if result.action in PROPAGATES_UP and path:
+                    if propagates_up(result.action) and path:
                         dirty.add(parent_path(path))
 
                     # Cooldown/rate tracking only for directly-enqueued paths

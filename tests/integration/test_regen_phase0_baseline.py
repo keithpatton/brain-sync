@@ -39,8 +39,8 @@ async def test_phase0_baseline_harness_covers_required_corpus_and_metrics(brain:
 
     ancestor_cases = metrics["ancestor_propagation_frequency"]["cases_by_name"]
     assert ancestor_cases["small_leaf_unchanged"]["ancestor_event_count"] == 0
-    assert ancestor_cases["rename_walkup"]["ancestor_event_count"] >= 1
-    assert ancestor_cases["backfill_walkup"]["ancestor_event_count"] >= 1
+    assert ancestor_cases["rename_walkup"]["ancestor_event_count"] == 0
+    assert ancestor_cases["backfill_walkup"]["ancestor_event_count"] == 0
     assert ancestor_cases["rename_walkup"]["leaf_outcome"] == "skipped_rename"
     assert ancestor_cases["backfill_walkup"]["leaf_outcome"] == "skipped_backfill"
 

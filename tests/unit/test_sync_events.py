@@ -110,7 +110,41 @@ def test_apply_folder_move_enqueues_old_parent_on_cross_branch_move(brain: Path)
         enqueue=enqueued.append,
     )
 
-    assert enqueued == ["beta/child", "alpha"]
+    assert enqueued == ["beta/child", "alpha", "beta"]
+
+
+def test_apply_folder_move_enqueues_shared_parent_on_same_parent_rename(brain: Path) -> None:
+    old_dir = brain / "knowledge" / "alpha" / "child-old"
+    old_dir.mkdir(parents=True, exist_ok=True)
+    new_dir = brain / "knowledge" / "alpha" / "child-new"
+    enqueued: list[str] = []
+
+    shutil.move(str(old_dir), str(new_dir))
+
+    apply_folder_move(
+        brain,
+        move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()),
+        enqueue=enqueued.append,
+    )
+
+    assert enqueued == ["alpha/child-new", "alpha"]
+
+
+def test_apply_folder_move_enqueues_root_on_root_level_rename(brain: Path) -> None:
+    old_dir = brain / "knowledge" / "child-old"
+    old_dir.mkdir(parents=True, exist_ok=True)
+    new_dir = brain / "knowledge" / "child-new"
+    enqueued: list[str] = []
+
+    shutil.move(str(old_dir), str(new_dir))
+
+    apply_folder_move(
+        brain,
+        move=FolderMove(src=old_dir.resolve(), dest=new_dir.resolve()),
+        enqueue=enqueued.append,
+    )
+
+    assert enqueued == ["child-new", ""]
 
 
 def test_handle_watcher_folder_change_invalidates_core_context(brain: Path, monkeypatch: pytest.MonkeyPatch) -> None:

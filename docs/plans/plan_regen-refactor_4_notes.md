@@ -90,6 +90,115 @@ Recommended next action:
 
 - proceed unchanged
 
+2026-03-23T07:53:54.0198904+13:00
+Phase: Phase 3 - dirty detection and propagation precision
+Change: Converged single-path, wave, and queue propagation on one shared contract for actual parent inputs, removed false-positive walk-up from local-only structure churn and metadata backfill, and moved parent-visible folder-rename propagation to the sync-owned move enqueue path.
+Reason: Phase 3 required REGEN propagation to follow actual parent dependencies rather than legacy continuation shortcuts.
+Status: Implemented with one approved exception to the coarse plan matrix.
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/topology.py`
+- `src/brain_sync/regen/engine.py`
+- `src/brain_sync/regen/queue.py`
+- `src/brain_sync/sync/lifecycle.py`
+- `tests/unit/test_regen.py`
+- `tests/unit/test_sync_events.py`
+- `tests/integration/regen_phase0_baseline.py`
+- `tests/integration/test_regen_phase0_baseline.py`
+- `docs/regen/README.md`
+- `docs/sync/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m pytest tests/unit/test_regen.py -q` -> 181 passed
+- `python -m pytest tests/unit/test_sync_events.py tests/unit/test_watcher_moves.py -q` -> 13 passed
+- `python -m pytest tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_pipeline.py -q` -> 8 passed
+- `python -m pytest tests/unit/test_regen_queue.py tests/unit/test_regen.py tests/unit/test_sync_events.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase0_baseline.py -q` -> 216 passed
+- `ruff check src/brain_sync/regen/topology.py src/brain_sync/regen/engine.py src/brain_sync/regen/queue.py src/brain_sync/sync/lifecycle.py tests/unit/test_regen.py tests/unit/test_sync_events.py tests/integration/regen_phase0_baseline.py tests/integration/test_regen_phase0_baseline.py` -> passed
+- `pyright src/brain_sync/regen/topology.py src/brain_sync/regen/engine.py src/brain_sync/regen/queue.py src/brain_sync/sync/lifecycle.py tests/unit/test_regen.py tests/unit/test_sync_events.py tests/integration/regen_phase0_baseline.py tests/integration/test_regen_phase0_baseline.py` -> passed
+
+Baseline-versus-current metrics relevant to the phase:
+
+- Targeted Phase 0 walk-up ancestor continuation rate improved from `2/3` cases before Phase 3 (`rename_walkup`, `backfill_walkup`) to `0/3` cases after Phase 3 (`small_leaf_unchanged`, `rename_walkup`, `backfill_walkup` all now stop at the leaf).
+- `rename_walkup` before/after: `ancestor_event_count` moved from `1` to `0`; ordered paths moved from `["operations/rename-demo", "operations"]` to `["operations/rename-demo"]`.
+- `backfill_walkup` before/after: `ancestor_event_count` moved from `1` to `0`; ordered paths moved from `["legacy/metadata", "legacy"]` to `["legacy/metadata"]`.
+- Shared propagation set before/after: before Phase 3, single-path walk-up continued on `skipped_rename` and `skipped_backfill` even though wave processing already excluded `skipped_backfill`; after Phase 3, single-path walk-up, full-tree wave execution, and queue wave execution all share the same upward set: `regenerated`, `skipped_no_content`, and `cleaned_up`.
+- Parent-visible folder move enqueue before/after: before Phase 3, same-parent folder rename enqueued only the moved area and cross-branch folder move enqueued the moved area plus only the old parent; after Phase 3, same-parent rename enqueues the moved area plus the shared parent, root-level rename enqueues the moved area plus root, and cross-branch move enqueues the moved area plus both old and new parents.
+- Quality guard remained stable: the Phase 0 anchor harness stayed `all_passed = true` before and after this phase.
+
+Evidence bundle:
+
+- `tests/integration/test_regen_phase0_baseline.py` plus the current baseline collector output prove the false-positive ancestor-walk-up drop from `2/3` to `0/3` without anchor loss.
+- `tests/unit/test_regen.py::test_backfill_ancestor_not_regenerated_on_second_visit` and `tests/unit/test_regen.py::test_local_structure_only_rename_does_not_walk_up_to_parent` prove local-only structure churn and metadata backfill now stop at the leaf.
+- `tests/unit/test_sync_events.py::test_apply_folder_move_enqueues_shared_parent_on_same_parent_rename`, `tests/unit/test_sync_events.py::test_apply_folder_move_enqueues_root_on_root_level_rename`, and `tests/unit/test_sync_events.py::test_apply_folder_move_enqueues_old_parent_on_cross_branch_move` prove parent-visible structure changes are now carried by explicit sync move enqueue paths.
+
+Findings summary:
+
+- Single-path walk-up, full-tree wave execution, and queue wave execution now share one authoritative propagation rule set.
+- `skipped_backfill` no longer continues upward in walk-up mode, removing the Phase 0 asymmetry with wave execution.
+- Local-only `skipped_rename` no longer implies parent invalidation; REGEN updates local managed hashes and stops at the current node.
+- Parent-visible folder renames and moves are now explicit sync-lifecycle responsibilities rather than implicit REGEN walk-up side effects.
+- The false-positive ancestor evaluation cases captured in the Phase 0 corpus were removed without degrading the anchor-quality harness.
+
+Product calls surfaced:
+
+- Resolved by user clearance on 2026-03-23: local-only structure changes inside a folder do not propagate upward; parent-visible child-structure changes propagate via explicit move/reconcile paths.
+- Approved exception list for the plan matrix: the coarse `skipped_rename -> propagate` row is narrowed in implementation because `skipped_rename` remains a local structure-only REGEN action; parent-visible folder rename and move propagation is handled by sync-owned move enqueue paths instead of generic REGEN walk-up.
+
+Regressions or ambiguous results:
+
+- No regressions were found in the targeted unit, queue, watcher-move, or integration slices that exercise the changed propagation paths.
+- The Phase 0 corpus does not yet include an explicit folder-move scenario, so the proof for parent-visible rename propagation comes from dedicated sync move tests rather than from the baseline corpus itself.
+
+Unresolved product decisions:
+
+- None within Phase 3 after the user-cleared propagation rule and approved exception above.
+
+Docs reviewed:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/sync/README.md`
+- `docs/regen/README.md`
+- `README.md`
+
+Docs changed:
+
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/sync/README.md`
+- `docs/regen/README.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/RULES.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `README.md`
+
+Recommended next action:
+
+- proceed unchanged
+
 2026-03-23T07:21:03+13:00
 Phase: Phase 2 - prompt assembly and budgeting refactor
 Change: Reworked REGEN prompt assembly to consume the Phase 1 backend-capability contract, use conservative model-aware effective budgets, prioritize stable scaffold then direct files then child summaries, and defer chunking until remaining direct-file budget truly requires it.

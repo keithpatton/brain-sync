@@ -423,13 +423,13 @@ async def collect_phase0_baseline(root: Path) -> dict[str, Any]:
             _top_token_usage_line(token_usage_per_node),
         ],
         "false_positive_drivers": [
-            "rename walk-up evaluated an unchanged parent after a leaf-only structure change",
-            "backfill walk-up evaluated an unchanged parent even though backfill is non-propagating in wave mode",
+            "leaf-only rename walk-up now stops at the renamed area instead of evaluating an unchanged parent",
+            "metadata-only backfill now stops at the backfilled area in both walk-up and wave execution",
         ],
         "product_calls": [
             (
-                "walk-up backfill continuation remains inconsistent with wave propagation "
-                "and still needs an explicit propagation-phase decision"
+                "parent-visible folder renames now rely on explicit move/reconcile enqueue paths "
+                "instead of generic skipped_rename walk-up"
             ),
             (
                 "the wide-parent case shows child summaries still dominate variable prompt "

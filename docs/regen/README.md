@@ -351,25 +351,24 @@ managed summary rewrites.
 
 The single-folder flow currently returns one of these actions:
 
-| Action | Claude call | Summary rewritten | Parent propagation in wave mode |
+| Action | Claude call | Summary rewritten | Parent propagation in shared matrix |
 |---|---|---|---|
 | `regenerated` | yes | yes | yes |
 | `skipped_unchanged` | no | no | no |
 | `skipped_no_content` | no | managed state cleaned | yes |
-| `skipped_rename` | no | no | yes |
+| `skipped_rename` | no | no | no |
 | `skipped_similarity` | yes | no | no |
 | `skipped_backfill` | no | no | no |
 | `cleaned_up` | no | managed state cleaned | yes |
 
-One current subtlety is worth calling out:
+`skipped_rename` now means a local structure-only change for the current area:
+for example, a file rename inside the folder with no durable content change.
+That action updates managed hashes for the current area but does not, by
+itself, imply that a parent-visible input changed.
 
-- single-path `regen_path()` walk-up continues upward after
-  `skipped_backfill`
-- multi-path wave processing does not propagate upward from
-  `skipped_backfill`
-
-That difference exists in the current implementation and is part of the
-behaviour this document is describing.
+Parent-visible folder renames and moves are handled earlier by sync-owned move
+logic, which explicitly enqueues the moved area plus the parent areas whose
+child structure changed.
 
 ## Walk-Up And Wave Execution
 
@@ -383,12 +382,13 @@ Regen currently has two execution shapes above the single-folder unit:
 ### Single-Path Walk-Up
 
 For explicit single-path regen and queue batches containing only one ready
-path, the system uses the current walk-up loop:
+path, the system uses the shared propagation matrix:
 
 - run the requested path first
-- continue to the parent after `regenerated`, `skipped_no_content`,
-  `skipped_rename`, `skipped_backfill`, or `cleaned_up`
-- stop after `skipped_unchanged` or `skipped_similarity`
+- continue to the parent after `regenerated`, `skipped_no_content`, or
+  `cleaned_up`
+- stop after `skipped_unchanged`, `skipped_similarity`, `skipped_rename`, or
+  `skipped_backfill`
 
 ### Multi-Path Wave Scheduling
 
@@ -531,7 +531,9 @@ current implementation:
 - similarity-based skips still count as successful completed runs
 - journal writes are independent of whether the summary is rewritten
 - queue wave processing and explicit single-path walk-up share the same
-  single-folder core but have different propagation behaviour
+  propagation matrix
+- parent-visible folder renames are carried by sync-owned move enqueue paths,
+  not by generic `skipped_rename` walk-up
 - watcher and reconcile are upstream entry paths into regen, not part of the
   regen engine itself
 

@@ -1015,8 +1015,11 @@ def apply_folder_move(
         enqueue_regen_path(root, knowledge_path=dest_rel, enqueue=enqueue, reason="folder_move")
         src_parent = _parent_path(src_rel)
         dest_parent = _parent_path(dest_rel)
-        if src_parent != dest_parent:
-            enqueue_regen_path(root, knowledge_path=src_parent, enqueue=enqueue, reason="folder_move")
+        parent_paths = [src_parent]
+        if dest_parent != src_parent:
+            parent_paths.append(dest_parent)
+        for parent_path in parent_paths:
+            enqueue_regen_path(root, knowledge_path=parent_path, enqueue=enqueue, reason="folder_move")
 
 
 def reconcile_sources(

@@ -54,7 +54,7 @@ from brain_sync.llm import (
     get_backend,
     resolve_backend_capabilities,
 )
-from brain_sync.regen.topology import PROPAGATES_UP, compute_waves, parent_path
+from brain_sync.regen.topology import compute_waves, parent_path, propagates_up
 from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     RegenLock,
@@ -2192,24 +2192,6 @@ async def regen_single_folder(
     return SingleFolderResult(action="regenerated", knowledge_path=current_path)
 
 
-# Walk-up stop/continue rules for regen_path (preserving original early-exit semantics)
-_WALKUP_CONTINUES = frozenset(
-    {
-        "regenerated",
-        "skipped_no_content",
-        "skipped_rename",
-        "skipped_backfill",
-        "cleaned_up",
-    }
-)
-_WALKUP_STOPS = frozenset(
-    {
-        "skipped_unchanged",
-        "skipped_similarity",
-    }
-)
-
-
 async def regen_path(
     root: Path,
     knowledge_rel_path: str,
@@ -2222,9 +2204,8 @@ async def regen_path(
 ) -> int:
     """Run the deterministic incremental regen loop for a knowledge path.
 
-    Starts at the given path, regenerates its summary, then walks up
-    ancestors regenerating parent summaries until a summary is unchanged
-    (content hash match or similarity guard).
+    Starts at the given path, then walks ancestors only while the completed
+    action changed a parent-visible input under the shared propagation matrix.
 
     Returns the number of summaries regenerated.
     """
@@ -2251,10 +2232,7 @@ async def regen_path(
         if result.action == "regenerated":
             regen_count += 1
 
-        if result.action in _WALKUP_STOPS:
-            break
-
-        if result.action in _WALKUP_CONTINUES:
+        if propagates_up(result.action):
             # Walk up to parent (or break if at root)
             if not current_path:
                 break
@@ -2262,7 +2240,7 @@ async def regen_path(
             current_path = parts[0] if len(parts) > 1 else ""
             continue
 
-        # Unknown action — defensive break
+        # Shared propagation contract says stop here.
         break
 
     return regen_count
@@ -2330,7 +2308,7 @@ async def regen_all(
                 )
                 if result.action == "regenerated":
                     total += 1
-                if result.action in PROPAGATES_UP and path:
+                if propagates_up(result.action) and path:
                     dirty.add(parent_path(path))
                 # else: don't propagate — parent stays clean
             except KeyboardInterrupt:

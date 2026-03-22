@@ -49,7 +49,7 @@ from brain_sync.regen.engine import (
     regen_single_folder,
     text_similarity,
 )
-from brain_sync.regen.topology import compute_waves
+from brain_sync.regen.topology import compute_waves, parent_dirty_reason, propagates_up
 from brain_sync.runtime.repository import _connect
 from brain_sync.util.retry import claude_breaker
 
@@ -929,7 +929,7 @@ class TestRegenPath:
         assert loaded.structure_hash is not None
 
     def test_backfill_ancestor_not_regenerated_on_second_visit(self, brain):
-        """Two leaf paths sharing a pre-v18 ancestor: second visit must not trigger Claude."""
+        """Leaf backfill must not walk up into a pre-v18 ancestor."""
         # Create two leaf folders under a shared parent
         for leaf in ("parent/leaf-a", "parent/leaf-b"):
             kdir = brain / "knowledge" / leaf
@@ -958,16 +958,50 @@ class TestRegenPath:
             count_a = asyncio.run(regen_path(brain, "parent/leaf-a", max_depth=2))
             count_b = asyncio.run(regen_path(brain, "parent/leaf-b", max_depth=2))
 
-        # Neither call should have invoked Claude — all backfilled
+        # Neither call should have invoked Claude — leaves backfilled and stopped
         assert count_a == 0
         assert count_b == 0
         mock_claude.assert_not_called()
 
-        # Parent content_hash should be updated to new algorithm (not "old-parent-hash")
+        # Parent should remain untouched because metadata-only backfill does not
+        # change a parent-visible input under the shared propagation matrix.
         loaded_parent = load_insight_state(brain, "parent")
         assert loaded_parent is not None
-        assert loaded_parent.content_hash != "old-parent-hash"
-        assert loaded_parent.structure_hash is not None
+        assert loaded_parent.content_hash == "old-parent-hash"
+        assert loaded_parent.structure_hash is None
+
+    def test_local_structure_only_rename_does_not_walk_up_to_parent(self, brain):
+        """Renaming a file inside a leaf should stop at that leaf."""
+        parent = brain / "knowledge" / "parent"
+        parent.mkdir(parents=True)
+        (parent / "overview.md").write_text("# Parent", encoding="utf-8")
+        leaf = parent / "leaf"
+        leaf.mkdir()
+        (leaf / "old-name.md").write_text("# Leaf", encoding="utf-8")
+
+        async def fake_invoke(prompt: str, cwd: Path, **kwargs):
+            return ClaudeResult(success=True, output="# Summary\n\nGenerated insight summary content.")
+
+        with patch("brain_sync.regen.engine.invoke_claude", side_effect=fake_invoke):
+            asyncio.run(regen_single_folder(brain, "parent"))
+            asyncio.run(regen_single_folder(brain, "parent/leaf"))
+
+        parent_before = load_insight_state(brain, "parent")
+        assert parent_before is not None
+
+        (leaf / "old-name.md").rename(leaf / "new-name.md")
+
+        with patch("brain_sync.regen.engine.invoke_claude") as mock_claude:
+            count = asyncio.run(regen_path(brain, "parent/leaf", max_depth=2))
+
+        parent_after = load_insight_state(brain, "parent")
+
+        assert count == 0
+        mock_claude.assert_not_called()
+        assert parent_after is not None
+        assert parent_after.content_hash == parent_before.content_hash
+        assert parent_after.summary_hash == parent_before.summary_hash
+        assert parent_after.structure_hash == parent_before.structure_hash
 
 
 class TestIsContentDir:
@@ -2471,6 +2505,20 @@ class TestComputeWaves:
         # "a/b" should appear once, not twice
         depth2 = waves[1]
         assert depth2.count("a/b") == 1
+
+
+class TestPropagationMatrix:
+    def test_backfill_stops_walkup_and_wave_propagation(self):
+        assert propagates_up("skipped_backfill") is False
+        assert parent_dirty_reason("skipped_backfill") is None
+
+    def test_local_structure_only_rename_does_not_propagate(self):
+        assert propagates_up("skipped_rename") is False
+        assert parent_dirty_reason("skipped_rename") is None
+
+    def test_regenerated_propagates_for_child_summary_change(self):
+        assert propagates_up("regenerated") is True
+        assert parent_dirty_reason("regenerated") == "child_summary_changed"
 
 
 class TestRegenSingleFolder:

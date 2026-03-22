@@ -534,7 +534,13 @@ write seam, while `regen_locks` remains runtime-only coordination.
 
 When regen is acting on behalf of a session, ownership for the target
 `knowledge_path` must be claimed before any portable mutation path, including
-regenerate, structure-only rename updates, and hash backfill paths.
+regenerate, local structure-only rename updates, and hash backfill paths.
+
+Parent-visible folder rename and move fallout is handled one layer earlier in
+sync-owned lifecycle code: move handling updates manifests and runtime path
+state, then explicitly enqueues the moved area plus the affected parent areas
+whose child structure changed. REGEN no longer treats generic
+`skipped_rename` as sufficient evidence to walk up on its own.
 
 Telemetry is workflow-agnostic via `resource_type` and `resource_id`.
 
