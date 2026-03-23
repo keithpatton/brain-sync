@@ -223,6 +223,12 @@ real user home directory, or a real brain checkout. In-process tests should
 rely on the shared test harness isolation; subprocess harnesses must set
 isolated `BRAIN_SYNC_CONFIG_DIR` and home-directory environment variables.
 
+Treat temporary brain roots and temporary machine-local runtime state as a
+single isolation bundle. If a test, repro, or harness uses a temp brain root,
+it must also use an isolated temp runtime via `BRAIN_SYNC_CONFIG_DIR` and the
+corresponding home-directory environment variables. Do not mix a temp brain
+with the real machine-local runtime.
+
 ### Failure Classification
 
 Classify failures into:
