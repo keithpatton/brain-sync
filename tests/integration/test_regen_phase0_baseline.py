@@ -54,6 +54,20 @@ async def test_phase0_baseline_harness_covers_required_corpus_and_metrics(brain:
     assert diagnostic_report["observability_contract"]["cost_surface"] == "token_events"
     assert diagnostic_report["terminal_reason_coverage_count"] >= 1
     assert "path_reports[].token_cost" in diagnostic_report["comparison_ready_keys"]
+    product_atlas = next(
+        path for path in diagnostic_report["path_reports"] if path["knowledge_path"] == "product/atlas"
+    )
+    assert product_atlas["latest_outcome"] == "skipped_unchanged"
+    assert product_atlas["run_reason"] == "content_hash_unchanged"
+    assert product_atlas["evaluation_outcome"] == "unchanged"
+    assert product_atlas["component_tokens"] == {}
+    legacy_metadata = next(
+        path for path in diagnostic_report["path_reports"] if path["knowledge_path"] == "legacy/metadata"
+    )
+    assert legacy_metadata["latest_outcome"] == "skipped_backfill"
+    assert legacy_metadata["run_reason"] == "metadata_backfill_only"
+    assert legacy_metadata["evaluation_outcome"] == "metadata_backfill"
+    assert legacy_metadata["component_tokens"] == {}
 
     quality = baseline["quality_harness"]
     assert quality["all_passed"] is True, json.dumps(quality, indent=2)

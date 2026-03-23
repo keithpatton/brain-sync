@@ -21,6 +21,7 @@ _REGEN_EVENT_TYPES = {
     OperationalEventType.REGEN_FAILED.value,
 }
 _SEMANTIC_EVENTS_SURFACE = "operational" + "_events"
+_NO_CALL_EVALUATION_OUTCOMES = {"missing_path", "no_content", "unchanged", "structure_only", "metadata_backfill"}
 
 
 def _event_details(details_json: str | None) -> dict[str, Any]:
@@ -112,8 +113,21 @@ def build_regen_diagnostic_report(root: Path, *, session_id: str | None = None) 
 
         if event.outcome is not None:
             outcome_counts[event.outcome] += 1
+        latest_evaluation_outcome = details.get("evaluation_outcome")
+        latest_reason = details.get("reason")
         report["latest_outcome"] = event.outcome
-        report["latest_reason"] = details.get("reason")
+        report["latest_reason"] = latest_reason
+        if latest_reason is not None and latest_evaluation_outcome in _NO_CALL_EVALUATION_OUTCOMES:
+            report["run_reason"] = latest_reason
+        if latest_evaluation_outcome is not None:
+            report["evaluation_outcome"] = latest_evaluation_outcome
+        if latest_evaluation_outcome in _NO_CALL_EVALUATION_OUTCOMES:
+            report["prompt_budget_class"] = None
+            report["component_tokens"] = {}
+            report["deferred_file_count"] = 0
+            report["deferred_files"] = []
+            report["omitted_child_summary_count"] = 0
+            report["omitted_child_summaries"] = []
         report["phase"] = details.get("phase")
         report["propagates_up"] = details.get("propagates_up")
         report["parent_input_changed"] = details.get("parent_input_changed")
@@ -125,7 +139,7 @@ def build_regen_diagnostic_report(root: Path, *, session_id: str | None = None) 
         report["chunked_file_count"] = int(details.get("chunked_file_count") or report["chunked_file_count"] or 0)
         report["chunked_files"] = list(details.get("chunked_files") or report["chunked_files"] or [])
         report["terminal_event_count"] = int(report["terminal_event_count"]) + 1
-        if report["latest_reason"] is not None:
+        if latest_reason is not None:
             terminal_reason_coverage += 1
 
     token_cost_by_path: dict[str, dict[str, int]] = defaultdict(

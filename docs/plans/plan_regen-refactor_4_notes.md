@@ -209,6 +209,7 @@ Changed code/doc surfaces:
 - `src/brain_sync/runtime/operational_events.py`
 - `src/brain_sync/runtime/repository.py`
 - `tests/unit/test_regen_phase5.py`
+- `tests/unit/test_regen_queue.py`
 - `tests/unit/test_runtime_operational_events.py`
 - `tests/unit/test_token_tracking.py`
 - `tests/integration/regen_phase0_baseline.py`
@@ -224,30 +225,35 @@ Tests run and results:
 
 - `python -m ruff check src/brain_sync/regen src/brain_sync/runtime tests/unit/test_regen_phase5.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py tests/integration/regen_phase0_baseline.py tests/integration/test_regen_phase0_baseline.py` -> passed
 - `python -m pyright src/brain_sync/regen src/brain_sync/runtime tests/unit/test_regen_phase5.py tests/integration/regen_phase0_baseline.py` -> 0 errors
-- `python -m pytest tests/unit/test_regen_phase5.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py -q` -> 37 passed
-- `python -m pytest tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py tests/unit/test_regen_phase5.py tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase2_budgeting.py -q` -> 249 passed
+- `python -m pytest tests/unit/test_regen_phase5.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py -q` -> 40 passed
+- `python -m pytest tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/unit/test_token_tracking.py tests/unit/test_regen_phase5.py tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase2_budgeting.py -q` -> 252 passed
 
 Baseline-versus-current metrics relevant to the phase:
 
 - Locked REGEN semantic coverage before/after: before this phase the catalog did not require typed semantic details for all REGEN started/completed/failed events and the runtime docs did not describe a fixed REGEN observability split; current state field-locks `regen.started` on `details.reason` plus `details.evaluation_outcome`, `regen.completed` on `details.reason` plus `details.propagates_up`, and `regen.failed` on `details.error` plus `details.reason` plus `details.phase`.
 - Prompt-planner visibility before/after: before this phase the baseline harness had no durable runtime-surface proof for prompt-budget class, component token breakdown, deferred files, or omitted child summaries; current Phase 0 corpus report records `prompt_component_coverage_count = 8` and the started-event details now carry those prompt-planning facts for each model-backed REGEN run.
 - Terminal reason coverage before/after: before this phase the baseline harness did not prove that terminal REGEN rows explained why paths skipped, failed, or propagated; current Phase 0 corpus report records `terminal_reason_coverage_count = 11` with per-path `latest_reason`, `propagates_up`, and propagation details aggregated from `operational_events`.
+- Latest-run report coherence before/after: before the review follow-up, churned no-call paths could retain stale `run_reason` / `evaluation_outcome` from an older `regen.started` row or leave them null on backfill-only runs; current report uses the latest terminal no-call context, so `product/atlas` now reports `run_reason = "content_hash_unchanged"` with `evaluation_outcome = "unchanged"` and `legacy/metadata` reports `run_reason = "metadata_backfill_only"` with `evaluation_outcome = "metadata_backfill"`.
 - Comparison-readiness before/after: before this phase the baseline harness relied on bespoke metric extraction without a compact report seam over the runtime diagnostics; current state emits a `diagnostic_report` with `comparison_ready_keys = ["outcome_counts", "path_reports[].component_tokens", "path_reports[].token_cost", "path_reports[].propagates_up", "high_churn_paths"]`.
 - Cost aggregation before/after: before this phase token telemetry was durable only at the raw row level; current report rolls those existing `token_events` rows into per-path totals including `invocations`, `chunk_invocations`, `final_invocations`, token totals, and duration totals. On the current corpus, `research/annual` reports `final_invocations = 1`, `chunk_invocations = 0`, and `final_total_tokens = 117991` under the existing application-prompt-body measurement scope.
 - Contract-boundary proof: current `diagnostic_report.observability_contract` is fixed to `semantic_events_surface = "operational_events"`, `cost_surface = "token_events"`, `coordination_surface = "regen_locks"`, and `logs_authoritative = false`, confirming the phase stayed within the approved observability surfaces and added 0 new runtime tables.
+- Queue failure typing before/after: before the review follow-up, queue terminal failure events used `details.reason = "queue_retries_exhausted"` even when `outcome = "lock_contention_deferred"`; current state preserves the cause distinction with `details.reason = "queue_lock_contention_deferred"` for lock-contention exhaustion and `details.reason = "queue_retries_exhausted"` for generic retry exhaustion.
 
 Evidence bundle:
 
-- `tests/unit/test_regen_phase5.py` proves typed REGEN started/completed/failed event details, including semantic reasons, propagation outcomes, prompt-component capture, and chunk-versus-final cost aggregation in the compact report.
+- `tests/unit/test_regen_phase5.py` proves typed REGEN started/completed/failed event details, including semantic reasons, propagation outcomes, prompt-component capture, chunk-versus-final cost aggregation in the compact report, and the bounded terminal-lock follow-up for already-unowned or missing rows.
 - `tests/unit/test_runtime_operational_events.py` proves the field-locked runtime event catalog now requires the new REGEN semantic details, and `tests/unit/test_token_tracking.py` proves the new `load_token_events(...)` filters used by diagnostics/reporting.
-- `tests/integration/test_regen_phase0_baseline.py` now proves the Phase 0 baseline harness exports a `diagnostic_report` with the fixed observability contract, terminal reason coverage, and comparison-ready keys over the current corpus.
-- The broader REGEN/runtime regression slice still passed unchanged at `249` tests, which shows the observability work did not require a new runtime persistence surface or change the existing REGEN control flow.
+- `tests/integration/test_regen_phase0_baseline.py` now proves the Phase 0 baseline harness exports a `diagnostic_report` with the fixed observability contract, terminal reason coverage, comparison-ready keys, and latest-run coherent no-call path reasons over the current corpus.
+- `tests/unit/test_regen_queue.py::test_lock_contention_exhaustion_records_classified_failure` now proves queue terminal failure details preserve the correct typed reason for lock-contention exhaustion.
+- The broader REGEN/runtime regression slice still passed unchanged at `252` tests, which shows the observability work did not require a new runtime persistence surface or change the existing REGEN control flow.
 
 Findings summary:
 
 - Phase 5 closed the approved observability gap without adding a new runtime table.
 - `operational_events` is now the typed semantic trail for why a path ran, skipped, failed, or propagated, including prompt-planner facts for model-backed runs.
 - `token_events` remains per-call telemetry, but the new diagnostics seam now makes chunk cost, final-call cost, and high-churn paths easy to inspect without bespoke ad hoc queries.
+- The compact report now stays latest-run coherent for no-call churned paths instead of inheriting stale `regen.started` reasons from earlier model-backed runs.
+- Queue terminal failure events now preserve the distinction between lock-contention exhaustion and generic retry exhaustion in their typed `details.reason` field.
 - `regen_locks` remains coordination-only runtime state and is now documented more explicitly as not being a historical analytics surface.
 - The baseline harness can now compare REGEN decisions and costs through a compact report built from the approved durable surfaces rather than through chat-only interpretation.
 

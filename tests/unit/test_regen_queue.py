@@ -15,7 +15,13 @@ from brain_sync.regen.queue import (
     MAX_RETRIES,
     RegenQueue,
 )
-from brain_sync.runtime.repository import RegenLock, _connect, acquire_regen_ownership, save_regen_lock
+from brain_sync.runtime.repository import (
+    RegenLock,
+    _connect,
+    acquire_regen_ownership,
+    load_operational_events,
+    save_regen_lock,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -203,6 +209,13 @@ class TestProcessReady:
         assert state.error_reason is not None
         assert "lock contention" in state.error_reason.lower()
         assert acquire_regen_ownership(brain, "project", "owner-2")
+        failed_events = [
+            event
+            for event in load_operational_events(brain)
+            if event.event_type == "regen.failed" and event.knowledge_path == "project"
+        ]
+        assert failed_events
+        assert '"reason": "queue_lock_contention_deferred"' in (failed_events[-1].details_json or "")
 
 
 class TestNextFireIn:

@@ -248,6 +248,7 @@ class RegenQueue:
             )
         else:
             outcome = "lock_contention_deferred" if lock_contention else "retries_exhausted"
+            failure_reason = "queue_lock_contention_deferred" if lock_contention else "queue_retries_exhausted"
             reason = (
                 f"Deferred after filesystem lock contention ({MAX_RETRIES} retries): {error}"
                 if lock_contention
@@ -269,7 +270,7 @@ class RegenQueue:
                 details={
                     "error": str(error),
                     "retries": MAX_RETRIES,
-                    "reason": "queue_retries_exhausted",
+                    "reason": failure_reason,
                     "phase": "queue_retry",
                 },
             )
