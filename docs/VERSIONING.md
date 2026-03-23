@@ -18,10 +18,13 @@ These versions must not be conflated.
 
 ## Brain Format
 
-The Brain Format version governs portable filesystem state, including:
+The Brain Format version governs the portable brain contract on disk. In
+practice, that means the durable filesystem/schema surfaces that another
+runtime or another machine must interpret consistently, including:
 
-- source manifest fields and invariants
-- frontmatter identity rules
+- portable directory and path layout inside the brain root
+- portable manifest and sidecar filenames, fields, and invariants
+- synced-document frontmatter identity fields and rules
 - reserved managed namespaces
 - the portable/runtime ownership split
 
@@ -44,7 +47,8 @@ The on-disk `brain.json` file remains:
 
 The major on-disk number stays `1` because this is still the first major
 portable format family. The normative portable schema details live in
-[docs/brain/SCHEMAS.md](brain/SCHEMAS.md).
+[docs/brain/SCHEMAS.md](brain/SCHEMAS.md), with the higher-level portable
+scope summarized in [docs/brain/README.md](brain/README.md).
 
 ### When to bump Brain Format version
 
@@ -52,8 +56,10 @@ Increase the Brain Format version when a change affects the portable
 brain contract, for example:
 
 - directory layout changes
-- manifest filename or field contract changes
-- frontmatter identity contract changes
+- durable manifest or sidecar filename changes
+- durable manifest, sidecar, or frontmatter field contract changes
+- durable generated artifact contract changes when they change the portable
+  on-disk shape or meaning compatibility surface
 - reserved namespace changes
 - changes in what is considered portable vs runtime state
 
@@ -62,8 +68,9 @@ Do not bump the Brain Format version for:
 - internal refactors with unchanged on-disk behavior
 - runtime DB schema changes only
 - changes to retry logic, scheduling, or batching defaults
-- implementation-only prompt/template updates that do not alter durable
-filesystem state
+- implementation-only prompt changes
+- packaged regen instruction/template updates, including runtime-fed resources,
+  that do not alter the portable on-disk contract
 
 ---
 

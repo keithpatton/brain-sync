@@ -4,8 +4,15 @@ This directory is the authoritative reference for the portable brain state
 managed by brain-sync.
 
 Brain Format `1.2` is the current outward-facing version of the portable
-brain. It determines compatibility and migration expectations for durable
-on-disk state.
+brain's filesystem/schema contract. It determines compatibility and migration
+expectations for durable on-disk state such as portable layout, manifests,
+sidecars, frontmatter, reserved namespaces, and portable/runtime ownership
+boundaries.
+
+It does not currently version regen prompt resources or packaged summary and
+journal templates as such. Those belong to the regen prompt contract and are
+tracked by prompt version unless they change the portable on-disk contract
+itself.
 
 ## Reference Set
 
@@ -27,6 +34,18 @@ Use this directory for questions about:
 - which generated artifacts are normative instances inside the brain
 - what the current brain version means
 - which source lifecycle facts are portable versus machine-local
+
+At a high level, Brain Format covers the portable brain contract:
+
+- directory and path layout inside the brain root
+- durable manifest and sidecar fields
+- frontmatter identity and durable ownership rules
+- reserved managed namespaces
+- what is portable brain state versus runtime-only state
+
+It does not currently cover implementation-only regen prompt changes or
+packaged template wording changes unless those changes alter the portable
+artifact contract on disk.
 
 Brain Format `1.2` keeps source identity, placement, lifecycle state, and
 last-successful materialization baseline in portable manifests, while leaving

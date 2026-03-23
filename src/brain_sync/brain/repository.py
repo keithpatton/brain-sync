@@ -210,7 +210,7 @@ class BrainRepository:
         """Create and return one knowledge area directory."""
         normalized = self._normalize_relative_knowledge_path(knowledge_path, operation="ensure_knowledge_dir")
         target_dir = self._knowledge_root / Path(normalized) if normalized else self._knowledge_root
-        target_dir.mkdir(parents=True, exist_ok=True)
+        win_long_path(target_dir).mkdir(parents=True, exist_ok=True)
         return target_dir
 
     def write_brain_manifest(self) -> Path:

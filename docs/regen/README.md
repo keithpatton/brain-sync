@@ -254,12 +254,23 @@ wrappers that older tests and callers still import.
 
 The current prompt shape is:
 
-1. packaged regen instructions from `INSIGHT_INSTRUCTIONS.md`
-2. global context derived from `_core`
-3. current node content
-4. child summaries when present
-5. existing summary when present
-6. output contract requiring `<summary>` and `<journal>` XML sections
+1. packaged behavioral instructions from `INSIGHT_INSTRUCTIONS.md`
+2. packaged canonical `summary.md` and `journal.md` templates used as the
+   preferred output shape
+3. global context derived from `_core`
+4. current node content
+5. child summaries when present
+6. existing summary when present
+7. output contract requiring `<summary>` and `<journal>` XML sections
+
+The packaged prompt contract currently asks the model to:
+
+- distinguish grounded signals from interpretation
+- use conservative language for indirect or ambiguous claims
+- treat people, roles, approvals, and decision authority as high-risk claim
+  classes that must be source-backed or explicitly marked unclear
+- treat `_core` as the user's high-authority framing context without letting it
+  silently override more recent or more specific direct area evidence
 
 ### Global Context
 
@@ -356,6 +367,13 @@ The current code models that contract explicitly:
 
 - `ParsedArtifacts` is the validated summary/journal payload from one model call
 - `ArtifactCommitPlan` is the durable write decision after similarity handling
+
+Within that XML envelope, the packaged prompt contract now asks summary
+content to follow the packaged summary template, keep `Why It Matters`
+explicitly interpretive, and use the packaged journal template as a
+lightweight preferred shape for observed change plus optional interpretation.
+The runtime still owns the outer day-file path and timestamp heading when that
+journal entry body is appended to disk.
 
 Journal writing is independent of summary replacement. Today a journal entry
 may still be written even when the similarity guard keeps the existing summary.

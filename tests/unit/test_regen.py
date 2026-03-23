@@ -24,6 +24,9 @@ from brain_sync.regen import (
 from brain_sync.regen.artifacts import ArtifactContractError
 from brain_sync.regen.engine import (
     _REGEN_INSTRUCTIONS,
+    _JOURNAL_TEMPLATE,
+    PromptBudgetError,
+    _SUMMARY_TEMPLATE,
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
     MAX_PROMPT_TOKENS,
@@ -33,6 +36,7 @@ from brain_sync.regen.engine import (
     RegenConfig,
     _build_chunk_prompt,
     _build_prompt,
+    _build_prompt_from_chunks,
     _collect_child_summaries,
     _collect_global_context,
     _compute_content_hash,
@@ -1614,10 +1618,47 @@ class TestJournalPrompting:
 class TestPromptVersionAndContent:
     def test_prompt_version_in_instructions(self):
         """INSIGHT_INSTRUCTIONS.md contains the version marker."""
-        assert "insight-v2" in _REGEN_INSTRUCTIONS
+        assert "insight-v6" in _REGEN_INSTRUCTIONS
 
     def test_prompt_version_constant(self):
-        assert PROMPT_VERSION == "insight-v2"
+        assert PROMPT_VERSION == "insight-v6"
+
+    def test_instructions_distinguish_grounded_claims_from_interpretation(self):
+        """The packaged instructions preserve the grounded-vs-interpretive split."""
+        assert "## Truthfulness And Evidence" in _REGEN_INSTRUCTIONS
+        assert "Separate direct source-grounded claims from interpretation." in _REGEN_INSTRUCTIONS
+        assert "## Output Structure" in _REGEN_INSTRUCTIONS
+        assert "canonical summary and journal templates below" in _REGEN_INSTRUCTIONS
+        assert "Keep grounded claims grounded" in _REGEN_INSTRUCTIONS
+
+    def test_instructions_guard_people_and_authority_claims(self):
+        """The packaged instructions treat people/authority claims as high-risk."""
+        assert "## People, Roles, Authority, And Decisions" in _REGEN_INSTRUCTIONS
+        assert "Claims about people are high-risk and must be handled conservatively." in _REGEN_INSTRUCTIONS
+        assert "appearance in a" in _REGEN_INSTRUCTIONS
+        assert "not enough to infer authority." in _REGEN_INSTRUCTIONS
+
+    def test_instructions_allow_epistemic_uplift_of_existing_summaries(self):
+        """The packaged instructions prefer correcting legacy overclaiming over preserving old wording."""
+        assert "## Existing Summary Correction" in _REGEN_INSTRUCTIONS
+        assert "Preserve stable meaning, not legacy wording or legacy structure." in _REGEN_INSTRUCTIONS
+        assert "Do not preserve wording that presents interpretation as fact." in _REGEN_INSTRUCTIONS
+        assert "rewrite those parts to match the current epistemic and structural" in _REGEN_INSTRUCTIONS
+
+    def test_instructions_define_core_precedence_without_silent_override(self):
+        """The packaged instructions keep `_core` authoritative without silently overriding local evidence."""
+        assert "_core` is the user's high-authority top-level context" in _REGEN_INSTRUCTIONS
+        assert "prefer more recent or more specific direct evidence for factual updates" in _REGEN_INSTRUCTIONS
+        assert "surface the tension explicitly" in _REGEN_INSTRUCTIONS
+
+    def test_packaged_templates_capture_runtime_shape(self):
+        """The canonical summary and journal templates are available as runtime prompt resources."""
+        assert "## Why It Matters" in _SUMMARY_TEMPLATE
+        assert "## Grounded Signals" in _SUMMARY_TEMPLATE
+        assert "## Interpretation" in _SUMMARY_TEMPLATE
+        assert "### Observed Change" in _JOURNAL_TEMPLATE
+        assert "### Interpretation" in _JOURNAL_TEMPLATE
+        assert "## HH:MM" not in _JOURNAL_TEMPLATE
 
     def test_global_context_in_prompt(self, brain):
         """Global context is inlined in the prompt (not left for agent to discover)."""
@@ -1651,6 +1692,29 @@ class TestPromptVersionAndContent:
         invalidate_global_context_cache()
         result = _build_prompt("leaf", kdir, {}, idir, brain)
         assert "Do NOT attempt to read additional files" in result.text
+        assert "## Summary Template" in result.text
+        assert "## Journal Template" in result.text
+        assert "## Why It Matters" in result.text
+        assert "### Observed Change" in result.text
+
+    def test_chunk_merge_prompt_includes_canonical_templates(self, brain):
+        """Chunk-merge prompts use the same canonical summary and journal templates."""
+        idir = managed_insights(brain, "leaf")
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        result = _build_prompt_from_chunks(
+            "leaf",
+            {"huge.md": ["# Chunk Summary\n\nGrounded summary."]},
+            {},
+            idir,
+            brain,
+            [],
+        )
+        assert "## Summary Template" in result.text
+        assert "## Journal Template" in result.text
+        assert "## Why It Matters" in result.text
+        assert "### Observed Change" in result.text
 
 
 class TestOutputValidation:
@@ -1868,6 +1932,8 @@ class TestChunking:
         assert "prd.md" in prompt
         assert "chunk content here" in prompt
         assert "[image removed]" in prompt  # placeholder instructions present
+        assert "stay grounded in the provided text" in prompt
+        assert "Do not infer approvers, owners, decision-makers, or authority" in prompt
 
     def test_first_heading(self):
         assert _first_heading("# Top Level\nContent") == "Top Level"
@@ -1981,7 +2047,7 @@ class TestChunkedRegenFlow:
         def capture_telemetry(result, **kwargs):
             telemetry_calls.append(kwargs)
 
-        monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 2_000)
+        monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000)
         with (
             patch("brain_sync.regen.engine.invoke_claude", side_effect=mock_invoke),
             patch("brain_sync.regen.engine._record_telemetry", side_effect=capture_telemetry),
@@ -2021,6 +2087,85 @@ class TestTokenBudgetEnforcement:
         assert result.oversized_files is not None
         assert len(result.oversized_files) > 0
         assert len(result.text) // 3 <= MAX_PROMPT_TOKENS
+
+    def test_chunk_merge_prompt_respects_budget(self, brain):
+        """Chunk-merge prompts stay within the configured prompt budget."""
+        idir = managed_insights(brain, "merge")
+        idir.mkdir(parents=True)
+
+        chunk_summaries = {
+            f"doc{i:02d}.md": [f"# Chunk {j}\n\n" + ("x" * 10_000) for j in range(3)]
+            for i in range(8)
+        }
+
+        invalidate_global_context_cache()
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000):
+            result = _build_prompt_from_chunks("merge", chunk_summaries, {}, idir, brain, [])
+
+        assert len(result.text) // 3 <= 5_000
+        assert "prompt budget" in result.text.lower()
+
+    def test_omission_scaffolding_collapses_under_tiny_budget(self, brain):
+        """Placeholder scaffolding is collapsed when listing omitted files would exceed budget."""
+        kdir = brain / "knowledge" / "tinybudget"
+        kdir.mkdir(parents=True)
+        for i in range(25):
+            name = f"document-with-a-very-long-name-{i:02d}-for-budget-pressure-testing.md"
+            (kdir / name).write_text("# Doc\n" + ("x" * 2_000), encoding="utf-8")
+        idir = managed_insights(brain, "tinybudget")
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 3_500):
+            result = _build_prompt("tinybudget", kdir, {}, idir, brain)
+
+        assert len(result.text) // 3 <= 3_500
+
+    def test_chunk_merge_omission_scaffolding_collapses_under_tiny_budget(self, brain):
+        """Chunk-merge omission scaffolding is collapsed when listing omitted files would exceed budget."""
+        idir = managed_insights(brain, "mergecollapse")
+        idir.mkdir(parents=True)
+        chunk_summaries = {
+            f"document-with-a-very-long-name-{i:02d}-for-budget-pressure-testing.md": ["# Chunk\n" + ("x" * 2_000)]
+            for i in range(25)
+        }
+
+        invalidate_global_context_cache()
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 3_500):
+            result = _build_prompt_from_chunks("mergecollapse", chunk_summaries, {}, idir, brain, [])
+
+        assert len(result.text) // 3 <= 3_500
+
+    def test_large_existing_summary_fails_fast_when_fixed_scaffold_exceeds_budget(self, brain):
+        """Oversized fixed scaffold raises a planner budget error instead of returning an oversized prompt."""
+        kdir = brain / "knowledge" / "scaffold"
+        kdir.mkdir(parents=True)
+        idir = managed_insights(brain, "scaffold")
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("# Summary\n" + ("x" * 25_000), encoding="utf-8")
+
+        invalidate_global_context_cache()
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 800):
+            with pytest.raises(PromptBudgetError, match="fixed scaffold"):
+                _build_prompt("scaffold", kdir, {}, idir, brain)
+
+    def test_large_core_summary_fails_fast_when_fixed_scaffold_exceeds_budget(self, brain):
+        """Oversized `_core` context raises a planner budget error instead of returning an oversized prompt."""
+        core = brain / "knowledge" / "_core"
+        core.mkdir(parents=True)
+        icore = managed_insights(brain, "_core")
+        icore.mkdir(parents=True)
+        (icore / "summary.md").write_text("# Core Summary\n" + ("x" * 25_000), encoding="utf-8")
+
+        kdir = brain / "knowledge" / "leaf"
+        kdir.mkdir(parents=True)
+        idir = managed_insights(brain, "leaf")
+        idir.mkdir(parents=True)
+
+        invalidate_global_context_cache()
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 800):
+            with pytest.raises(PromptBudgetError, match="fixed scaffold"):
+                _build_prompt("leaf", kdir, {}, idir, brain)
 
     def test_largest_files_deferred_first(self, brain):
         """With a low budget, largest files get deferred first."""
@@ -2097,7 +2242,7 @@ class TestTokenBudgetEnforcement:
 
         invalidate_global_context_cache()
         # Budget so low nothing fits
-        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 3_000):
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 3_500):
             result = _build_prompt("allbig", kdir, {}, idir, brain)
 
         assert result.oversized_files is not None
@@ -2275,6 +2420,27 @@ class TestJournalWriting:
         assert "Second entry." in content
         # Two timestamped headings
         assert content.count("## ") == 2
+
+    def test_template_shaped_journal_body_does_not_duplicate_timestamp(self, tmp_path):
+        """The canonical journal body shape does not duplicate the runtime timestamp heading."""
+        insights_dir = managed_insights(tmp_path, "area")
+        insights_dir.mkdir(parents=True)
+
+        journal_body = (
+            "### Observed Change\n"
+            "Knowledge changed.\n\n"
+            "### Interpretation\n"
+            "This may indicate a shift in direction."
+        )
+        _write_journal_entry(insights_dir, journal_body, "abc123", "area")
+
+        journal_files = list(managed_journal(tmp_path, "area").rglob("*.md"))
+        assert len(journal_files) == 1
+        content = journal_files[0].read_text(encoding="utf-8")
+        timestamp_lines = [line for line in content.splitlines() if line.startswith("## ") and not line.startswith("### ")]
+        assert len(timestamp_lines) == 1
+        assert "### Observed Change" in content
+        assert "### Interpretation" in content
 
     def test_no_journal_when_empty(self, brain):
         """Empty journal section does not create a journal file."""
@@ -2736,6 +2902,26 @@ class TestRegenSingleFolder:
         assert loaded.regen_status == "failed"
         assert loaded.last_regen_utc == "2026-03-10T00:00:00Z"
         assert sidecar_path.read_bytes() == before_bytes
+
+    def test_prompt_budget_failure_is_persisted_as_failed_state(self, brain):
+        """Prompt planning budget failures surface as RegenFailed and persist failed runtime state."""
+        kdir = brain / "knowledge" / "scaffold"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Content", encoding="utf-8")
+        idir = managed_insights(brain, "scaffold")
+        idir.mkdir(parents=True)
+        (idir / "summary.md").write_text("# Summary\n" + ("x" * 25_000), encoding="utf-8")
+
+        invalidate_global_context_cache()
+        with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 800):
+            with pytest.raises(RegenFailed, match="fixed scaffold"):
+                asyncio.run(regen_single_folder(brain, "scaffold"))
+
+        loaded = load_insight_state(brain, "scaffold")
+        assert loaded is not None
+        assert loaded.regen_status == "failed"
+        assert loaded.error_reason is not None
+        assert "fixed scaffold" in loaded.error_reason
 
 
 class TestRegenAllWave:

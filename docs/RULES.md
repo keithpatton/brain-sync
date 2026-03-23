@@ -721,8 +721,7 @@ Each area goes through a classification before any LLM invocation:
 2. **Unchanged** — content hash matches previous. No work needed. Stop
    propagation.
 3. **Rename only** — content hash unchanged, structure hash changed.
-   Update structure hash in insight state. Propagate (parent may need to
-   update references).
+   Update structure hash in insight state. Do not propagate by itself.
 4. **Content changed** — invoke LLM to regenerate summary.
 5. **Similarity guard** — if new summary is >0.97 similar to existing,
    discard rewrite. Treat as unchanged for propagation.
@@ -767,18 +766,33 @@ through the entire knowledge tree.
 
 When regenerating an area, the prompt includes:
 
-1. **Instructions** — regen directives and templates bundled with the
-   brain-sync package.
-2. **Global context** — `_core`'s generated summary for non-`_core`
+1. **Instructions** — packaged behavioral and epistemic guidance from
+   `INSIGHT_INSTRUCTIONS.md`.
+2. **Canonical templates** — packaged `summary.md` and `journal.md` templates
+   fed directly to prompt assembly as the preferred output shape.
+3. **Global context** — `_core`'s generated summary for non-`_core`
    areas, or raw [core knowledge](GLOSSARY.md#core-knowledge) files from
    `knowledge/_core/` when regenerating `_core` itself.
-3. **Area files** — readable files in the area (for leaf areas).
-4. **Child summaries** — summaries from child areas (for parent areas).
-5. **Existing summary** — current summary for stability comparison.
+4. **Area files** — readable files in the area (for leaf areas).
+5. **Child summaries** — summaries from child areas (for parent areas).
+6. **Existing summary** — current summary for stability comparison.
 
 Token budget is managed by greedy packing (largest files first) with
 chunking for oversized files. Files that don't fit are deferred to
 separate chunks processed in sequence.
+
+Generated summaries must follow these epistemic rules:
+
+- direct source-grounded claims and interpretation must remain distinguishable
+- ambiguous or indirect evidence must not be presented as settled fact
+- `_core` provides high-authority framing and terminology, but it must not
+  silently override more recent or more specific direct area evidence on local
+  factual points
+- when `_core` and direct area evidence pull in different directions and the
+  tension cannot be resolved confidently, the summary must surface that tension
+  explicitly
+- claims about people, roles, approvals, ownership, or decision authority must
+  be explicitly supported by the provided material or described as unclear
 
 ### Journal Entries
 
@@ -792,6 +806,9 @@ Journals are:
 - durable (survive all automated cleanup including orphan detection)
 - not regenerable (point-in-time observations cannot be reconstructed)
 - organised by day: `journal/YYYY-MM/YYYY-MM-DD.md`
+
+When journal entries include interpretation, they must mark it as
+interpretation rather than present it as settled fact.
 
 ---
 
@@ -827,9 +844,12 @@ The cross-cutting schema rules that matter here are:
 
 ### Packaged Regen Resources
 
-Regen templates (summary layout, journal format, etc.) are internal to
-the brain-sync package. They are bundled in the source code and loaded
-at runtime — not deployed to the brain root.
+Regen instructions and canonical summary/journal templates are bundled in the
+brain-sync package and loaded at runtime — not deployed to the brain root.
+
+These packaged prompt resources are part of the regen prompt contract, not the
+portable Brain Format contract. Prompt-version changes do not by themselves
+change Brain Format.
 
 Users who want to influence regen behaviour should add instructions to
 [core knowledge](GLOSSARY.md#core-knowledge) (`knowledge/_core/`).

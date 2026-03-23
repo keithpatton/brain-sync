@@ -29,15 +29,19 @@ from brain_sync.llm import DEFAULT_SYSTEM_PROMPT, BackendCapabilities
 log = logging.getLogger(__name__)
 
 
-def _load_instruction(name: str) -> str:
-    """Load an instruction file bundled with the package."""
+def _load_resource(*parts: str) -> str:
+    """Load a bundled regen resource from the package."""
 
-    ref = resources.files("brain_sync.regen.resources").joinpath(name)
+    ref = resources.files("brain_sync.regen.resources")
+    for part in parts:
+        ref = ref.joinpath(part)
     return ref.read_text(encoding="utf-8")
 
 
-PROMPT_VERSION = "insight-v2"
-REGEN_INSTRUCTIONS = _load_instruction("INSIGHT_INSTRUCTIONS.md")
+PROMPT_VERSION = "insight-v6"
+REGEN_INSTRUCTIONS = _load_resource("INSIGHT_INSTRUCTIONS.md")
+SUMMARY_TEMPLATE = _load_resource("templates", "insights", "summary.md")
+JOURNAL_TEMPLATE = _load_resource("templates", "insights", "journal.md")
 MINIMAL_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+)", re.MULTILINE)
@@ -52,7 +56,6 @@ class _FileEntry:
     name: str
     content: str
     size: int
-    inline: bool = True
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,10 @@ class PromptResult:
     text: str
     oversized_files: dict[str, str] | None = None
     diagnostics: PromptBudgetDiagnostics | None = None
+
+
+class PromptBudgetError(RuntimeError):
+    """Raised when prompt planning cannot satisfy the effective prompt budget."""
 
 
 @dataclass(frozen=True)
@@ -132,7 +139,7 @@ def preprocess_content(content: str, filename: str) -> str:
     new_len = len(content)
     if new_len < original_len:
         reduction = (1 - new_len / original_len) * 100
-        log.info("Preprocessed %s: %d → %d chars (%.0f%% reduction)", filename, original_len, new_len, reduction)
+        log.info("Preprocessed %s: %d -> %d chars (%.0f%% reduction)", filename, original_len, new_len, reduction)
 
     return content
 
@@ -144,15 +151,27 @@ def _assemble_files_text(
 ) -> str:
     """Build the files section of the prompt."""
 
+    inlined_parts = [f"### {name}\n```\n{content}\n```" for name, content in inlined]
+    placeholder_parts = [f"### {name}\n(This file will be summarized in chunks - too large to inline)" for name in oversized_names]
+    return _assemble_file_parts_text(inlined_parts, placeholder_parts, binary_names)
+
+
+def _assemble_file_parts_text(
+    inlined_parts: list[str],
+    placeholder_parts: list[str],
+    binary_names: list[str],
+    *,
+    binary_text_override: str | None = None,
+) -> str:
+    """Build the files section from preformatted inline and placeholder parts."""
+
     parts: list[str] = []
-    inlined_parts: list[str] = []
-    for name, content in inlined:
-        inlined_parts.append(f"### {name}\n```\n{content}\n```")
-    for name in oversized_names:
-        inlined_parts.append(f"### {name}\n(This file will be summarized in chunks — too large to inline)")
-    if inlined_parts:
-        parts.append("The knowledge folder contains these files:\n" + "\n\n".join(inlined_parts))
-    if binary_names:
+    file_parts = inlined_parts + placeholder_parts
+    if file_parts:
+        parts.append("The knowledge folder contains these files:\n" + "\n\n".join(file_parts))
+    if binary_text_override is not None:
+        parts.append(binary_text_override)
+    elif binary_names:
         file_list = "\n".join(f"- {name}" for name in binary_names)
         parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
     return "\n\n".join(parts) + "\n" if parts else ""
@@ -160,6 +179,7 @@ def _assemble_files_text(
 
 def _assemble_prompt(
     instructions: str,
+    templates_text: str,
     global_context: str,
     files_text: str,
     children_text: str,
@@ -173,14 +193,18 @@ If nothing is journal-worthy, leave the journal section empty.
 Return only the XML sections. Do not include any text outside the tags.
 
 <summary>
-…the updated summary…
+...the updated summary...
 </summary>
 
 <journal>
-…journal entry, or empty if nothing meaningful changed…
+...journal entry, or empty if nothing meaningful changed...
 </journal>"""
 
     return f"""{instructions}
+
+---
+
+{templates_text}
 
 ---
 
@@ -193,6 +217,24 @@ You are regenerating the insight summary for knowledge area: {display_path}
 {"The current summary is:" + chr(10) + existing_summary if existing_summary else "There is no existing summary yet."}
 
 {output_directive}"""
+
+
+def _assemble_templates_text(summary_template: str, journal_template: str) -> str:
+    """Build the canonical template section included in every regen prompt."""
+
+    return f"""Use the packaged templates below as the canonical preferred shape for the
+content inside `<summary>` and `<journal>`. Follow them when they fit the
+material. Omit empty sections when appropriate.
+
+## Summary Template
+```md
+{summary_template}
+```
+
+## Journal Template
+```md
+{journal_template}
+```"""
 
 
 def invalidate_global_context_cache() -> None:
@@ -349,7 +391,7 @@ def _pack_child_summaries(
             )
         return "", omitted_names, 0
 
-    loaded_parts: list[str] = []
+    loaded_parts: list[tuple[str, str]] = []
     omitted: list[str] = []
     used_tokens = 0
     for name, content in sorted(child_summaries.items()):
@@ -358,8 +400,21 @@ def _pack_child_summaries(
         if used_tokens + child_tokens > remaining_tokens:
             omitted.append(name)
             continue
-        loaded_parts.append(child_part)
+        loaded_parts.append((name, child_part))
         used_tokens += child_tokens
+
+    def _render_children_text() -> str:
+        total = len(child_summaries)
+        loaded = len(loaded_parts)
+        header = f"Sub-area summaries ({loaded} of {total} loaded):" if omitted else "Sub-area summaries:"
+        footer = f"\n({len(omitted)} sub-area summaries omitted - prompt budget)" if omitted else ""
+        return f"\n{header}{''.join(part for _, part in loaded_parts)}{footer}\n" if loaded_parts else ""
+
+    children_text = _render_children_text()
+    while loaded_parts and estimate_tokens(children_text) > remaining_tokens:
+        removed_name, _ = loaded_parts.pop()
+        omitted.append(removed_name)
+        children_text = _render_children_text()
 
     if omitted:
         log.info(
@@ -368,12 +423,103 @@ def _pack_child_summaries(
             display_path,
             remaining_tokens,
         )
-    total = len(child_summaries)
-    loaded = total - len(omitted)
-    header = f"Sub-area summaries ({loaded} of {total} loaded):" if omitted else "Sub-area summaries:"
-    footer = f"\n({len(omitted)} sub-area summaries omitted — prompt budget)" if omitted else ""
-    children_text = f"\n{header}{''.join(loaded_parts)}{footer}\n" if loaded_parts else ""
-    return children_text, tuple(omitted), used_tokens
+    return children_text, tuple(sorted(omitted)), estimate_tokens(children_text)
+
+
+def _pack_formatted_file_parts(
+    parts_by_name: dict[str, str],
+    *,
+    remaining_tokens: int,
+    display_path: str,
+    binary_names: list[str],
+    placeholder_builder: Callable[[str], str],
+    initial_reason: str,
+    overflow_reason: str,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[DeferredFileDecision, ...], str, int]:
+    """Pack preformatted file parts into the remaining prompt budget."""
+
+    if not parts_by_name:
+        empty_text = _assemble_file_parts_text([], [], binary_names)
+        return (), (), (), empty_text, estimate_tokens(empty_text)
+
+    original_order = {name: index for index, name in enumerate(parts_by_name)}
+    part_tokens = {name: estimate_tokens(text) for name, text in parts_by_name.items()}
+    included: set[str] = set()
+    deferred: dict[str, DeferredFileDecision] = {}
+    used_tokens = 0
+
+    for name in sorted(parts_by_name, key=lambda item: (part_tokens[item], item), reverse=True):
+        remaining_after_loaded = max(0, remaining_tokens - used_tokens)
+        if part_tokens[name] <= remaining_after_loaded:
+            included.add(name)
+            used_tokens += part_tokens[name]
+            continue
+        deferred[name] = DeferredFileDecision(
+            name=name,
+            estimated_tokens=part_tokens[name],
+            remaining_tokens_before_defer=remaining_after_loaded,
+            reason=initial_reason,
+        )
+        log.info(
+            "Deferred %s (~%d tokens) for %s (remaining=%d effective budget tokens; reason=%s)",
+            name,
+            part_tokens[name],
+            display_path,
+            remaining_after_loaded,
+            initial_reason,
+        )
+
+    def _render_files_text(*, collapse_omitted: bool = False, collapse_binary: bool = False) -> str:
+        ordered_names = sorted(parts_by_name, key=lambda item: original_order[item])
+        inlined_parts = [parts_by_name[name] for name in ordered_names if name in included]
+        omitted_names = [name for name in ordered_names if name not in included]
+        if collapse_omitted and omitted_names:
+            placeholder_parts = [f"({len(omitted_names)} files omitted due to prompt budget)"]
+        else:
+            placeholder_parts = [placeholder_builder(name) for name in omitted_names]
+        binary_text_override = None
+        if collapse_binary and binary_names:
+            binary_text_override = f"The folder also contains {len(binary_names)} binary files (not inlined)."
+        return _assemble_file_parts_text(
+            inlined_parts,
+            placeholder_parts,
+            binary_names,
+            binary_text_override=binary_text_override,
+        )
+
+    files_text = _render_files_text()
+    while included and estimate_tokens(files_text) > remaining_tokens:
+        name = max(included, key=lambda item: (part_tokens[item], item))
+        included.remove(name)
+        deferred[name] = DeferredFileDecision(
+            name=name,
+            estimated_tokens=part_tokens[name],
+            remaining_tokens_before_defer=0,
+            reason=overflow_reason,
+        )
+        log.info(
+            "Deferred %s (~%d tokens) for %s after exact prompt assembly (reason=%s)",
+            name,
+            part_tokens[name],
+            display_path,
+            overflow_reason,
+        )
+        files_text = _render_files_text()
+
+    if estimate_tokens(files_text) > remaining_tokens:
+        files_text = _render_files_text(collapse_omitted=True)
+
+    if estimate_tokens(files_text) > remaining_tokens:
+        files_text = _render_files_text(collapse_omitted=True, collapse_binary=True)
+
+    if estimate_tokens(files_text) > remaining_tokens:
+        files_text = ""
+
+    ordered_names = sorted(parts_by_name, key=lambda item: original_order[item])
+    included_names = tuple(name for name in ordered_names if name in included)
+    omitted_names = tuple(name for name in ordered_names if name not in included)
+    deferred_files = tuple(deferred[name] for name in omitted_names)
+    return included_names, omitted_names, deferred_files, files_text, estimate_tokens(files_text)
 
 
 def _pack_direct_files(
@@ -381,50 +527,37 @@ def _pack_direct_files(
     *,
     remaining_tokens: int,
     display_path: str,
-) -> tuple[list[tuple[str, str]], list[str], dict[str, str] | None, tuple[DeferredFileDecision, ...], int]:
+    binary_names: list[str],
+) -> tuple[list[tuple[str, str]], list[str], dict[str, str] | None, tuple[DeferredFileDecision, ...], str, int]:
     """Pack direct files into the remaining prompt budget before chunk fallback."""
 
-    original_order = {entry.name: index for index, entry in enumerate(entries)}
-    deferred: list[DeferredFileDecision] = []
-    used_tokens = 0
+    parts_by_name = {entry.name: f"### {entry.name}\n```\n{entry.content}\n```" for entry in entries}
+    included_names, omitted_names, deferred_files, files_text, exact_tokens = _pack_formatted_file_parts(
+        parts_by_name,
+        remaining_tokens=remaining_tokens,
+        display_path=display_path,
+        binary_names=binary_names,
+        placeholder_builder=lambda name: f"### {name}\n(This file will be summarized in chunks - too large to inline)",
+        initial_reason="exceeds_remaining_direct_file_budget",
+        overflow_reason="post_assembly_direct_file_overflow",
+    )
+    entry_by_name = {entry.name: entry for entry in entries}
+    inlined = [(name, entry_by_name[name].content) for name in included_names]
+    oversized_names = list(omitted_names)
+    oversized_files: dict[str, str] | None = {name: entry_by_name[name].content for name in omitted_names} or None
+    return inlined, oversized_names, oversized_files, deferred_files, files_text, exact_tokens
 
-    for entry in sorted(entries, key=lambda item: item.size, reverse=True):
-        formatted_tokens = estimate_tokens(f"### {entry.name}\n```\n{entry.content}\n```")
-        remaining_after_loaded = max(0, remaining_tokens - used_tokens)
-        if formatted_tokens <= remaining_after_loaded:
-            used_tokens += formatted_tokens
-            continue
-        entry.inline = False
-        deferred.append(
-            DeferredFileDecision(
-                name=entry.name,
-                estimated_tokens=formatted_tokens,
-                remaining_tokens_before_defer=remaining_after_loaded,
-                reason="exceeds_remaining_direct_file_budget",
-            )
-        )
-        log.info(
-            "Deferred %s (~%d tokens) to chunking for %s (remaining=%d effective budget tokens)",
-            entry.name,
-            formatted_tokens,
-            display_path,
-            remaining_after_loaded,
-        )
 
-    inlined = [
-        (entry.name, entry.content)
-        for entry in sorted(entries, key=lambda item: original_order[item.name])
-        if entry.inline
-    ]
-    oversized_names = [
-        entry.name for entry in sorted(entries, key=lambda item: original_order[item.name]) if not entry.inline
-    ]
-    oversized_files: dict[str, str] | None = {
-        entry.name: entry.content
-        for entry in sorted(entries, key=lambda item: original_order[item.name])
-        if not entry.inline
-    } or None
-    return inlined, oversized_names, oversized_files, tuple(deferred), used_tokens
+def _raise_if_prompt_over_budget(prompt: str, *, effective_prompt_tokens: int, display_path: str, phase: str) -> None:
+    """Fail fast when prompt planning cannot satisfy the configured budget."""
+
+    estimated_tokens = estimate_tokens(prompt)
+    if estimated_tokens <= effective_prompt_tokens:
+        return
+    raise PromptBudgetError(
+        f"{phase} exceeds effective prompt budget for {display_path}: "
+        f"~{estimated_tokens} tokens vs {effective_prompt_tokens}"
+    )
 
 
 def build_chunk_prompt(
@@ -437,15 +570,25 @@ def build_chunk_prompt(
     """Build a lightweight prompt for summarizing a single chunk."""
 
     return f"""Summarize this section while preserving all requirements, decisions,
-technical constraints, and implementation details. Do not omit
-substantive information. Maintain lists, structure, and terminology.
+technical constraints, implementation details, tensions, and explicit
+uncertainty. Do not omit substantive information. Maintain lists, structure,
+and terminology.
+
+This chunk summary must stay grounded in the provided text.
+- Preserve explicit concepts, boundaries, decisions, components, workflows,
+  dependencies, constraints, and recurring patterns when present.
+- Preserve explicit conflicts or ambiguity instead of resolving them silently.
+- Do not add interpretation, business framing, or role/authority conclusions
+  that are not directly supported by the chunk.
+- Do not infer approvers, owners, decision-makers, or authority from mentions,
+  attendance, authorship, or diagrams.
 
 This document may contain [image removed] or [diagram: ...] placeholders.
 Treat [image removed] and [diagram: ...] as references to diagrams or UI screenshots.
 Preserve any functional meaning implied by surrounding text.
 Do not attempt to reconstruct the images.
 
-[Chunk {chunk_idx}/{total_chunks} — section: {first_heading_text}]
+[Chunk {chunk_idx}/{total_chunks} - section: {first_heading_text}]
 File: {filename}
 
 ---
@@ -529,6 +672,7 @@ def build_prompt(
     """Build the prompt for regenerating an insight summary."""
 
     instructions = settings.instructions
+    templates_text = _assemble_templates_text(SUMMARY_TEMPLATE, JOURNAL_TEMPLATE)
     global_context = collect_global_context_fn(root, knowledge_path)
     effective_prompt_tokens, prompt_budget_class, capability_max_prompt_tokens = resolve_effective_prompt_budget(
         capabilities,
@@ -558,25 +702,29 @@ def build_prompt(
     empty_files_text = _assemble_files_text([], [], binary_names)
     base_prompt_without_files_or_children = _assemble_prompt(
         instructions,
+        templates_text,
         global_context,
         empty_files_text,
         "",
         existing_summary,
         display_path,
     )
-    remaining_for_direct_files = max(
-        0,
-        effective_prompt_tokens - estimate_tokens(base_prompt_without_files_or_children),
+    _raise_if_prompt_over_budget(
+        base_prompt_without_files_or_children,
+        effective_prompt_tokens=effective_prompt_tokens,
+        display_path=display_path,
+        phase="fixed scaffold before direct-file packing",
     )
-    inlined, oversized_names, oversized_files, deferred_files, direct_file_tokens = _pack_direct_files(
+    remaining_for_direct_files = max(0, effective_prompt_tokens - estimate_tokens(base_prompt_without_files_or_children))
+    inlined, oversized_names, oversized_files, deferred_files, files_text, direct_file_tokens = _pack_direct_files(
         entries,
         remaining_tokens=remaining_for_direct_files,
         display_path=display_path,
+        binary_names=binary_names,
     )
-
-    files_text = _assemble_files_text(inlined, oversized_names, binary_names)
     base_prompt_without_children = _assemble_prompt(
         instructions,
+        templates_text,
         global_context,
         files_text,
         "",
@@ -592,22 +740,21 @@ def build_prompt(
 
     prompt = _assemble_prompt(
         instructions,
+        templates_text,
         global_context,
         files_text,
         children_text,
         existing_summary,
         display_path,
     )
+    _raise_if_prompt_over_budget(
+        prompt,
+        effective_prompt_tokens=effective_prompt_tokens,
+        display_path=display_path,
+        phase="final prompt",
+    )
 
     estimated_tokens = estimate_tokens(prompt)
-    if estimated_tokens > effective_prompt_tokens:
-        log.warning(
-            "Prompt still exceeds effective budget after packing for %s: ~%d tokens vs %d effective",
-            display_path,
-            estimated_tokens,
-            effective_prompt_tokens,
-        )
-
     diagnostics = PromptBudgetDiagnostics(
         prompt_budget_class=prompt_budget_class,
         capability_max_prompt_tokens=capability_max_prompt_tokens,
@@ -615,6 +762,7 @@ def build_prompt(
         prompt_overhead_tokens=capabilities.invocation.prompt_overhead_tokens if capabilities else 0,
         component_tokens={
             "instructions": estimate_tokens(instructions),
+            "templates": estimate_tokens(templates_text),
             "global_context": estimate_tokens(global_context),
             "direct_files": direct_file_tokens,
             "child_summaries": child_tokens_used,
@@ -623,6 +771,7 @@ def build_prompt(
                 0,
                 estimated_tokens
                 - estimate_tokens(instructions)
+                - estimate_tokens(templates_text)
                 - estimate_tokens(global_context)
                 - direct_file_tokens
                 - child_tokens_used
@@ -651,29 +800,24 @@ def build_prompt_from_chunks(
     """Build a merge prompt using chunk summaries instead of raw file content."""
 
     instructions = settings.instructions
+    templates_text = _assemble_templates_text(SUMMARY_TEMPLATE, JOURNAL_TEMPLATE)
     global_context = collect_global_context_fn(root, knowledge_path)
     effective_prompt_tokens, prompt_budget_class, capability_max_prompt_tokens = resolve_effective_prompt_budget(
         capabilities,
         settings,
     )
 
-    files_parts: list[str] = []
+    parts_by_name: dict[str, str] = {}
     for filename in sorted(chunk_summaries.keys()):
         summaries = chunk_summaries[filename]
         chunk_parts: list[str] = []
         for index, summary in enumerate(summaries, 1):
             heading = first_heading(summary) or f"part {index}"
-            chunk_parts.append(f"#### Chunk {index}/{len(summaries)} — section: {heading}\n{summary}")
-        files_parts.append(
-            f"### {filename} (summarized in {len(summaries)} chunks — original too large to inline)\n\n"
+            chunk_parts.append(f"#### Chunk {index}/{len(summaries)} - section: {heading}\n{summary}")
+        parts_by_name[filename] = (
+            f"### {filename} (summarized in {len(summaries)} chunks - original too large to inline)\n\n"
             + "\n\n".join(chunk_parts)
         )
-
-    if binary_names:
-        file_list = "\n".join(f"- {name}" for name in binary_names)
-        files_parts.append(f"The folder also contains these binary files (not inlined):\n{file_list}")
-
-    files_text = "The knowledge folder contains these files:\n" + "\n\n".join(files_parts) + "\n" if files_parts else ""
 
     existing_summary = ""
     summary_path = insights_dir / "summary.md"
@@ -681,8 +825,45 @@ def build_prompt_from_chunks(
         existing_summary = read_text(summary_path, encoding="utf-8")
 
     display_path = knowledge_path or "(root)"
+    empty_files_text = _assemble_file_parts_text([], [], binary_names)
+    base_prompt_without_files_or_children = _assemble_prompt(
+        instructions,
+        templates_text,
+        global_context,
+        empty_files_text,
+        "",
+        existing_summary,
+        display_path,
+    )
+    _raise_if_prompt_over_budget(
+        base_prompt_without_files_or_children,
+        effective_prompt_tokens=effective_prompt_tokens,
+        display_path=display_path,
+        phase="fixed scaffold before chunk-merge packing",
+    )
+    remaining_for_chunk_files = max(
+        0,
+        effective_prompt_tokens - estimate_tokens(base_prompt_without_files_or_children),
+    )
+    _, omitted_chunk_files, _, files_text, direct_file_tokens = _pack_formatted_file_parts(
+        parts_by_name,
+        remaining_tokens=remaining_for_chunk_files,
+        display_path=display_path,
+        binary_names=binary_names,
+        placeholder_builder=lambda name: f"### {name}\n(Chunk summaries omitted from merge prompt - prompt budget)",
+        initial_reason="exceeds_remaining_chunk_merge_budget",
+        overflow_reason="post_assembly_chunk_merge_overflow",
+    )
+    if omitted_chunk_files:
+        log.info(
+            "Omitted %d chunk-summary file blocks for %s during merge prompt assembly",
+            len(omitted_chunk_files),
+            display_path,
+        )
+
     base_prompt_without_children = _assemble_prompt(
         instructions,
+        templates_text,
         global_context,
         files_text,
         "",
@@ -698,11 +879,18 @@ def build_prompt_from_chunks(
 
     prompt = _assemble_prompt(
         instructions,
+        templates_text,
         global_context,
         files_text,
         children_text,
         existing_summary,
         display_path,
+    )
+    _raise_if_prompt_over_budget(
+        prompt,
+        effective_prompt_tokens=effective_prompt_tokens,
+        display_path=display_path,
+        phase="final chunk-merge prompt",
     )
 
     diagnostics = PromptBudgetDiagnostics(
@@ -712,8 +900,9 @@ def build_prompt_from_chunks(
         prompt_overhead_tokens=capabilities.invocation.prompt_overhead_tokens if capabilities else 0,
         component_tokens={
             "instructions": estimate_tokens(instructions),
+            "templates": estimate_tokens(templates_text),
             "global_context": estimate_tokens(global_context),
-            "direct_files": estimate_tokens(files_text),
+            "direct_files": direct_file_tokens,
             "child_summaries": child_tokens_used,
             "existing_summary": estimate_tokens(existing_summary),
             "total": estimate_tokens(prompt),
@@ -728,6 +917,9 @@ __all__ = [
     "MINIMAL_SYSTEM_PROMPT",
     "PROMPT_VERSION",
     "REGEN_INSTRUCTIONS",
+    "SUMMARY_TEMPLATE",
+    "JOURNAL_TEMPLATE",
+    "PromptBudgetError",
     "DeferredFileDecision",
     "PromptBudgetDiagnostics",
     "PromptPlannerSettings",

@@ -69,7 +69,10 @@ from brain_sync.regen.prompt_planner import (
     PROMPT_VERSION as _PROMPT_VERSION,
 )
 from brain_sync.regen.prompt_planner import (
+    JOURNAL_TEMPLATE,
+    PromptBudgetError as _PromptBudgetError,
     REGEN_INSTRUCTIONS,
+    SUMMARY_TEMPLATE,
     PromptPlannerSettings,
     PromptResult,
     build_chunk_prompt,
@@ -146,6 +149,9 @@ PROMPT_VERSION = _PROMPT_VERSION
 classify_change = _classify_change
 invalidate_global_context_cache = _invalidate_global_context_cache
 _REGEN_INSTRUCTIONS = REGEN_INSTRUCTIONS
+PromptBudgetError = _PromptBudgetError
+_SUMMARY_TEMPLATE = SUMMARY_TEMPLATE
+_JOURNAL_TEMPLATE = JOURNAL_TEMPLATE
 _first_heading = first_heading
 _preprocess_content = preprocess_content
 _compute_content_hash = compute_content_hash
@@ -1195,16 +1201,46 @@ async def regen_single_folder(
         new_content_hash[:12],
     )
 
-    # Build prompt
-    prompt_result = _build_prompt(
-        current_path,
-        knowledge_dir,
-        child_summaries,
-        insights_dir,
-        root,
-        capabilities=capabilities,
-    )
-    prompt_diagnostics = prompt_result.diagnostics
+    try:
+        # Build prompt
+        prompt_result = _build_prompt(
+            current_path,
+            knowledge_dir,
+            child_summaries,
+            insights_dir,
+            root,
+            capabilities=capabilities,
+        )
+        prompt_diagnostics = prompt_result.diagnostics
+    except Exception as e:
+        started = datetime.now(UTC).isoformat()
+        log.error("Prompt planning failed for %s: %s", current_path or "(root)", e, exc_info=True)
+        try:
+            _save_terminal_regen_lock(
+                root,
+                knowledge_path=current_path,
+                owner_id=owner_id,
+                regen_started_utc=started,
+                regen_status="failed",
+                error_reason=str(e),
+            )
+        except Exception as db_err:
+            log.error("Failed to persist 'failed' state for %s: %s", current_path, db_err)
+        _record_regen_event(
+            root=root,
+            event_type=OperationalEventType.REGEN_FAILED,
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            outcome="failed",
+            details={
+                "error": str(e),
+                "reason": "prompt_planning_failed",
+                "phase": "planning",
+                "evaluation_outcome": evaluation.outcome,
+            },
+        )
+        raise RegenFailed(current_path or "(root)", str(e)) from e
 
     # Prompt fingerprint for forensic tracing
     prompt_hash = hashlib.sha1(prompt_result.text.encode("utf-8")).hexdigest()[:8]
