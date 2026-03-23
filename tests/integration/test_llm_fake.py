@@ -38,6 +38,14 @@ class TestFakeStable:
         assert "<summary>" in r.output
         assert "<journal>" in r.output
 
+    async def test_chunk_calls_return_plain_text_merge_input(self):
+        """Chunk calls should return plain-text summaries, not final XML envelopes."""
+        backend = FakeBackend(mode="stable")
+        r = await backend.invoke("test prompt", cwd=Path("."), is_chunk=True)
+        assert "[fake-" in r.output
+        assert "<summary>" not in r.output
+        assert "<journal>" not in r.output
+
     async def test_token_counts_proportional(self):
         """Token counts should be proportional to content length."""
         backend = FakeBackend(mode="stable")

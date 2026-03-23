@@ -90,6 +90,219 @@ Recommended next action:
 
 - proceed unchanged
 
+## Plan completion marker — 2026-03-23
+
+Completion status:
+
+- The approved `plan_regen-refactor_4` implementation is complete through Phase 6.
+- The whole-plan implementation review follow-up is complete.
+- The latest whole-plan review outcome reported no findings and accepted the realized implementation against the approved plan.
+
+Final durable state:
+
+- All approved phases were implemented with checkpointed notes.
+- Required implementation review artifacts now exist for the realized work.
+- The current notes trail records the final whole-plan follow-up fixes for diagnostics latest-run coherence and fake-backend chunk proof alignment.
+
+Recommended next action:
+
+- plan fully completed
+
+## Final whole-plan review follow-up — 2026-03-23
+
+Purpose:
+
+- Address the blocking whole-plan implementation review finding that Phase 5 diagnostics still leaked stale chunk metadata into latest-run no-call path reports.
+- Tighten the fake-backend chunk proof surface so chunk intermediates match the intended plain-text merge-input contract.
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/diagnostics.py`
+- `src/brain_sync/llm/fake.py`
+- `tests/unit/test_regen_phase5.py`
+- `tests/integration/test_llm_fake.py`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m pytest tests/unit/test_regen_phase5.py tests/integration/test_llm_fake.py tests/integration/test_regen_phase0_baseline.py -q` -> 21 passed
+- `python -m ruff check src/brain_sync/regen/diagnostics.py src/brain_sync/llm/fake.py tests/unit/test_regen_phase5.py tests/integration/test_llm_fake.py tests/integration/test_regen_phase0_baseline.py` -> passed
+- `python -m pyright src/brain_sync/regen/diagnostics.py src/brain_sync/llm/fake.py tests/unit/test_regen_phase5.py tests/integration/test_llm_fake.py` -> passed
+- `python -m pytest tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase5.py tests/unit/test_regen_phase6.py tests/unit/test_runtime_operational_events.py tests/integration/test_llm_fake.py tests/integration/test_regen_phase0_baseline.py tests/integration/test_regen_pipeline.py -q` -> 252 passed
+- `python -m pyright src/brain_sync/regen src/brain_sync/llm tests/unit/test_regen_phase5.py tests/unit/test_regen_phase6.py tests/integration/test_llm_fake.py` -> passed
+
+Baseline-versus-current metrics relevant to the follow-up:
+
+- Latest-run chunk metadata coherence before/after: before this follow-up a path that chunked on an earlier run and then ended in a no-call latest outcome could still report prior-run `chunk_count`, `chunked_file_count`, and `chunked_files`; current state clears all 3 latest-run chunk fields to `0`, `0`, and `[]` for latest no-call outcomes.
+- Fake chunk proof shape before/after: before this follow-up `FakeBackend` returned the final XML envelope even when `is_chunk=True`, so merge prompts could contain raw `<summary>` tags from chunk calls; current state returns plain-text chunk summaries for chunk invocations while preserving XML output for final calls.
+
+Evidence bundle:
+
+- `tests/unit/test_regen_phase5.py` now proves a chunked path followed by a latest `skipped_unchanged` run clears stale latest-run chunk metadata in the diagnostics report.
+- `tests/integration/test_llm_fake.py` now proves fake chunk calls return plain-text merge inputs rather than final XML envelopes.
+- The broader 252-test regression slice passed after both fixes landed.
+
+Findings summary:
+
+- The whole-plan review blocker around latest-run chunk metadata coherence is resolved.
+- The fake-backend chunk-path proof surface now matches the intended contract more honestly: final model-backed outputs stay XML, chunk intermediates stay plain text.
+
+Product calls surfaced:
+
+- No new product call was exposed by this follow-up.
+
+Regressions or ambiguous results:
+
+- No regressions were found in the targeted or broader regression slices.
+- Prompt-body token accounting remains intentionally unchanged and still excludes backend-owned system-prompt and invocation framing overhead.
+
+Docs reviewed:
+
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs changed:
+
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `docs/regen/README.md`
+- `docs/RULES.md`
+- `docs/architecture/ARCHITECTURE.md`
+
+Recommended next action:
+
+- re-review the whole-plan implementation state
+
+## Phase 6 checkpoint — 2026-03-23
+
+Phase name and completion date:
+
+- Phase 6: scheduler and backend-capability readiness — completed 2026-03-23
+
+Changed code/doc surfaces:
+
+- `src/brain_sync/regen/topology.py`
+- `src/brain_sync/regen/queue.py`
+- `src/brain_sync/llm/base.py`
+- `src/brain_sync/llm/__init__.py`
+- `src/brain_sync/llm/claude_cli.py`
+- `src/brain_sync/llm/fake.py`
+- `tests/unit/test_regen_phase6.py`
+- `tests/unit/test_regen_phase1.py`
+- `tests/unit/test_regen_queue.py`
+- `tests/unit/test_runtime_operational_events.py`
+- `docs/regen/README.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/RULES.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Tests run and results:
+
+- `python -m pytest tests/unit/test_regen_phase6.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase1.py -q` -> 34 passed
+- `python -m ruff check src/brain_sync/llm src/brain_sync/regen tests/unit/test_regen_phase6.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase1.py` -> passed
+- `python -m pyright src/brain_sync/llm src/brain_sync/regen tests/unit/test_regen_phase6.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase1.py` -> passed
+- `python -m pytest tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase6.py tests/unit/test_daemon.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase0_baseline.py -q` -> 246 passed
+- `python -m ruff check src/brain_sync/llm src/brain_sync/regen src/brain_sync/sync/daemon.py tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase6.py tests/unit/test_daemon.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/integration/test_regen_pipeline.py tests/integration/test_regen_phase0_baseline.py docs/regen/README.md docs/architecture/ARCHITECTURE.md docs/RULES.md` -> passed
+- `python -m pyright src/brain_sync/llm src/brain_sync/regen src/brain_sync/sync/daemon.py tests/unit/test_regen.py tests/unit/test_regen_queue.py tests/unit/test_regen_phase6.py tests/unit/test_daemon.py tests/unit/test_runtime_operational_events.py tests/unit/test_runtime_operational_event_callers.py tests/integration/test_regen_phase0_baseline.py` -> passed
+
+Baseline-versus-current metrics relevant to the phase:
+
+- Queue scheduler explicitness before/after: before this phase the daemon queue had 0 explicit scheduler-decision objects and 1 hidden single-path fast path that delegated ancestor continuation to `regen_path()`; current state has 1 explicit `decide_queue_batch()` surface with 2 named strategies (`single_path_walk_up`, `wave_batch`) and 0 queue calls to `regen_path()`.
+- Single-path strategy proof before/after: before this phase the queue could not expose or test the exact walk-up chain it intended to run; current state proves a 1-seed batch such as `initiative/workstream` plans the bounded chain `initiative/workstream -> initiative -> ''`.
+- Multi-path strategy proof before/after: before this phase queue wave intent was inferred indirectly from `len(ready) > 1`; current state proves a 2-seed batch such as `area/sub1`, `area/sub2` plans 3 explicit waves `("area/sub1","area/sub2")`, `("area")`, `("")`.
+- Backend capability seam before/after: before this phase `BackendCapabilities` exposed prompt-budget class, max prompt tokens, structured-output contract shape, and invocation settings, but had 0 explicit readiness fields for concurrency, startup overhead, or structured-output reliability; current state adds 3 explicit readiness traits: `max_concurrency`, `structured_output.reliability`, and `invocation.startup_overhead_class`.
+- Backend readiness examples added in proof: current fake-backend contract reports `max_concurrency = 8` with `startup_overhead_class = low`, while Claude CLI reports `max_concurrency = 1` with `startup_overhead_class = high`; both report `structured_output.reliability = strict`.
+- Phase 0 / Phase 2 baseline comparison remains stable: this phase intentionally did not change prompt assembly or prompt-body token accounting, so the existing baseline still reports `research/annual` at `final_invocations = 1` and `chunk_invocations = 0` under the current prompt-body-only measurement scope.
+
+Evidence bundle:
+
+- `tests/unit/test_regen_phase6.py` proves the new scheduler decision seam directly and proves backend-owned readiness traits for fake and Claude backends.
+- `tests/unit/test_regen_queue.py` proves queue processing now uses the explicit single-path walk-up path rather than the removed hidden `regen_path()` fast path while preserving wave behavior for multi-path batches.
+- `tests/unit/test_runtime_operational_events.py` proves queue event emission remains non-duplicating after the explicit scheduler change.
+- `tests/integration/test_regen_pipeline.py` and `tests/integration/test_regen_phase0_baseline.py` prove the queue/scheduler seam change did not regress the current pipeline or the durable baseline harness.
+
+Findings summary:
+
+- Queue scheduling now depends on an explicit ready-batch decision surface instead of hidden engine ancestor traversal.
+- The bounded single-path walk-up special case remains in place, but it is now explicit, testable, and only selected when exactly 1 ready seed is present in the queue snapshot.
+- Multi-path queue batches still use depth-ordered wave processing, but the wave choice is now made explicitly and explained by the scheduler seam rather than by an inline `len(ready)` branch alone.
+- The backend-capability seam is now durable enough for later backend expansion work: REGEN can reason about context budget, max concurrency, startup overhead, and structured-output reliability without reintroducing backend-name heuristics into scheduler policy.
+- No actual LLM parallelism was introduced in this phase. `max_concurrency` is readiness metadata for later phases or follow-on work, not a new execution policy.
+
+Final phase report on what scheduler/backend work is now unblocked:
+
+- later queue-policy work can compare “single-path walk-up” versus “use one shared wave model everywhere” by changing the explicit scheduler decision seam rather than by reopening engine propagation logic
+- later backend expansion can tune concurrency policy and startup-cost tradeoffs from bounded capability data instead of backend-specific string checks
+- later parallelism work can be added behind the current explicit strategy object without reopening the Phase 3 propagation contract or the Phase 4 artifact contract
+
+Product calls surfaced:
+
+- No new Phase 6 blocking product call was exposed.
+
+Regressions or ambiguous results:
+
+- No regressions were found in the targeted or broader queue/daemon/regen regression slices.
+- Prompt-body token accounting remains intentionally unchanged in this phase; it still excludes backend-owned system-prompt and invocation framing overhead.
+- This phase does not make the daemon queue execute parallel LLM calls; any throughput gain remains deferred intentionally.
+
+Any remaining product calls intentionally deferred from this plan:
+
+- the future deterministic “meaningful change” gate ahead of LLM generation remains deferred to follow-on work
+- portable area-move identity for offline reconcile remains deferred to follow-on work
+
+Unresolved product decisions:
+
+- No new unresolved product decision blocks the end of this plan.
+- The two deferred follow-on items above remain outside the approved Phase 0-6 scope.
+
+Docs reviewed:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/GLOSSARY.md`
+- `docs/RULES.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/sync/README.md`
+- `docs/regen/README.md`
+- `README.md`
+
+Docs changed:
+
+- `docs/RULES.md`
+- `docs/architecture/ARCHITECTURE.md`
+- `docs/regen/README.md`
+- `docs/plans/plan_regen-refactor_4_notes.md`
+
+Docs reviewed but intentionally unchanged:
+
+- `AGENTS.md`
+- `docs/plans/README.md`
+- `docs/GLOSSARY.md`
+- `docs/COMPATIBILITY.md`
+- `docs/VERSIONING.md`
+- `docs/brain/README.md`
+- `docs/brain/SCHEMAS.md`
+- `docs/runtime/README.md`
+- `docs/runtime/SCHEMAS.md`
+- `docs/sync/README.md`
+- `README.md`
+
+Final doc review note summarizing all docs reviewed and updated across implementation:
+
+- Across Phases 0-6, the implementation trail updated `docs/regen/README.md`, `docs/architecture/ARCHITECTURE.md`, `docs/sync/README.md`, `docs/runtime/README.md`, `docs/runtime/SCHEMAS.md`, `docs/RULES.md`, and this notes artifact where the realized behavior changed or the proof trail needed durable capture.
+- Across the same implementation trail, `AGENTS.md`, `docs/plans/README.md`, `docs/GLOSSARY.md`, `docs/COMPATIBILITY.md`, `docs/VERSIONING.md`, `docs/brain/README.md`, `docs/brain/SCHEMAS.md`, and `README.md` were reviewed and remain accurate for the current end state.
+
+Recommended next action:
+
+- proceed unchanged
+
 2026-03-23T08:55:08+13:00
 Phase: Phase 4 - artifact-aware pipeline hardening
 Change: Introduced an explicit REGEN artifact contract for required summary payloads and optional journal payloads, hardened execution to fail invalid structured output at the artifact boundary, delayed runtime success finalization until journal commit succeeds, aligned the fake backend with the fixed contract, and updated the explanatory docs.

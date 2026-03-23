@@ -1,12 +1,16 @@
-"""Regen event queue with debounce, cooldown, and rate limiting.
+"""Regen event queue with debounce, cooldown, and explicit scheduling decisions.
 
 Events are batched by knowledge path. A path is only processed after its
 debounce window elapses (30s from last change). Post-regen cooldown prevents
 re-triggering the same path within 5 minutes.
 
-When multiple paths are ready simultaneously, wave-based scheduling processes
-them in depth order (deepest first) with dirty propagation, ensuring each
-folder is processed at most once.
+Queue scheduling is explicit:
+
+- one ready path keeps the bounded single-path walk-up special case
+- multiple ready paths use wave scheduling with shared ancestor dedupe
+
+That choice is made up front from the ready snapshot instead of depending on
+hidden parent traversal inside ``regen_path()``.
 """
 
 from __future__ import annotations
@@ -18,8 +22,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from brain_sync.regen.engine import regen_path, regen_single_folder
-from brain_sync.regen.topology import compute_waves, parent_path, propagates_up
+from brain_sync.regen.engine import regen_single_folder
+from brain_sync.regen.topology import QueueBatchDecision, decide_queue_batch, parent_path, propagates_up
 from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
     RegenLock,
@@ -148,50 +152,77 @@ class RegenQueue:
     async def process_ready(self) -> int:
         """Process all ready regen events. Returns count of successful regens.
 
-        Single path: uses regen_path() walk-up (fast path).
-        Multiple paths: uses wave-based scheduling with dirty propagation.
+        Scheduling strategy is chosen explicitly from the ready snapshot:
+
+        - one ready path -> bounded single-path walk-up
+        - multiple ready paths -> wave scheduling with dirty propagation
+
         All processing runs under self._lock to prevent interleaved batches.
         """
         ready = self.pop_ready()
         if not ready:
             return 0
 
+        decision = decide_queue_batch(ready)
+        log.debug(
+            "Queue scheduling decision: strategy=%s ready=%s reason=%s",
+            decision.strategy,
+            list(decision.ready_paths),
+            decision.reason,
+        )
         total = 0
         async with self._lock:
-            if len(ready) == 1:
-                # Fast path: single event, use existing regen_path (walk-up)
-                total = await self._process_single(ready[0])
+            if decision.strategy == "single_path_walk_up":
+                total = await self._process_single_walk_up(decision)
             else:
-                # Multi-path: wave scheduling
-                total = await self._process_wave(ready)
+                total = await self._process_wave(decision)
 
         return total
 
-    async def _process_single(self, knowledge_path: str) -> int:
-        """Process a single ready path using regen_path walk-up."""
-        if not acquire_regen_ownership(self.root, knowledge_path, self.owner_id or "", self.cooldown_secs * 2):
-            log.debug("Could not acquire regen ownership for %s, skipping", knowledge_path)
-            return 0
+    async def _process_single_walk_up(self, decision: QueueBatchDecision) -> int:
+        """Process one ready seed using an explicit bounded walk-up chain."""
 
-        try:
-            count = await regen_path(self.root, knowledge_path, owner_id=self.owner_id, session_id=self.session_id)
-            self._last_regen[knowledge_path] = time.monotonic()
-            self._regen_times.append(time.monotonic())
-            self._retry_counts.pop(knowledge_path, None)
-            log.info("[regen] path=%s summaries_updated=%d", knowledge_path or "(root)", count)
-            return count
-        except Exception as e:
-            self._handle_failure(knowledge_path, e)
-            return 0
+        knowledge_path = decision.ready_paths[0]
+        total = 0
+        for current_path in decision.scheduled_paths:
+            if not acquire_regen_ownership(self.root, current_path, self.owner_id or "", self.cooldown_secs * 2):
+                log.debug("Could not acquire regen ownership for %s, stopping walk-up", current_path)
+                break
 
-    async def _process_wave(self, ready: list[str]) -> int:
+            try:
+                result = await regen_single_folder(
+                    self.root,
+                    current_path,
+                    owner_id=self.owner_id,
+                    session_id=self.session_id,
+                )
+                if result.action == "regenerated":
+                    total += 1
+                log.info("[regen] path=%s action=%s", current_path or "(root)", result.action)
+                if not propagates_up(result.action):
+                    break
+            except Exception as e:
+                self._handle_failure(knowledge_path, e)
+                return 0
+
+        self._last_regen[knowledge_path] = time.monotonic()
+        self._regen_times.append(time.monotonic())
+        self._retry_counts.pop(knowledge_path, None)
+        log.info(
+            "[regen] path=%s strategy=%s summaries_updated=%d",
+            knowledge_path or "(root)",
+            decision.strategy,
+            total,
+        )
+        return total
+
+    async def _process_wave(self, decision: QueueBatchDecision) -> int:
         """Process multiple ready paths using wave-based scheduling."""
-        ready_set = set(ready)
-        waves = compute_waves(ready)
-        dirty: set[str] = set(ready)  # all enqueued paths start dirty
+        ready_set = set(decision.ready_paths)
+        dirty: set[str] = set(decision.ready_paths)  # all enqueued paths start dirty
         total = 0
 
-        for wave in waves:
+        for wave in decision.waves:
             for path in wave:
                 if path not in dirty:
                     continue

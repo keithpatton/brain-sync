@@ -110,8 +110,8 @@ flowchart TD
     ENQUEUE --> QUEUE["RegenQueue"]
     QUEUE --> SESSION2["daemon regen_session()"]
     SESSION2 --> READY["process_ready()"]
-    READY --> ONE["single ready path -> regen_path()"]
-    READY --> MANY["many ready paths -> wave scheduling"]
+    READY --> ONE["single ready path -> explicit walk-up decision"]
+    READY --> MANY["many ready paths -> explicit wave decision"]
     MANY --> FOLDER["regen_single_folder()"]
     ONE --> FOLDER
     FULL --> FOLDER
@@ -412,7 +412,9 @@ Regen currently has two execution shapes above the single-folder unit:
 ### Single-Path Walk-Up
 
 For explicit single-path regen and queue batches containing only one ready
-path, the system uses the shared propagation matrix:
+path, the system uses the shared propagation matrix. In queue mode this is now
+an explicit scheduler decision rather than a hidden side effect of calling
+`regen_path()`:
 
 - run the requested path first
 - continue to the parent after `regenerated`, `skipped_no_content`, or
@@ -460,13 +462,30 @@ Current queue features are:
 - retry with bounded backoff
 - special handling for Windows-style lock contention errors
 
-Queue processing currently has two paths:
+Queue processing currently has two explicit scheduler strategies:
 
-- one ready path: call `regen_path()`
-- multiple ready paths: call `regen_single_folder()` through wave scheduling
+- one ready path: keep the bounded single-path walk-up special case
+- multiple ready paths: call `regen_single_folder()` through one shared wave batch
 
 Queue ownership is runtime-scoped. If regen ownership cannot be acquired for a
 path, that branch is skipped rather than forced.
+
+## Backend Capability Contract
+
+The bounded capability seam under `llm/` now carries both prompt-planning and
+backend-readiness traits:
+
+- prompt budget class
+- max prompt tokens
+- max concurrency
+- structured-output reliability
+- invocation startup-overhead class
+
+Current policy still uses those fields conservatively. Long context remains a
+capability rather than a blanket default, and queue scheduling does not start
+parallel model execution in this phase. The contract now exists so later
+backend expansion can use explicit capabilities instead of backend-name
+heuristics.
 
 ## Persistence Model
 

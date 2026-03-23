@@ -26,6 +26,7 @@ from brain_sync.llm.base import (
     StructuredOutputContract,
     capabilities_for_model,
     resolve_backend_capabilities,
+    with_backend_traits,
 )
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "capabilities_for_model",
     "get_backend",
     "resolve_backend_capabilities",
+    "with_backend_traits",
 ]
 
 

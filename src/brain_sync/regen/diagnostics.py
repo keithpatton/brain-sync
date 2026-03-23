@@ -31,6 +31,20 @@ def _event_details(details_json: str | None) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _clear_latest_no_call_prompt_fields(report: dict[str, Any]) -> None:
+    """Reset latest-run prompt and chunk metadata for no-call terminal outcomes."""
+
+    report["prompt_budget_class"] = None
+    report["component_tokens"] = {}
+    report["deferred_file_count"] = 0
+    report["deferred_files"] = []
+    report["omitted_child_summary_count"] = 0
+    report["omitted_child_summaries"] = []
+    report["chunk_count"] = 0
+    report["chunked_file_count"] = 0
+    report["chunked_files"] = []
+
+
 def build_regen_diagnostic_report(root: Path, *, session_id: str | None = None) -> dict[str, Any]:
     """Aggregate REGEN observability into one compact report."""
 
@@ -122,12 +136,7 @@ def build_regen_diagnostic_report(root: Path, *, session_id: str | None = None) 
         if latest_evaluation_outcome is not None:
             report["evaluation_outcome"] = latest_evaluation_outcome
         if latest_evaluation_outcome in _NO_CALL_EVALUATION_OUTCOMES:
-            report["prompt_budget_class"] = None
-            report["component_tokens"] = {}
-            report["deferred_file_count"] = 0
-            report["deferred_files"] = []
-            report["omitted_child_summary_count"] = 0
-            report["omitted_child_summaries"] = []
+            _clear_latest_no_call_prompt_fields(report)
         report["phase"] = details.get("phase")
         report["propagates_up"] = details.get("propagates_up")
         report["parent_input_changed"] = details.get("parent_input_changed")
@@ -135,9 +144,10 @@ def build_regen_diagnostic_report(root: Path, *, session_id: str | None = None) 
         report["propagation_explanation"] = details.get("propagation_explanation")
         report["journal_written"] = details.get("journal_written")
         report["summary_written"] = details.get("summary_written")
-        report["chunk_count"] = int(details.get("chunk_count") or report["chunk_count"] or 0)
-        report["chunked_file_count"] = int(details.get("chunked_file_count") or report["chunked_file_count"] or 0)
-        report["chunked_files"] = list(details.get("chunked_files") or report["chunked_files"] or [])
+        if latest_evaluation_outcome not in _NO_CALL_EVALUATION_OUTCOMES:
+            report["chunk_count"] = int(details.get("chunk_count") or report["chunk_count"] or 0)
+            report["chunked_file_count"] = int(details.get("chunked_file_count") or report["chunked_file_count"] or 0)
+            report["chunked_files"] = list(details.get("chunked_files") or report["chunked_files"] or [])
         report["terminal_event_count"] = int(report["terminal_event_count"]) + 1
         if latest_reason is not None:
             terminal_reason_coverage += 1

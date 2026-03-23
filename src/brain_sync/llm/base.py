@@ -8,7 +8,7 @@ helpers defined here rather than backend-name heuristics.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -33,6 +33,7 @@ class StructuredOutputContract:
     format: Literal["summary_journal_xml"]
     summary_required: bool
     journal_optional: bool
+    reliability: Literal["strict", "best_effort"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class InvocationContract:
     system_prompt: str | None
     tools: str | None
     prompt_overhead_tokens: int
+    startup_overhead_class: Literal["low", "medium", "high"]
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class BackendCapabilities:
 
     prompt_budget_class: str
     max_prompt_tokens: int
+    max_concurrency: int
     structured_output: StructuredOutputContract
     invocation: InvocationContract
 
@@ -70,13 +73,16 @@ DEFAULT_BACKEND_CAPABILITIES = BackendCapabilities(
         format="summary_journal_xml",
         summary_required=True,
         journal_optional=True,
+        reliability="strict",
     ),
     invocation=InvocationContract(
         mode="single_prompt_inference",
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         tools="",
         prompt_overhead_tokens=max(1, len(DEFAULT_SYSTEM_PROMPT) // 3),
+        startup_overhead_class="medium",
     ),
+    max_concurrency=1,
 )
 
 
@@ -129,8 +135,34 @@ def capabilities_for_model(model: str) -> BackendCapabilities:
         return BackendCapabilities(
             prompt_budget_class="extended_1m",
             max_prompt_tokens=1_000_000,
+            max_concurrency=1,
             structured_output=DEFAULT_BACKEND_CAPABILITIES.structured_output,
             invocation=DEFAULT_BACKEND_CAPABILITIES.invocation,
         )
 
     return DEFAULT_BACKEND_CAPABILITIES
+
+
+def with_backend_traits(
+    capabilities: BackendCapabilities,
+    *,
+    max_concurrency: int | None = None,
+    structured_output_reliability: Literal["strict", "best_effort"] | None = None,
+    startup_overhead_class: Literal["low", "medium", "high"] | None = None,
+) -> BackendCapabilities:
+    """Return *capabilities* with backend-owned readiness traits applied."""
+
+    updated = capabilities
+    if max_concurrency is not None:
+        updated = replace(updated, max_concurrency=max_concurrency)
+    if structured_output_reliability is not None:
+        updated = replace(
+            updated,
+            structured_output=replace(updated.structured_output, reliability=structured_output_reliability),
+        )
+    if startup_overhead_class is not None:
+        updated = replace(
+            updated,
+            invocation=replace(updated.invocation, startup_overhead_class=startup_overhead_class),
+        )
+    return updated

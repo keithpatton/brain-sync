@@ -106,9 +106,18 @@ that subsystem, `regen/engine.py` now acts primarily as the orchestration
 surface, `regen/evaluation.py` owns deterministic node evaluation and hash
 classification, `regen/artifacts.py` owns the strict summary/journal artifact
 contract, `regen/prompt_planner.py` owns prompt assembly and chunk planning,
-`regen/topology.py` owns parent-propagation rules, and
-`regen/diagnostics.py` owns compact report building over the existing runtime
-event surfaces.
+`regen/topology.py` owns parent-propagation rules plus explicit queue
+scheduling decisions, and `regen/diagnostics.py` owns compact report building
+over the existing runtime event surfaces. The queue no longer relies on
+hidden ancestor traversal inside `regen_path()` to decide how one ready batch
+should execute.
+
+`llm/` now owns a more durable backend-capability seam than the earlier prompt
+budget fields alone. In addition to context budget, the contract now carries
+max concurrency, structured-output reliability, and invocation startup
+overhead expectations. Regen still uses those traits conservatively in the
+current phase; they are readiness data for later backend expansion rather than
+an immediate parallelism switch.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
 interface-neutral operations consumed by the CLI and MCP layers. `interfaces/`

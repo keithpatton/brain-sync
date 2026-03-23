@@ -156,6 +156,50 @@ def test_diagnostic_report_aggregates_prompt_and_chunk_cost(brain: Path, monkeyp
     assert any(item["knowledge_path"] == "chunky" for item in churn_report["high_churn_paths"])
 
 
+def test_diagnostic_report_clears_stale_chunk_metadata_after_no_call(
+    brain: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kdir = brain / "knowledge" / "chunky-stable"
+    kdir.mkdir(parents=True)
+    big_content = "\n\n".join(f"## Section {i}\n{'content ' * 100}" for i in range(20))
+    (kdir / "report.md").write_text(big_content, encoding="utf-8")
+
+    async def mixed_output(prompt: str, cwd: Path, **kwargs):
+        del prompt, cwd
+        if kwargs.get("is_chunk"):
+            return ClaudeResult(
+                success=True,
+                output="Chunk summary with retained facts.",
+                input_tokens=90,
+                output_tokens=10,
+                duration_ms=3,
+                num_turns=1,
+            )
+        return ClaudeResult(
+            success=True,
+            output=_structured_output("# Summary\nChunked final summary with retained facts."),
+            input_tokens=140,
+            output_tokens=30,
+            duration_ms=5,
+            num_turns=1,
+        )
+
+    monkeypatch.setattr("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000)
+    monkeypatch.setattr("brain_sync.regen.engine.CHUNK_TARGET_CHARS", 1_500)
+
+    with patch("brain_sync.regen.engine.invoke_claude", side_effect=mixed_output):
+        asyncio.run(regen_single_folder(brain, "chunky-stable", session_id="session-chunky-1", owner_id="owner-1"))
+        asyncio.run(regen_single_folder(brain, "chunky-stable", session_id="session-chunky-2", owner_id="owner-1"))
+
+    report = build_regen_diagnostic_report(brain)
+    chunky = next(path for path in report["path_reports"] if path["knowledge_path"] == "chunky-stable")
+    assert chunky["latest_outcome"] == "skipped_unchanged"
+    assert chunky["run_reason"] == "content_hash_unchanged"
+    assert chunky["chunk_count"] == 0
+    assert chunky["chunked_file_count"] == 0
+    assert chunky["chunked_files"] == []
+
+
 def test_terminal_lock_release_tolerates_already_unowned_row(brain: Path) -> None:
     save_regen_lock(brain, RegenLock(knowledge_path="area", regen_status="idle"))
     assert acquire_regen_ownership(brain, "area", "owner-1")

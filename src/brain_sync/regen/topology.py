@@ -14,6 +14,7 @@ ParentDirtyReason = Literal[
     "child_input_removed",
     "parent_structure_changed",
 ]
+QueueStrategy = Literal["single_path_walk_up", "wave_batch"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,17 @@ class PropagationRule:
     propagate_upward: bool
     dirty_reason: ParentDirtyReason | None
     explanation: str
+
+
+@dataclass(frozen=True)
+class QueueBatchDecision:
+    """Explicit scheduler decision for one queue-ready batch."""
+
+    strategy: QueueStrategy
+    ready_paths: tuple[str, ...]
+    scheduled_paths: tuple[str, ...]
+    waves: tuple[tuple[str, ...], ...]
+    reason: str
 
 
 PROPAGATION_RULES: dict[str, PropagationRule] = {
@@ -114,6 +126,19 @@ def parent_path(path: str) -> str:
     return parts[0] if len(parts) > 1 else ""
 
 
+def walk_up_chain(path: str, *, max_depth: int = 10) -> tuple[str, ...]:
+    """Return the bounded leaf-to-root chain for single-path walk-up."""
+
+    current = path
+    chain: list[str] = []
+    for _ in range(max_depth):
+        chain.append(current)
+        if not current:
+            break
+        current = parent_path(current)
+    return tuple(chain)
+
+
 def compute_waves(paths: list[str]) -> list[list[str]]:
     """Compute depth-ordered waves from leaf paths including all ancestors."""
     if not paths:
@@ -130,3 +155,27 @@ def compute_waves(paths: list[str]) -> list[list[str]]:
             current = parent_path(current)
 
     return [sorted(by_depth[depth]) for depth in sorted(by_depth, reverse=True)]
+
+
+def decide_queue_batch(ready_paths: list[str], *, max_depth: int = 10) -> QueueBatchDecision:
+    """Choose the explicit queue scheduling strategy for one ready snapshot."""
+
+    unique_ready = tuple(dict.fromkeys(ready_paths))
+    if len(unique_ready) == 1:
+        scheduled_paths = walk_up_chain(unique_ready[0], max_depth=max_depth)
+        return QueueBatchDecision(
+            strategy="single_path_walk_up",
+            ready_paths=unique_ready,
+            scheduled_paths=scheduled_paths,
+            waves=(),
+            reason="one dirty seed is ready, so keep the bounded immediate walk-up special case",
+        )
+
+    waves = tuple(tuple(wave) for wave in compute_waves(list(unique_ready)))
+    return QueueBatchDecision(
+        strategy="wave_batch",
+        ready_paths=unique_ready,
+        scheduled_paths=tuple(path for wave in waves for path in wave),
+        waves=waves,
+        reason="multiple ready seeds share ancestor dedupe, so use one explicit wave batch",
+    )

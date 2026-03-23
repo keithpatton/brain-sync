@@ -16,7 +16,7 @@ import random
 import time
 from pathlib import Path
 
-from brain_sync.llm.base import BackendCapabilities, LlmResult, capabilities_for_model
+from brain_sync.llm.base import BackendCapabilities, LlmResult, capabilities_for_model, with_backend_traits
 
 TOPIC_FRAGMENTS = [
     "cross-functional alignment",
@@ -60,7 +60,12 @@ class FakeBackend:
         self.prompts: list[str] = []
 
     def get_capabilities(self, *, model: str = "") -> BackendCapabilities:
-        return capabilities_for_model(model)
+        return with_backend_traits(
+            capabilities_for_model(model),
+            max_concurrency=8,
+            structured_output_reliability="strict",
+            startup_overhead_class="low",
+        )
 
     async def invoke(
         self,
@@ -113,7 +118,7 @@ class FakeBackend:
             )
 
         if self.mode == "large-output":
-            output = _generate_large(prompt)
+            output = _generate_chunk_summary(prompt) if is_chunk else _generate_large(prompt)
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             return LlmResult(
                 success=True,
@@ -126,7 +131,7 @@ class FakeBackend:
 
         # stable / rewrite
         seed_offset = 0 if self.mode == "stable" else 42
-        output = _generate(prompt, seed_offset)
+        output = _generate_chunk_summary(prompt, seed_offset) if is_chunk else _generate(prompt, seed_offset)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return LlmResult(
             success=True,
@@ -150,6 +155,18 @@ def _generate(prompt: str, seed_offset: int = 0) -> str:
     detail = rng.choice(TOPIC_FRAGMENTS)
     summary = f"# Summary\n\n[fake-{h}] {phrase} {topic}. Further analysis shows {detail}."
     return f"<summary>\n{summary}\n</summary>\n<journal>\n</journal>"
+
+
+def _generate_chunk_summary(prompt: str, seed_offset: int = 0) -> str:
+    """Generate deterministic plain-text chunk summaries for merge prompts."""
+
+    h = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    seed = int(h, 16) + seed_offset
+    rng = random.Random(seed)
+    phrase = rng.choice(PHRASES)
+    topic = rng.choice(TOPIC_FRAGMENTS)
+    detail = rng.choice(TOPIC_FRAGMENTS)
+    return f"[fake-{h}] {phrase} {topic}. Retained facts include {detail}."
 
 
 def _generate_large(prompt: str) -> str:

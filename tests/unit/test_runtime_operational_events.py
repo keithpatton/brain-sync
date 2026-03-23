@@ -16,6 +16,7 @@ from brain_sync.application.reconcile import reconcile_knowledge_tree
 from brain_sync.application.sources import add_source, migrate_sources, move_source, remove_source, update_source
 from brain_sync.application.sync_events import enqueue_regen_path
 from brain_sync.regen.queue import RegenQueue
+from brain_sync.regen.topology import decide_queue_batch
 from brain_sync.runtime.operational_events import (
     CATALOG_EVENT_TYPE_NAMES,
     FIELD_LOCKED_EVENT_FIELDS,
@@ -232,7 +233,7 @@ def test_queue_does_not_duplicate_engine_completed_event(
 ) -> None:
     queue = RegenQueue(root=brain, owner_id="owner-1", session_id="session-1")
 
-    async def _fake_regen_path(root: Path, knowledge_path: str, **_: object) -> int:
+    async def _fake_single_folder(root: Path, knowledge_path: str, **_: object):
         record_brain_operational_event(
             root,
             event_type="regen.completed",
@@ -242,11 +243,12 @@ def test_queue_does_not_duplicate_engine_completed_event(
             outcome="regenerated",
             details={"reason": "summary_written", "propagates_up": True},
         )
-        return 1
+        return type("Result", (), {"action": "regenerated"})()
 
-    monkeypatch.setattr("brain_sync.regen.queue.regen_path", _fake_regen_path)
+    monkeypatch.setattr("brain_sync.regen.queue.acquire_regen_ownership", lambda *args, **kwargs: True)
+    monkeypatch.setattr("brain_sync.regen.queue.regen_single_folder", _fake_single_folder)
 
-    count = asyncio.run(queue._process_single("area"))
+    count = asyncio.run(queue._process_single_walk_up(decide_queue_batch(["area"], max_depth=1)))
 
     events = load_operational_events(brain, event_type="regen.completed")
 
@@ -263,7 +265,7 @@ def test_queue_does_not_duplicate_engine_failed_event(
 ) -> None:
     queue = RegenQueue(root=brain, owner_id="owner-1", session_id="session-1")
 
-    async def _fake_regen_path(root: Path, knowledge_path: str, **_: object) -> int:
+    async def _fake_single_folder(root: Path, knowledge_path: str, **_: object):
         record_brain_operational_event(
             root,
             event_type="regen.failed",
@@ -275,9 +277,10 @@ def test_queue_does_not_duplicate_engine_failed_event(
         )
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("brain_sync.regen.queue.regen_path", _fake_regen_path)
+    monkeypatch.setattr("brain_sync.regen.queue.acquire_regen_ownership", lambda *args, **kwargs: True)
+    monkeypatch.setattr("brain_sync.regen.queue.regen_single_folder", _fake_single_folder)
 
-    count = asyncio.run(queue._process_single("area"))
+    count = asyncio.run(queue._process_single_walk_up(decide_queue_batch(["area"], max_depth=1)))
 
     events = load_operational_events(brain, event_type="regen.failed")
 

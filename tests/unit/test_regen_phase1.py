@@ -138,6 +138,9 @@ class TestBackendCapabilities:
         capabilities = resolve_backend_capabilities(NoCapabilitiesBackend(), model="claude-sonnet-4-6")
         assert capabilities.prompt_budget_class == "extended_1m"
         assert capabilities.max_prompt_tokens == 1_000_000
+        assert capabilities.max_concurrency == 1
+        assert capabilities.structured_output.reliability == "strict"
+        assert capabilities.invocation.startup_overhead_class == "medium"
 
     def test_unknown_model_stays_on_conservative_default(self) -> None:
         class NoCapabilitiesBackend:
@@ -159,6 +162,7 @@ class TestBackendCapabilities:
         capabilities = resolve_backend_capabilities(NoCapabilitiesBackend(), model="unknown-model")
         assert capabilities.prompt_budget_class == "standard_200k"
         assert capabilities.max_prompt_tokens == 200_000
+        assert capabilities.max_concurrency == 1
 
     def test_regen_execution_uses_backend_invocation_contract(self, brain: Path) -> None:
         area = brain / "knowledge" / "contract"
@@ -174,16 +178,19 @@ class TestBackendCapabilities:
                 return BackendCapabilities(
                     prompt_budget_class="test",
                     max_prompt_tokens=321_000,
+                    max_concurrency=2,
                     structured_output=StructuredOutputContract(
                         format="summary_journal_xml",
                         summary_required=True,
                         journal_optional=True,
+                        reliability="strict",
                     ),
                     invocation=InvocationContract(
                         mode="single_prompt_inference",
                         system_prompt="Capability system prompt",
                         tools="",
                         prompt_overhead_tokens=7,
+                        startup_overhead_class="low",
                     ),
                 )
 

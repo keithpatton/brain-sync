@@ -748,7 +748,10 @@ durable state reflects filesystem truth.
 
 Walk-up: when a single area is regenerated (e.g. from a watcher event),
 the system walks up toward the root, regenerating each parent. Walk-up
-stops when an area produces an unchanged result.
+stops when the shared propagation matrix says no parent-visible input
+changed. In queue processing this remains a bounded special case only when
+exactly one ready seed is in the current debounce snapshot; otherwise queue
+processing must use one explicit wave batch for the ready set.
 
 ### Stability Guard
 

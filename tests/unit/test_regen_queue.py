@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -109,15 +110,24 @@ class TestRateLimiting:
 
 
 class TestProcessReady:
-    def test_process_calls_regen_path(self, brain):
+    def test_process_single_ready_path_uses_explicit_walk_up(self, brain):
         q = RegenQueue(root=brain, debounce_secs=0.0, cooldown_secs=0.0)
         q.enqueue("project")
 
-        with patch("brain_sync.regen.queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_regen:
+        async def _single_folder(root, knowledge_path, **kwargs):
+            del root, kwargs
+            if knowledge_path == "project":
+                return SimpleNamespace(action="regenerated")
+            return SimpleNamespace(action="skipped_unchanged")
+
+        with (
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=_single_folder) as mock_single,
+        ):
             count = asyncio.run(q.process_ready())
 
         assert count == 1
-        mock_regen.assert_called_once_with(brain, "project", owner_id=None, session_id=None)
+        assert [call.args[1] for call in mock_single.call_args_list] == ["project", ""]
 
     def test_process_empty_queue(self, brain):
         q = RegenQueue(root=brain)
@@ -128,7 +138,14 @@ class TestProcessReady:
         q = RegenQueue(root=brain, debounce_secs=0.0, cooldown_secs=0.0)
         q.enqueue("project")
 
-        with patch("brain_sync.regen.queue.regen_path", new_callable=AsyncMock, return_value=1):
+        async def _single_folder(root, knowledge_path, **kwargs):
+            del root, kwargs
+            return SimpleNamespace(action="regenerated" if knowledge_path == "project" else "skipped_unchanged")
+
+        with (
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=_single_folder),
+        ):
             asyncio.run(q.process_ready())
 
         assert "project" in q._last_regen
@@ -140,7 +157,10 @@ class TestProcessReady:
         async def fail(*args, **kwargs):
             raise RuntimeError("Claude unavailable")
 
-        with patch("brain_sync.regen.queue.regen_path", side_effect=fail):
+        with (
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=fail),
+        ):
             asyncio.run(q.process_ready())
 
         # Should be re-enqueued
@@ -155,7 +175,10 @@ class TestProcessReady:
             raise RuntimeError("Claude unavailable")
 
         # Simulate MAX_RETRIES failures through the queue
-        with patch("brain_sync.regen.queue.regen_path", side_effect=fail):
+        with (
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=fail),
+        ):
             for i in range(MAX_RETRIES + 1):
                 if i == 0:
                     q.enqueue("project")
@@ -178,7 +201,10 @@ class TestProcessReady:
         async def fail_regen(*args, **kwargs):
             raise RegenFailed("project", "Claude CLI failed")
 
-        with patch("brain_sync.regen.queue.regen_path", side_effect=fail_regen):
+        with (
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=fail_regen),
+        ):
             asyncio.run(q.process_ready())
 
         # Should be re-enqueued with retry_count=1
@@ -196,7 +222,10 @@ class TestProcessReady:
         async def fail(*args, **kwargs):
             raise error
 
-        with patch("brain_sync.regen.queue.regen_path", side_effect=fail):
+        with (
+            patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=fail),
+        ):
             for _ in range(MAX_RETRIES + 1):
                 if "project" in q._pending:
                     q._pending["project"].fire_at = 0
@@ -304,19 +333,22 @@ class TestWaveProcessing:
         assert "area/sub2" in call_paths
         assert "area" not in call_paths
 
-    def test_process_ready_single_path_uses_regen_path(self, brain):
-        """Single ready path uses regen_path walk-up (fast path)."""
+    def test_process_ready_single_path_does_not_use_hidden_regen_path(self, brain):
+        """Single ready path should use the explicit queue walk-up strategy."""
         q = RegenQueue(root=brain, debounce_secs=0.0)
         q.enqueue("project")
 
+        async def _single_folder(root, knowledge_path, **kwargs):
+            del root, kwargs
+            if knowledge_path == "project":
+                return SimpleNamespace(action="skipped_unchanged")
+            raise AssertionError("walk-up should stop before parent call")
+
         with (
             patch("brain_sync.regen.queue.acquire_regen_ownership", return_value=True),
-            patch("brain_sync.regen.queue.regen_path", new_callable=AsyncMock, return_value=1) as mock_rp,
-            patch("brain_sync.regen.queue.regen_single_folder") as mock_rsf,
+            patch("brain_sync.regen.queue.regen_single_folder", side_effect=_single_folder) as mock_rsf,
         ):
             total = asyncio.run(q.process_ready())
 
-        # regen_path called (fast path), not regen_single_folder
-        mock_rp.assert_called_once()
-        mock_rsf.assert_not_called()
-        assert total == 1
+        assert [call.args[1] for call in mock_rsf.call_args_list] == ["project"]
+        assert total == 0
