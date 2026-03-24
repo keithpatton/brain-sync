@@ -11,11 +11,11 @@ Version terminology is defined in [VERSIONING.md](VERSIONING.md).
 | App version | Brain Format | Runtime DB schema | Status |
 |---|---|---|---|
 | `0.5.0` | `1.0` | `v23` | Supported upgrade source |
-| `0.7.0.0` | `1.2` | `v29` | Current supported row |
+| `0.7.1` | `1.2` | `v29` | Current supported row |
 
 Canonical compatibility statement:
 
-`brain-sync 0.7.0.0 supports Brain Format 1.2 with runtime DB schema v29`
+`brain-sync 0.7.1 supports Brain Format 1.2 with runtime DB schema v29`
 
 Transition guarantees for the current row:
 
@@ -41,7 +41,7 @@ For the current row, brain-sync must support:
 - normal operation on valid Brain Format `1.2` brains
 - doctor/rebuild flows that preserve portable source truth
 - guided migration from `0.5.0` / Brain Format `1.0` / runtime schema `v23`
-  to `0.7.0.0` / Brain Format `1.2` / runtime schema `v29`
+  to `0.7.1` / Brain Format `1.2` / runtime schema `v29`
 - in-place migration from supported runtime DB schemas to `v29`
 - cross-machine continuation from portable manifest truth even when runtime DB
   state differs per machine
@@ -69,7 +69,7 @@ The suite should prove:
 
 1. fresh Brain Format `1.2` init
 2. `0.5.0` / Brain Format `1.0` / runtime schema `v23` ->
-   `0.7.0.0` / Brain Format `1.2` / runtime schema `v29` guided migration expectations
+   `0.7.1` / Brain Format `1.2` / runtime schema `v29` guided migration expectations
 3. runtime DB `v23/v24/v25/v26/v27 -> v29` in-place migration
 4. unreleased runtime DB `v28 -> v29` in-place migration when encountered
 5. runtime DB rebuild without durable source-truth loss
