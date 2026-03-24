@@ -9,7 +9,7 @@ brain-sync uses three version domains:
 | ----------------- | ------------------------------ | ------------- |
 | Brain Format      | Portable filesystem contract   | `1.2`         |
 | Runtime DB schema | Machine-local runtime DB shape | `v29`         |
-| App version       | Packaged application version   | `0.7.1`       |
+| App version       | Packaged application version   | See [`pyproject.toml`](../pyproject.toml) |
 
 
 These versions must not be conflated.
@@ -98,12 +98,11 @@ runtime DB state. The unreleased intermediate `v28` schema is not the shipped
 
 ## App Version
 
-The current app version is `0.7.1`.
+The app version is the packaged release identifier.
 
-This is the current release identifier for the Brain Format `1.2` /
-runtime schema `v29` row.
+The canonical source is [`pyproject.toml`](../pyproject.toml).
 
-The canonical source is `pyproject.toml`.
+The current release row is defined in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ---
 
@@ -112,10 +111,6 @@ The canonical source is `pyproject.toml`.
 Compatibility statements should use this form:
 
 `brain-sync <app version> supports Brain Format <format version> with runtime DB schema <db version>`
-
-Current statement:
-
-`brain-sync 0.7.1 supports Brain Format 1.2 with runtime DB schema v29`
 
 See [docs/COMPATIBILITY.md](COMPATIBILITY.md) for the supported rows and
 transition guarantees.
@@ -128,7 +123,7 @@ Compatibility and migration tests should explicitly cover:
 
 - fresh Brain Format `1.2` init
 - `0.5.0` / Brain Format `1.0` / runtime schema `v23` ->
-`0.7.1` / Brain Format `1.2` / runtime schema `v29` guided migration behavior
+current `1.2` / `v29` app row guided migration behavior
 - runtime DB `v23/v24/v25/v26/v27 -> v29` in-place migration
 - unreleased runtime DB `v28 -> v29` in-place migration when encountered
 - runtime DB rebuild without changing durable source truth

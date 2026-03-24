@@ -89,6 +89,24 @@ If you need shared ontology, state rules, versioning, or compatibility, go to:
 If you need system-level design rationale or module responsibilities, go to
 [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
 
+## Version Bumps
+
+When the user asks to bump only the packaged app version, keep the update
+minimal and avoid version-sprawl:
+
+- `pyproject.toml` is the authoritative app-version source
+- `docs/COMPATIBILITY.md` should carry the explicit supported app-version rows
+  and, if useful, one canonical compatibility statement for the current row
+- `docs/VERSIONING.md` should describe version domains and point to the
+  authoritative source/compatibility row rather than repeating the exact app
+  version in multiple places
+- keep at most one explicit app-version assertion in compatibility-focused
+  tests unless a second assertion proves a distinct invariant
+
+If a version bump also changes Brain Format or runtime DB schema, update
+`docs/VERSIONING.md`, `docs/COMPATIBILITY.md`, and the related migration or
+compatibility tests intentionally together.
+
 ## Brain Contract
 
 Before making portable brain changes:

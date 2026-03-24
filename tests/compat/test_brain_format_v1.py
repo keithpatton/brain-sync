@@ -23,13 +23,9 @@ def _project_version() -> str:
 
 
 def test_supported_compatibility_row_constants() -> None:
-    assert _project_version() == "0.7.1"
+    assert _project_version() == "0.7.2"
     assert BRAIN_FORMAT_VERSION == "1.2"
     assert RUNTIME_DB_SCHEMA_VERSION == 29
-
-
-def test_pyproject_version_matches_app_version() -> None:
-    assert _project_version() == "0.7.1"
 
 
 def test_fresh_init_matches_brain_format_v1_2(tmp_path: Path) -> None:
