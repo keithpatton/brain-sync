@@ -23,15 +23,15 @@ from brain_sync.regen import (
 )
 from brain_sync.regen.artifacts import ArtifactContractError
 from brain_sync.regen.engine import (
-    _REGEN_INSTRUCTIONS,
     _JOURNAL_TEMPLATE,
-    PromptBudgetError,
+    _REGEN_INSTRUCTIONS,
     _SUMMARY_TEMPLATE,
     CHUNK_TARGET_CHARS,
     MAX_CHUNKS,
     MAX_PROMPT_TOKENS,
     PROMPT_VERSION,
     ClaudeResult,
+    PromptBudgetError,
     PromptResult,
     RegenConfig,
     _build_chunk_prompt,
@@ -2093,10 +2093,7 @@ class TestTokenBudgetEnforcement:
         idir = managed_insights(brain, "merge")
         idir.mkdir(parents=True)
 
-        chunk_summaries = {
-            f"doc{i:02d}.md": [f"# Chunk {j}\n\n" + ("x" * 10_000) for j in range(3)]
-            for i in range(8)
-        }
+        chunk_summaries = {f"doc{i:02d}.md": [f"# Chunk {j}\n\n" + ("x" * 10_000) for j in range(3)] for i in range(8)}
 
         invalidate_global_context_cache()
         with patch("brain_sync.regen.engine.MAX_PROMPT_TOKENS", 5_000):
@@ -2427,17 +2424,16 @@ class TestJournalWriting:
         insights_dir.mkdir(parents=True)
 
         journal_body = (
-            "### Observed Change\n"
-            "Knowledge changed.\n\n"
-            "### Interpretation\n"
-            "This may indicate a shift in direction."
+            "### Observed Change\nKnowledge changed.\n\n### Interpretation\nThis may indicate a shift in direction."
         )
         _write_journal_entry(insights_dir, journal_body, "abc123", "area")
 
         journal_files = list(managed_journal(tmp_path, "area").rglob("*.md"))
         assert len(journal_files) == 1
         content = journal_files[0].read_text(encoding="utf-8")
-        timestamp_lines = [line for line in content.splitlines() if line.startswith("## ") and not line.startswith("### ")]
+        timestamp_lines = [
+            line for line in content.splitlines() if line.startswith("## ") and not line.startswith("### ")
+        ]
         assert len(timestamp_lines) == 1
         assert "### Observed Change" in content
         assert "### Interpretation" in content

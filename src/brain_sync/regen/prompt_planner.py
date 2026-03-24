@@ -152,7 +152,9 @@ def _assemble_files_text(
     """Build the files section of the prompt."""
 
     inlined_parts = [f"### {name}\n```\n{content}\n```" for name, content in inlined]
-    placeholder_parts = [f"### {name}\n(This file will be summarized in chunks - too large to inline)" for name in oversized_names]
+    placeholder_parts = [
+        f"### {name}\n(This file will be summarized in chunks - too large to inline)" for name in oversized_names
+    ]
     return _assemble_file_parts_text(inlined_parts, placeholder_parts, binary_names)
 
 
@@ -715,8 +717,18 @@ def build_prompt(
         display_path=display_path,
         phase="fixed scaffold before direct-file packing",
     )
-    remaining_for_direct_files = max(0, effective_prompt_tokens - estimate_tokens(base_prompt_without_files_or_children))
-    inlined, oversized_names, oversized_files, deferred_files, files_text, direct_file_tokens = _pack_direct_files(
+    remaining_for_direct_files = max(
+        0,
+        effective_prompt_tokens - estimate_tokens(base_prompt_without_files_or_children),
+    )
+    (
+        _inlined,
+        _oversized_names,
+        oversized_files,
+        deferred_files,
+        files_text,
+        direct_file_tokens,
+    ) = _pack_direct_files(
         entries,
         remaining_tokens=remaining_for_direct_files,
         display_path=display_path,
@@ -914,14 +926,14 @@ def build_prompt_from_chunks(
 
 
 __all__ = [
+    "JOURNAL_TEMPLATE",
     "MINIMAL_SYSTEM_PROMPT",
     "PROMPT_VERSION",
     "REGEN_INSTRUCTIONS",
     "SUMMARY_TEMPLATE",
-    "JOURNAL_TEMPLATE",
-    "PromptBudgetError",
     "DeferredFileDecision",
     "PromptBudgetDiagnostics",
+    "PromptBudgetError",
     "PromptPlannerSettings",
     "PromptResult",
     "build_chunk_prompt",
