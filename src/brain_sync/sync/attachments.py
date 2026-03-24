@@ -75,10 +75,12 @@ async def _sync_binary_file(
     url: str,
     client: httpx.AsyncClient,
     headers: dict[str, str] | None = None,
-) -> bytes:
+) -> tuple[bytes, str | None]:
     response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
     response.raise_for_status()
-    return response.content
+    content_type = response.headers.get("content-type")
+    mime_type = content_type.split(";", 1)[0].strip().lower() if content_type else None
+    return response.content, mime_type
 
 
 def _inline_image_local_path(
@@ -109,16 +111,23 @@ async def process_inline_images(
     staged_artifacts: list[StagedManagedArtifact] = []
 
     for image in images:
-        local_path = _inline_image_local_path(source_dir_id, image.canonical_id, image, image.mime_type)
-        result_map[image.canonical_id] = local_path
         try:
-            data = await _sync_binary_file(
+            data, detected_mime_type = await _sync_binary_file(
                 url=image.download_url,
                 client=client,
                 headers=headers,
             )
+            local_path = _inline_image_local_path(
+                source_dir_id,
+                image.canonical_id,
+                image,
+                detected_mime_type or image.mime_type,
+            )
+            result_map[image.canonical_id] = local_path
             staged_artifacts.append(StagedManagedArtifact(local_path=local_path, data=data))
         except Exception:
+            local_path = _inline_image_local_path(source_dir_id, image.canonical_id, image, image.mime_type)
+            result_map[image.canonical_id] = local_path
             log.exception("Failed to sync inline image %s", image.canonical_id)
 
     return result_map, staged_artifacts

@@ -260,6 +260,34 @@ class TestExtractCanonicalText:
             para["paragraph"]["bullet"] = {}
         return para
 
+    def _person(self, name: str = "Alice", email: str = "alice@example.com") -> dict:
+        return {
+            "person": {
+                "personProperties": {
+                    "name": name,
+                    "email": email,
+                }
+            }
+        }
+
+    def _date(self, display_text: str = "Jan 8, 2026") -> dict:
+        return {
+            "dateElement": {
+                "dateElementProperties": {
+                    "displayText": display_text,
+                }
+            }
+        }
+
+    def _rich_link(self, title: str = "Roadmap") -> dict:
+        return {
+            "richLink": {
+                "richLinkProperties": {
+                    "title": title,
+                }
+            }
+        }
+
     def test_empty_body(self):
         doc = self._make_tabs_doc([])
         result = extract_canonical_text(doc)
@@ -324,6 +352,23 @@ class TestExtractCanonicalText:
         doc = self._make_tabs_doc([para])
         result = extract_canonical_text(doc)
         assert "Hello world" in result
+
+    def test_person_date_and_rich_link_elements_render_to_text(self):
+        para = {
+            "paragraph": {
+                "elements": [
+                    {"textRun": {"content": "Owner: "}},
+                    self._person(),
+                    {"textRun": {"content": " due "}},
+                    self._date(),
+                    {"textRun": {"content": " in "}},
+                    self._rich_link(),
+                ]
+            }
+        }
+        doc = self._make_tabs_doc([para])
+        result = extract_canonical_text(doc)
+        assert "Owner: Alice due Jan 8, 2026 in Roadmap" in result
 
     def test_multi_tab_canonical_text_includes_tab_prefix(self):
         tabs_doc = TabsDocument(
@@ -758,6 +803,25 @@ class TestGenerateTabsMarkdown:
         doc = TabsDocument(title="Doc", tabs=[self._tab("t1", "Main", "1", content)])
         md = generate_tabs_markdown(doc)
         assert "Hello world" in md
+
+    def test_person_date_and_rich_link_rendered(self):
+        content = [
+            {
+                "paragraph": {
+                    "elements": [
+                        {"textRun": {"content": "Owner: "}},
+                        {"person": {"personProperties": {"name": "Alice", "email": "alice@example.com"}}},
+                        {"textRun": {"content": " due "}},
+                        {"dateElement": {"dateElementProperties": {"displayText": "Jan 8, 2026"}}},
+                        {"textRun": {"content": " in "}},
+                        {"richLink": {"richLinkProperties": {"title": "Roadmap"}}},
+                    ]
+                }
+            }
+        ]
+        doc = TabsDocument(title="Doc", tabs=[self._tab("t1", "Main", "1", content)])
+        md = generate_tabs_markdown(doc)
+        assert "Owner: Alice due Jan 8, 2026 in Roadmap" in md
 
 
 # --- OAuth2 auth tests ---

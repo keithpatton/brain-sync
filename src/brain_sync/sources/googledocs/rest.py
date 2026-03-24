@@ -256,8 +256,9 @@ def _walk_body(content: list[dict], parts: list[str]) -> None:
             para = element["paragraph"]
             text_parts: list[str] = []
             for e in para.get("elements", []):
-                if "textRun" in e:
-                    text_parts.append(e["textRun"].get("content", ""))
+                text = _extract_paragraph_element_text(e)
+                if text:
+                    text_parts.append(text)
                 elif "inlineObjectElement" in e:
                     obj_id = e["inlineObjectElement"].get("inlineObjectId", "")
                     if obj_id:
@@ -319,8 +320,9 @@ def _walk_body_markdown(
             # Build paragraph content handling both text runs and inline images
             inline_parts: list[str] = []
             for e in para.get("elements", []):
-                if "textRun" in e:
-                    inline_parts.append(e["textRun"].get("content", ""))
+                text = _extract_paragraph_element_text(e)
+                if text:
+                    inline_parts.append(text)
                 elif "inlineObjectElement" in e and inline_objects and doc_id:
                     obj_id = e["inlineObjectElement"].get("inlineObjectId", "")
                     img = inline_objects.get(obj_id)
@@ -349,6 +351,22 @@ def _walk_body_markdown(
                 if i == 0:
                     # Header separator row required for standard markdown tables
                     parts.append("| " + " | ".join("---" for _ in row_cells) + " |")
+
+
+def _extract_paragraph_element_text(element: dict) -> str:
+    """Return the display text for one Docs API paragraph element."""
+    if "textRun" in element:
+        return element["textRun"].get("content", "")
+    if "person" in element:
+        props = element["person"].get("personProperties", {})
+        return props.get("name") or props.get("email") or ""
+    if "dateElement" in element:
+        props = element["dateElement"].get("dateElementProperties", {})
+        return props.get("displayText") or props.get("timestamp") or ""
+    if "richLink" in element:
+        props = element["richLink"].get("richLinkProperties", {})
+        return props.get("title") or props.get("uri") or ""
+    return ""
 
 
 def generate_tabs_markdown(tabs_doc: TabsDocument, doc_id: str | None = None) -> str:

@@ -435,9 +435,39 @@ class TestProcessInlineImages:
         cid = "gdoc-image:doc1:kix.img1"
         assert cid in result_map
         local_path = result_map[cid]
+        assert local_path.endswith(".png")
         assert staged_artifacts[0].local_path == local_path
         assert staged_artifacts[0].data == b"PNG-DATA"
         assert not (target_dir / local_path).exists()
+
+    async def test_uses_download_content_type_for_extension(self, setup_root):
+        root, target_dir = setup_root
+        img = DiscoveredImage(
+            canonical_id="gdoc-image:doc1:kix.img2",
+            download_url="https://example.com/kix.img2",
+            title=None,
+            mime_type=None,
+        )
+
+        mock_response = MagicMock()
+        mock_response.content = b"PNG-DATA"
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {"content-type": "image/png; charset=binary"}
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result_map, staged_artifacts = await process_inline_images(
+            images=[img],
+            headers={"Authorization": "Bearer token"},
+            client=client,
+            target_dir=target_dir,
+            primary_canonical_id="gdoc:doc1",
+            root=root,
+        )
+
+        local_path = result_map["gdoc-image:doc1:kix.img2"]
+        assert local_path.endswith(".png")
+        assert staged_artifacts[0].local_path == local_path
 
     async def test_download_failure_skips_image(self, setup_root):
         root, target_dir = setup_root
