@@ -54,6 +54,14 @@ class TabsDocument:
     tabs: list[TabData]  # order preserved as returned by API
 
 
+@dataclass(frozen=True)
+class DriveDocMetadata:
+    """Lightweight Google Drive metadata used for preflight change checks."""
+
+    title: str | None
+    version: str | None
+
+
 async def fetch_doc_html(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> str:
     """Fetch Google Doc as HTML via export endpoint."""
     token = await auth.get_token()
@@ -65,6 +73,44 @@ async def fetch_doc_html(doc_id: str, auth: GoogleOAuthCredentials, client: http
     except httpx.HTTPError as e:
         raise FetchError(f"Google Docs fetch failed for {doc_id}: {e}") from e
     return response.text
+
+
+async def fetch_drive_metadata(
+    doc_id: str,
+    auth: GoogleOAuthCredentials,
+    client: httpx.AsyncClient,
+) -> DriveDocMetadata | None:
+    """Fetch lightweight Google Drive metadata for a doc by file ID.
+
+    Uses Drive metadata for cheap change detection before falling back to the
+    heavier Docs API content fetch. ``supportsAllDrives=true`` keeps shared-drive
+    docs readable through the same code path.
+    """
+    token = await auth.get_token()
+    url = f"https://www.googleapis.com/drive/v3/files/{doc_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {
+        "fields": "name,version",
+        "supportsAllDrives": "true",
+    }
+    try:
+        response = await client.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            log.debug("Drive metadata not found (no access?): %s", doc_id)
+        else:
+            log.debug("Drive metadata fetch failed for %s: %s", doc_id, e)
+        return None
+    except httpx.HTTPError:
+        log.debug("Drive metadata fetch failed for %s", doc_id, exc_info=True)
+        return None
+
+    return DriveDocMetadata(
+        title=data.get("name"),
+        version=data.get("version"),
+    )
 
 
 async def fetch_doc_title(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> str | None:

@@ -24,6 +24,7 @@ from brain_sync.sources.googledocs.auth import (
     run_oauth_flow,
 )
 from brain_sync.sources.googledocs.rest import (
+    DriveDocMetadata,
     FetchError,
     TabData,
     TabsDocument,
@@ -32,6 +33,7 @@ from brain_sync.sources.googledocs.rest import (
     extract_canonical_text,
     extract_title_from_html,
     fetch_all_tabs,
+    fetch_drive_metadata,
     generate_tabs_markdown,
 )
 
@@ -71,81 +73,53 @@ class TestCheckForUpdate:
             source_type="googledocs",
         )
 
-    def _make_tabs_doc(self, title: str | None = "My Doc") -> TabsDocument:
-        return TabsDocument(
-            title=title,
-            tabs=[TabData(tab_id="t1", title="Main", number="1", body_content=[])],
-        )
-
-    async def test_returns_unchanged_when_semantic_hash_matches(self, adapter, source_state):
-        tabs_doc = self._make_tabs_doc()
-        fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
-        source_state.metadata_fingerprint = fingerprint
-        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
+    async def test_returns_unchanged_when_drive_version_matches(self, adapter, source_state):
+        source_state.remote_fingerprint = "42"
+        with patch(
+            "brain_sync.sources.googledocs.fetch_drive_metadata",
+            new_callable=AsyncMock,
+            return_value=DriveDocMetadata(title="My Doc", version="42"),
+        ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNCHANGED
-        assert result.fingerprint == fingerprint
+        assert result.fingerprint == "42"
         assert result.title == "My Doc"
 
-    async def test_returns_changed_when_semantic_hash_differs(self, adapter, source_state):
-        old_tabs_doc = TabsDocument(
-            title="My Doc",
-            tabs=[
-                TabData(
-                    tab_id="t1",
-                    title="Main",
-                    number="1",
-                    body_content=[{"paragraph": {"elements": [{"textRun": {"content": "old content"}}]}}],
-                )
-            ],
-        )
-        source_state.metadata_fingerprint = compute_semantic_fingerprint(extract_canonical_text(old_tabs_doc))
-        new_tabs_doc = TabsDocument(
-            title="My Doc",
-            tabs=[
-                TabData(
-                    tab_id="t1",
-                    title="Main",
-                    number="1",
-                    body_content=[{"paragraph": {"elements": [{"textRun": {"content": "new content"}}]}}],
-                )
-            ],
-        )
+    async def test_returns_changed_when_drive_version_differs(self, adapter, source_state):
+        source_state.remote_fingerprint = "41"
         with patch(
-            "brain_sync.sources.googledocs.fetch_all_tabs",
+            "brain_sync.sources.googledocs.fetch_drive_metadata",
             new_callable=AsyncMock,
-            return_value=new_tabs_doc,
+            return_value=DriveDocMetadata(title="My Doc", version="42"),
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.CHANGED
-        assert result.fingerprint == compute_semantic_fingerprint(extract_canonical_text(new_tabs_doc))
+        assert result.fingerprint == "42"
 
     async def test_returns_changed_when_no_prior_fingerprint(self, adapter, source_state):
-        source_state.metadata_fingerprint = None
         with patch(
-            "brain_sync.sources.googledocs.fetch_all_tabs",
+            "brain_sync.sources.googledocs.fetch_drive_metadata",
             new_callable=AsyncMock,
-            return_value=self._make_tabs_doc(),
+            return_value=DriveDocMetadata(title="My Doc", version="42"),
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.CHANGED
 
-    async def test_returns_unknown_when_body_unavailable(self, adapter, source_state):
-        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=None):
+    async def test_returns_unknown_when_metadata_unavailable(self, adapter, source_state):
+        with patch("brain_sync.sources.googledocs.fetch_drive_metadata", new_callable=AsyncMock, return_value=None):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.status == UpdateStatus.UNKNOWN
 
-    async def test_adapter_state_contains_semantic_fingerprint(self, adapter, source_state):
-        source_state.metadata_fingerprint = None
+    async def test_adapter_state_contains_drive_version(self, adapter, source_state):
         with patch(
-            "brain_sync.sources.googledocs.fetch_all_tabs",
+            "brain_sync.sources.googledocs.fetch_drive_metadata",
             new_callable=AsyncMock,
-            return_value=self._make_tabs_doc(),
+            return_value=DriveDocMetadata(title="My Doc", version="42"),
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.adapter_state is not None
-        assert "semanticFingerprint" in result.adapter_state
-        assert result.adapter_state["semanticFingerprint"].startswith("gdocs:v3:")
+        assert result.adapter_state["version"] == "42"
+        assert result.adapter_state["title"] == "My Doc"
 
 
 class TestFetch:
@@ -181,7 +155,14 @@ class TestFetch:
 
     async def test_fetch_returns_correct_result(self, adapter, source_state):
         tabs_doc = self._make_tabs_doc()
-        with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch(
+                "brain_sync.sources.googledocs.fetch_drive_metadata",
+                new_callable=AsyncMock,
+                return_value=DriveDocMetadata(title="Drive Title", version="42"),
+            ),
+        ):
             result = await adapter.fetch(source_state, Mock(), AsyncMock())
 
         assert isinstance(result, SourceFetchResult)
@@ -189,17 +170,17 @@ class TestFetch:
         assert "World" in result.body_markdown
         assert result.title == "My Doc"
         assert result.comments == []
-        assert result.remote_fingerprint is None  # no prior_adapter_state
+        assert result.remote_fingerprint == "42"
         assert result.source_html is None
 
-    async def test_fetch_returns_semantic_fingerprint(self, adapter, source_state):
+    async def test_fetch_returns_drive_version_from_adapter_state(self, adapter, source_state):
         tabs_doc = self._make_tabs_doc()
         with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
             result = await adapter.fetch(
-                source_state, Mock(), AsyncMock(), prior_adapter_state={"semanticFingerprint": "gdocs:v3:abc123"}
+                source_state, Mock(), AsyncMock(), prior_adapter_state={"version": "42", "title": "Drive Title"}
             )
 
-        assert result.remote_fingerprint == "gdocs:v3:abc123"
+        assert result.remote_fingerprint == "42"
 
     async def test_fetch_uses_title_from_adapter_state(self, adapter, source_state):
         # tabs_doc.title is None — title should come from prior_adapter_state
@@ -209,25 +190,46 @@ class TestFetch:
                 source_state,
                 Mock(),
                 AsyncMock(),
-                prior_adapter_state={"semanticFingerprint": "gdocs:v3:abc123", "title": "Adapter Title"},
+                prior_adapter_state={"version": "42", "title": "Adapter Title"},
             )
 
         assert result.title == "Adapter Title"
+        assert result.remote_fingerprint == "42"
 
     async def test_fetch_falls_back_to_api_title_when_no_adapter_state(self, adapter, source_state):
         tabs_doc = self._make_tabs_doc(title=None)
         with (
             patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch("brain_sync.sources.googledocs.fetch_drive_metadata", new_callable=AsyncMock, return_value=None),
             patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock, return_value="API Title"),
         ):
             result = await adapter.fetch(source_state, Mock(), AsyncMock())
 
         assert result.title == "API Title"
+        assert result.remote_fingerprint.startswith("gdocs:v3:")
+
+    async def test_fetch_uses_drive_title_before_docs_title_fallback(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc(title=None)
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch(
+                "brain_sync.sources.googledocs.fetch_drive_metadata",
+                new_callable=AsyncMock,
+                return_value=DriveDocMetadata(title="Drive Title", version="42"),
+            ),
+            patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock) as mock_title,
+        ):
+            result = await adapter.fetch(source_state, Mock(), AsyncMock())
+
+        assert result.title == "Drive Title"
+        assert result.remote_fingerprint == "42"
+        mock_title.assert_not_awaited()
 
     async def test_fetch_title_none_when_both_sources_fail(self, adapter, source_state):
         tabs_doc = self._make_tabs_doc(title=None)
         with (
             patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch("brain_sync.sources.googledocs.fetch_drive_metadata", new_callable=AsyncMock, return_value=None),
             patch("brain_sync.sources.googledocs.fetch_doc_title", new_callable=AsyncMock, return_value=None),
         ):
             result = await adapter.fetch(source_state, Mock(), AsyncMock())
@@ -1128,4 +1130,50 @@ class TestFetchDocTitle:
         client.get.side_effect = httpx.ConnectError("connection refused")
 
         result = await fetch_doc_title("abc123", auth, client)
+        assert result is None
+
+
+class TestFetchDriveMetadata:
+    async def test_success_returns_title_and_version(self):
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"name": "My Doc", "version": "42"}
+        mock_response.raise_for_status = MagicMock()
+
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_drive_metadata("abc123", auth, client)
+        assert result == DriveDocMetadata(title="My Doc", version="42")
+        call_kwargs = client.get.call_args
+        assert "www.googleapis.com/drive/v3/files/abc123" in call_kwargs.args[0]
+        assert call_kwargs.kwargs["params"]["fields"] == "name,version"
+        assert call_kwargs.kwargs["params"]["supportsAllDrives"] == "true"
+
+    async def test_404_returns_none(self):
+        import httpx
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found", request=MagicMock(), response=mock_response
+        )
+        client = AsyncMock()
+        client.get.return_value = mock_response
+
+        result = await fetch_drive_metadata("missing123", auth, client)
+        assert result is None
+
+    async def test_network_error_returns_none(self):
+        import httpx
+
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError("connection refused")
+
+        result = await fetch_drive_metadata("abc123", auth, client)
         assert result is None

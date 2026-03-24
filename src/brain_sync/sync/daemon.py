@@ -235,7 +235,11 @@ async def run(root: Path) -> None:
                                     fetch_children=child_request.fetch_children if child_request is not None else False,
                                     lifecycle_owner_id=_source_lease_owner_id(),
                                 )
-                                ss = load_active_sync_state(root).sources.get(key, ss)
+                                processed_last_checked_utc = ss.last_checked_utc
+                                refreshed = load_active_sync_state(root).sources.get(key)
+                                if refreshed is not None:
+                                    refreshed.last_checked_utc = processed_last_checked_utc
+                                    ss = refreshed
                                 state.sources[key] = ss
                                 interval = compute_interval(ss.last_changed_utc)
                                 ss.current_interval_secs = interval

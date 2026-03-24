@@ -23,6 +23,7 @@ from brain_sync.sources.googledocs.rest import (
     extract_canonical_text,
     fetch_all_tabs,
     fetch_doc_title,
+    fetch_drive_metadata,
     generate_tabs_markdown,
 )
 
@@ -54,11 +55,11 @@ class GoogleDocsAdapter:
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
         doc_id = extract_google_doc_id(source_state.source_url)
-        tabs_doc = await fetch_all_tabs(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
-        if tabs_doc is None:
+        metadata = await fetch_drive_metadata(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+        if metadata is None or metadata.version is None:
             return UpdateCheckResult(status=UpdateStatus.UNKNOWN, title=None)
-        fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
-        title = tabs_doc.title
+        fingerprint = metadata.version
+        title = metadata.title
         if fingerprint == source_state.remote_fingerprint:
             return UpdateCheckResult(
                 status=UpdateStatus.UNCHANGED,
@@ -69,7 +70,7 @@ class GoogleDocsAdapter:
             status=UpdateStatus.CHANGED,
             fingerprint=fingerprint,
             title=title,
-            adapter_state={"semanticFingerprint": fingerprint, "title": title},
+            adapter_state={"version": fingerprint, "title": title},
         )
 
     async def fetch(
@@ -84,11 +85,21 @@ class GoogleDocsAdapter:
         tabs_doc = await fetch_all_tabs(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         if tabs_doc is None:
             raise FetchError(f"Failed to fetch tabs for {doc_id}")
+        cached_title = (prior_adapter_state or {}).get("title")
+        cached_version = (prior_adapter_state or {}).get("version")
+        metadata = None
+        if cached_version is None or (tabs_doc.title is None and cached_title is None):
+            metadata = await fetch_drive_metadata(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         title = (
-            tabs_doc.title or (prior_adapter_state or {}).get("title") or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
+            tabs_doc.title
+            or cached_title
+            or (metadata.title if metadata else None)
+            or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         )
         body_markdown = generate_tabs_markdown(tabs_doc, doc_id=doc_id)
-        fingerprint = (prior_adapter_state or {}).get("semanticFingerprint")
+        fingerprint = cached_version or (metadata.version if metadata else None)
+        if fingerprint is None:
+            fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
 
         # Build deduplicated inline image list from all tabs
         images_by_cid: dict[str, DiscoveredImage] = {}

@@ -18,7 +18,11 @@ from brain_sync.application.sources import add_source
 from brain_sync.brain.managed_markdown import prepend_managed_header
 from brain_sync.brain.manifest import read_source_manifest
 from brain_sync.runtime.child_requests import load_child_discovery_request
-from brain_sync.runtime.repository import DaemonAlreadyRunningError, load_source_lifecycle_runtime
+from brain_sync.runtime.repository import (
+    DaemonAlreadyRunningError,
+    load_source_lifecycle_runtime,
+    load_sync_progress,
+)
 from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.daemon import _sync_scheduler_state, run
 
@@ -222,6 +226,59 @@ async def test_daemon_consumes_and_clears_child_discovery_request_once(tmp_path:
 
     await _run_daemon_once(root, observed_flags)
     assert observed_flags == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_daemon_persists_last_checked_utc_after_processing_source(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    result = add_source(
+        root,
+        url="test://doc/persist-last-checked",
+        target_path="area",
+    )
+    checked_utc = "2026-03-25T08:49:06+00:00"
+
+    async def _fake_process_source(
+        source_state,
+        _http_client,
+        root=None,
+        *,
+        fetch_children=False,
+        lifecycle_owner_id=None,
+    ):
+        assert root is not None
+        assert fetch_children is False
+        assert lifecycle_owner_id is not None
+        source_state.last_checked_utc = checked_utc
+        return False, []
+
+    async def _stop_after_tick(_seconds: float) -> None:
+        raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "brain_sync.sync.daemon.reconcile_sources",
+            return_value=_FakeSourceReconcileResult(updated=[], not_found=[]),
+        ),
+        patch(
+            "brain_sync.sync.daemon.reconcile_knowledge_tree",
+            return_value=_FakeTreeReconcileResult(orphans_cleaned=[], content_changed=[], enqueued_paths=[]),
+        ),
+        patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
+        patch("brain_sync.sync.daemon.KnowledgeWatcher", _FakeWatcher),
+        patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
+        patch("brain_sync.sync.daemon.process_source", side_effect=_fake_process_source),
+        patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
+        patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run(root)
+
+    progress = load_sync_progress(root)
+    assert progress[result.canonical_id].last_checked_utc == checked_utc
 
 
 @pytest.mark.asyncio
