@@ -9,7 +9,7 @@ brain-sync uses three version domains:
 | ----------------- | ------------------------------ | ------------- |
 | Brain Format      | Portable filesystem contract   | `1.2`         |
 | Runtime DB schema | Machine-local runtime DB shape | `v29`         |
-| App version       | Packaged application version   | `0.7.0.0`     |
+| App version       | Packaged application version   | `0.7.1`       |
 
 
 These versions must not be conflated.
@@ -98,7 +98,7 @@ runtime DB state. The unreleased intermediate `v28` schema is not the shipped
 
 ## App Version
 
-The current app version is `0.7.0.0`.
+The current app version is `0.7.1`.
 
 This is the current release identifier for the Brain Format `1.2` /
 runtime schema `v29` row.
@@ -115,7 +115,7 @@ Compatibility statements should use this form:
 
 Current statement:
 
-`brain-sync 0.7.0.0 supports Brain Format 1.2 with runtime DB schema v29`
+`brain-sync 0.7.1 supports Brain Format 1.2 with runtime DB schema v29`
 
 See [docs/COMPATIBILITY.md](COMPATIBILITY.md) for the supported rows and
 transition guarantees.
@@ -128,7 +128,7 @@ Compatibility and migration tests should explicitly cover:
 
 - fresh Brain Format `1.2` init
 - `0.5.0` / Brain Format `1.0` / runtime schema `v23` ->
-  `0.7.0.0` / Brain Format `1.2` / runtime schema `v29` guided migration behavior
+`0.7.1` / Brain Format `1.2` / runtime schema `v29` guided migration behavior
 - runtime DB `v23/v24/v25/v26/v27 -> v29` in-place migration
 - unreleased runtime DB `v28 -> v29` in-place migration when encountered
 - runtime DB rebuild without changing durable source truth
