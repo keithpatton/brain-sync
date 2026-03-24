@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from brain_sync.sources import SourceType, extract_id
@@ -15,6 +17,7 @@ from brain_sync.sources.base import (
 from brain_sync.sources.confluence import ConfluenceAdapter
 from brain_sync.sources.conversion import _escape_md, format_comments
 from brain_sync.sources.registry import get_adapter, reset_registry
+from brain_sync.sync.source_state import SourceState
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +38,38 @@ class TestCapabilities:
         assert caps.supports_children is True
         assert caps.supports_attachments is True
         assert caps.supports_comments is True
+
+
+class TestConfluenceFetch:
+    async def test_fetch_resolves_user_mentions_status_and_emoticons(self):
+        adapter = ConfluenceAdapter()
+        source_state = SourceState(
+            canonical_id="confluence:12345",
+            source_url="https://acme.atlassian.net/wiki/spaces/X/pages/12345/Test",
+            source_type="confluence",
+            knowledge_path="area/c12345-test.md",
+        )
+        html = (
+            '<p><ac:link><ri:user ri:account-id="user-1" /></ac:link></p>'
+            '<p><ac:structured-macro ac:name="status"><ac:parameter ac:name="title">APPROVER</ac:parameter>'
+            '<ac:parameter ac:name="colour">Yellow</ac:parameter></ac:structured-macro></p>'
+            '<p><ac:emoticon ac:name="cross" ac:emoji-fallback=":cross_mark:" /></p>'
+        )
+
+        with (
+            patch("brain_sync.sources.confluence.fetch_page_body", AsyncMock(return_value=(html, "Title", 7))),
+            patch("brain_sync.sources.confluence.fetch_structured_comments", AsyncMock(return_value=[])),
+            patch(
+                "brain_sync.sources.confluence.fetch_users_by_account_ids",
+                AsyncMock(return_value={"user-1": "Alice"}),
+            ),
+        ):
+            result = await adapter.fetch(source_state, object(), AsyncMock())
+
+        assert "Alice" in result.body_markdown
+        assert "APPROVER" in result.body_markdown
+        assert "APPROVERYellow" not in result.body_markdown
+        assert "No" in result.body_markdown
 
 
 class TestRegistry:
