@@ -229,6 +229,34 @@ it must also use an isolated temp runtime via `BRAIN_SYNC_CONFIG_DIR` and the
 corresponding home-directory environment variables. Do not mix a temp brain
 with the real machine-local runtime.
 
+For ad hoc local repros and full-suite runs, prefer an explicitly isolated
+runtime/home bundle rather than relying on your live shell environment.
+
+PowerShell example:
+
+```powershell
+$tmp = Join-Path $env:TEMP ('brain-sync-test-' + [guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+$env:BRAIN_SYNC_CONFIG_DIR = (Join-Path $tmp 'config')
+$env:HOME = $tmp
+$env:USERPROFILE = $tmp
+python -m pytest -n auto --timeout=120
+```
+
+Bash example:
+
+```bash
+tmp="$(mktemp -d)"
+export BRAIN_SYNC_CONFIG_DIR="$tmp/config"
+export HOME="$tmp"
+export USERPROFILE="$tmp"
+python -m pytest -n auto --timeout=120
+```
+
+On Windows, set both `HOME` and `USERPROFILE`. On Unix-like systems, setting
+`USERPROFILE` as well is harmless and keeps subprocess behavior aligned across
+platforms.
+
 ### Failure Classification
 
 Classify failures into:
