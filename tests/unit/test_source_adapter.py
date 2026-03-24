@@ -81,9 +81,12 @@ class TestFormatComments:
             Comment(author="Bob", created="2026-01-02T00:00:00Z", content="<p>Needs review.</p>"),
         ]
         result = format_comments(comments)
-        assert "**Alice** (2026-01-01T00:00:00Z)" in result
+        assert "### Comment Thread `unknown`" in result
+        assert "Author: Alice" in result
+        assert "Created: 2026-01-01T00:00:00Z" in result
+        assert "Body:" in result
         assert "Great work!" in result
-        assert "**Bob** (2026-01-02T00:00:00Z)" in result
+        assert "Author: Bob" in result
         assert "Needs review." in result
 
     def test_empty_list(self):
@@ -108,8 +111,55 @@ class TestFormatComments:
             ),
         ]
         result = format_comments(comments)
-        assert "> **Bob** (2026-01-02)" in result
-        assert "> Answer." in result
+        assert "Replies:" in result
+        assert "1. Reply `unknown`" in result
+        assert "Author: Bob" in result
+        assert "Created: 2026-01-02" in result
+        assert "Answer." in result
+
+    def test_inline_comment_metadata(self):
+        comments = [
+            Comment(
+                author="Alice",
+                created="2026-01-01",
+                content="<p>Check this section.</p>",
+                id="123",
+                comment_type="inline",
+                resolution_status="reopened",
+                anchor_text="Important requirement",
+                anchor_ref="marker-1",
+            ),
+        ]
+        result = format_comments(comments)
+        assert "### Comment Thread `123` [inline] [reopened]" in result
+        assert 'Anchor Text: "Important requirement"' in result
+        assert "Anchor Ref:" not in result
+
+    def test_replies_do_not_repeat_parent_resolution_metadata(self):
+        comments = [
+            Comment(
+                author="Alice",
+                created="2026-01-01",
+                content="<p>Question?</p>",
+                id="root-1",
+                comment_type="footer",
+                resolution_status="resolved",
+                replies=[
+                    Comment(
+                        author="Bob",
+                        created="2026-01-02",
+                        content="<p>Answer.</p>",
+                        id="reply-1",
+                        comment_type="footer",
+                        resolution_status="open",
+                    ),
+                ],
+            ),
+        ]
+        result = format_comments(comments)
+        assert "### Comment Thread `root-1` [footer] [resolved]" in result
+        assert "1. Reply `reply-1`" in result
+        assert "[open]" not in result
 
 
 class TestEscapeMd:

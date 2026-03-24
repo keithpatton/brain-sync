@@ -12,8 +12,10 @@ from brain_sync.sources.confluence.rest import (
     download_attachment,
     fetch_attachments,
     fetch_child_pages,
+    fetch_comments,
     fetch_page_body,
     fetch_page_version,
+    fetch_users_by_account_ids,
     get_confluence_auth,
     reset_auth_cache,
 )
@@ -28,7 +30,7 @@ def _mock_response(data: dict, status_code: int = 200, headers: dict | None = No
         status_code=status_code,
         json=data,
         headers=headers or {},
-        request=httpx.Request("GET", "https://test.atlassian.net/wiki/rest/api/test"),
+        request=httpx.Request("GET", "https://test.atlassian.net/wiki/api/v2/test"),
     )
     return resp
 
@@ -103,30 +105,30 @@ class TestFetchChildPages:
         resp = _mock_response(
             {
                 "results": [
-                    {"id": "10", "title": "Child 1", "version": {"number": 1}},
-                    {"id": "20", "title": "Child 2", "version": {"number": 3}},
+                    {"id": "10", "title": "Child 1"},
+                    {"id": "20", "title": "Child 2"},
                 ],
-                "size": 2,
+                "_links": {"base": "https://test.atlassian.net/wiki"},
             }
         )
         client = _mock_client(resp)
         children = await fetch_child_pages("123", AUTH, client)
         assert len(children) == 2
         assert children[0]["id"] == "10"
-        assert children[1]["version"] == 3
+        assert children[1]["title"] == "Child 2"
 
     @pytest.mark.asyncio
     async def test_pagination(self):
         page1 = _mock_response(
             {
-                "results": [{"id": str(i), "title": f"C{i}", "version": {"number": 1}} for i in range(25)],
-                "size": 25,
+                "results": [{"id": str(i), "title": f"C{i}"} for i in range(25)],
+                "_links": {"next": "/pages/123/children?cursor=abc", "base": "https://test.atlassian.net/wiki"},
             }
         )
         page2 = _mock_response(
             {
-                "results": [{"id": "99", "title": "Last", "version": {"number": 1}}],
-                "size": 1,
+                "results": [{"id": "99", "title": "Last"}],
+                "_links": {"base": "https://test.atlassian.net/wiki"},
             }
         )
         client = _mock_client(page1, page2)
@@ -144,11 +146,10 @@ class TestFetchAttachments:
                         "id": "att1",
                         "title": "diagram.png",
                         "version": {"number": 2},
-                        "_links": {"download": "/download/attachments/123/diagram.png"},
-                        "metadata": {"mediaType": "image/png"},
+                        "downloadLink": "/download/attachments/123/diagram.png",
+                        "mediaType": "image/png",
                     }
-                ],
-                "size": 1,
+                ]
             }
         )
         client = _mock_client(resp)
@@ -157,6 +158,150 @@ class TestFetchAttachments:
         assert atts[0]["id"] == "att1"
         assert "diagram.png" in atts[0]["download_url"]
         assert atts[0]["media_type"] == "image/png"
+
+
+class TestFetchUsers:
+    @pytest.mark.asyncio
+    async def test_resolves_display_names(self):
+        resp = _mock_response(
+            {
+                "results": [
+                    {"accountId": "acc-1", "displayName": "Alice"},
+                    {"accountId": "acc-2", "publicName": "Bob Public"},
+                ]
+            }
+        )
+        client = _mock_client(resp)
+        users = await fetch_users_by_account_ids(["acc-2", "acc-1", "acc-1"], AUTH, client)
+        assert users == {"acc-1": "Alice", "acc-2": "Bob Public"}
+
+
+class TestFetchComments:
+    @pytest.mark.asyncio
+    async def test_returns_rendered_threaded_comments(self):
+        inline = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "i1",
+                        "status": "current",
+                        "pageId": "123",
+                        "version": {"createdAt": "2026-01-01T00:00:00Z", "authorId": "acc-1"},
+                        "body": {"storage": {"value": "<p>Inline note</p>"}},
+                        "resolutionStatus": "resolved",
+                        "properties": {
+                            "inlineMarkerRef": "marker-1",
+                            "inlineOriginalSelection": "Selected text",
+                        },
+                        "_links": {"webui": "/pages/123?focusedCommentId=i1"},
+                    }
+                ]
+            }
+        )
+        footer = _mock_response({"results": []})
+        inline_children = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "i2",
+                        "status": "current",
+                        "parentCommentId": "i1",
+                        "version": {"createdAt": "2026-01-01T00:01:00Z", "authorId": "acc-2"},
+                        "body": {"storage": {"value": "<p>Reply</p>"}},
+                        "resolutionStatus": "open",
+                        "properties": {},
+                        "_links": {"webui": "/pages/123?focusedCommentId=i2"},
+                    }
+                ]
+            }
+        )
+        users = _mock_response(
+            {
+                "results": [
+                    {"accountId": "acc-1", "displayName": "Alice"},
+                    {"accountId": "acc-2", "displayName": "Bob"},
+                ]
+            }
+        )
+        client = _mock_client(inline, footer, inline_children, users)
+        rendered = await fetch_comments("123", AUTH, client)
+        assert rendered is not None
+        assert "### Comment Thread `i1` [inline] [resolved]" in rendered
+        assert 'Anchor Text: "Selected text"' in rendered
+        assert "Replies:" in rendered
+        assert "1. Reply `i2`" in rendered
+        assert "Author: Bob" in rendered
+        assert "[open]" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_orders_threads_newest_first_and_replies_oldest_first(self):
+        inline = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "older-thread",
+                        "status": "current",
+                        "pageId": "123",
+                        "version": {"createdAt": "2026-01-01T00:00:00Z", "authorId": "acc-1"},
+                        "body": {"storage": {"value": "<p>Older thread</p>"}},
+                        "resolutionStatus": "open",
+                        "properties": {},
+                        "_links": {"webui": "/pages/123?focusedCommentId=older-thread"},
+                    }
+                ]
+            }
+        )
+        footer = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "newer-thread",
+                        "status": "current",
+                        "pageId": "123",
+                        "version": {"createdAt": "2026-01-02T00:00:00Z", "authorId": "acc-2"},
+                        "body": {"storage": {"value": "<p>Newer thread</p>"}},
+                        "resolutionStatus": "resolved",
+                        "_links": {"webui": "/pages/123?focusedCommentId=newer-thread"},
+                    }
+                ]
+            }
+        )
+        inline_children = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "reply-older",
+                        "status": "current",
+                        "parentCommentId": "older-thread",
+                        "version": {"createdAt": "2026-01-01T00:01:00Z", "authorId": "acc-2"},
+                        "body": {"storage": {"value": "<p>First reply</p>"}},
+                        "_links": {"webui": "/pages/123?focusedCommentId=reply-older"},
+                    },
+                    {
+                        "id": "reply-newer",
+                        "status": "current",
+                        "parentCommentId": "older-thread",
+                        "version": {"createdAt": "2026-01-01T00:02:00Z", "authorId": "acc-1"},
+                        "body": {"storage": {"value": "<p>Second reply</p>"}},
+                        "_links": {"webui": "/pages/123?focusedCommentId=reply-newer"},
+                    },
+                ]
+            }
+        )
+        footer_children = _mock_response({"results": []})
+        users = _mock_response(
+            {
+                "results": [
+                    {"accountId": "acc-1", "displayName": "Alice"},
+                    {"accountId": "acc-2", "displayName": "Bob"},
+                ]
+            }
+        )
+        client = _mock_client(inline, footer, inline_children, footer_children, users)
+        rendered = await fetch_comments("123", AUTH, client)
+        assert rendered is not None
+        assert rendered.index("### Comment Thread `newer-thread`") < rendered.index("### Comment Thread `older-thread`")
+        assert rendered.index("1. Reply `reply-older`") < rendered.index("2. Reply `reply-newer`")
 
 
 class TestDownloadAttachment:
@@ -179,7 +324,7 @@ class TestRetryOn429:
             429,
             json={},
             headers={"Retry-After": "0"},
-            request=httpx.Request("GET", "https://test.atlassian.net/wiki/rest/api/content/1"),
+            request=httpx.Request("GET", "https://test.atlassian.net/wiki/api/v2/pages/1"),
         )
         success = _mock_response({"version": {"number": 7}})
         client = _mock_client(rate_limited, success)
@@ -193,7 +338,7 @@ class TestRetryOn429:
             429,
             json={},
             headers={"Retry-After": "0"},
-            request=httpx.Request("GET", "https://test.atlassian.net/wiki/rest/api/content/1"),
+            request=httpx.Request("GET", "https://test.atlassian.net/wiki/api/v2/pages/1"),
         )
         client = _mock_client(rate_limited, rate_limited, rate_limited, rate_limited)
         # After MAX_RETRIES (3) + 1 attempts, should return None (caught by fetch_page_version)

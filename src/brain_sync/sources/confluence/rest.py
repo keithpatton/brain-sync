@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -24,7 +25,7 @@ class ConfluenceAuth:
 
     @property
     def base_url(self) -> str:
-        return f"https://{self.domain}/wiki/rest/api"
+        return f"https://{self.domain}/wiki/api/v2"
 
     @property
     def basic_auth(self) -> tuple[str, str]:
@@ -140,7 +141,7 @@ async def _request(
 async def fetch_page_version(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> int | None:
     """Cheap metadata check: returns page version number."""
     try:
-        resp = await _request(client, auth, "GET", f"/content/{page_id}", params={"expand": "version"})
+        resp = await _request(client, auth, "GET", f"/pages/{page_id}")
         data = resp.json()
         return data.get("version", {}).get("number")
     except httpx.HTTPStatusError as exc:
@@ -168,8 +169,8 @@ async def fetch_page_body(
             client,
             auth,
             "GET",
-            f"/content/{page_id}",
-            params={"expand": "body.storage,version,title"},
+            f"/pages/{page_id}",
+            params={"body-format": "storage"},
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
@@ -187,17 +188,20 @@ async def fetch_page_body(
 
 
 async def fetch_child_pages(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> list[dict]:
-    """Fetch child pages. Returns list of {id, title, version}."""
+    """Fetch child pages. Returns list of {id, title}."""
     results: list[dict] = []
-    start = 0
-    limit = 25
+    cursor: str | None = None
+    limit = 250
     while True:
+        params: dict[str, str] = {"limit": str(limit)}
+        if cursor:
+            params["cursor"] = cursor
         resp = await _request(
             client,
             auth,
             "GET",
-            f"/content/{page_id}/child/page",
-            params={"expand": "version", "start": str(start), "limit": str(limit)},
+            f"/pages/{page_id}/children",
+            params=params,
         )
         data = resp.json()
         for item in data.get("results", []):
@@ -205,93 +209,90 @@ async def fetch_child_pages(page_id: str, auth: ConfluenceAuth, client: httpx.As
                 {
                     "id": item["id"],
                     "title": item.get("title"),
-                    "version": item.get("version", {}).get("number"),
                 }
             )
-        if data.get("size", 0) < limit:
+        cursor = _next_cursor(data)
+        if cursor is None:
             break
-        start += limit
     return results
 
 
 async def fetch_attachments(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> list[dict]:
     """Fetch attachments. Returns list of metadata dictionaries."""
     results: list[dict] = []
-    start = 0
-    limit = 25
+    cursor: str | None = None
+    limit = 250
     while True:
+        params: dict[str, str] = {"limit": str(limit)}
+        if cursor:
+            params["cursor"] = cursor
         resp = await _request(
             client,
             auth,
             "GET",
-            f"/content/{page_id}/child/attachment",
-            params={"expand": "version", "start": str(start), "limit": str(limit)},
+            f"/pages/{page_id}/attachments",
+            params=params,
         )
         data = resp.json()
         for item in data.get("results", []):
-            download = item.get("_links", {}).get("download", "")
+            download = item.get("downloadLink") or item.get("_links", {}).get("download", "")
             results.append(
                 {
                     "id": item["id"],
                     "title": item.get("title"),
                     "version": item.get("version", {}).get("number"),
-                    "download_url": f"https://{auth.domain}/wiki{download}" if download else "",
-                    "media_type": item.get("metadata", {}).get("mediaType", ""),
+                    "download_url": _absolute_wiki_url(auth.domain, download),
+                    "media_type": item.get("mediaType", ""),
                 }
             )
-        if data.get("size", 0) < limit:
+        cursor = _next_cursor(data)
+        if cursor is None:
             break
-        start += limit
     return results
 
 
 async def fetch_comments(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> str | None:
-    """Fetch page comments via REST API. Returns markdown string, or None."""
-    from brain_sync.sources.conversion import html_to_markdown
+    """Fetch page comments and return rendered markdown, or None."""
+    from brain_sync.sources.confluence.comments import fetch_structured_comments
+    from brain_sync.sources.conversion import format_comments
 
-    results: list[dict] = []
-    start = 0
-    limit = 25
     try:
-        while True:
-            resp = await _request(
-                client,
-                auth,
-                "GET",
-                f"/content/{page_id}/child/comment",
-                params={"expand": "body.storage,version", "start": str(start), "limit": str(limit)},
-            )
-            data = resp.json()
-            for item in data.get("results", []):
-                version = item.get("version", {})
-                results.append(
-                    {
-                        "author": version.get("by", {}).get("displayName", "Unknown"),
-                        "date": version.get("when", ""),
-                        "body": item.get("body", {}).get("storage", {}).get("value", ""),
-                    }
-                )
-            if data.get("size", 0) < limit:
-                break
-            start += limit
+        comments = await fetch_structured_comments(page_id, auth, client)
     except Exception as exc:
         log.debug("Comments fetch failed for page %s: %s", page_id, exc)
         return None
 
-    if not results:
+    if not comments:
         return None
+    return format_comments(comments)
 
-    lines: list[str] = []
-    for comment in results:
-        header = f"**{comment['author']}**"
-        if comment["date"]:
-            header += f" ({comment['date']})"
-        lines.append(header)
-        body_md = html_to_markdown(comment["body"]).strip()
-        if body_md:
-            lines.append(body_md)
-        lines.append("")
-    return "\n".join(lines).strip()
+
+async def fetch_users_by_account_ids(
+    account_ids: list[str],
+    auth: ConfluenceAuth,
+    client: httpx.AsyncClient,
+) -> dict[str, str]:
+    """Resolve account IDs to display names using one bulk lookup."""
+    if not account_ids:
+        return {}
+
+    requested = sorted({account_id for account_id in account_ids if account_id})
+    if not requested:
+        return {}
+
+    resp = await _request(
+        client,
+        auth,
+        "POST",
+        "/users-bulk",
+        json={"accountIds": requested},
+    )
+    data = resp.json()
+    return {
+        item["accountId"]: item.get("displayName") or item.get("publicName") or item["accountId"]
+        for item in data.get("results", [])
+        if item.get("accountId")
+    }
 
 
 async def download_attachment(url: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> bytes:
@@ -299,6 +300,27 @@ async def download_attachment(url: str, auth: ConfluenceAuth, client: httpx.Asyn
     resp = await client.get(url, auth=auth.basic_auth, follow_redirects=True)
     resp.raise_for_status()
     return resp.content
+
+
+def _next_cursor(data: dict) -> str | None:
+    next_link = data.get("_links", {}).get("next")
+    if not next_link:
+        return None
+    query = parse_qs(urlparse(next_link).query)
+    values = query.get("cursor")
+    return values[0] if values else None
+
+
+def _absolute_wiki_url(domain: str, url_or_path: str) -> str:
+    if not url_or_path:
+        return ""
+    if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+        return url_or_path
+    if url_or_path.startswith("/wiki/"):
+        return f"https://{domain}{url_or_path}"
+    if url_or_path.startswith("/"):
+        return f"https://{domain}/wiki{url_or_path}"
+    return f"https://{domain}/wiki/{url_or_path.lstrip('/')}"
 
 
 __all__ = [
@@ -312,6 +334,7 @@ __all__ = [
     "fetch_comments",
     "fetch_page_body",
     "fetch_page_version",
+    "fetch_users_by_account_ids",
     "get_confluence_auth",
     "reset_auth_cache",
 ]

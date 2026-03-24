@@ -66,7 +66,16 @@ class Comment:
     author: str
     created: str
     content: str
+    id: str | None = None
+    author_id: str | None = None
+    comment_type: str | None = None
+    parent_id: str | None = None
+    status: str | None = None
     resolved: bool = False
+    resolution_status: str | None = None
+    anchor_text: str | None = None
+    anchor_ref: str | None = None
+    webui_link: str | None = None
     replies: list[Comment] = field(default_factory=list)
 
 

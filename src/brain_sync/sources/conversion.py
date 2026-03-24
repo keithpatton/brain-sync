@@ -25,25 +25,62 @@ def html_to_markdown(html: str) -> str:
 
 
 def format_comments(comments: list[Comment]) -> str:
-    """Convert structured Comment list to markdown section content."""
+    """Convert structured Comment list to agent-friendly markdown."""
     parts: list[str] = []
     for c in comments:
-        header = f"**{_escape_md(c.author)}**"
-        if c.created:
-            header += f" ({c.created})"
-        if c.resolved:
-            header += " [resolved]"
-        parts.append(header)
-        body_md = html_to_markdown(c.content).strip()
-        if body_md:
-            parts.append(body_md)
-        for reply in c.replies:
-            parts.append(f"> **{_escape_md(reply.author)}** ({reply.created})")
-            reply_md = html_to_markdown(reply.content).strip()
-            if reply_md:
-                parts.append(f"> {reply_md}")
+        parts.append(_thread_header(c))
+        parts.extend(_thread_metadata(c))
+        _append_body(parts, c.content)
+        if c.replies:
+            parts.append("")
+            parts.append("Replies:")
+            for index, reply in enumerate(c.replies, start=1):
+                parts.append(f"{index}. Reply `{reply.id or 'unknown'}`")
+                parts.append(f"   Author: {_escape_md(reply.author)}")
+                if reply.created:
+                    parts.append(f"   Created: {reply.created}")
+                _append_body(parts, reply.content, prefix="   ")
         parts.append("")
     return "\n".join(parts).strip()
+
+
+def _comment_badges(comment: Comment) -> list[str]:
+    badges: list[str] = []
+    if comment.comment_type:
+        badges.append(comment.comment_type)
+    resolution = comment.resolution_status
+    if resolution:
+        badges.append(resolution)
+    elif comment.resolved:
+        badges.append("resolved")
+    if comment.status and comment.status != "current":
+        badges.append(comment.status)
+    return badges
+
+
+def _thread_header(comment: Comment) -> str:
+    thread_id = comment.id or "unknown"
+    badges = "".join(f" [{badge}]" for badge in _comment_badges(comment))
+    return f"### Comment Thread `{thread_id}`{badges}"
+
+
+def _thread_metadata(comment: Comment) -> list[str]:
+    lines = [f"Author: {_escape_md(comment.author)}"]
+    if comment.created:
+        lines.append(f"Created: {comment.created}")
+    if comment.anchor_text:
+        lines.append(f'Anchor Text: "{_escape_md(comment.anchor_text)}"')
+    if comment.webui_link:
+        lines.append(f"Web UI: {comment.webui_link}")
+    return lines
+
+
+def _append_body(parts: list[str], html: str, *, prefix: str = "") -> None:
+    body_md = html_to_markdown(html).strip()
+    if body_md:
+        parts.append(f"{prefix}Body:")
+        for line in body_md.splitlines():
+            parts.append(f"{prefix}{line}")
 
 
 def _escape_md(text: str) -> str:
