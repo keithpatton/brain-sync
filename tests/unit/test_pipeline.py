@@ -221,6 +221,50 @@ class TestSkipGuard:
         assert excinfo.value.lease_owner == "move-owner"
         assert not (tmp_path / "knowledge" / "area" / "gabc123-my-doc.md").exists()
 
+    async def test_root_backed_processing_with_lifecycle_owner_updates_original_state_after_processing(
+        self, tmp_path: Path
+    ) -> None:
+        source_state = _source_state()
+        refreshed_state = _source_state()
+        prepared = MagicMock(discovered_children=[])
+        checked_utc = "2026-03-25T09:00:05+00:00"
+
+        def _fake_process_prepared_source(root: Path, state: SourceState, prepared_sync, *, lifecycle_owner_id: str):
+            assert root == tmp_path
+            assert state is refreshed_state
+            assert prepared_sync is prepared
+            assert lifecycle_owner_id == "daemon-owner"
+            state.last_checked_utc = checked_utc
+            state.remote_fingerprint = "rev-43"
+            state.materialized_utc = checked_utc
+            return MagicMock(changed=False, discovered_children=[])
+
+        with (
+            patch(
+                "brain_sync.runtime.repository.acquire_source_lifecycle_lease",
+                return_value=(True, None),
+            ),
+            patch("brain_sync.runtime.repository.clear_source_lifecycle_lease"),
+            patch(
+                "brain_sync.sync.source_state.load_active_sync_state",
+                return_value=MagicMock(sources={_CANONICAL_ID: refreshed_state}),
+            ),
+            patch("brain_sync.sync.pipeline.prepare_source_sync", AsyncMock(return_value=prepared)),
+            patch("brain_sync.sync.lifecycle.process_prepared_source", side_effect=_fake_process_prepared_source),
+        ):
+            changed, children = await process_source(
+                source_state,
+                AsyncMock(),
+                root=tmp_path,
+                lifecycle_owner_id="daemon-owner",
+            )
+
+        assert changed is False
+        assert children == []
+        assert source_state.last_checked_utc == checked_utc
+        assert source_state.remote_fingerprint == "rev-43"
+        assert source_state.materialized_utc == checked_utc
+
 
 class TestGoogleAttachmentHandling:
     async def test_google_docs_does_not_use_confluence_attachment_flow(self, tmp_path: Path) -> None:

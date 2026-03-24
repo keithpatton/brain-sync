@@ -362,6 +362,20 @@ async def process_source(
     from brain_sync.sync.lifecycle import process_prepared_source
     from brain_sync.sync.source_state import SourceState
 
+    def _copy_source_state(target: SourceState, source: SourceState) -> None:
+        target.source_url = source.source_url
+        target.source_type = source.source_type
+        target.knowledge_path = source.knowledge_path
+        target.knowledge_state = source.knowledge_state
+        target.sync_attachments = source.sync_attachments
+        target.content_hash = source.content_hash
+        target.remote_fingerprint = source.remote_fingerprint
+        target.materialized_utc = source.materialized_utc
+        target.last_checked_utc = source.last_checked_utc
+        target.current_interval_secs = source.current_interval_secs
+        target.next_check_utc = source.next_check_utc
+        target.interval_seconds = source.interval_seconds
+
     original_source_state = source_state
     caller_supplied_owner_id = lifecycle_owner_id is not None
     effective_owner_id = lifecycle_owner_id
@@ -400,18 +414,7 @@ async def process_source(
                 # mutable instance they passed in, while still revalidating
                 # from manifest-authoritative active state before processing.
                 if isinstance(original_source_state, SourceState) and not caller_supplied_owner_id:
-                    original_source_state.source_url = refreshed.source_url
-                    original_source_state.source_type = refreshed.source_type
-                    original_source_state.knowledge_path = refreshed.knowledge_path
-                    original_source_state.knowledge_state = refreshed.knowledge_state
-                    original_source_state.sync_attachments = refreshed.sync_attachments
-                    original_source_state.content_hash = refreshed.content_hash
-                    original_source_state.remote_fingerprint = refreshed.remote_fingerprint
-                    original_source_state.materialized_utc = refreshed.materialized_utc
-                    original_source_state.last_checked_utc = refreshed.last_checked_utc
-                    original_source_state.current_interval_secs = refreshed.current_interval_secs
-                    original_source_state.next_check_utc = refreshed.next_check_utc
-                    original_source_state.interval_seconds = refreshed.interval_seconds
+                    _copy_source_state(original_source_state, refreshed)
                     source_state = original_source_state
                 else:
                     source_state = refreshed
@@ -433,6 +436,8 @@ async def process_source(
             prepared,
             lifecycle_owner_id=effective_owner_id,
         )
+        if isinstance(original_source_state, SourceState) and source_state is not original_source_state:
+            _copy_source_state(original_source_state, source_state)
         return result.changed, result.discovered_children
     finally:
         if root is not None and effective_owner_id is not None and lease_acquired:
