@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -24,7 +24,7 @@ from brain_sync.runtime.repository import (
     load_sync_progress,
 )
 from brain_sync.sources.base import RemoteSourceMissingError
-from brain_sync.sync.daemon import _sync_scheduler_state, run
+from brain_sync.sync.daemon import _order_due_batch, _sync_scheduler_state, run
 
 pytestmark = pytest.mark.unit
 
@@ -84,6 +84,22 @@ class _FakeScheduler:
 
     def next_due_in(self) -> None:
         return None
+
+
+def _source_state(
+    canonical_id: str,
+    *,
+    knowledge_state: str,
+    materialized_utc: str | None = None,
+) -> SourceState:
+    return SourceState(
+        canonical_id=canonical_id,
+        source_url=f"https://example.com/{canonical_id.rsplit(':', 1)[-1]}",
+        source_type="confluence",
+        knowledge_path=f"area/{canonical_id.rsplit(':', 1)[-1]}.md",
+        knowledge_state=knowledge_state,
+        materialized_utc=materialized_utc,
+    )
 
 
 class _FakeWatcher:
@@ -344,6 +360,93 @@ async def test_daemon_uses_non_finalizing_reconcile_for_watcher_events(tmp_path:
     assert observed_finalize_flags == [False, False]
 
 
+def test_order_due_batch_prioritizes_awaiting_before_stale() -> None:
+    due_keys = ["confluence:200", "confluence:100"]
+    sources = {
+        "confluence:100": _source_state("confluence:100", knowledge_state="awaiting"),
+        "confluence:200": _source_state(
+            "confluence:200",
+            knowledge_state="stale",
+            materialized_utc="2026-03-20T09:00:00+00:00",
+        ),
+    }
+
+    assert _order_due_batch(due_keys, sources) == ["confluence:100", "confluence:200"]
+
+
+def test_order_due_batch_prioritizes_stale_before_settled_sources() -> None:
+    due_keys = ["confluence:300", "confluence:200"]
+    sources = {
+        "confluence:200": _source_state(
+            "confluence:200",
+            knowledge_state="stale",
+            materialized_utc="2026-03-20T09:00:00+00:00",
+        ),
+        "confluence:300": _source_state(
+            "confluence:300",
+            knowledge_state="materialized",
+            materialized_utc="2026-03-21T09:00:00+00:00",
+        ),
+    }
+
+    assert _order_due_batch(due_keys, sources) == ["confluence:200", "confluence:300"]
+
+
+def test_order_due_batch_prefers_newer_materialized_sources() -> None:
+    due_keys = ["confluence:old", "confluence:new"]
+    sources = {
+        "confluence:new": _source_state(
+            "confluence:new",
+            knowledge_state="materialized",
+            materialized_utc="2026-03-22T09:00:00+00:00",
+        ),
+        "confluence:old": _source_state(
+            "confluence:old",
+            knowledge_state="materialized",
+            materialized_utc="2026-03-20T09:00:00+00:00",
+        ),
+    }
+
+    assert _order_due_batch(due_keys, sources) == ["confluence:new", "confluence:old"]
+
+
+def test_order_due_batch_uses_canonical_id_as_deterministic_tie_breaker() -> None:
+    due_keys = ["confluence:beta", "confluence:alpha"]
+    sources = {
+        "confluence:alpha": _source_state(
+            "confluence:alpha",
+            knowledge_state="materialized",
+            materialized_utc="2026-03-22T09:00:00+00:00",
+        ),
+        "confluence:beta": _source_state(
+            "confluence:beta",
+            knowledge_state="materialized",
+            materialized_utc="2026-03-22T09:00:00+00:00",
+        ),
+    }
+
+    assert _order_due_batch(due_keys, sources) == ["confluence:alpha", "confluence:beta"]
+
+
+def test_order_due_batch_sorts_settled_sources_without_materialized_utc_last() -> None:
+    due_keys = ["confluence:none-b", "confluence:dated", "confluence:none-a"]
+    sources = {
+        "confluence:dated": _source_state(
+            "confluence:dated",
+            knowledge_state="materialized",
+            materialized_utc="2026-03-22T09:00:00+00:00",
+        ),
+        "confluence:none-a": _source_state("confluence:none-a", knowledge_state="materialized"),
+        "confluence:none-b": _source_state("confluence:none-b", knowledge_state="materialized"),
+    }
+
+    assert _order_due_batch(due_keys, sources) == [
+        "confluence:dated",
+        "confluence:none-a",
+        "confluence:none-b",
+    ]
+
+
 def test_sync_scheduler_state_removes_stale_keys_and_restarts_reappeared_sources_immediately() -> None:
     scheduler = _FakeScheduler()
     scheduler._scheduled_keys = {"confluence:12345", "confluence:99999"}
@@ -417,6 +520,108 @@ async def test_daemon_marks_live_local_delete_missing_before_due_poll(tmp_path: 
     assert runtime_state is not None
     assert runtime_state.missing_confirmation_count >= 1
     assert result.canonical_id not in load_state(root).sources
+
+
+@pytest.mark.asyncio
+async def test_daemon_processes_due_batch_in_sorted_priority_order(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    awaiting = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/100/Awaiting",
+        target_path="area",
+    )
+    stale = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/200/Stale",
+        target_path="area",
+    )
+    newest = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/300/Newest",
+        target_path="area",
+    )
+    oldest = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/400/Oldest",
+        target_path="area",
+    )
+
+    manifest_updates: list[tuple[str, Literal["stale", "materialized"], str]] = [
+        (stale.canonical_id, "stale", "2026-03-20T09:00:00+00:00"),
+        (newest.canonical_id, "materialized", "2026-03-22T09:00:00+00:00"),
+        (oldest.canonical_id, "materialized", "2026-03-19T09:00:00+00:00"),
+    ]
+    for canonical_id, knowledge_state, materialized_utc in manifest_updates:
+        manifest = read_source_manifest(root, canonical_id)
+        assert manifest is not None
+        manifest.knowledge_state = knowledge_state
+        manifest.content_hash = "sha256:abc"
+        manifest.remote_fingerprint = "rev-1"
+        manifest.materialized_utc = materialized_utc
+        from brain_sync.brain.manifest import write_source_manifest
+
+        write_source_manifest(root, manifest)
+
+    due_order = [
+        oldest.canonical_id,
+        stale.canonical_id,
+        awaiting.canonical_id,
+        newest.canonical_id,
+    ]
+    processed: list[str] = []
+
+    class _PriorityProofScheduler(_FakeScheduler):
+        def pop_due(self) -> list[str]:
+            if self._popped:
+                return []
+            self._popped = True
+            return list(due_order)
+
+    async def _fake_process_source(
+        source_state,
+        _http_client,
+        root=None,
+        *,
+        fetch_children=False,
+        lifecycle_owner_id=None,
+    ):
+        assert root is not None
+        assert fetch_children is False
+        assert lifecycle_owner_id is not None
+        processed.append(source_state.canonical_id)
+        return False, []
+
+    async def _stop_after_tick(_seconds: float) -> None:
+        raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "brain_sync.sync.daemon.reconcile_sources",
+            return_value=_FakeSourceReconcileResult(updated=[], not_found=[]),
+        ),
+        patch(
+            "brain_sync.sync.daemon.reconcile_knowledge_tree",
+            return_value=_FakeTreeReconcileResult(orphans_cleaned=[], content_changed=[], enqueued_paths=[]),
+        ),
+        patch("brain_sync.sync.daemon.Scheduler", _PriorityProofScheduler),
+        patch("brain_sync.sync.daemon.KnowledgeWatcher", _FakeWatcher),
+        patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
+        patch("brain_sync.sync.daemon.process_source", side_effect=_fake_process_source),
+        patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
+        patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run(root)
+
+    assert processed == [
+        awaiting.canonical_id,
+        stale.canonical_id,
+        newest.canonical_id,
+        oldest.canonical_id,
+    ]
 
 
 @pytest.mark.asyncio

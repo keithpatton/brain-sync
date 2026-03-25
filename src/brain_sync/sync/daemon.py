@@ -5,6 +5,8 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -43,6 +45,7 @@ from brain_sync.sync.scheduler import (
     compute_next_check_utc,
 )
 from brain_sync.sync.source_state import (
+    SourceState,
     SyncState,
     load_active_sync_state,
     save_active_sync_state,
@@ -110,6 +113,39 @@ def _log_reconcile_result(result) -> None:
         log.info("Rediscovered missing source %s during reconcile", canonical_id)
     for canonical_id in result.deleted:
         log.info("Deregistered still-missing source %s during reconcile", canonical_id)
+
+
+def _materialized_sort_value(materialized_utc: str | None) -> tuple[int, float]:
+    if materialized_utc is None:
+        return (1, 0.0)
+
+    try:
+        return (0, -datetime.fromisoformat(materialized_utc).timestamp())
+    except ValueError:
+        return (1, 0.0)
+
+
+def _order_due_batch(due_keys: list[str], sources: Mapping[str, SourceState]) -> list[str]:
+    """Order only the already-due batch: awaiting, then stale, then settled newest-first.
+
+    Due eligibility remains owned by ``sync_polling`` and ``scheduler.pop_due()``.
+    This helper only reorders the returned due keys. Settled sources with no
+    usable ``materialized_utc`` sort after timestamped settled peers, with
+    ``canonical_id`` as the deterministic fallback tie-breaker.
+    """
+
+    def _sort_key(source_key: str) -> tuple[int, int, float, str]:
+        source = sources.get(source_key)
+        if source is None:
+            return (3, 1, 0.0, source_key)
+        if source.knowledge_state == "awaiting":
+            return (0, 0, 0.0, source.canonical_id)
+        if source.knowledge_state == "stale":
+            return (1, 0, 0.0, source.canonical_id)
+        timestamp_rank, timestamp_value = _materialized_sort_value(source.materialized_utc)
+        return (2, timestamp_rank, timestamp_value, source.canonical_id)
+
+    return sorted(due_keys, key=_sort_key)
 
 
 async def run(root: Path) -> None:
@@ -218,7 +254,7 @@ async def run(root: Path) -> None:
                             last_rescan = now
 
                         # 3. Process due sources
-                        due_keys = scheduler.pop_due()
+                        due_keys = _order_due_batch(scheduler.pop_due(), state.sources)
                         for key in due_keys:
                             if key not in state.sources:
                                 scheduler.remove(key)
