@@ -9,7 +9,7 @@ import pytest
 from brain_sync.application.insights import load_insight_state
 from brain_sync.brain.layout import area_summary_path
 from brain_sync.llm.fake import FakeBackend
-from brain_sync.regen import regen_path
+from brain_sync.regen import regen_all, regen_path
 from brain_sync.regen.engine import RegenConfig, regen_single_folder
 
 pytestmark = pytest.mark.integration
@@ -80,6 +80,30 @@ class TestRegenWithFakeBackend:
         assert count >= 2
         assert area_summary_path(brain, "eng/backend").exists()
         assert area_summary_path(brain, "eng").exists()
+
+    async def test_regen_all_discovers_new_nested_area_without_child_summary(self, brain: Path):
+        """A newly added nested area with direct files is included in regen_all."""
+        base = brain / "knowledge" / "initiatives" / "proj"
+        meetings = base / "meetings"
+        meetings.mkdir(parents=True)
+        (base / "overview.md").write_text("# Initiative\n\nOverview.", encoding="utf-8")
+        (meetings / "index.md").write_text("# Meetings\n\nMeeting area.", encoding="utf-8")
+
+        backend = FakeBackend(mode="stable")
+        config = RegenConfig(model="fake-model", effort="low", timeout=30)
+
+        await regen_single_folder(brain, "initiatives/proj/meetings", config=config, backend=backend)
+        await regen_single_folder(brain, "initiatives/proj", config=config, backend=backend)
+
+        monthly = meetings / "2026-03"
+        monthly.mkdir()
+        (monthly / "manual.md").write_text("# Notes\n\nManual content.", encoding="utf-8")
+
+        count = await regen_all(brain, config=config, backend=backend)
+
+        assert count >= 1
+        assert area_summary_path(brain, "initiatives/proj/meetings/2026-03").exists()
+        assert load_insight_state(brain, "initiatives/proj/meetings/2026-03") is not None
 
     async def test_insight_state_persisted(self, brain: Path):
         """Regen should persist InsightState to SQLite."""

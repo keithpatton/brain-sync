@@ -1148,12 +1148,22 @@ async def regen_single_folder(
         return SingleFolderResult(action="skipped_unchanged", knowledge_path=current_path)
 
     if evaluation.outcome == "structure_only":
-        # Rename only — persist updated structure_hash
-        log.info(
-            "[%s] Structure-only change for %s (rename), updating structure_hash",
-            regen_id,
-            current_path or "(root)",
+        pending_child_summaries = sorted(
+            child.name for child in evaluation.child_dirs if child.name not in evaluation.child_summaries
         )
+        if pending_child_summaries:
+            log.info(
+                "[%s] Structure-only change for %s (pending child summaries: %s), updating structure_hash",
+                regen_id,
+                current_path or "(root)",
+                ", ".join(pending_child_summaries),
+            )
+        else:
+            log.info(
+                "[%s] Structure-only change for %s (names only), updating structure_hash",
+                regen_id,
+                current_path or "(root)",
+            )
         _claim_regen_ownership_or_raise(root, current_path, owner_id)
         if owner_id is not None:
             lock = load_regen_lock(root, current_path)

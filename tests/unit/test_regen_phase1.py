@@ -97,6 +97,26 @@ class TestEvaluateFolderState:
         evaluation = evaluate_folder_state(brain, "rename")
         assert evaluation.outcome == "structure_only"
 
+    def test_structure_only_outcome_when_new_child_has_no_summary_yet(self, brain: Path) -> None:
+        area = brain / "knowledge" / "initiative"
+        meetings = area / "meetings"
+        area.mkdir(parents=True)
+        meetings.mkdir()
+        (meetings / "index.md").write_text("# Meetings\n\nExisting notes.", encoding="utf-8")
+
+        _save_current_hashes(brain, "initiative/meetings")
+        _save_current_hashes(brain, "initiative")
+
+        monthly = meetings / "2026-03"
+        monthly.mkdir()
+        (monthly / "manual.md").write_text("# Manual Notes\n\nAdded by hand.", encoding="utf-8")
+
+        evaluation = evaluate_folder_state(brain, "initiative/meetings")
+        assert evaluation.outcome == "structure_only"
+        assert evaluation.change.change_type == "rename"
+        assert [child.name for child in evaluation.child_dirs] == ["2026-03"]
+        assert evaluation.child_summaries == {}
+
     def test_metadata_backfill_outcome(self, brain: Path) -> None:
         area = brain / "knowledge" / "legacy"
         area.mkdir(parents=True)
