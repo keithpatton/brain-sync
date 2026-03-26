@@ -8,8 +8,14 @@ from pathlib import Path
 
 from brain_sync.application.roots import _require_root
 from brain_sync.brain.fileops import canonical_prefix, path_is_dir, rglob_paths
+from brain_sync.brain.manifest import read_all_source_manifests, read_source_manifest
 from brain_sync.runtime.operational_events import OperationalEventType
-from brain_sync.runtime.repository import record_brain_operational_event
+from brain_sync.runtime.repository import (
+    is_daemon_running_for_root,
+    record_brain_operational_event,
+    request_daemon_rescan,
+    request_source_polls_now,
+)
 from brain_sync.sync.finalization import FinalizationResult
 from brain_sync.sync.finalization import finalize_missing as sync_finalize_missing
 from brain_sync.sync.lifecycle import (
@@ -25,28 +31,15 @@ from brain_sync.sync.lifecycle import (
     UpdateResult,
     observe_missing_source,
 )
-from brain_sync.sync.lifecycle import (
-    add_source as sync_add_source,
-)
-from brain_sync.sync.lifecycle import (
-    check_source_exists as sync_check_source_exists,
-)
-from brain_sync.sync.lifecycle import (
-    list_sources as sync_list_sources,
-)
-from brain_sync.sync.lifecycle import (
-    move_source as sync_move_source,
-)
-from brain_sync.sync.lifecycle import (
-    reconcile_sources as sync_reconcile_sources,
-)
-from brain_sync.sync.lifecycle import (
-    remove_source as sync_remove_source,
-)
-from brain_sync.sync.lifecycle import (
-    update_source as sync_update_source,
-)
+from brain_sync.sync.lifecycle import add_source as sync_add_source
+from brain_sync.sync.lifecycle import check_source_exists as sync_check_source_exists
+from brain_sync.sync.lifecycle import list_sources as sync_list_sources
+from brain_sync.sync.lifecycle import move_source as sync_move_source
+from brain_sync.sync.lifecycle import reconcile_sources as sync_reconcile_sources
+from brain_sync.sync.lifecycle import remove_source as sync_remove_source
+from brain_sync.sync.lifecycle import update_source as sync_update_source
 from brain_sync.sync.source_state import SourceAdminView as SourceInfo
+from brain_sync.sync.source_state import load_active_sync_state
 
 __all__ = [
     "AddResult",
@@ -61,6 +54,7 @@ __all__ = [
     "SourceAlreadyExistsError",
     "SourceInfo",
     "SourceNotFoundError",
+    "SyncSourceResult",
     "UnsupportedSourceUrlError",
     "UpdateResult",
     "add_source",
@@ -72,6 +66,7 @@ __all__ = [
     "move_source",
     "reconcile_sources",
     "remove_source",
+    "sync_source",
     "update_source",
 ]
 
@@ -105,6 +100,119 @@ def require_exact_source_canonical_id(canonical_id: str) -> str:
 
 def check_source_exists(root: Path, url: str) -> SourceAlreadyExistsError | None:
     return sync_check_source_exists(root, url)
+
+
+@dataclass(frozen=True)
+class SyncSourceResult:
+    result_state: str
+    requested_sources: tuple[str, ...] = ()
+    requested_all: bool = False
+    daemon_running: bool = False
+    unresolved_sources: tuple[str, ...] = ()
+    message: str | None = None
+
+
+def _resolve_active_source_selector(
+    root: Path,
+    state,
+    source: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    if source in state.sources:
+        resolved = state.sources[source]
+        return source, resolved.source_url, resolved.target_path, None
+
+    for canonical_id, source_state in state.sources.items():
+        if source_state.source_url == source:
+            return canonical_id, source_state.source_url, source_state.target_path, None
+
+    manifest = read_source_manifest(root, source)
+    if manifest is not None:
+        return None, manifest.source_url, manifest.target_path, manifest.canonical_id
+
+    for manifest in read_all_source_manifests(root).values():
+        if manifest.source_url == source:
+            return None, manifest.source_url, manifest.target_path, manifest.canonical_id
+
+    return None, None, None, None
+
+
+def _sync_request_message(*, count: int, requested_all: bool, daemon_running: bool) -> str:
+    if count == 0:
+        return "No active sources were eligible for immediate polling."
+    scope = "all active sources" if requested_all else f"{count} active source(s)"
+    follow_up = (
+        "A running daemon will pick this up at the next loop."
+        if daemon_running
+        else "The next `brain-sync run` will pick this up."
+    )
+    return (
+        f"Requested immediate polling for {scope}. {follow_up} "
+        "Other already-due sources may also be processed in the same daemon cycle."
+    )
+
+
+def sync_source(
+    root: Path | None = None,
+    *,
+    sources: list[str] | tuple[str, ...],
+) -> SyncSourceResult:
+    root = _require_root(root)
+    state = load_active_sync_state(root)
+    daemon_running = is_daemon_running_for_root(root)
+
+    if not sources:
+        requested_sources = tuple(sorted(state.sources))
+        requested_count = request_source_polls_now(root, list(requested_sources))
+        if daemon_running and requested_count:
+            request_daemon_rescan()
+        return SyncSourceResult(
+            result_state="requested" if requested_count else "no_active_sources",
+            requested_sources=requested_sources,
+            requested_all=True,
+            daemon_running=daemon_running,
+            message=_sync_request_message(
+                count=requested_count,
+                requested_all=True,
+                daemon_running=daemon_running,
+            ),
+        )
+
+    requested: list[str] = []
+    unresolved: list[str] = []
+    for source in sources:
+        canonical_id, _source_url, _target_path, inactive_canonical_id = _resolve_active_source_selector(
+            root,
+            state,
+            source,
+        )
+        if canonical_id is None:
+            unresolved.append(inactive_canonical_id or source)
+            continue
+        requested.append(canonical_id)
+
+    if unresolved:
+        unresolved_display = ", ".join(unresolved)
+        return SyncSourceResult(
+            result_state="not_found",
+            daemon_running=daemon_running,
+            unresolved_sources=tuple(unresolved),
+            message=f"Selectors did not resolve to active registered sources: {unresolved_display}",
+        )
+
+    requested_sources = tuple(dict.fromkeys(requested))
+    requested_count = request_source_polls_now(root, list(requested_sources))
+    if daemon_running and requested_count:
+        request_daemon_rescan()
+    return SyncSourceResult(
+        result_state="requested",
+        requested_sources=requested_sources,
+        daemon_running=daemon_running,
+        message=_sync_request_message(
+            count=requested_count,
+            requested_all=False,
+            daemon_running=daemon_running,
+        ),
+    )
 
 
 def add_source(

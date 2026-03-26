@@ -16,8 +16,9 @@ the first entry is treated as active runtime state.
 
 That current single-brain runtime model coexists with a config-dir daemon
 startup guard: `daemon.json` is the latest daemon status snapshot for the
-config directory, while durable startup exclusion for that runtime lives in
-`daemon.lock`.
+config directory, `daemon-rescan.flag` is a best-effort request for the
+running daemon to reload active sync state on its next loop, and durable
+startup exclusion for that runtime lives in `daemon.lock`.
 
 Runtime schema `v29` splits active polling from source lifecycle coordination:
 

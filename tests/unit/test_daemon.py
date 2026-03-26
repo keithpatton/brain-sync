@@ -212,7 +212,7 @@ async def _run_daemon_once(root: Path, fetch_children_flags: list[bool], *, miss
         patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
         patch("brain_sync.sync.daemon.KnowledgeWatcher", _FakeWatcher),
         patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
-        patch("brain_sync.sync.daemon.process_source", side_effect=_fake_process_source),
+        patch("brain_sync.sync.lifecycle.process_source", side_effect=_fake_process_source),
         patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
         patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
     ):
@@ -286,7 +286,7 @@ async def test_daemon_persists_last_checked_utc_after_processing_source(tmp_path
         patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
         patch("brain_sync.sync.daemon.KnowledgeWatcher", _FakeWatcher),
         patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
-        patch("brain_sync.sync.daemon.process_source", side_effect=_fake_process_source),
+        patch("brain_sync.sync.lifecycle.process_source", side_effect=_fake_process_source),
         patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
         patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
     ):
@@ -350,7 +350,7 @@ async def test_daemon_uses_non_finalizing_reconcile_for_watcher_events(tmp_path:
         patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
         patch("brain_sync.sync.daemon.KnowledgeWatcher", _TwoEventWatcher),
         patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
-        patch("brain_sync.sync.daemon.process_source", return_value=(False, [])),
+        patch("brain_sync.sync.lifecycle.process_source", return_value=(False, [])),
         patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
         patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
     ):
@@ -467,6 +467,29 @@ def test_sync_scheduler_state_removes_stale_keys_and_restarts_reappeared_sources
     assert scheduler.immediate_calls == ["confluence:12345"]
 
 
+def test_sync_scheduler_state_reloads_persisted_due_time_for_existing_key() -> None:
+    scheduler = _FakeScheduler()
+    scheduler._scheduled_keys = {"confluence:12345"}
+    state = SyncState(
+        sources={
+            "confluence:12345": SourceState(
+                canonical_id="confluence:12345",
+                source_url="https://example.com/12345",
+                source_type="confluence",
+                knowledge_path="area/c12345.md",
+                next_check_utc="2026-03-26T00:00:00+00:00",
+                interval_seconds=1800,
+            )
+        }
+    )
+
+    _sync_scheduler_state(state, cast(Any, scheduler))
+
+    assert scheduler.removed_calls == ["confluence:12345"]
+    assert scheduler.persisted_calls == ["confluence:12345"]
+    assert scheduler.immediate_calls == []
+
+
 @pytest.mark.asyncio
 async def test_daemon_marks_live_local_delete_missing_before_due_poll(tmp_path: Path) -> None:
     root = tmp_path / "brain"
@@ -506,7 +529,7 @@ async def test_daemon_marks_live_local_delete_missing_before_due_poll(tmp_path: 
         patch("brain_sync.sync.daemon.Scheduler", _FakeScheduler),
         patch("brain_sync.sync.daemon.KnowledgeWatcher", _DeletingWatcher),
         patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
-        patch("brain_sync.sync.daemon.process_source", side_effect=_process_source_should_not_run),
+        patch("brain_sync.sync.lifecycle.process_source", side_effect=_process_source_should_not_run),
         patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
         patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
     ):
@@ -609,7 +632,7 @@ async def test_daemon_processes_due_batch_in_sorted_priority_order(tmp_path: Pat
         patch("brain_sync.sync.daemon.Scheduler", _PriorityProofScheduler),
         patch("brain_sync.sync.daemon.KnowledgeWatcher", _FakeWatcher),
         patch("brain_sync.sync.daemon.RegenQueue", _FakeRegenQueue),
-        patch("brain_sync.sync.daemon.process_source", side_effect=_fake_process_source),
+        patch("brain_sync.sync.lifecycle.process_source", side_effect=_fake_process_source),
         patch("brain_sync.regen.lifecycle.regen_session", _fake_regen_session),
         patch("brain_sync.sync.daemon.asyncio.sleep", side_effect=_stop_after_tick),
     ):

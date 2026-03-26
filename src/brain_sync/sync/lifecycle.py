@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,15 +39,19 @@ from brain_sync.runtime.repository import (
     renew_source_lifecycle_lease,
     save_child_discovery_request,
     save_source_lifecycle_runtime,
+    save_source_sync_progress,
     source_lifecycle_commit_fence,
 )
 from brain_sync.sources import UnsupportedSourceError, canonical_id, detect_source_type, slugify
+from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.pipeline import (
     ChildDiscoveryResult,
     PreparedSourceSync,
     SourceLifecycleLeaseConflictError,
     prepare_source_sync,
+    process_source,
 )
+from brain_sync.sync.scheduler import MAX_ERROR_BACKOFF, compute_interval, compute_next_check_utc
 from brain_sync.sync.source_state import (
     SourceAdminView,
     SourceState,
@@ -115,6 +120,21 @@ class MissingObservationResult:
 class SourceSyncResult:
     changed: bool
     discovered_children: list[ChildDiscoveryResult]
+
+
+@dataclass(frozen=True)
+class ActiveSourceSyncOutcome:
+    result_state: str
+    canonical_id: str | None = None
+    source_url: str | None = None
+    target_path: str | None = None
+    changed: bool | None = None
+    knowledge_state: str | None = None
+    lease_owner: str | None = None
+    child_request_consumed: bool = False
+    children_registered: int = 0
+    current_interval_secs: int | None = None
+    error_message: str | None = None
 
 
 @dataclass
@@ -746,6 +766,128 @@ def process_discovered_children(
         clear_child_discovery_request(root, parent_canonical_id)
 
     return state
+
+
+async def sync_active_source_once(
+    root: Path,
+    canonical_id: str,
+    http_client: httpx.AsyncClient,
+    *,
+    lifecycle_session_id: str | None = None,
+    owner_kind: str = "sync",
+    schedule_immediate: Callable[[str], None] | None = None,
+) -> ActiveSourceSyncOutcome:
+    state = load_active_sync_state(root)
+    if canonical_id not in state.sources:
+        manifest_resolution = _try_resolve_source_or_manifest(state, root, canonical_id)
+        if manifest_resolution is None:
+            return ActiveSourceSyncOutcome(
+                result_state="not_found",
+                error_message=f"Source not found: {canonical_id}",
+            )
+        resolved_canonical_id, source_url, target_path = manifest_resolution
+        return ActiveSourceSyncOutcome(
+            result_state="not_found",
+            canonical_id=resolved_canonical_id,
+            source_url=source_url,
+            target_path=target_path,
+            error_message=f"Source not found: {canonical_id}",
+        )
+
+    source_state = state.sources[canonical_id]
+    child_request = load_child_discovery_request(root, canonical_id)
+    source_url = source_state.source_url
+    target_path = source_state.target_path
+    owner_id = _owner_id(owner_kind)
+
+    def _schedule_child(canonical_id: str) -> None:
+        if schedule_immediate is not None:
+            schedule_immediate(canonical_id)
+
+    try:
+        changed, discovered_children = await process_source(
+            source_state,
+            http_client,
+            root=root,
+            fetch_children=child_request.fetch_children if child_request is not None else False,
+            lifecycle_owner_id=owner_id,
+        )
+        processed_last_checked_utc = source_state.last_checked_utc
+        refreshed = load_active_sync_state(root).sources.get(canonical_id)
+        if refreshed is not None:
+            refreshed.last_checked_utc = processed_last_checked_utc
+            source_state = refreshed
+        state.sources[canonical_id] = source_state
+
+        interval = compute_interval(source_state.last_changed_utc)
+        source_state.current_interval_secs = interval
+        pre_children = set(state.sources)
+        state = process_discovered_children(
+            root,
+            parent_canonical_id=canonical_id,
+            parent_source_url=source_url,
+            parent_target=target_path,
+            sync_attachments=source_state.sync_attachments,
+            request=child_request,
+            discovered_children=discovered_children,
+            schedule_immediate=_schedule_child,
+            state=state,
+        )
+        children_registered = len(set(state.sources) - pre_children)
+        source_state.interval_seconds = interval
+        source_state.next_check_utc = compute_next_check_utc(interval)
+        save_source_sync_progress(root, canonical_id, source_state)
+        return ActiveSourceSyncOutcome(
+            result_state="changed" if changed else "unchanged",
+            canonical_id=canonical_id,
+            source_url=source_url,
+            target_path=target_path,
+            changed=changed,
+            child_request_consumed=child_request is not None,
+            children_registered=children_registered,
+            current_interval_secs=interval,
+        )
+    except RemoteSourceMissingError as exc:
+        observe_missing_source(
+            root,
+            canonical_id=canonical_id,
+            outcome="remote_missing",
+            lifecycle_session_id=lifecycle_session_id,
+        )
+        if child_request is not None:
+            clear_child_discovery_request(root, canonical_id)
+        return ActiveSourceSyncOutcome(
+            result_state="remote_missing",
+            canonical_id=canonical_id,
+            source_url=source_url,
+            target_path=target_path,
+            knowledge_state="missing",
+            child_request_consumed=child_request is not None,
+            error_message=str(exc),
+        )
+    except SourceLifecycleLeaseConflictError as exc:
+        return ActiveSourceSyncOutcome(
+            result_state="lease_conflict",
+            canonical_id=canonical_id,
+            source_url=source_url,
+            target_path=target_path,
+            lease_owner=exc.lease_owner,
+            error_message=f"Source lifecycle lease is already held for {canonical_id}",
+        )
+    except Exception as exc:
+        interval = min(source_state.current_interval_secs * 2, MAX_ERROR_BACKOFF)
+        source_state.current_interval_secs = interval
+        source_state.interval_seconds = interval
+        source_state.next_check_utc = compute_next_check_utc(interval)
+        save_source_sync_progress(root, canonical_id, source_state)
+        return ActiveSourceSyncOutcome(
+            result_state="error",
+            canonical_id=canonical_id,
+            source_url=source_url,
+            target_path=target_path,
+            current_interval_secs=interval,
+            error_message=str(exc),
+        )
 
 
 def move_source(

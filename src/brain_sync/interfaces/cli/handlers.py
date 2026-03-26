@@ -514,6 +514,31 @@ def handle_update(args) -> None:
     )
 
 
+def handle_sync(args) -> None:
+    from brain_sync.application.sources import sync_source
+
+    root = _resolve_root_or_exit(args)
+    try:
+        result = sync_source(root=root, sources=args.sources)
+    except BrainNotFoundError as e:
+        log.error("Cannot resolve brain root: %s", e)
+        sys.exit(1)
+
+    log.info("Result: %s", result.result_state)
+    if result.requested_all:
+        log.info("  Scope: all active sources")
+    elif result.requested_sources:
+        log.info("  Requested: %s", ", ".join(result.requested_sources))
+    if result.unresolved_sources:
+        log.info("  Unresolved: %s", ", ".join(result.unresolved_sources))
+    log.info("  Daemon: %s", "running" if result.daemon_running else "stopped")
+    if result.message:
+        log.info("  %s", result.message)
+
+    if result.result_state == "not_found":
+        sys.exit(1)
+
+
 def handle_reconcile(args) -> None:
     from brain_sync.application.reconcile import reconcile_brain
 

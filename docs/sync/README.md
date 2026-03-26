@@ -78,6 +78,20 @@ One important split is easy to miss:
 - remote drift is not a watcher concern and is not discovered by startup
   reconcile alone; it is discovered by daemon polling
 
+The direct CLI sync command fits that split in a specific way:
+
+- `brain-sync sync <source>` is still a `Command` entry path, not a daemon RPC
+  or scheduler mutation
+- it requests immediate polling by moving one or more active sources'
+  persisted `next_check_utc` values to now
+- it does not fetch remote content or run inline regen as part of the command
+  itself
+- if the daemon is already running, a best-effort runtime nudge asks it to
+  reload active sync state on the next loop so newly due rows are noticed
+  promptly
+- if the daemon is not running, the next daemon start sees those persisted due
+  rows during normal startup load and scheduling
+
 Another important split is that missing sources are still registered, but they
 are excluded from active polling until they are rediscovered locally or
 finalized explicitly.
@@ -110,6 +124,7 @@ This matrix is the applicability view of synced-source lifecycle behavior.
 | CLI/MCP | Update Source | Single File | Command | x | x | x | x |  | unchanged | Updates sync settings and child-discovery intent, not the durable knowledge lifecycle directly. |
 | CLI/MCP | Move Source | Single File | Command | x | x | x | x |  | state-dependent | State unchanged except `materialized` -> `stale`. Only source-owned artifacts for the addressed source move; colocated user files and unrelated sources stay in place. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict` and does not mutate the source. |
 | CLI/MCP | Remove Source | Single File | Command | x | x | x | x |  | state-dependent | Unregisters the source and removes synced files from disk, including the materialized file and source-owned attachments when present. The legacy `delete_files` flag is compatibility-only and does not change this destructive behavior. If the source cannot be resolved, the command returns handled `not_found`. If another lifecycle owner already holds the source lease, the command returns handled `lease_conflict`. |
+| CLI | Sync Source | Single or Many Sources | Command | x | x | x |  |  | unchanged durable state | Requests immediate polling for all active sources or the listed active sources by setting `next_check_utc` to now. Exact canonical ID is tried first, then exact source URL. The command itself does not fetch or regenerate content, and other already-due sources may still be processed in the same daemon cycle. |
 | CLI/MCP | Reconcile | Knowledge Tree | Command | x | x | x | x |  | conservative repair | Uses the same reconcile engine as daemon startup. `awaiting` usually stays `awaiting`; direct-path present registered sources stay in their current settled state; repaired or rediscovered present sources become `stale`; absent registered sources become or remain `missing`; missing sources that reappear become `stale`. |
 | CLI/MCP | Finalize Missing | Single File | Command |  |  |  | x |  | state-dependent | Finalization rechecks local presence before destructive cleanup. If the source file is rediscovered during preflight or final commit revalidation, the source is restored to `stale` instead of being unregistered. If the source remains absent and no conflicting lifecycle lease exists, one explicit call finalizes it immediately. |
 | User | Synced File Moved | Single File | Daemon Watcher |  | x | x |  |  | `stale` | The watcher observes local drift and reconcile repairs the manifest path to the found file. |

@@ -5,16 +5,51 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from brain_sync.brain.layout import area_summary_path
-from brain_sync.brain.manifest import read_source_manifest
-from tests.e2e.harness.cli import CliRunner
+from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest
+from brain_sync.sources.test import reset_test_adapter
+from tests.e2e.harness.cli import CliResult, CliRunner
 from tests.harness.isolation import build_subprocess_env, layout_for_base_dir
 
 pytestmark = pytest.mark.system
+
+
+@pytest.fixture(autouse=True)
+def _reset_test_adapter_fixture() -> Iterator[None]:
+    reset_test_adapter()
+    yield
+    reset_test_adapter()
+
+
+def _stderr_messages(result: CliResult) -> list[str]:
+    messages: list[str] = []
+    for raw_line in result.stderr.splitlines():
+        if not raw_line.strip():
+            continue
+        _prefix, separator, payload = raw_line.partition(": ")
+        message = payload if separator else raw_line
+        if message.startswith("Logging initialised, run_id="):
+            continue
+        messages.append(message)
+    return messages
+
+
+def _load_sync_polling_row(config_dir: Path, canonical_id: str) -> tuple[str | None, int | None]:
+    conn = sqlite3.connect(str(config_dir / "db" / "brain-sync.sqlite"))
+    try:
+        row = conn.execute(
+            "SELECT next_check_utc, current_interval_secs FROM sync_polling WHERE canonical_id = ?",
+            (canonical_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return row[0], row[1]
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +376,111 @@ class TestRemoveFile:
         result = cli.run("remove-file", "area/doc.md", "--root", str(brain_root))
         assert result.returncode == 0, f"remove-file failed: {result.stderr}"
         assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Sync
+# ---------------------------------------------------------------------------
+
+
+class TestSync:
+    """brain-sync sync via subprocess."""
+
+    def test_sync_requests_selected_source_by_canonical_id(
+        self,
+        cli: CliRunner,
+        brain_root: Path,
+        config_dir: Path,
+    ) -> None:
+        cli.run("init", str(brain_root))
+        cli.run("add", "test://doc/sync1", "--path", "area", "--root", str(brain_root))
+
+        result = cli.run("sync", "test:sync1", "--root", str(brain_root))
+
+        assert result.returncode == 0, result.stderr
+        assert _stderr_messages(result) == [
+            "Result: requested",
+            "  Requested: test:sync1",
+            "  Daemon: stopped",
+            "  Requested immediate polling for 1 active source(s). "
+            "The next `brain-sync run` will pick this up. "
+            "Other already-due sources may also be processed in the same daemon cycle.",
+        ]
+        next_check_utc, current_interval_secs = _load_sync_polling_row(config_dir, "test:sync1")
+        assert next_check_utc is not None
+        assert current_interval_secs == 1800
+        assert not list((brain_root / "knowledge" / "area").glob("*.md"))
+
+    def test_sync_requests_selected_source_by_url(self, cli: CliRunner, brain_root: Path) -> None:
+        cli.run("init", str(brain_root))
+        cli.run("add", "test://doc/sync2", "--path", "area", "--root", str(brain_root))
+
+        result = cli.run("sync", "test://doc/sync2", "--root", str(brain_root))
+
+        assert result.returncode == 0, result.stderr
+        assert _stderr_messages(result) == [
+            "Result: requested",
+            "  Requested: test:sync2",
+            "  Daemon: stopped",
+            "  Requested immediate polling for 1 active source(s). "
+            "The next `brain-sync run` will pick this up. "
+            "Other already-due sources may also be processed in the same daemon cycle.",
+        ]
+
+    def test_sync_with_no_selectors_requests_all_active_sources(
+        self,
+        cli: CliRunner,
+        brain_root: Path,
+        config_dir: Path,
+    ) -> None:
+        cli.run("init", str(brain_root))
+        cli.run("add", "test://doc/sync-all-1", "--path", "area", "--root", str(brain_root))
+        cli.run("add", "test://doc/sync-all-2", "--path", "area", "--root", str(brain_root))
+
+        result = cli.run("sync", "--root", str(brain_root))
+
+        assert result.returncode == 0, result.stderr
+        assert _stderr_messages(result) == [
+            "Result: requested",
+            "  Scope: all active sources",
+            "  Daemon: stopped",
+            "  Requested immediate polling for all active sources. "
+            "The next `brain-sync run` will pick this up. "
+            "Other already-due sources may also be processed in the same daemon cycle.",
+        ]
+        assert _load_sync_polling_row(config_dir, "test:sync-all-1")[0] is not None
+        assert _load_sync_polling_row(config_dir, "test:sync-all-2")[0] is not None
+
+    def test_sync_missing_source_returns_handled_not_found(self, cli: CliRunner, brain_root: Path) -> None:
+        cli.run("init", str(brain_root))
+        cli.run("add", "test://doc/sync-missing", "--path", "area", "--root", str(brain_root))
+        mark_manifest_missing(brain_root, "test:sync-missing", "2026-03-26T00:00:00+00:00")
+
+        result = cli.run("sync", "test:sync-missing", "--root", str(brain_root))
+
+        assert result.returncode == 1
+        assert _stderr_messages(result) == [
+            "Result: not_found",
+            "  Unresolved: test:sync-missing",
+            "  Daemon: stopped",
+            "  Selectors did not resolve to active registered sources: test:sync-missing",
+        ]
+
+    def test_sync_with_no_active_sources_returns_handled_no_active_sources(
+        self,
+        cli: CliRunner,
+        brain_root: Path,
+    ) -> None:
+        cli.run("init", str(brain_root))
+        result = cli.run("sync", "--root", str(brain_root))
+
+        assert result.returncode == 0
+        assert _stderr_messages(result) == [
+            "Result: no_active_sources",
+            "  Scope: all active sources",
+            "  Daemon: stopped",
+            "  No active sources were eligible for immediate polling.",
+        ]
 
 
 # ---------------------------------------------------------------------------

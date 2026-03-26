@@ -9,11 +9,14 @@ Requires: Phase 0A (readiness signal) + Phase 1 (test source adapter).
 from __future__ import annotations
 
 import sqlite3
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from brain_sync.runtime.repository import SyncProgress, save_source_sync_progress
 from brain_sync.sources.test import register_test_root, reset_test_adapter
 from tests.e2e.harness.assertions import assert_brain_consistent
 from tests.e2e.harness.brain import BrainFixture
@@ -231,3 +234,48 @@ class TestSourceErrorBackoff:
         # The source should have eventually synced (after recovery)
         # or at least the brain should be consistent
         assert_brain_consistent(brain.root)
+
+
+class TestSyncCommandDaemonCoexistence:
+    """Sync command requests should be picked up promptly by a running daemon."""
+
+    def test_sync_command_requests_immediate_poll_while_daemon_is_running(
+        self,
+        brain: BrainFixture,
+        cli: CliRunner,
+        daemon: DaemonProcess,
+    ) -> None:
+        cli.run("add", "test://doc/daemon-request", "--path", "request", "--root", str(brain.root))
+        save_source_sync_progress(
+            brain.root,
+            "test:daemon-request",
+            SyncProgress(
+                canonical_id="test:daemon-request",
+                current_interval_secs=1800,
+                next_check_utc=(datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                interval_seconds=1800,
+            ),
+        )
+        script_test_source(
+            brain.root,
+            "test:daemon-request",
+            [{"status": "CHANGED", "body": "# Requested\n\nDaemon picked this up.", "title": "Requested"}],
+        )
+        register_test_root("test:daemon-request", brain.root)
+
+        daemon.start()
+        daemon.wait_for_ready()
+        try:
+            time.sleep(3)
+            assert not (brain.knowledge / "request" / "tdaemon-request-requested.md").exists()
+
+            result = cli.run("sync", "test:daemon-request", "--root", str(brain.root))
+
+            assert result.returncode == 0
+            assert "Result: requested" in result.stderr
+            assert "Daemon: running" in result.stderr
+            assert daemon.is_running() is True
+
+            wait_for_file(brain.knowledge / "request" / "tdaemon-request-requested.md", timeout=20)
+        finally:
+            daemon.shutdown()

@@ -1468,6 +1468,28 @@ def _iter_sync_progress_items(state: object) -> list[tuple[str, _SyncProgressLik
     return list(sources.items())  # type: ignore[return-value]
 
 
+def _upsert_sync_progress_row(conn: sqlite3.Connection, canonical_id: str, ss: _SyncProgressLike) -> None:
+    conn.execute(
+        "INSERT INTO sync_polling "
+        "(canonical_id, last_checked_utc, "
+        "current_interval_secs, "
+        "next_check_utc, interval_seconds) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(canonical_id) DO UPDATE SET "
+        "last_checked_utc=excluded.last_checked_utc, "
+        "current_interval_secs=excluded.current_interval_secs, "
+        "next_check_utc=excluded.next_check_utc, "
+        "interval_seconds=excluded.interval_seconds",
+        (
+            canonical_id,
+            ss.last_checked_utc,
+            ss.current_interval_secs,
+            ss.next_check_utc,
+            ss.interval_seconds,
+        ),
+    )
+
+
 def save_sync_progress(root: Path, state: object) -> None:
     """Save sync polling state for all sources to sync_polling."""
     conn = _connect(root)
@@ -1475,31 +1497,45 @@ def save_sync_progress(root: Path, state: object) -> None:
         for key, ss in _iter_sync_progress_items(state):
             if not _has_sync_progress(ss):
                 continue
-            conn.execute(
-                "INSERT INTO sync_polling "
-                "(canonical_id, last_checked_utc, "
-                "current_interval_secs, "
-                "next_check_utc, interval_seconds) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(canonical_id) DO UPDATE SET "
-                "last_checked_utc=excluded.last_checked_utc, "
-                "current_interval_secs=excluded.current_interval_secs, "
-                "next_check_utc=excluded.next_check_utc, "
-                "interval_seconds=excluded.interval_seconds",
-                (
-                    key,
-                    ss.last_checked_utc,
-                    ss.current_interval_secs,
-                    ss.next_check_utc,
-                    ss.interval_seconds,
-                ),
-            )
+            _upsert_sync_progress_row(conn, key, ss)
         conn.commit()
     finally:
         conn.close()
 
 
 save_state = save_sync_progress  # deprecated alias
+
+
+def save_source_sync_progress(root: Path, canonical_id: str, source_state: _SyncProgressLike) -> None:
+    """Persist sync polling state for one source only."""
+    if not _has_sync_progress(source_state):
+        return
+    conn = _connect(root)
+    try:
+        _upsert_sync_progress_row(conn, canonical_id, source_state)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def request_source_polls_now(root: Path, canonical_ids: list[str], *, requested_utc: str | None = None) -> int:
+    """Mark the listed active sources due immediately by setting next_check_utc."""
+    if not canonical_ids:
+        return 0
+    due_utc = requested_utc or _utc_now()
+    conn = _connect(root)
+    try:
+        for canonical_id in canonical_ids:
+            conn.execute(
+                "INSERT INTO sync_polling (canonical_id, current_interval_secs, next_check_utc) "
+                "VALUES (?, 1800, ?) "
+                "ON CONFLICT(canonical_id) DO UPDATE SET next_check_utc=excluded.next_check_utc",
+                (canonical_id, due_utc),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(canonical_ids)
 
 
 def ensure_source_polling(root: Path, canonical_id: str, *, current_interval_secs: int = 1800) -> None:
@@ -2668,6 +2704,10 @@ def _daemon_guard_path() -> Path:
     return _daemon_status_file().parent / "daemon.lock"
 
 
+def _daemon_rescan_flag_path() -> Path:
+    return _daemon_status_file().parent / "daemon-rescan.flag"
+
+
 def _lock_daemon_handle(handle: IO[str]) -> bool:
     if os.name == "nt":
         import msvcrt
@@ -2757,6 +2797,37 @@ def ensure_no_active_daemon() -> None:
         return
     if _pid_is_running(pid):
         raise DaemonAlreadyRunningError(pid)
+
+
+def is_daemon_running_for_root(root: Path) -> bool:
+    """Return True when a live daemon is attached to this runtime root."""
+    current = read_daemon_status()
+    if current is None or current.get("status") not in {"starting", "ready"}:
+        return False
+    pid = current.get("pid")
+    brain_root = current.get("brain_root")
+    if not isinstance(pid, int) or not isinstance(brain_root, str):
+        return False
+    return brain_root == _daemon_root_id(root) and _pid_is_running(pid)
+
+
+def request_daemon_rescan() -> None:
+    """Request that a running daemon reload active sync state on its next loop."""
+    flag_path = _daemon_rescan_flag_path()
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    flag_path.write_text(_utc_now(), encoding="utf-8")
+
+
+def consume_daemon_rescan_request() -> bool:
+    """Return True once per requested daemon rescan, coalescing repeated nudges."""
+    flag_path = _daemon_rescan_flag_path()
+    if not flag_path.exists():
+        return False
+    try:
+        flag_path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def read_daemon_status() -> dict | None:

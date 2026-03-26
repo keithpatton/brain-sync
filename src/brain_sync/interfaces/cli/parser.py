@@ -140,6 +140,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override target path for discovered children (use '.' for same level as parent)",
     )
 
+    # --- sync ---
+    p_sync = sub.add_parser("sync", help="Request immediate polling for active sources")
+    p_sync.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_sync.add_argument(
+        "sources",
+        nargs="*",
+        help="Canonical IDs or URLs of sources to request immediately (omit to target all active sources)",
+    )
+
     # --- reconcile ---
     p_reconcile = sub.add_parser(
         "reconcile",

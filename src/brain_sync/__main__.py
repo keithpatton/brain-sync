@@ -25,6 +25,7 @@ def main() -> None:
         handle_remove_file,
         handle_run,
         handle_status,
+        handle_sync,
         handle_update,
         handle_update_skill,
     )
@@ -61,6 +62,7 @@ def main() -> None:
         "list": handle_list,
         "move": handle_move,
         "update": handle_update,
+        "sync": handle_sync,
         "reconcile": handle_reconcile,
         "finalize-missing": handle_finalize_missing,
         "status": handle_status,
