@@ -24,7 +24,7 @@ from brain_sync.runtime.repository import (
     RegenLock,
     RegenOwnershipError,
     acquire_regen_ownership,
-    is_daemon_running_for_root,
+    ensure_no_active_daemon,
     read_daemon_status,
     release_regen_ownership,
     save_regen_lock,
@@ -118,7 +118,7 @@ class TestRuntimeState:
         assert "root" in inspect.signature(write_daemon_status).parameters
         assert "root" not in inspect.signature(read_daemon_status).parameters
 
-    def test_is_daemon_running_for_root_is_runtime_scoped_boolean(self, tmp_path: Path) -> None:
+    def test_ensure_no_active_daemon_uses_live_status_snapshot(self, tmp_path: Path) -> None:
         with (
             patch.object(
                 state_module,
@@ -127,9 +127,11 @@ class TestRuntimeState:
             ),
             patch.object(state_module, "_pid_is_running", return_value=True),
         ):
-            assert is_daemon_running_for_root(tmp_path) is True
+            with pytest.raises(state_module.DaemonAlreadyRunningError) as excinfo:
+                ensure_no_active_daemon()
+        assert excinfo.value.pid == 1234
 
-    def test_is_daemon_running_for_root_falls_back_to_live_guard(self, tmp_path: Path) -> None:
+    def test_ensure_no_active_daemon_falls_back_to_live_guard(self, tmp_path: Path) -> None:
         lock_path = tmp_path / "daemon.lock"
         lock_path.write_text(
             json.dumps({"pid": 1234, "daemon_id": "daemon:1234:test", "brain_root": "c:/brain"}) + "\n",
@@ -142,7 +144,22 @@ class TestRuntimeState:
             patch.object(state_module, "_lock_daemon_handle", return_value=False),
             patch.object(state_module, "_pid_is_running", return_value=True),
         ):
-            assert is_daemon_running_for_root(tmp_path) is True
+            with pytest.raises(state_module.DaemonAlreadyRunningError) as excinfo:
+                ensure_no_active_daemon()
+        assert excinfo.value.pid == 1234
+
+    def test_ensure_no_active_daemon_fails_closed_when_guard_is_locked_without_valid_pid(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / "daemon.lock"
+        lock_path.write_text("{not-json}\n", encoding="utf-8")
+
+        with (
+            patch.object(state_module, "read_daemon_status", return_value=None),
+            patch.object(state_module, "_daemon_guard_path", return_value=lock_path),
+            patch.object(state_module, "_lock_daemon_handle", return_value=False),
+        ):
+            with pytest.raises(state_module.DaemonAlreadyRunningError) as excinfo:
+                ensure_no_active_daemon()
+        assert excinfo.value.pid is None
 
     def test_pid_is_running_windows_uses_process_handle_probe(self) -> None:
         class _Kernel32:
@@ -177,15 +194,7 @@ class TestRuntimeState:
                 return _Ref()
 
         with patch.dict("sys.modules", {"ctypes": _Ctypes}):
-            assert state_module._pid_is_running_windows(1234) is True
-
-    def test_pid_is_running_dispatches_to_windows_probe(self) -> None:
-        with (
-            patch.object(state_module.os, "name", "nt"),
-            patch.object(state_module, "_pid_is_running_windows", return_value=True) as probe,
-        ):
             assert state_module._pid_is_running(1234) is True
-            probe.assert_called_once_with(1234)
 
     def test_pid_is_running_non_windows_uses_kill_probe(self) -> None:
         with (
