@@ -24,6 +24,7 @@ from brain_sync.runtime.repository import (
     RegenLock,
     RegenOwnershipError,
     acquire_regen_ownership,
+    is_daemon_running_for_root,
     read_daemon_status,
     release_regen_ownership,
     save_regen_lock,
@@ -116,6 +117,32 @@ class TestRuntimeState:
     def test_daemon_status_writer_accepts_root_but_reader_stays_config_dir_scoped(self) -> None:
         assert "root" in inspect.signature(write_daemon_status).parameters
         assert "root" not in inspect.signature(read_daemon_status).parameters
+
+    def test_is_daemon_running_for_root_is_runtime_scoped_boolean(self, tmp_path: Path) -> None:
+        with (
+            patch.object(
+                state_module,
+                "read_daemon_status",
+                return_value={"pid": 1234, "status": "ready", "brain_root": "c:/other/root"},
+            ),
+            patch.object(state_module, "_pid_is_running", return_value=True),
+        ):
+            assert is_daemon_running_for_root(tmp_path) is True
+
+    def test_is_daemon_running_for_root_falls_back_to_live_guard(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / "daemon.lock"
+        lock_path.write_text(
+            json.dumps({"pid": 1234, "daemon_id": "daemon:1234:test", "brain_root": "c:/brain"}) + "\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(state_module, "read_daemon_status", return_value=None),
+            patch.object(state_module, "_daemon_guard_path", return_value=lock_path),
+            patch.object(state_module, "_lock_daemon_handle", return_value=False),
+            patch.object(state_module, "_pid_is_running", return_value=True),
+        ):
+            assert is_daemon_running_for_root(tmp_path) is True
 
     def test_supported_runtime_db_is_migrated_in_place(self, tmp_path: Path) -> None:
         db_path = runtime_config.runtime_db_file_path()

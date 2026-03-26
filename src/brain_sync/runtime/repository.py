@@ -2752,6 +2752,34 @@ def _read_daemon_guard_payload(lock_path: Path) -> dict | None:
         return None
 
 
+def _live_daemon_runtime_payload() -> dict | None:
+    current = read_daemon_status()
+    if current is not None and current.get("status") in {"starting", "ready"}:
+        pid = current.get("pid")
+        if isinstance(pid, int) and _pid_is_running(pid):
+            return current
+
+    lock_path = _daemon_guard_path()
+    if not lock_path.exists():
+        return None
+
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        if _lock_daemon_handle(handle):
+            _unlock_daemon_handle(handle)
+            return None
+    finally:
+        handle.close()
+
+    payload = _read_daemon_guard_payload(lock_path)
+    if not isinstance(payload, dict):
+        return None
+    pid = payload.get("pid")
+    if not isinstance(pid, int) or not _pid_is_running(pid):
+        return None
+    return payload
+
+
 def acquire_daemon_start_guard(root: Path) -> DaemonStartGuard:
     lock_path = _daemon_guard_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2787,28 +2815,17 @@ def release_daemon_start_guard(guard: DaemonStartGuard) -> None:
 
 def ensure_no_active_daemon() -> None:
     """Fail closed when a live daemon is already attached to this runtime."""
-    current = read_daemon_status()
+    current = _live_daemon_runtime_payload()
     if current is None:
         return
-    if current.get("status") not in {"starting", "ready"}:
-        return
     pid = current.get("pid")
-    if not isinstance(pid, int):
-        return
-    if _pid_is_running(pid):
-        raise DaemonAlreadyRunningError(pid)
+    raise DaemonAlreadyRunningError(pid if isinstance(pid, int) else None)
 
 
 def is_daemon_running_for_root(root: Path) -> bool:
-    """Return True when a live daemon is attached to this runtime root."""
-    current = read_daemon_status()
-    if current is None or current.get("status") not in {"starting", "ready"}:
-        return False
-    pid = current.get("pid")
-    brain_root = current.get("brain_root")
-    if not isinstance(pid, int) or not isinstance(brain_root, str):
-        return False
-    return brain_root == _daemon_root_id(root) and _pid_is_running(pid)
+    """Return True when a live daemon is attached to this runtime."""
+    del root
+    return _live_daemon_runtime_payload() is not None
 
 
 def request_daemon_rescan() -> None:
