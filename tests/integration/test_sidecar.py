@@ -160,6 +160,36 @@ class TestSidecarAfterRegen:
         assert state.regen_status == "idle"
         assert state.owner_id is None
 
+    async def test_skipped_unchanged_with_owner_id_releases_runtime_slot(self, brain: Path) -> None:
+        kdir = brain / "knowledge" / "project"
+        kdir.mkdir(parents=True)
+        (kdir / "doc.md").write_text("# Doc\n\nContent.", encoding="utf-8")
+        backend = FakeBackend(mode="stable")
+        config = _config()
+
+        first = await regen_single_folder(
+            brain,
+            "project",
+            config=config,
+            backend=backend,
+            owner_id="session-owner",
+        )
+        assert first.action == "regenerated"
+
+        second = await regen_single_folder(
+            brain,
+            "project",
+            config=config,
+            backend=backend,
+            owner_id="session-owner",
+        )
+        assert second.action == "skipped_unchanged"
+
+        state = load_insight_state(brain, "project")
+        assert state is not None
+        assert state.regen_status == "idle"
+        assert state.owner_id is None
+
     async def test_backfill_writes_sidecar(self, brain: Path) -> None:
         kdir = brain / "knowledge" / "project"
         kdir.mkdir(parents=True)

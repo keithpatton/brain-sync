@@ -1126,6 +1126,24 @@ async def regen_single_folder(
             current_path or "(root)",
             new_content_hash[:12],
         )
+        _claim_regen_ownership_or_raise(root, current_path, owner_id)
+        if owner_id is not None:
+            lock = load_regen_lock(root, current_path)
+        _persist_area_state_or_fail(
+            root,
+            repository,
+            knowledge_path=current_path,
+            session_id=session_id,
+            owner_id=owner_id,
+            regen_started_utc=lock.regen_started_utc if lock else None,
+            content_hash=new_content_hash,
+            summary_hash=meta.summary_hash if meta else None,
+            structure_hash=new_structure_hash,
+            last_regen_utc=meta.last_regen_utc if meta else None,
+            regen_status="idle",
+            release_owner_id=owner_id,
+            error_reason=lock.error_reason if lock else None,
+        )
         unchanged_rule = propagation_rule("skipped_unchanged")
         _record_regen_event(
             root=root,
