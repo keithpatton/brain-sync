@@ -531,7 +531,6 @@ def handle_sync(args) -> None:
         log.info("  Requested: %s", ", ".join(result.requested_sources))
     if result.unresolved_sources:
         log.info("  Unresolved: %s", ", ".join(result.unresolved_sources))
-    log.info("  Daemon: %s", "running" if result.daemon_running else "stopped")
     if result.message:
         log.info("  %s", result.message)
 

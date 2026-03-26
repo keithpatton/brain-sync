@@ -144,6 +144,57 @@ class TestRuntimeState:
         ):
             assert is_daemon_running_for_root(tmp_path) is True
 
+    def test_pid_is_running_windows_uses_process_handle_probe(self) -> None:
+        class _Kernel32:
+            def OpenProcess(self, _access: int, _inherit: bool, _pid: int) -> int:
+                return 123
+
+            def GetExitCodeProcess(self, _handle: int, exit_code) -> int:
+                exit_code._obj.value = 259
+                return 1
+
+            def CloseHandle(self, _handle: int) -> int:
+                return 1
+
+        class _Windll:
+            kernel32 = _Kernel32()
+
+        class _Ctypes:
+            windll = _Windll()
+
+            @staticmethod
+            def c_ulong() -> object:
+                class _Value:
+                    value = 0
+
+                return _Value()
+
+            @staticmethod
+            def byref(value: object) -> object:
+                class _Ref:
+                    _obj = value
+
+                return _Ref()
+
+        with patch.dict("sys.modules", {"ctypes": _Ctypes}):
+            assert state_module._pid_is_running_windows(1234) is True
+
+    def test_pid_is_running_dispatches_to_windows_probe(self) -> None:
+        with (
+            patch.object(state_module.os, "name", "nt"),
+            patch.object(state_module, "_pid_is_running_windows", return_value=True) as probe,
+        ):
+            assert state_module._pid_is_running(1234) is True
+            probe.assert_called_once_with(1234)
+
+    def test_pid_is_running_non_windows_uses_kill_probe(self) -> None:
+        with (
+            patch.object(state_module.os, "name", "posix"),
+            patch.object(state_module.os, "kill") as kill_probe,
+        ):
+            assert state_module._pid_is_running(1234) is True
+            kill_probe.assert_called_once_with(1234, 0)
+
     def test_supported_runtime_db_is_migrated_in_place(self, tmp_path: Path) -> None:
         db_path = runtime_config.runtime_db_file_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)

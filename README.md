@@ -121,10 +121,9 @@ next-check time to now.
 - with one or more selectors, only those active sources are marked due
   immediately
 
-The command does not fetch remote content itself. A running daemon will notice
-the request on its next loop; otherwise the next `brain-sync run` will pick it
-up. Requested sources become immediately eligible for polling, but other
-already-due sources may also be processed in the same daemon cycle.
+The command does not fetch remote content itself. It only updates
+`sync_polling` so the targeted sources are due on the next daemon refresh or
+the next `brain-sync run`.
 
 ### Add a Local File
 
@@ -290,7 +289,7 @@ python -m brain_sync.interfaces.mcp.server
 | `brain-sync list [--path <filter>] [--status]` | List registered sources and print `State: <knowledge_state>` for each source |
 | `brain-sync move <canonical-id> --to <new-path>` | Move one registered source by exact canonical ID; may return handled `not_found` or `lease_conflict` |
 | `brain-sync update <canonical-id-or-url> [...]` | Update source settings |
-| `brain-sync sync [<canonical-id-or-url> ...]` | Request immediate polling for all active sources or the listed active sources; handled `not_found` is returned when any listed selector is not currently active |
+| `brain-sync sync [<canonical-id-or-url> ...]` | Schedule priority polling for all active sources or the listed active sources by updating `sync_polling`; handled `not_found` is returned when any listed selector is not currently active |
 | `brain-sync reconcile [--root <path>]` | Reconcile filesystem moves |
 | `brain-sync finalize-missing <canonical-id>` | Explicitly finalize one missing registered source after revalidation; requires an exact canonical ID, not a URL or path |
 | `brain-sync status [--root <path>]` | Show daemon and sync status |

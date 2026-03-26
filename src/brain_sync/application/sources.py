@@ -11,9 +11,7 @@ from brain_sync.brain.fileops import canonical_prefix, path_is_dir, rglob_paths
 from brain_sync.brain.manifest import read_all_source_manifests, read_source_manifest
 from brain_sync.runtime.operational_events import OperationalEventType
 from brain_sync.runtime.repository import (
-    is_daemon_running_for_root,
     record_brain_operational_event,
-    request_daemon_rescan,
     request_source_polls_now,
 )
 from brain_sync.sync.finalization import FinalizationResult
@@ -107,7 +105,6 @@ class SyncSourceResult:
     result_state: str
     requested_sources: tuple[str, ...] = ()
     requested_all: bool = False
-    daemon_running: bool = False
     unresolved_sources: tuple[str, ...] = ()
     message: str | None = None
 
@@ -136,19 +133,11 @@ def _resolve_active_source_selector(
     return None, None, None, None
 
 
-def _sync_request_message(*, count: int, requested_all: bool, daemon_running: bool) -> str:
+def _sync_request_message(*, count: int, requested_all: bool) -> str:
     if count == 0:
         return "No active sources were eligible for immediate polling."
     scope = "all active sources" if requested_all else f"{count} active source(s)"
-    follow_up = (
-        "A running daemon will pick this up at the next loop."
-        if daemon_running
-        else "The next `brain-sync run` will pick this up."
-    )
-    return (
-        f"Requested immediate polling for {scope}. {follow_up} "
-        "Other already-due sources may also be processed in the same daemon cycle."
-    )
+    return f"Priority sync scheduled for {scope}."
 
 
 def sync_source(
@@ -158,22 +147,17 @@ def sync_source(
 ) -> SyncSourceResult:
     root = _require_root(root)
     state = load_active_sync_state(root)
-    daemon_running = is_daemon_running_for_root(root)
 
     if not sources:
         requested_sources = tuple(sorted(state.sources))
         requested_count = request_source_polls_now(root, list(requested_sources))
-        if daemon_running and requested_count:
-            request_daemon_rescan()
         return SyncSourceResult(
             result_state="requested" if requested_count else "no_active_sources",
             requested_sources=requested_sources,
             requested_all=True,
-            daemon_running=daemon_running,
             message=_sync_request_message(
                 count=requested_count,
                 requested_all=True,
-                daemon_running=daemon_running,
             ),
         )
 
@@ -194,23 +178,18 @@ def sync_source(
         unresolved_display = ", ".join(unresolved)
         return SyncSourceResult(
             result_state="not_found",
-            daemon_running=daemon_running,
             unresolved_sources=tuple(unresolved),
             message=f"Selectors did not resolve to active registered sources: {unresolved_display}",
         )
 
     requested_sources = tuple(dict.fromkeys(requested))
     requested_count = request_source_polls_now(root, list(requested_sources))
-    if daemon_running and requested_count:
-        request_daemon_rescan()
     return SyncSourceResult(
         result_state="requested",
         requested_sources=requested_sources,
-        daemon_running=daemon_running,
         message=_sync_request_message(
             count=requested_count,
             requested_all=False,
-            daemon_running=daemon_running,
         ),
     )
 

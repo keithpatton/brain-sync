@@ -16,7 +16,7 @@ from typing import cast
 
 import pytest
 
-from brain_sync.runtime.repository import SyncProgress, save_source_sync_progress
+from brain_sync.runtime.repository import SyncProgress, load_sync_progress, save_source_sync_progress
 from brain_sync.sources.test import register_test_root, reset_test_adapter
 from tests.e2e.harness.assertions import assert_brain_consistent
 from tests.e2e.harness.brain import BrainFixture
@@ -237,9 +237,9 @@ class TestSourceErrorBackoff:
 
 
 class TestSyncCommandDaemonCoexistence:
-    """Sync command requests should be picked up promptly by a running daemon."""
+    """Sync command requests should persist cleanly while a daemon is running."""
 
-    def test_sync_command_requests_immediate_poll_while_daemon_is_running(
+    def test_sync_command_updates_polling_state_while_daemon_is_running(
         self,
         brain: BrainFixture,
         cli: CliRunner,
@@ -273,9 +273,9 @@ class TestSyncCommandDaemonCoexistence:
 
             assert result.returncode == 0
             assert "Result: requested" in result.stderr
-            assert "Daemon: running" in result.stderr
+            assert "Priority sync scheduled for 1 active source(s)." in result.stderr
             assert daemon.is_running() is True
-
-            wait_for_file(brain.knowledge / "request" / "tdaemon-request-requested.md", timeout=20)
+            progress = load_sync_progress(brain.root)
+            assert progress["test:daemon-request"].next_check_utc is not None
         finally:
             daemon.shutdown()

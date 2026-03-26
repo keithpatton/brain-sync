@@ -1525,6 +1525,7 @@ def request_source_polls_now(root: Path, canonical_ids: list[str], *, requested_
     due_utc = requested_utc or _utc_now()
     conn = _connect(root)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         for canonical_id in canonical_ids:
             conn.execute(
                 "INSERT INTO sync_polling (canonical_id, current_interval_secs, next_check_utc) "
@@ -2678,9 +2679,29 @@ class DaemonAlreadyRunningError(RuntimeError):
             super().__init__(f"Another brain-sync daemon is already running (pid {pid})")
 
 
+def _pid_is_running_windows(pid: int) -> bool:
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) == 0:
+            return False
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return _pid_is_running_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -2702,10 +2723,6 @@ def _daemon_root_id(root: Path) -> str:
 
 def _daemon_guard_path() -> Path:
     return _daemon_status_file().parent / "daemon.lock"
-
-
-def _daemon_rescan_flag_path() -> Path:
-    return _daemon_status_file().parent / "daemon-rescan.flag"
 
 
 def _lock_daemon_handle(handle: IO[str]) -> bool:
@@ -2826,25 +2843,6 @@ def is_daemon_running_for_root(root: Path) -> bool:
     """Return True when a live daemon is attached to this runtime."""
     del root
     return _live_daemon_runtime_payload() is not None
-
-
-def request_daemon_rescan() -> None:
-    """Request that a running daemon reload active sync state on its next loop."""
-    flag_path = _daemon_rescan_flag_path()
-    flag_path.parent.mkdir(parents=True, exist_ok=True)
-    flag_path.write_text(_utc_now(), encoding="utf-8")
-
-
-def consume_daemon_rescan_request() -> bool:
-    """Return True once per requested daemon rescan, coalescing repeated nudges."""
-    flag_path = _daemon_rescan_flag_path()
-    if not flag_path.exists():
-        return False
-    try:
-        flag_path.unlink()
-    except FileNotFoundError:
-        return False
-    return True
 
 
 def read_daemon_status() -> dict | None:

@@ -401,10 +401,7 @@ class TestSync:
         assert _stderr_messages(result) == [
             "Result: requested",
             "  Requested: test:sync1",
-            "  Daemon: stopped",
-            "  Requested immediate polling for 1 active source(s). "
-            "The next `brain-sync run` will pick this up. "
-            "Other already-due sources may also be processed in the same daemon cycle.",
+            "  Priority sync scheduled for 1 active source(s).",
         ]
         next_check_utc, current_interval_secs = _load_sync_polling_row(config_dir, "test:sync1")
         assert next_check_utc is not None
@@ -421,10 +418,7 @@ class TestSync:
         assert _stderr_messages(result) == [
             "Result: requested",
             "  Requested: test:sync2",
-            "  Daemon: stopped",
-            "  Requested immediate polling for 1 active source(s). "
-            "The next `brain-sync run` will pick this up. "
-            "Other already-due sources may also be processed in the same daemon cycle.",
+            "  Priority sync scheduled for 1 active source(s).",
         ]
 
     def test_sync_with_no_selectors_requests_all_active_sources(
@@ -443,10 +437,7 @@ class TestSync:
         assert _stderr_messages(result) == [
             "Result: requested",
             "  Scope: all active sources",
-            "  Daemon: stopped",
-            "  Requested immediate polling for all active sources. "
-            "The next `brain-sync run` will pick this up. "
-            "Other already-due sources may also be processed in the same daemon cycle.",
+            "  Priority sync scheduled for all active sources.",
         ]
         assert _load_sync_polling_row(config_dir, "test:sync-all-1")[0] is not None
         assert _load_sync_polling_row(config_dir, "test:sync-all-2")[0] is not None
@@ -462,7 +453,6 @@ class TestSync:
         assert _stderr_messages(result) == [
             "Result: not_found",
             "  Unresolved: test:sync-missing",
-            "  Daemon: stopped",
             "  Selectors did not resolve to active registered sources: test:sync-missing",
         ]
 
@@ -478,7 +468,6 @@ class TestSync:
         assert _stderr_messages(result) == [
             "Result: no_active_sources",
             "  Scope: all active sources",
-            "  Daemon: stopped",
             "  No active sources were eligible for immediate polling.",
         ]
 

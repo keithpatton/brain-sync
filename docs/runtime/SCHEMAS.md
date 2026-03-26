@@ -42,7 +42,6 @@ Current runtime artifacts:
 |---|---|
 | `config.json` | machine-local config, active-brain selection, credentials, and local defaults |
 | `daemon.json` | current daemon lifecycle snapshot |
-| `daemon-rescan.flag` | best-effort request for the running daemon to reload active sync state promptly |
 | `daemon.lock` | durable config-dir daemon startup guard plus best-effort lock metadata |
 | `db/brain-sync.sqlite` | runtime coordination, scheduling, and telemetry store |
 | `logs/` | rotating local logs |
@@ -95,20 +94,6 @@ runtime model enforces daemon exclusivity per config directory via
 | `daemon_id` | string | Runtime-unique daemon session identifier for this process start. |
 | `brain_root` | string | Normalized attached brain-root path for the daemon that wrote the snapshot. |
 | `status` | string | Current daemon status. Typical values: `starting`, `ready`, `stopped`. |
-
----
-
-## `daemon-rescan.flag`
-
-`daemon-rescan.flag` is an optional best-effort nudge file in the runtime
-directory. It is not authoritative daemon status and it is not a queue.
-
-When present, it means some local caller requested that the running daemon
-reload active sync state on its next loop so newly due `sync_polling` rows can
-be noticed promptly. The daemon consumes the flag by deleting it after one
-reload attempt. Repeated requests coalesce naturally into one pending flag.
-
----
 
 ## Runtime DB Schema
 

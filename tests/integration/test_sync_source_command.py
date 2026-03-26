@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -38,8 +37,7 @@ def test_sync_source_requests_selected_active_source_without_materializing(brain
     assert sync_result.result_state == "requested"
     assert sync_result.requested_sources == (result.canonical_id,)
     assert sync_result.requested_all is False
-    assert sync_result.daemon_running is False
-    assert "Requested immediate polling for 1 active source(s)." in (sync_result.message or "")
+    assert sync_result.message == "Priority sync scheduled for 1 active source(s)."
     progress = load_sync_progress(brain)[result.canonical_id]
     assert progress.last_checked_utc is None
     assert progress.next_check_utc is not None
@@ -81,15 +79,10 @@ def test_sync_source_returns_not_found_for_inactive_selector(brain: Path) -> Non
     assert "active registered sources" in (sync_result.message or "")
 
 
-def test_sync_source_requests_daemon_rescan_when_daemon_is_running(brain: Path) -> None:
+def test_sync_source_requests_selected_source_without_extra_runtime_side_effects(brain: Path) -> None:
     result = add_source(root=brain, url="test://doc/sync-rescan", target_path="area")
 
-    with (
-        patch("brain_sync.application.sources.is_daemon_running_for_root", return_value=True),
-        patch("brain_sync.application.sources.request_daemon_rescan") as request_rescan,
-    ):
-        sync_result = sync_source(root=brain, sources=[result.canonical_id])
+    sync_result = sync_source(root=brain, sources=[result.canonical_id])
 
     assert sync_result.result_state == "requested"
-    assert sync_result.daemon_running is True
-    request_rescan.assert_called_once_with()
+    assert sync_result.message == "Priority sync scheduled for 1 active source(s)."

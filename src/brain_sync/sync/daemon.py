@@ -19,7 +19,6 @@ from brain_sync.runtime.paths import ensure_safe_temp_root_runtime
 from brain_sync.runtime.repository import (
     DaemonAlreadyRunningError,
     acquire_daemon_start_guard,
-    consume_daemon_rescan_request,
     ensure_lifecycle_session,
     prune_operational_events,
     prune_token_events,
@@ -236,7 +235,7 @@ async def run(root: Path) -> None:
 
                         # 2. Periodic state reload (pick up sources added via CLI)
                         now = time.monotonic()
-                        if consume_daemon_rescan_request() or now - last_rescan >= RESCAN_INTERVAL:
+                        if now - last_rescan >= RESCAN_INTERVAL:
                             state = load_active_sync_state(root)
                             _sync_scheduler_state(state, scheduler)
                             last_rescan = now
@@ -347,10 +346,6 @@ async def run(root: Path) -> None:
                         write_daemon_status(root=root, pid=pid, status="stopped", daemon_id=guard.daemon_id)
                     except Exception:
                         log.warning("Failed to write daemon stopped status", exc_info=True)
-                    try:
-                        consume_daemon_rescan_request()
-                    except Exception:
-                        log.warning("Failed to clear pending daemon rescan request on shutdown", exc_info=True)
                     log.info("brain-sync stopped")
     finally:
         try:
