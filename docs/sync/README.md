@@ -66,7 +66,8 @@ logs a warning and does not stop the daemon from loading active sync state.
 Polling uses two different freshness concepts on purpose:
 
 - portable `materialized_utc` remains local brain truth about when this brain
-  last successfully materialized the source
+  last successfully materialized the source; it records successful full
+  materialization work rather than upstream-change semantics
 - runtime `remote_last_changed_utc` is a machine-local scheduling hint for
   when the adapter last confirmed an upstream change that affects synchronized
   content

@@ -230,6 +230,14 @@ async def prepare_source_sync(
 
     # Full fetch
     prior_adapter_state = check.adapter_state if check else None
+    if source_type.value == "googledocs" and existing_file is not None:
+        try:
+            existing_markdown = strip_managed_header(read_text(existing_file, encoding="utf-8"))
+        except OSError:
+            existing_markdown = None
+        if existing_markdown is not None:
+            prior_adapter_state = dict(prior_adapter_state or {})
+            prior_adapter_state["existing_materialized_markdown"] = existing_markdown
     result = await adapter.fetch(source_state, auth, http_client, root, prior_adapter_state)
 
     # Re-resolve filename with title from fetch

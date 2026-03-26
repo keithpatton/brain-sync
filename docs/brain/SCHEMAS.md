@@ -43,7 +43,7 @@ also reused for per-source attachment directories.
 | `knowledge_state` | string | yes | brain normative state | Durable lifecycle state for the knowledge file. |
 | `content_hash` | string or null | conditional | brain reconciliation baseline | Last successful materialized content hash. |
 | `remote_fingerprint` | string or null | conditional | brain reconciliation baseline | Last successful adapter-owned freshness token. |
-| `materialized_utc` | string or null | conditional | brain reconciliation baseline | UTC time when the current materialized source baseline was accepted into portable brain state after successful full materialization. |
+| `materialized_utc` | string or null | conditional | brain reconciliation baseline | UTC time when the current materialized source baseline was accepted into portable brain state after successful full materialization. This records successful materialization work, not whether that run confirmed a new upstream content change. |
 
 Retired fields from Brain Format `1.0` are intentionally absent:
 

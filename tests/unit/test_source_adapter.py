@@ -57,7 +57,10 @@ class TestConfluenceFetch:
         )
 
         with (
-            patch("brain_sync.sources.confluence.fetch_page_body", AsyncMock(return_value=(html, "Title", 7))),
+            patch(
+                "brain_sync.sources.confluence.fetch_page_body",
+                AsyncMock(return_value=(html, "Title", 7, "2026-03-01T00:00:00Z")),
+            ),
             patch("brain_sync.sources.confluence.fetch_structured_comments", AsyncMock(return_value=[])),
             patch(
                 "brain_sync.sources.confluence.fetch_users_by_account_ids",
