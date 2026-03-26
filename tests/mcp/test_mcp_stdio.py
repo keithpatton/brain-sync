@@ -64,9 +64,11 @@ async def test_stdio_server_lists_tools_and_answers_query(tmp_path: Path) -> Non
             tool_names = {tool.name for tool in tools.tools}
             assert "brain_sync_query" in tool_names
             assert "brain_sync_open_area" in tool_names
+            assert "brain_sync_tree" in tool_names
             assert "brain_sync_sync" in tool_names
 
             result = await session.call_tool("brain_sync_query", {"query": "AAA"})
+            tree_result = await session.call_tool("brain_sync_tree", {})
 
     assert result.isError is False
     assert len(result.content) == 1
@@ -74,3 +76,10 @@ async def test_stdio_server_lists_tools_and_answers_query(tmp_path: Path) -> Non
     assert response["status"] == "ok"
     assert response["matches"][0]["path"] == "initiatives/AAA"
     assert response["total_areas"] >= 1
+
+    assert tree_result.isError is False
+    assert len(tree_result.content) == 1
+    tree_payload = json.loads(tree_result.content[0].text)
+    assert tree_payload["status"] == "ok"
+    assert tree_payload["nodes"][0]["path"] == ""
+    assert any(node["path"] == "initiatives/AAA" for node in tree_payload["nodes"])

@@ -188,6 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
 
+    # --- tree ---
+    p_tree = sub.add_parser("tree", help="Show the semantic knowledge-area tree")
+    p_tree.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Brain root directory (auto-detected from config if omitted)",
+    )
+    p_tree.add_argument("--json", action="store_true", help="Emit the sparse JSON tree contract")
+
     # --- regen ---
     p_regen = sub.add_parser("regen", help="Manually trigger insight regeneration")
     p_regen.add_argument(

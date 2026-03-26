@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import signal
@@ -625,6 +626,21 @@ def handle_status(args) -> None:
             log.info("Token usage (7d): unavailable for a non-active brain root")
     except Exception:
         log.exception("Failed to load status")
+
+
+def handle_tree(args) -> None:
+    from brain_sync.application.structure import render_tree_lines, tree_brain, tree_result_to_payload
+
+    root = _resolve_root_or_exit(args)
+    result = tree_brain(root)
+    payload = {"status": "ok", **tree_result_to_payload(result)}
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    for line in render_tree_lines(result):
+        log.info("%s", line)
 
 
 def handle_regen(args) -> None:

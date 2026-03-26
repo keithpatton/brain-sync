@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -10,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from brain_sync.brain.layout import area_summary_path
-from brain_sync.brain.manifest import mark_manifest_missing, read_source_manifest
+from brain_sync.brain.layout import area_insights_dir, area_summary_path
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import SourceManifest, mark_manifest_missing, read_source_manifest, write_source_manifest
+from brain_sync.brain.sidecar import RegenMeta, write_regen_meta
 from brain_sync.sources.test import reset_test_adapter
 from tests.e2e.harness.cli import CliResult, CliRunner
 from tests.harness.isolation import build_subprocess_env, layout_for_base_dir
@@ -50,6 +53,63 @@ def _load_sync_polling_row(config_dir: Path, canonical_id: str) -> tuple[str | N
         conn.close()
     assert row is not None
     return row[0], row[1]
+
+
+def _seed_tree_command_brain(root: Path) -> None:
+    project_dir = root / "knowledge" / "project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "notes.md").write_text("manual project note", encoding="utf-8")
+    (project_dir / "c123-project.md").write_text(
+        prepend_managed_header(
+            "confluence:123",
+            "# Synced project\n",
+            source_type="confluence",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/123/Project",
+        ),
+        encoding="utf-8",
+    )
+
+    insights_dir = area_insights_dir(root, "project")
+    insights_dir.mkdir(parents=True, exist_ok=True)
+    (insights_dir / "summary.md").write_text("# Project summary", encoding="utf-8")
+    write_regen_meta(
+        insights_dir,
+        RegenMeta(
+            content_hash="content-project",
+            summary_hash="summary-project",
+            structure_hash="structure-project",
+            last_regen_utc="2026-03-27T00:00:00+00:00",
+        ),
+    )
+
+    write_source_manifest(
+        root,
+        SourceManifest(
+            canonical_id="confluence:123",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/123/Project",
+            source_type="confluence",
+            sync_attachments=False,
+            knowledge_path="project/c123-project.md",
+            knowledge_state="materialized",
+            content_hash="sha256:123",
+            remote_fingerprint="rev-123",
+            materialized_utc="2026-03-27T00:00:00+00:00",
+        ),
+    )
+    write_source_manifest(
+        root,
+        SourceManifest(
+            canonical_id="confluence:124",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/124/Project-Stale",
+            source_type="confluence",
+            sync_attachments=False,
+            knowledge_path="project/c124-project-stale.md",
+            knowledge_state="stale",
+            content_hash="sha256:124",
+            remote_fingerprint="rev-124",
+            materialized_utc="2026-03-26T00:00:00+00:00",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +612,51 @@ class TestStatus:
         cli.run("init", str(brain_root))
         result = cli.run("list", "--root", str(brain_root), "--status")
         assert result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Tree
+# ---------------------------------------------------------------------------
+
+
+class TestTree:
+    def test_tree_json_returns_sparse_contract(self, cli: CliRunner, brain_root: Path) -> None:
+        cli.run("init", str(brain_root))
+        _seed_tree_command_brain(brain_root)
+
+        result = cli.run("tree", "--root", str(brain_root), "--json")
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "status": "ok",
+            "nodes": [
+                {"path": "", "depth": 0, "child_folder_count": 1},
+                {
+                    "path": "project",
+                    "depth": 1,
+                    "manual_file_count": 1,
+                    "synced_files": {"materialized": 1, "stale": 1},
+                    "insights": {
+                        "summary_present": True,
+                        "artifact_count": 1,
+                        "last_regen_utc": "2026-03-27T00:00:00+00:00",
+                    },
+                },
+            ],
+            "total_nodes": 2,
+            "max_depth": 1,
+        }
+
+    def test_tree_default_output_is_human_readable(self, cli: CliRunner, brain_root: Path) -> None:
+        cli.run("init", str(brain_root))
+        _seed_tree_command_brain(brain_root)
+
+        result = cli.run("tree", "--root", str(brain_root))
+
+        assert result.returncode == 0, result.stderr
+        messages = _stderr_messages(result)
+        assert any("knowledge/" in message for message in messages)
+        assert any("project/" in message and "synced[a=0,m=1,s=1,ms=0]" in message for message in messages)
 
 
 # ---------------------------------------------------------------------------

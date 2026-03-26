@@ -26,6 +26,7 @@ def main() -> None:
         handle_run,
         handle_status,
         handle_sync,
+        handle_tree,
         handle_update,
         handle_update_skill,
     )
@@ -66,6 +67,7 @@ def main() -> None:
         "reconcile": handle_reconcile,
         "finalize-missing": handle_finalize_missing,
         "status": handle_status,
+        "tree": handle_tree,
         "regen": handle_regen,
         "migrate": handle_migrate,
         "config": handle_config,

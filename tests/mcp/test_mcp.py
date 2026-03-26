@@ -32,6 +32,9 @@ from brain_sync.application import (
 from brain_sync.application.init import init_brain
 from brain_sync.application.sources import ReconcileEntry, SyncSourceResult, UnsupportedSourceUrlError
 from brain_sync.brain.layout import area_insights_dir, area_journal_dir
+from brain_sync.brain.managed_markdown import prepend_managed_header
+from brain_sync.brain.manifest import SourceManifest, write_source_manifest
+from brain_sync.brain.sidecar import RegenMeta, write_regen_meta
 
 pytestmark = pytest.mark.mcp
 
@@ -113,6 +116,65 @@ def _make_ctx(root: Path) -> MagicMock:
 
 def _managed_insights(root: Path, knowledge_path: str = "") -> Path:
     return area_insights_dir(root, knowledge_path)
+
+
+def _seed_tree_brain(root: Path) -> None:
+    init_brain(root)
+
+    area = root / "knowledge" / "project"
+    area.mkdir(parents=True, exist_ok=True)
+    (area / "notes.md").write_text("manual project note", encoding="utf-8")
+    (area / "c123-project.md").write_text(
+        prepend_managed_header(
+            "confluence:123",
+            "# Synced project\n",
+            source_type="confluence",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/123/Project",
+        ),
+        encoding="utf-8",
+    )
+
+    insights_dir = area_insights_dir(root, "project")
+    insights_dir.mkdir(parents=True, exist_ok=True)
+    (insights_dir / "summary.md").write_text("# Project summary", encoding="utf-8")
+    write_regen_meta(
+        insights_dir,
+        RegenMeta(
+            content_hash="content-project",
+            summary_hash="summary-project",
+            structure_hash="structure-project",
+            last_regen_utc="2026-03-27T00:00:00+00:00",
+        ),
+    )
+
+    write_source_manifest(
+        root,
+        SourceManifest(
+            canonical_id="confluence:123",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/123/Project",
+            source_type="confluence",
+            sync_attachments=False,
+            knowledge_path="project/c123-project.md",
+            knowledge_state="materialized",
+            content_hash="sha256:123",
+            remote_fingerprint="rev-123",
+            materialized_utc="2026-03-27T00:00:00+00:00",
+        ),
+    )
+    write_source_manifest(
+        root,
+        SourceManifest(
+            canonical_id="confluence:124",
+            source_url="https://acme.atlassian.net/wiki/spaces/TEAM/pages/124/Project-Stale",
+            source_type="confluence",
+            sync_attachments=False,
+            knowledge_path="project/c124-project-stale.md",
+            knowledge_state="stale",
+            content_hash="sha256:124",
+            remote_fingerprint="rev-124",
+            materialized_utc="2026-03-26T00:00:00+00:00",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1511,6 +1573,41 @@ class TestSuggestPlacement:
         )
         assert result["status"] == "ok"
         assert result["suggested_filename"] == "c12345-aaa-platform.md"
+
+
+# ---------------------------------------------------------------------------
+# Tree
+# ---------------------------------------------------------------------------
+
+
+class TestBrainSyncTree:
+    def test_tree_returns_sparse_contract(self, tmp_path: Path) -> None:
+        from brain_sync.interfaces.mcp.server import brain_sync_tree
+
+        root = tmp_path / "brain"
+        _seed_tree_brain(root)
+
+        result = brain_sync_tree(_make_ctx(root))
+
+        assert result == {
+            "status": "ok",
+            "nodes": [
+                {"path": "", "depth": 0, "child_folder_count": 1},
+                {
+                    "path": "project",
+                    "depth": 1,
+                    "manual_file_count": 1,
+                    "synced_files": {"materialized": 1, "stale": 1},
+                    "insights": {
+                        "summary_present": True,
+                        "artifact_count": 1,
+                        "last_regen_utc": "2026-03-27T00:00:00+00:00",
+                    },
+                },
+            ],
+            "total_nodes": 2,
+            "max_depth": 1,
+        }
 
 
 # ---------------------------------------------------------------------------

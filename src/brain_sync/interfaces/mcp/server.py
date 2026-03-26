@@ -61,7 +61,10 @@ from brain_sync.application.local_files import (
     add_local_file,
     remove_local_file,
 )
-from brain_sync.application.placement import DocumentTitleRequiredError, suggest_document_placement
+from brain_sync.application.placement import (
+    DocumentTitleRequiredError,
+    suggest_document_placement,
+)
 from brain_sync.application.query_index import AreaIndex, load_area_index
 from brain_sync.application.reconcile import reconcile_brain
 from brain_sync.application.regen import RegenFailed, run_regen
@@ -82,6 +85,7 @@ from brain_sync.application.sources import (
     update_source,
 )
 from brain_sync.application.status import get_usage_summary
+from brain_sync.application.structure import tree_brain, tree_result_to_payload
 from brain_sync.runtime.repository import ensure_lifecycle_session
 
 log = logging.getLogger(__name__)
@@ -629,6 +633,34 @@ def brain_sync_open_area(
         result.total_children,
     )
     return _drop_none_values({"status": "ok", **asdict(result)})
+
+
+@server.tool(
+    name="brain_sync_tree",
+    description=(
+        "Return the full semantic knowledge-area tree under knowledge/ as a sparse, read-only JSON structure. "
+        "Each node represents one current knowledge area and may include direct "
+        "child-area count, direct manual-file count, direct synced-source counts "
+        "by lifecycle state (`awaiting`, `materialized`, `stale`, `missing`), "
+        "insight coverage, and journal coverage. Omitted fields mean default "
+        "values: missing counts are zero, missing `insights` means no summary "
+        "or insight artifacts, and missing `journals` means no journal entries. "
+        "Journal coverage indicates user activity over time within an area. "
+        "Use this tool to understand the brain's current semantic structure, "
+        "spot areas with missing or stale synced sources, inspect summary "
+        "coverage, and identify branches worth deeper inspection. For area-level "
+        "details, use `brain_sync_open_area`; for file content, use "
+        "`brain_sync_open_file`; for source management and corrections use "
+        "`brain_sync_move`, `brain_sync_reconcile`, `brain_sync_remove`, "
+        "`brain_sync_finalize_missing`, or `brain_sync_regen` after user "
+        "confirmation. This tool provides structural facts, not recommended "
+        "actions."
+    ),
+)
+def brain_sync_tree(ctx: Context) -> dict:
+    """Return the full semantic knowledge-area tree under knowledge/."""
+    rt = _runtime(ctx)
+    return {"status": "ok", **tree_result_to_payload(tree_brain(rt.root))}
 
 
 @server.tool(

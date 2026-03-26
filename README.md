@@ -257,6 +257,7 @@ Primary tools:
 | Tool | Description |
 |---|---|
 | `brain_sync_query` | Search areas by query |
+| `brain_sync_tree` | Return the full semantic knowledge-area tree as a sparse read-only JSON structure |
 | `brain_sync_get_context` | Load global context from the `_core` summary at `knowledge/_core/.brain-sync/insights/summary.md` |
 | `brain_sync_open_area` | Load an area's summary, artifacts, and children |
 | `brain_sync_open_file` | Read a text file from the brain |
@@ -293,6 +294,7 @@ python -m brain_sync.interfaces.mcp.server
 | `brain-sync reconcile [--root <path>]` | Reconcile filesystem moves |
 | `brain-sync finalize-missing <canonical-id>` | Explicitly finalize one missing registered source after revalidation; requires an exact canonical ID, not a URL or path |
 | `brain-sync status [--root <path>]` | Show daemon and sync status |
+| `brain-sync tree [--json]` | Show the full semantic knowledge-area tree; `--json` emits the same sparse contract as `brain_sync_tree` |
 | `brain-sync regen [<knowledge-path>]` | Trigger regeneration |
 | `brain-sync doctor [--fix|--rebuild-db]` | Validate or repair a brain |
 | `brain-sync config confluence ...` | Configure Confluence credentials |
