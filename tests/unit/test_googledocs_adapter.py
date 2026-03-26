@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
 pytest.importorskip("google.auth", reason="google-auth not installed (install brain-sync[google])")
 
-from brain_sync.sources.base import (
-    AuthProvider,
-    SourceAdapter,
-    SourceFetchResult,
-    UpdateStatus,
-)
+from brain_sync.sources.base import AuthProvider, SourceAdapter, SourceFetchResult, UpdateStatus
 from brain_sync.sources.googledocs import GoogleDocsAdapter
 from brain_sync.sources.googledocs.auth import (
     GoogleDocsAuthProvider,
@@ -26,6 +23,7 @@ from brain_sync.sources.googledocs.auth import (
 from brain_sync.sources.googledocs.rest import (
     DriveDocMetadata,
     FetchError,
+    InlineImageInfo,
     TabData,
     TabsDocument,
     _flatten_tabs,
@@ -114,12 +112,13 @@ class TestCheckForUpdate:
         with patch(
             "brain_sync.sources.googledocs.fetch_drive_metadata",
             new_callable=AsyncMock,
-            return_value=DriveDocMetadata(title="My Doc", version="42"),
+            return_value=DriveDocMetadata(title="My Doc", version="42", modified_time="2026-03-01T00:00:00Z"),
         ):
             result = await adapter.check_for_update(source_state, Mock(), AsyncMock())
         assert result.adapter_state is not None
         assert result.adapter_state["version"] == "42"
         assert result.adapter_state["title"] == "My Doc"
+        assert result.adapter_state["modified_time"] == "2026-03-01T00:00:00Z"
 
 
 class TestFetch:
@@ -153,6 +152,30 @@ class TestFetch:
             ],
         )
 
+    def _make_inline_image_tabs_doc(self, title: str | None = "My Doc", body_text: str = "Hello") -> TabsDocument:
+        return TabsDocument(
+            title=title,
+            tabs=[
+                TabData(
+                    tab_id="t1",
+                    title="Main",
+                    number="1",
+                    body_content=[
+                        {"paragraph": {"elements": [{"textRun": {"content": body_text}}]}},
+                        {"paragraph": {"elements": [{"inlineObjectElement": {"inlineObjectId": "kix.1"}}]}},
+                    ],
+                    inline_objects={
+                        "kix.1": InlineImageInfo(
+                            object_id="kix.1",
+                            content_uri="https://example.com/image.png",
+                            title="Diagram",
+                            mime_type="image/png",
+                        ),
+                    },
+                )
+            ],
+        )
+
     async def test_fetch_returns_correct_result(self, adapter, source_state):
         tabs_doc = self._make_tabs_doc()
         with (
@@ -173,6 +196,46 @@ class TestFetch:
         assert result.remote_fingerprint == "42"
         assert result.source_html is None
 
+    async def test_fetch_sets_remote_last_changed_on_first_sync(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc()
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch(
+                "brain_sync.sources.googledocs.fetch_drive_metadata",
+                new_callable=AsyncMock,
+                return_value=DriveDocMetadata(
+                    title="Drive Title",
+                    version="42",
+                    modified_time="2026-03-01T00:00:00Z",
+                ),
+            ),
+        ):
+            result = await adapter.fetch(source_state, Mock(), AsyncMock())
+
+        assert result.remote_last_changed_utc == "2026-03-01T00:00:00Z"
+
+    async def test_fetch_suppresses_remote_last_changed_for_version_only_false_positive(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc()
+        source_state.content_hash = hashlib.sha256(
+            generate_tabs_markdown(tabs_doc, doc_id="abc123").encode("utf-8")
+        ).hexdigest()
+
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch(
+                "brain_sync.sources.googledocs.fetch_drive_metadata",
+                new_callable=AsyncMock,
+                return_value=DriveDocMetadata(
+                    title="Drive Title",
+                    version="42",
+                    modified_time="2026-03-01T00:00:00Z",
+                ),
+            ),
+        ):
+            result = await adapter.fetch(source_state, Mock(), AsyncMock())
+
+        assert result.remote_last_changed_utc is None
+
     async def test_fetch_returns_drive_version_from_adapter_state(self, adapter, source_state):
         tabs_doc = self._make_tabs_doc()
         with patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc):
@@ -181,6 +244,94 @@ class TestFetch:
             )
 
         assert result.remote_fingerprint == "42"
+
+    async def test_fetch_uses_cached_modified_time_to_set_remote_last_changed(self, adapter, source_state):
+        tabs_doc = self._make_tabs_doc()
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch("brain_sync.sources.googledocs.fetch_drive_metadata", new_callable=AsyncMock) as metadata_mock,
+        ):
+            result = await adapter.fetch(
+                source_state,
+                Mock(),
+                AsyncMock(),
+                prior_adapter_state={
+                    "version": "42",
+                    "title": "Drive Title",
+                    "modified_time": "2026-03-01T00:00:00Z",
+                },
+            )
+
+        assert result.remote_fingerprint == "42"
+        assert result.remote_last_changed_utc == "2026-03-01T00:00:00Z"
+        metadata_mock.assert_not_awaited()
+
+    async def test_fetch_with_inline_images_uses_body_semantics_for_remote_last_changed(
+        self, adapter, source_state, tmp_path: Path
+    ):
+        source_state.sync_attachments = True
+        source_state.content_hash = "existing-body-hash"
+        tabs_doc = self._make_inline_image_tabs_doc(body_text="Hello updated")
+        existing_markdown = generate_tabs_markdown(self._make_inline_image_tabs_doc(body_text="Hello"), doc_id="abc123")
+        existing_markdown = existing_markdown.replace(
+            "attachment-ref:gdoc-image:abc123:kix.1",
+            "./.brain-sync/attachments/gabc123/akix.1-diagram.png",
+        )
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch("brain_sync.sources.googledocs.fetch_drive_metadata", new_callable=AsyncMock) as metadata_mock,
+        ):
+            result = await adapter.fetch(
+                source_state,
+                auth,
+                AsyncMock(),
+                root=tmp_path,
+                prior_adapter_state={
+                    "version": "42",
+                    "title": "Drive Title",
+                    "modified_time": "2026-03-01T00:00:00Z",
+                    "existing_materialized_markdown": existing_markdown,
+                },
+            )
+
+        assert result.remote_last_changed_utc == "2026-03-01T00:00:00Z"
+        metadata_mock.assert_not_awaited()
+
+    async def test_fetch_with_inline_images_suppresses_remote_last_changed_for_body_false_positive(
+        self, adapter, source_state, tmp_path: Path
+    ):
+        source_state.sync_attachments = True
+        source_state.content_hash = "existing-body-hash"
+        tabs_doc = self._make_inline_image_tabs_doc(body_text="Hello")
+        existing_markdown = generate_tabs_markdown(tabs_doc, doc_id="abc123").replace(
+            "attachment-ref:gdoc-image:abc123:kix.1",
+            "./.brain-sync/attachments/gabc123/akix.1-diagram.png",
+        )
+        auth = AsyncMock()
+        auth.get_token.return_value = "test-token"
+
+        with (
+            patch("brain_sync.sources.googledocs.fetch_all_tabs", new_callable=AsyncMock, return_value=tabs_doc),
+            patch("brain_sync.sources.googledocs.fetch_drive_metadata", new_callable=AsyncMock) as metadata_mock,
+        ):
+            result = await adapter.fetch(
+                source_state,
+                auth,
+                AsyncMock(),
+                root=tmp_path,
+                prior_adapter_state={
+                    "version": "42",
+                    "title": "Drive Title",
+                    "modified_time": "2026-03-01T00:00:00Z",
+                    "existing_materialized_markdown": existing_markdown,
+                },
+            )
+
+        assert result.remote_last_changed_utc is None
+        metadata_mock.assert_not_awaited()
 
     async def test_fetch_uses_title_from_adapter_state(self, adapter, source_state):
         # tabs_doc.title is None — title should come from prior_adapter_state
@@ -1202,17 +1353,21 @@ class TestFetchDriveMetadata:
         auth = AsyncMock()
         auth.get_token.return_value = "test-token"
         mock_response = MagicMock()
-        mock_response.json.return_value = {"name": "My Doc", "version": "42"}
+        mock_response.json.return_value = {
+            "name": "My Doc",
+            "version": "42",
+            "modifiedTime": "2026-03-01T00:00:00Z",
+        }
         mock_response.raise_for_status = MagicMock()
 
         client = AsyncMock()
         client.get.return_value = mock_response
 
         result = await fetch_drive_metadata("abc123", auth, client)
-        assert result == DriveDocMetadata(title="My Doc", version="42")
+        assert result == DriveDocMetadata(title="My Doc", version="42", modified_time="2026-03-01T00:00:00Z")
         call_kwargs = client.get.call_args
         assert "www.googleapis.com/drive/v3/files/abc123" in call_kwargs.args[0]
-        assert call_kwargs.kwargs["params"]["fields"] == "name,version"
+        assert call_kwargs.kwargs["params"]["fields"] == "name,version,modifiedTime"
         assert call_kwargs.kwargs["params"]["supportsAllDrives"] == "true"
 
     async def test_404_returns_none(self):

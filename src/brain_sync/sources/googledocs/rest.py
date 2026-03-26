@@ -60,6 +60,7 @@ class DriveDocMetadata:
 
     title: str | None
     version: str | None
+    modified_time: str | None = None
 
 
 async def fetch_doc_html(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> str:
@@ -90,7 +91,7 @@ async def fetch_drive_metadata(
     url = f"https://www.googleapis.com/drive/v3/files/{doc_id}"
     headers = {"Authorization": f"Bearer {token}"}
     params = {
-        "fields": "name,version",
+        "fields": "name,version,modifiedTime",
         "supportsAllDrives": "true",
     }
     try:
@@ -110,6 +111,7 @@ async def fetch_drive_metadata(
     return DriveDocMetadata(
         title=data.get("name"),
         version=data.get("version"),
+        modified_time=data.get("modifiedTime"),
     )
 
 

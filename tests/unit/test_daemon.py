@@ -20,11 +20,14 @@ from brain_sync.brain.manifest import read_source_manifest
 from brain_sync.runtime.child_requests import load_child_discovery_request
 from brain_sync.runtime.repository import (
     DaemonAlreadyRunningError,
+    SyncProgress,
     load_source_lifecycle_runtime,
     load_sync_progress,
+    save_source_sync_progress,
 )
 from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sync.daemon import _order_due_batch, _sync_scheduler_state, run
+from brain_sync.sync.lifecycle import sync_active_source_once
 
 pytestmark = pytest.mark.unit
 
@@ -488,6 +491,57 @@ def test_sync_scheduler_state_reloads_persisted_due_time_for_existing_key() -> N
     assert scheduler.removed_calls == ["confluence:12345"]
     assert scheduler.persisted_calls == ["confluence:12345"]
     assert scheduler.immediate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_sync_active_source_once_prefers_remote_last_changed_over_materialized_time(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    result = add_source(
+        root,
+        url="https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Page",
+        target_path="area",
+    )
+    manifest = read_source_manifest(root, result.canonical_id)
+    assert manifest is not None
+    manifest.knowledge_state = "materialized"
+    manifest.knowledge_path = "area/c12345-page.md"
+    manifest.content_hash = "sha256:abc"
+    manifest.remote_fingerprint = "rev-1"
+    manifest.materialized_utc = "2026-03-26T00:00:00+00:00"
+    from brain_sync.brain.manifest import write_source_manifest
+
+    write_source_manifest(root, manifest)
+    save_source_sync_progress(
+        root,
+        result.canonical_id,
+        SyncProgress(
+            canonical_id=result.canonical_id,
+            remote_last_changed_utc="2025-11-01T00:00:00+00:00",
+        ),
+    )
+
+    async def _fake_process_source(
+        source_state,
+        _http_client,
+        root=None,
+        *,
+        fetch_children=False,
+        lifecycle_owner_id=None,
+    ):
+        assert root is not None
+        assert fetch_children is False
+        assert lifecycle_owner_id is not None
+        source_state.last_checked_utc = "2026-03-26T01:00:00+00:00"
+        return False, []
+
+    with patch("brain_sync.sync.lifecycle.process_source", side_effect=_fake_process_source):
+        outcome = await sync_active_source_once(root, result.canonical_id, object())
+
+    assert outcome.result_state == "unchanged"
+    assert outcome.current_interval_secs == 24 * 3600
 
 
 @pytest.mark.asyncio

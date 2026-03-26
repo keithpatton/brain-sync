@@ -25,7 +25,7 @@ def _project_version() -> str:
 def test_supported_compatibility_row_constants() -> None:
     assert _project_version() == "0.7.2"
     assert BRAIN_FORMAT_VERSION == "1.2"
-    assert RUNTIME_DB_SCHEMA_VERSION == 29
+    assert RUNTIME_DB_SCHEMA_VERSION == 30
 
 
 def test_fresh_init_matches_brain_format_v1_2(tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_runtime_db_can_be_rebuilt_without_invalidating_brain(tmp_path: Path) ->
     assert not (root / ".sync-state.sqlite").exists()
 
 
-def test_supported_v23_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -> None:
+def test_supported_v23_runtime_db_is_migrated_to_v30_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -137,7 +137,7 @@ def test_supported_v23_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) ->
     ]
 
 
-def test_supported_v27_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -> None:
+def test_supported_v27_runtime_db_is_migrated_to_v30_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -205,7 +205,7 @@ def test_supported_v27_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) ->
     assert row == ("test:123", "2026-03-20T00:00:00+00:00", "2026-03-20T01:00:00+00:00", "daemon-owner")
 
 
-def test_prerelease_v28_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -> None:
+def test_prerelease_v28_runtime_db_is_migrated_to_v30_in_place(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
     init_brain(root)
@@ -280,6 +280,82 @@ def test_prerelease_v28_runtime_db_is_migrated_to_v29_in_place(tmp_path: Path) -
         "daemon-owner",
         "2099-01-01T00:00:00+00:00",
     )
+
+
+def test_supported_v29_runtime_db_is_migrated_to_v30_with_sync_polling_reset(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    root.mkdir()
+    init_brain(root)
+
+    db_path = state_module.RUNTIME_DB_FILE
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '29')")
+        conn.execute(
+            "CREATE TABLE sync_polling ("
+            "canonical_id TEXT PRIMARY KEY, "
+            "last_checked_utc TEXT, "
+            "current_interval_secs INTEGER NOT NULL DEFAULT 1800, "
+            "next_check_utc TEXT, "
+            "interval_seconds INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO sync_polling "
+            "(canonical_id, last_checked_utc, current_interval_secs, next_check_utc, interval_seconds) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "test:123",
+                "2026-03-20T00:00:00+00:00",
+                3600,
+                "2026-03-20T01:00:00+00:00",
+                3600,
+            ),
+        )
+        conn.execute(
+            "CREATE TABLE source_lifecycle_runtime ("
+            "canonical_id TEXT PRIMARY KEY, "
+            "local_missing_first_observed_utc TEXT, "
+            "local_missing_last_confirmed_utc TEXT, "
+            "lease_owner TEXT, "
+            "lease_expires_utc TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO source_lifecycle_runtime "
+            "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, lease_owner) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "test:missing",
+                "2026-03-20T00:00:00+00:00",
+                "2026-03-20T01:00:00+00:00",
+                "daemon-owner",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = state_module._connect(root)
+    try:
+        schema_version = migrated.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        columns = [row[1] for row in migrated.execute("PRAGMA table_info(sync_polling)").fetchall()]
+        sync_rows = migrated.execute("SELECT COUNT(*) FROM sync_polling").fetchone()
+        lifecycle_rows = migrated.execute("SELECT COUNT(*) FROM source_lifecycle_runtime").fetchone()
+    finally:
+        migrated.close()
+
+    assert schema_version == (str(RUNTIME_DB_SCHEMA_VERSION),)
+    assert columns == [
+        "canonical_id",
+        "last_checked_utc",
+        "current_interval_secs",
+        "next_check_utc",
+        "interval_seconds",
+        "remote_last_changed_utc",
+    ]
+    assert sync_rows == (0,)
+    assert lifecycle_rows == (1,)
 
 
 def test_doctor_rejects_unsupported_legacy_layout(tmp_path: Path) -> None:

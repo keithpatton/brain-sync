@@ -42,6 +42,7 @@ class SourceState(_PathNormalized):
     content_hash: str | None = None
     remote_fingerprint: str | None = None
     materialized_utc: str | None = None
+    remote_last_changed_utc: str | None = None
     last_checked_utc: str | None = None
     current_interval_secs: int = 1800
     next_check_utc: str | None = None
@@ -127,6 +128,7 @@ def load_active_sync_state(root: Path) -> SyncState:
         progress = progress_by_source.get(canonical_id)
         if progress is not None:
             state.last_checked_utc = progress.last_checked_utc
+            state.remote_last_changed_utc = progress.remote_last_changed_utc
             state.current_interval_secs = progress.current_interval_secs
             state.next_check_utc = progress.next_check_utc
             state.interval_seconds = progress.interval_seconds

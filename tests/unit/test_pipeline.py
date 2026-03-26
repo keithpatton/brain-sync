@@ -26,6 +26,8 @@ def _source_state(
     knowledge_state: str = "materialized",
     remote_fingerprint: str | None = _FINGERPRINT,
     sync_attachments: bool = False,
+    materialized_utc: str | None = None,
+    remote_last_changed_utc: str | None = None,
 ) -> SourceState:
     return SourceState(
         canonical_id=_CANONICAL_ID,
@@ -35,6 +37,8 @@ def _source_state(
         knowledge_state=knowledge_state,
         remote_fingerprint=remote_fingerprint,
         sync_attachments=sync_attachments,
+        materialized_utc=materialized_utc,
+        remote_last_changed_utc=remote_last_changed_utc,
     )
 
 
@@ -143,6 +147,34 @@ class TestSkipGuard:
 
         assert changed is False
         assert children == []
+        adapter.fetch.assert_not_called()
+
+    async def test_unchanged_skip_updates_remote_freshness_without_bumping_materialized_time(
+        self, tmp_path: Path
+    ) -> None:
+        materialized_utc = "2026-03-25T00:00:00+00:00"
+        source_state = _source_state(materialized_utc=materialized_utc)
+        discovered = tmp_path / "knowledge" / "area" / "gabc123-my-doc.md"
+        adapter = _make_adapter(
+            UpdateCheckResult(
+                status=UpdateStatus.UNCHANGED,
+                fingerprint=_FINGERPRINT,
+                title=_TITLE,
+                remote_last_changed_utc="2025-12-01T00:00:00+00:00",
+                adapter_state={"revisionId": _FINGERPRINT},
+            )
+        )
+
+        with (
+            patch("brain_sync.sync.pipeline.get_adapter", return_value=adapter),
+            patch("brain_sync.sync.pipeline.rediscover_local_path", return_value=discovered),
+        ):
+            changed, children = await process_source(source_state, AsyncMock(), root=tmp_path)
+
+        assert changed is False
+        assert children == []
+        assert source_state.remote_last_changed_utc == "2025-12-01T00:00:00+00:00"
+        assert source_state.materialized_utc == materialized_utc
         adapter.fetch.assert_not_called()
 
     async def test_sync_attachments_forces_fetch_when_existing_markdown_references_missing_attachment_context(

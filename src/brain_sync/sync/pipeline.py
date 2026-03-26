@@ -80,6 +80,7 @@ class PreparedSourceSync:
     markdown: str
     content_hash: str
     remote_fingerprint: str
+    remote_last_changed_utc: str | None
     checked_utc: str
     discovered_children: list[ChildDiscoveryResult]
     staged_managed_artifacts: tuple[StagedManagedArtifact, ...] = ()
@@ -136,6 +137,7 @@ async def prepare_source_sync(
             markdown="",
             content_hash=source_state.content_hash or "",
             remote_fingerprint=source_state.remote_fingerprint or "",
+            remote_last_changed_utc=source_state.remote_last_changed_utc,
             checked_utc=now,
             discovered_children=[],
             skip_materialization=True,
@@ -194,6 +196,7 @@ async def prepare_source_sync(
             markdown="",
             content_hash=source_state.content_hash or "",
             remote_fingerprint=source_state.remote_fingerprint or check.fingerprint or "",
+            remote_last_changed_utc=check.remote_last_changed_utc or source_state.remote_last_changed_utc,
             checked_utc=now,
             discovered_children=[],
             skip_materialization=True,
@@ -219,6 +222,7 @@ async def prepare_source_sync(
             markdown="",
             content_hash=source_state.content_hash or "",
             remote_fingerprint=source_state.remote_fingerprint or check.fingerprint or "",
+            remote_last_changed_utc=check.remote_last_changed_utc or source_state.remote_last_changed_utc,
             checked_utc=now,
             discovered_children=[],
             skip_materialization=True,
@@ -226,6 +230,14 @@ async def prepare_source_sync(
 
     # Full fetch
     prior_adapter_state = check.adapter_state if check else None
+    if source_type.value == "googledocs" and existing_file is not None:
+        try:
+            existing_markdown = strip_managed_header(read_text(existing_file, encoding="utf-8"))
+        except OSError:
+            existing_markdown = None
+        if existing_markdown is not None:
+            prior_adapter_state = dict(prior_adapter_state or {})
+            prior_adapter_state["existing_materialized_markdown"] = existing_markdown
     result = await adapter.fetch(source_state, auth, http_client, root, prior_adapter_state)
 
     # Re-resolve filename with title from fetch
@@ -325,6 +337,11 @@ async def prepare_source_sync(
     remote_fingerprint = (
         result.remote_fingerprint or (check.fingerprint if check else None) or source_state.remote_fingerprint
     )
+    remote_last_changed_utc = (
+        result.remote_last_changed_utc
+        or (check.remote_last_changed_utc if check else None)
+        or source_state.remote_last_changed_utc
+    )
     if remote_fingerprint is None:
         raise RuntimeError(f"Adapter did not provide remote_fingerprint for {source_state.canonical_id}")
 
@@ -344,6 +361,7 @@ async def prepare_source_sync(
         markdown=markdown,
         content_hash=body_hash,
         remote_fingerprint=remote_fingerprint,
+        remote_last_changed_utc=remote_last_changed_utc,
         checked_utc=now,
         discovered_children=discovered_children,
         staged_managed_artifacts=tuple(staged_managed_artifacts),
@@ -371,6 +389,7 @@ async def process_source(
         target.content_hash = source.content_hash
         target.remote_fingerprint = source.remote_fingerprint
         target.materialized_utc = source.materialized_utc
+        target.remote_last_changed_utc = source.remote_last_changed_utc
         target.last_checked_utc = source.last_checked_utc
         target.current_interval_secs = source.current_interval_secs
         target.next_check_utc = source.next_check_utc

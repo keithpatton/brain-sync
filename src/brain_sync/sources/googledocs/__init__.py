@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -28,6 +30,36 @@ from brain_sync.sources.googledocs.rest import (
 )
 
 log = logging.getLogger(__name__)
+_MANAGED_ATTACHMENTS_PREFIX = ".brain-sync/attachments"
+
+
+def _normalize_materialized_google_markdown(
+    markdown: str,
+    *,
+    doc_id: str,
+    image_canonical_ids: tuple[str, ...],
+) -> str:
+    """Normalize prior materialized markdown back to Google body semantics.
+
+    Google runtime upstream freshness is defined around synchronized document
+    body semantics, not around machine-local attachment paths. For docs with
+    inline images, previously materialized markdown may contain local managed
+    attachment paths instead of the stable ``attachment-ref:`` links emitted by
+    the adapter fetch path. This helper rewrites those paths back to stable
+    refs so the adapter can compare body semantics without changing attachment
+    fetching/materialization behavior.
+    """
+
+    normalized = markdown
+    source_dir = f"g{doc_id}"
+    for canonical_id in image_canonical_ids:
+        object_id = canonical_id.rsplit(":", 1)[1]
+        pattern = re.compile(
+            rf"\]\((?:\./)?{re.escape(_MANAGED_ATTACHMENTS_PREFIX)}/"
+            rf"{re.escape(source_dir)}/a{re.escape(object_id)}-[^)]*\)"
+        )
+        normalized = pattern.sub(f"](attachment-ref:{canonical_id})", normalized)
+    return normalized
 
 
 class GoogleDocsAdapter:
@@ -70,7 +102,7 @@ class GoogleDocsAdapter:
             status=UpdateStatus.CHANGED,
             fingerprint=fingerprint,
             title=title,
-            adapter_state={"version": fingerprint, "title": title},
+            adapter_state={"version": fingerprint, "title": title, "modified_time": metadata.modified_time},
         )
 
     async def fetch(
@@ -87,6 +119,8 @@ class GoogleDocsAdapter:
             raise FetchError(f"Failed to fetch tabs for {doc_id}")
         cached_title = (prior_adapter_state or {}).get("title")
         cached_version = (prior_adapter_state or {}).get("version")
+        cached_modified_time = (prior_adapter_state or {}).get("modified_time")
+        cached_existing_markdown = (prior_adapter_state or {}).get("existing_materialized_markdown")
         metadata = None
         if cached_version is None or (tabs_doc.title is None and cached_title is None):
             metadata = await fetch_drive_metadata(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
@@ -97,6 +131,7 @@ class GoogleDocsAdapter:
             or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         )
         body_markdown = generate_tabs_markdown(tabs_doc, doc_id=doc_id)
+        body_hash = hashlib.sha256(body_markdown.encode("utf-8")).hexdigest()
         fingerprint = cached_version or (metadata.version if metadata else None)
         if fingerprint is None:
             fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
@@ -120,10 +155,27 @@ class GoogleDocsAdapter:
             token = await auth.get_token()  # pyright: ignore[reportAttributeAccessIssue]
             download_headers = {"Authorization": f"Bearer {token}"}
 
+        remote_last_changed_utc: str | None = None
+        remote_modified_time = metadata.modified_time if metadata is not None else cached_modified_time
+        if remote_modified_time:
+            if source_state.content_hash is None:
+                remote_last_changed_utc = remote_modified_time
+            elif source_state.sync_attachments and images_by_cid and isinstance(cached_existing_markdown, str):
+                existing_markdown = _normalize_materialized_google_markdown(
+                    cached_existing_markdown,
+                    doc_id=doc_id,
+                    image_canonical_ids=tuple(sorted(images_by_cid)),
+                )
+                if existing_markdown != body_markdown:
+                    remote_last_changed_utc = remote_modified_time
+            elif body_hash != source_state.content_hash:
+                remote_last_changed_utc = remote_modified_time
+
         return SourceFetchResult(
             body_markdown=body_markdown,
             comments=[],
             remote_fingerprint=fingerprint,
+            remote_last_changed_utc=remote_last_changed_utc,
             title=title,
             inline_images=list(images_by_cid.values()),
             download_headers=download_headers,

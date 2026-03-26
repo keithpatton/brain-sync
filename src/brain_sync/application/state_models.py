@@ -38,6 +38,7 @@ class SourceState(_PathNormalized):
     content_hash: str | None = None
     remote_fingerprint: str | None = None
     materialized_utc: str | None = None
+    remote_last_changed_utc: str | None = None
     last_checked_utc: str | None = None
     current_interval_secs: int = 1800
     next_check_utc: str | None = None

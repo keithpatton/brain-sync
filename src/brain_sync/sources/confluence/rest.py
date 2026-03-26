@@ -32,6 +32,12 @@ class ConfluenceAuth:
         return (self.email, self.token)
 
 
+@dataclass(frozen=True)
+class PageVersionInfo:
+    version: int | None
+    last_changed_utc: str | None = None
+
+
 class _AuthCache:
     """Thread-safe cache for Confluence authentication credentials."""
 
@@ -138,12 +144,16 @@ async def _request(
     return resp
 
 
-async def fetch_page_version(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> int | None:
-    """Cheap metadata check: returns page version number."""
+async def fetch_page_version(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> PageVersionInfo | None:
+    """Cheap metadata check: returns page version info."""
     try:
         resp = await _request(client, auth, "GET", f"/pages/{page_id}")
         data = resp.json()
-        return data.get("version", {}).get("number")
+        version = data.get("version", {})
+        return PageVersionInfo(
+            version=version.get("number"),
+            last_changed_utc=version.get("createdAt"),
+        )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise RemoteSourceMissingError(
@@ -162,7 +172,7 @@ async def fetch_page_body(
     page_id: str,
     auth: ConfluenceAuth,
     client: httpx.AsyncClient,
-) -> tuple[str, str | None, int | None]:
+) -> tuple[str, str | None, int | None, str | None]:
     """Fetch page body, title, and version in one call."""
     try:
         resp = await _request(
@@ -183,8 +193,8 @@ async def fetch_page_body(
     data = resp.json()
     html = data.get("body", {}).get("storage", {}).get("value", "")
     title = data.get("title")
-    version = data.get("version", {}).get("number")
-    return html, title, version
+    version = data.get("version", {})
+    return html, title, version.get("number"), version.get("createdAt")
 
 
 async def fetch_child_pages(page_id: str, auth: ConfluenceAuth, client: httpx.AsyncClient) -> list[dict]:
@@ -327,6 +337,7 @@ __all__ = [
     "BACKOFF_BASE",
     "MAX_RETRIES",
     "ConfluenceAuth",
+    "PageVersionInfo",
     "_request",
     "download_attachment",
     "fetch_attachments",

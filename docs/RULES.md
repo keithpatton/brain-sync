@@ -840,7 +840,7 @@ The cross-cutting schema rules that matter here are:
 - `fetch_children` and `child_path` are operational inputs, not durable
   portable manifest fields
 - machine-local missing-observation timestamps and explicit-finalization leases
-  live in runtime schema `v29`, not in portable manifests
+  live in runtime schema `v30`, not in portable manifests
 
 ### Packaged Regen Resources
 

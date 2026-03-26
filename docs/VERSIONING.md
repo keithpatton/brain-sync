@@ -8,7 +8,7 @@ brain-sync uses three version domains:
 | Domain            | Meaning                        | Current value |
 | ----------------- | ------------------------------ | ------------- |
 | Brain Format      | Portable filesystem contract   | `1.2`         |
-| Runtime DB schema | Machine-local runtime DB shape | `v29`         |
+| Runtime DB schema | Machine-local runtime DB shape | `v30`         |
 | App version       | Packaged application version   | See [`pyproject.toml`](../pyproject.toml) |
 
 
@@ -80,19 +80,28 @@ The runtime DB schema version governs only machine-local runtime state.
 
 The current runtime DB schema is:
 
-- label: `v29`
-- integer value in `meta.schema_version`: `29`
+- label: `v30`
+- integer value in `meta.schema_version`: `30`
 
-Schema `v29` keeps `sync_polling` polling-only and keeps
+Schema `v30` keeps `sync_polling` polling-only and keeps
 `source_lifecycle_runtime` for machine-local missing-observation timestamps and
 source-level lifecycle leases. Explicit finalization is now single-call for an
 already-missing source: it depends on current revalidation and lease ownership,
 not on lifecycle-session freshness or persisted confirmation counts.
 
+`v30` also adds runtime-only `remote_last_changed_utc` to `sync_polling`.
+That field is the adapter-confirmed upstream freshness hint used for poll
+backoff. It does not change Brain Format `1.2`, does not alter portable
+`materialized_utc`, and does not retarget existing `last_changed_utc`
+read-model semantics away from local materialization time.
+
 Supported earlier runtime schemas migrate in place during normal upgrades.
 Rebuild remains the fallback for missing, corrupt, unsupported, or provisional
 runtime DB state. The unreleased intermediate `v28` schema is not the shipped
-`0.7` contract; when encountered it migrates forward to `v29`.
+`0.7` contract; when encountered it migrates forward to `v30`. The
+`v29 -> v30` migration clears `sync_polling` rows after adding
+`remote_last_changed_utc` so each machine intentionally rebuilds its own
+runtime freshness and schedule assumptions.
 
 ---
 
@@ -123,7 +132,9 @@ Compatibility and migration tests should explicitly cover:
 
 - fresh Brain Format `1.2` init
 - `0.5.0` / Brain Format `1.0` / runtime schema `v23` ->
-current `1.2` / `v29` app row guided migration behavior
-- runtime DB `v23/v24/v25/v26/v27 -> v29` in-place migration
-- unreleased runtime DB `v28 -> v29` in-place migration when encountered
+current `1.2` / `v30` app row guided migration behavior
+- runtime DB `v23/v24/v25/v26/v27/v29 -> v30` in-place migration
+- unreleased runtime DB `v28 -> v30` in-place migration when encountered
+- `v29 -> v30` migration-time `sync_polling` reset with
+  `remote_last_changed_utc` added
 - runtime DB rebuild without changing durable source truth

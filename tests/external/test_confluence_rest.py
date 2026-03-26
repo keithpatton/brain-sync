@@ -9,6 +9,7 @@ import pytest
 from brain_sync.sources.base import RemoteSourceMissingError
 from brain_sync.sources.confluence.rest import (
     ConfluenceAuth,
+    PageVersionInfo,
     download_attachment,
     fetch_attachments,
     fetch_child_pages,
@@ -46,10 +47,10 @@ def _mock_client(*responses: httpx.Response) -> httpx.AsyncClient:
 class TestFetchPageVersion:
     @pytest.mark.asyncio
     async def test_returns_version(self):
-        resp = _mock_response({"version": {"number": 42}})
+        resp = _mock_response({"version": {"number": 42, "createdAt": "2026-03-01T00:00:00Z"}})
         client = _mock_client(resp)
         result = await fetch_page_version("123", AUTH, client)
-        assert result == 42
+        assert result == PageVersionInfo(version=42, last_changed_utc="2026-03-01T00:00:00Z")
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
@@ -74,19 +75,20 @@ class TestFetchPageVersion:
 
 class TestFetchPageBody:
     @pytest.mark.asyncio
-    async def test_returns_html_title_version(self):
+    async def test_returns_html_title_version_and_last_changed(self):
         resp = _mock_response(
             {
                 "body": {"storage": {"value": "<p>Hello</p>"}},
                 "title": "My Page",
-                "version": {"number": 5},
+                "version": {"number": 5, "createdAt": "2026-03-02T00:00:00Z"},
             }
         )
         client = _mock_client(resp)
-        html, title, version = await fetch_page_body("123", AUTH, client)
+        html, title, version, last_changed_utc = await fetch_page_body("123", AUTH, client)
         assert html == "<p>Hello</p>"
         assert title == "My Page"
         assert version == 5
+        assert last_changed_utc == "2026-03-02T00:00:00Z"
 
     @pytest.mark.asyncio
     async def test_raises_missing_on_404(self):
@@ -326,10 +328,10 @@ class TestRetryOn429:
             headers={"Retry-After": "0"},
             request=httpx.Request("GET", "https://test.atlassian.net/wiki/api/v2/pages/1"),
         )
-        success = _mock_response({"version": {"number": 7}})
+        success = _mock_response({"version": {"number": 7, "createdAt": "2026-03-03T00:00:00Z"}})
         client = _mock_client(rate_limited, success)
         result = await fetch_page_version("1", AUTH, client)
-        assert result == 7
+        assert result == PageVersionInfo(version=7, last_changed_utc="2026-03-03T00:00:00Z")
         assert client.request.call_count == 2
 
     @pytest.mark.asyncio
