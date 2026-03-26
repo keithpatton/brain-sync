@@ -12,11 +12,11 @@ Version terminology is defined in [VERSIONING.md](VERSIONING.md).
 |---|---|---|---|
 | `0.5.0` | `1.0` | `v23` | Supported upgrade source |
 | `0.7.1` | `1.2` | `v29` | Supported same-format row |
-| `0.7.2` | `1.2` | `v30` | Current supported row |
+| `0.7.3` | `1.2` | `v30` | Current supported row |
 
 Canonical compatibility statement:
 
-`brain-sync 0.7.2 supports Brain Format 1.2 with runtime DB schema v30`
+`brain-sync 0.7.3 supports Brain Format 1.2 with runtime DB schema v30`
 
 Transition guarantees for the current row:
 

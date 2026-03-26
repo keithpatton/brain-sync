@@ -23,7 +23,7 @@ def _project_version() -> str:
 
 
 def test_supported_compatibility_row_constants() -> None:
-    assert _project_version() == "0.7.2"
+    assert _project_version() == "0.7.3"
     assert BRAIN_FORMAT_VERSION == "1.2"
     assert RUNTIME_DB_SCHEMA_VERSION == 30
 
