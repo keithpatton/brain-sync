@@ -78,6 +78,7 @@ from brain_sync.application.sources import (
     list_sources,
     move_source,
     remove_source,
+    sync_source,
     update_source,
 )
 from brain_sync.application.status import get_usage_summary
@@ -371,6 +372,25 @@ def brain_sync_move(ctx: Context, source: str, to_path: str) -> dict:
             "source": result.source,
         }
     return _result_payload(result)
+
+
+@server.tool(
+    name="brain_sync_sync",
+    description=(
+        "Request immediate polling for registered active sources. "
+        "Pass canonical IDs or source URLs to target specific sources, "
+        "or omit sources to request all active sources."
+    ),
+)
+def brain_sync_sync(ctx: Context, sources: list[str] | None = None) -> dict:
+    """Schedule immediate polling for selected active sources."""
+    rt = _runtime(ctx)
+    result = sync_source(root=rt.root, sources=sources or [])
+    payload = _drop_none_values({"status": "ok", **asdict(result)})
+    if result.result_state == "not_found":
+        payload["status"] = "error"
+        payload["error"] = "source_not_found"
+    return payload
 
 
 @server.tool(

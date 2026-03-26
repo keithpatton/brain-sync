@@ -64,6 +64,7 @@ async def test_stdio_server_lists_tools_and_answers_query(tmp_path: Path) -> Non
             tool_names = {tool.name for tool in tools.tools}
             assert "brain_sync_query" in tool_names
             assert "brain_sync_open_area" in tool_names
+            assert "brain_sync_sync" in tool_names
 
             result = await session.call_tool("brain_sync_query", {"query": "AAA"})
 

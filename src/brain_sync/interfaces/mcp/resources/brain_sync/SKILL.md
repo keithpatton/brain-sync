@@ -46,6 +46,7 @@ artifacts do not answer the question. Stop once the question can be answered.
 | `brain_sync_suggest_placement` | Suggest placement areas for a new document. **Always present results to the user.** |
 | `brain_sync_add` | Register a URL for syncing (`source`, `target_path`, optional flags). |
 | `brain_sync_add_file` | Add a local `.md` or `.txt` file to knowledge/ (`source`, `target_path`, `copy`). |
+| `brain_sync_sync` | Request immediate polling for active sources (`sources`, omit to target all active sources). |
 | `brain_sync_update` | Update settings for a source — pass only the flags to change (`fetch_children`, `sync_attachments`, `child_path`). |
 | `brain_sync_remove` | Unregister a sync source (`source` = canonical ID or URL). |
 | `brain_sync_remove_file` | Remove a local file from knowledge/ (`path` relative to knowledge/). |
@@ -68,6 +69,8 @@ All tools return `{"status": "ok", ...}` on success or
 - **Need raw `_core` source material:** `brain_sync_open_file("knowledge/_core/<file>")`
   rather than relying on global context, which is summary-only.
 - **User wants to sync a URL:** `brain_sync_add(url=..., target_path=...)`.
+- **User wants an existing source checked now:** `brain_sync_sync(sources=[...])`
+  or omit `sources` to request all active sources.
 
 ## Access rules
 

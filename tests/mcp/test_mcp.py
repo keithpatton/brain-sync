@@ -30,7 +30,7 @@ from brain_sync.application import (
     UpdateResult,
 )
 from brain_sync.application.init import init_brain
-from brain_sync.application.sources import ReconcileEntry, UnsupportedSourceUrlError
+from brain_sync.application.sources import ReconcileEntry, SyncSourceResult, UnsupportedSourceUrlError
 from brain_sync.brain.layout import area_insights_dir, area_journal_dir
 
 pytestmark = pytest.mark.mcp
@@ -81,6 +81,12 @@ SAMPLE_UPDATE_RESULT = UpdateResult(
     source_url="https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test",
     fetch_children=False,
     sync_attachments=False,
+)
+
+SAMPLE_SYNC_RESULT = SyncSourceResult(
+    result_state="requested",
+    requested_sources=("confluence:12345",),
+    message="Priority sync scheduled for 1 active source(s).",
 )
 
 
@@ -686,6 +692,91 @@ class TestBrainSyncUpdate:
         assert result["status"] == "ok"
         mock_update.assert_called_once()
         assert not ctx.request_context.lifespan_context.area_index.is_stale(_dummy_root)
+
+
+# ---------------------------------------------------------------------------
+# Sync
+# ---------------------------------------------------------------------------
+
+
+class TestBrainSyncSync:
+    @patch("brain_sync.interfaces.mcp.server.sync_source", return_value=SAMPLE_SYNC_RESULT)
+    def test_sync_selected_sources(self, mock_sync, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_sync
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_sync(ctx, sources=["confluence:12345"])
+
+        assert result == {
+            "status": "ok",
+            "result_state": "requested",
+            "requested_sources": ("confluence:12345",),
+            "requested_all": False,
+            "unresolved_sources": (),
+            "message": "Priority sync scheduled for 1 active source(s).",
+        }
+        mock_sync.assert_called_once_with(root=_dummy_root, sources=["confluence:12345"])
+
+    @patch("brain_sync.interfaces.mcp.server.sync_source", return_value=SAMPLE_SYNC_RESULT)
+    def test_sync_accepts_url_selectors(self, mock_sync, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_sync
+
+        url = "https://example.atlassian.net/wiki/spaces/TEAM/pages/12345/Test"
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_sync(ctx, sources=[url])
+
+        assert result["status"] == "ok"
+        mock_sync.assert_called_once_with(root=_dummy_root, sources=[url])
+
+    @patch(
+        "brain_sync.interfaces.mcp.server.sync_source",
+        return_value=SyncSourceResult(
+            result_state="requested",
+            requested_sources=("confluence:12345", "gdoc:abc"),
+            requested_all=True,
+            message="Priority sync scheduled for all active sources.",
+        ),
+    )
+    def test_sync_without_selectors_requests_all_active_sources(self, mock_sync, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_sync
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_sync(ctx)
+
+        assert result == {
+            "status": "ok",
+            "result_state": "requested",
+            "requested_sources": ("confluence:12345", "gdoc:abc"),
+            "requested_all": True,
+            "unresolved_sources": (),
+            "message": "Priority sync scheduled for all active sources.",
+        }
+        mock_sync.assert_called_once_with(root=_dummy_root, sources=[])
+
+    @patch(
+        "brain_sync.interfaces.mcp.server.sync_source",
+        return_value=SyncSourceResult(
+            result_state="not_found",
+            unresolved_sources=("confluence:99999",),
+            message="Selectors did not resolve to active registered sources: confluence:99999",
+        ),
+    )
+    def test_sync_not_found_returns_error_payload(self, mock_sync, _dummy_root):
+        from brain_sync.interfaces.mcp.server import brain_sync_sync
+
+        ctx = _make_ctx(_dummy_root)
+        result = brain_sync_sync(ctx, sources=["confluence:99999"])
+
+        assert result == {
+            "status": "error",
+            "error": "source_not_found",
+            "result_state": "not_found",
+            "requested_sources": (),
+            "requested_all": False,
+            "unresolved_sources": ("confluence:99999",),
+            "message": "Selectors did not resolve to active registered sources: confluence:99999",
+        }
+        mock_sync.assert_called_once_with(root=_dummy_root, sources=["confluence:99999"])
 
 
 # ---------------------------------------------------------------------------
