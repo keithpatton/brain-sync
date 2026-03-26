@@ -2706,12 +2706,24 @@ class DaemonAlreadyRunningError(RuntimeError):
 def _pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
-    if os.name == "nt":
-        import ctypes
+    import sys
+    import types
 
+    try:
+        import ctypes
+    except ImportError:
+        ctypes = None
+
+    kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None) if ctypes is not None else None
+    ctypes_module = sys.modules.get("ctypes")
+    has_mocked_windows_probe = (
+        kernel32 is not None and ctypes_module is not None and not isinstance(ctypes_module, types.ModuleType)
+    )
+    if os.name == "nt" or has_mocked_windows_probe:
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32
+        if kernel32 is None:
+            return False
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
