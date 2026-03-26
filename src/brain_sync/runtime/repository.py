@@ -2724,12 +2724,15 @@ def _pid_is_running(pid: int) -> bool:
         STILL_ACTIVE = 259
         if kernel32 is None:
             return False
+        ctypes_mod = ctypes
+        if ctypes_mod is None:
+            return False
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
         try:
-            exit_code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) == 0:
+            exit_code = ctypes_mod.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes_mod.byref(exit_code)) == 0:
                 return False
             return exit_code.value == STILL_ACTIVE
         finally:
