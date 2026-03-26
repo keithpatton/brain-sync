@@ -19,9 +19,10 @@ landing page.
 
 ## Typical workflow
 
-1. `brain_sync_query("search terms")` — find matching areas.
-2. `brain_sync_open_area("path")` — read the summary and insight artifacts.
-3. `brain_sync_open_file("path")` — only if insights don't answer the question.
+1. `brain_sync_get_context()` or `brain_sync_tree()` — load broad orientation.
+2. `brain_sync_query("search terms")` — find matching areas.
+3. `brain_sync_open_area("path")` — read the summary and insight artifacts.
+4. `brain_sync_open_file("path")` — only if insights don't answer the question.
 
 Always read the area's summary via `brain_sync_open_area()` before opening raw
 source files. Only call `brain_sync_open_file()` when the summary and insight
@@ -33,6 +34,7 @@ artifacts do not answer the question. Stop once the question can be answered.
 
 | Tool | Purpose |
 |------|---------|
+| `brain_sync_tree` | Return the full semantic knowledge-area tree with sparse structural metadata. Use for whole-brain structure, file mix, insight coverage, and synced-source state overview. |
 | `brain_sync_query` | **Start here.** Search for areas matching a query. If additional context is needed, call `brain_sync_get_context()`. |
 | `brain_sync_get_context` | Load global context from `knowledge/_core/.brain-sync/insights/summary.md` for broad orientation. |
 | `brain_sync_open_area` | Drill into a specific area — full summary, insight artifacts, children. |
@@ -60,10 +62,14 @@ All tools return `{"status": "ok", ...}` on success or
 
 - **First interaction with the brain:** call `brain_sync_get_context()` to load
   global context (distilled `_core` meaning such as taxonomy, terminology, org structure) before querying.
+- **Need a whole-brain structural snapshot:** call `brain_sync_tree()` before drilling in.
 - **Know what you're looking for:** `brain_sync_query("search terms")` → review
   matches → `brain_sync_open_area("path")`.
 - **Need background understanding:** `brain_sync_get_context()` for broad
   orientation without a specific search.
+- **Need to inspect area shape or stale/missing synced sources:** `brain_sync_tree()`
+  to see the semantic tree, direct file counts, insight coverage, journal coverage,
+  and synced-source lifecycle counts before opening a specific area.
 - **Deep dive into source material:** `brain_sync_open_file("knowledge/path/file.md")`
   — only when insights don't answer the question.
 - **Need raw `_core` source material:** `brain_sync_open_file("knowledge/_core/<file>")`
