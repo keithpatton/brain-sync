@@ -606,6 +606,8 @@ def process_prepared_source(
     lifecycle_owner_id: str | None = None,
 ) -> SourceSyncResult:
     source_state.last_checked_utc = prepared.checked_utc
+    if prepared.remote_last_changed_utc is not None:
+        source_state.remote_last_changed_utc = prepared.remote_last_changed_utc
     if prepared.skip_materialization:
         return SourceSyncResult(changed=False, discovered_children=prepared.discovered_children)
 
@@ -674,7 +676,8 @@ def process_prepared_source(
 
     source_state.knowledge_path = materialization.materialized_path
     source_state.knowledge_state = "materialized"
-    source_state.materialized_utc = prepared.checked_utc
+    if materialization.materialized_utc_updated:
+        source_state.materialized_utc = prepared.checked_utc
     source_state.content_hash = prepared.content_hash
     source_state.remote_fingerprint = prepared.remote_fingerprint
     for stale_name in materialization.duplicate_files_removed:
@@ -813,13 +816,15 @@ async def sync_active_source_once(
             lifecycle_owner_id=owner_id,
         )
         processed_last_checked_utc = source_state.last_checked_utc
+        processed_remote_last_changed_utc = source_state.remote_last_changed_utc
         refreshed = load_active_sync_state(root).sources.get(canonical_id)
         if refreshed is not None:
             refreshed.last_checked_utc = processed_last_checked_utc
+            refreshed.remote_last_changed_utc = processed_remote_last_changed_utc
             source_state = refreshed
         state.sources[canonical_id] = source_state
 
-        interval = compute_interval(source_state.last_changed_utc)
+        interval = compute_interval(source_state.remote_last_changed_utc or source_state.last_changed_utc)
         source_state.current_interval_secs = interval
         pre_children = set(state.sources)
         state = process_discovered_children(

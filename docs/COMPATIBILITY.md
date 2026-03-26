@@ -12,25 +12,30 @@ Version terminology is defined in [VERSIONING.md](VERSIONING.md).
 |---|---|---|---|
 | `0.5.0` | `1.0` | `v23` | Supported upgrade source |
 | `0.7.1` | `1.2` | `v29` | Supported same-format row |
-| `0.7.2` | `1.2` | `v29` | Current supported row |
+| `0.7.2` | `1.2` | `v30` | Current supported row |
 
 Canonical compatibility statement:
 
-`brain-sync 0.7.2 supports Brain Format 1.2 with runtime DB schema v29`
+`brain-sync 0.7.2 supports Brain Format 1.2 with runtime DB schema v30`
 
 Transition guarantees for the current row:
 
 - supported `0.5.0` brains on Brain Format `1.0` / runtime schema `v23` may be
-  upgraded to Brain Format `1.2` / runtime schema `v29` using the guided
+  upgraded to Brain Format `1.2` / runtime schema `v30` using the guided
   migration path
-- supported runtime DB schemas `v23`, `v24`, `v25`, `v26`, and `v27` must
-  migrate in place to `v29`
-- the unreleased interim runtime schema `v28` must migrate in place to `v29`
+- supported runtime DB schemas `v23`, `v24`, `v25`, `v26`, `v27`, and `v29`
+  must migrate in place to `v30`
+- the unreleased interim runtime schema `v28` must migrate in place to `v30`
   before use; it is not itself a released compatibility row
+- the `v29 -> v30` migration must add `remote_last_changed_utc` and clear
+  all `sync_polling` rows while preserving other runtime tables
 - deleting or rebuilding the runtime DB must not change durable source truth in
   the portable manifest
 - portable `knowledge_state = stale` must still force full rematerialization
   even when the stored `remote_fingerprint` matches the remote source
+- cross-device schedule identity is not guaranteed before each machine has
+  rebuilt its own runtime freshness state; portable use remains supported
+  because manifest truth stays authoritative
 
 ---
 
@@ -42,10 +47,12 @@ For the current row, brain-sync must support:
 - normal operation on valid Brain Format `1.2` brains
 - doctor/rebuild flows that preserve portable source truth
 - guided migration from `0.5.0` / Brain Format `1.0` / runtime schema `v23`
-  to the current `1.2` / `v29` app row
-- in-place migration from supported runtime DB schemas to `v29`
+  to the current `1.2` / `v30` app row
+- in-place migration from supported runtime DB schemas to `v30`
 - cross-machine continuation from portable manifest truth even when runtime DB
   state differs per machine
+- machine-local schedule convergence after each runtime re-establishes
+  `remote_last_changed_utc`
 
 ---
 
@@ -70,11 +77,13 @@ The suite should prove:
 
 1. fresh Brain Format `1.2` init
 2. `0.5.0` / Brain Format `1.0` / runtime schema `v23` ->
-   current `1.2` / `v29` app row guided migration expectations
-3. runtime DB `v23/v24/v25/v26/v27 -> v29` in-place migration
-4. unreleased runtime DB `v28 -> v29` in-place migration when encountered
-5. runtime DB rebuild without durable source-truth loss
-6. cross-machine continuation from shared manifest state
+   current `1.2` / `v30` app row guided migration expectations
+3. runtime DB `v23/v24/v25/v26/v27/v29 -> v30` in-place migration
+4. unreleased runtime DB `v28 -> v30` in-place migration when encountered
+5. `v29 -> v30` migration reset of `sync_polling` with
+   `remote_last_changed_utc` added
+6. runtime DB rebuild without durable source-truth loss
+7. cross-machine continuation from shared manifest state
 
 Current compatibility-focused coverage should include:
 
@@ -83,5 +92,7 @@ Current compatibility-focused coverage should include:
 - moved or rediscovered files writing `knowledge_state = stale`
 - durable `missing` holding-state behavior with machine-local missing-observation history
 - `stale` forcing full rematerialization even when `remote_fingerprint` matches
+- runtime-only `remote_last_changed_utc` driving backoff without changing
+  portable `materialized_utc`
 - administrative listing returning missing registered sources with
   `knowledge_state`

@@ -101,15 +101,16 @@ class ConfluenceAdapter:
         client: httpx.AsyncClient,
     ) -> UpdateCheckResult:
         page_id = extract_confluence_page_id(source_state.source_url)
-        v = await fetch_page_version(page_id, auth, client)  # pyright: ignore[reportArgumentType]
-        if v is None:
+        version_info = await fetch_page_version(page_id, auth, client)  # pyright: ignore[reportArgumentType]
+        if version_info is None or version_info.version is None:
             return UpdateCheckResult(status=UpdateStatus.UNKNOWN)
-        version_str = str(v)
+        version_str = str(version_info.version)
         status = UpdateStatus.UNCHANGED if version_str == source_state.remote_fingerprint else UpdateStatus.CHANGED
         return UpdateCheckResult(
             status=status,
             fingerprint=version_str,
             title=None,
+            remote_last_changed_utc=version_info.last_changed_utc,
             adapter_state={"version": version_str},
         )
 
@@ -122,7 +123,7 @@ class ConfluenceAdapter:
         prior_adapter_state: dict[str, Any] | None = None,
     ) -> SourceFetchResult:
         page_id = extract_confluence_page_id(source_state.source_url)
-        html, title, version = await fetch_page_body(page_id, auth, client)  # pyright: ignore[reportArgumentType]
+        html, title, version, last_changed_utc = await fetch_page_body(page_id, auth, client)  # pyright: ignore[reportArgumentType]
         comments = await fetch_structured_comments(page_id, auth, client)  # pyright: ignore[reportArgumentType]
         user_names: dict[str, str] = {}
         account_ids = _extract_user_account_ids(html)
@@ -145,6 +146,7 @@ class ConfluenceAdapter:
             body_markdown=markdown,
             comments=comments,
             remote_fingerprint=fingerprint,
+            remote_last_changed_utc=last_changed_utc,
             title=title,
             source_html=html,
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -97,6 +98,7 @@ class GoogleDocsAdapter:
             or await fetch_doc_title(doc_id, auth, client)  # pyright: ignore[reportArgumentType]
         )
         body_markdown = generate_tabs_markdown(tabs_doc, doc_id=doc_id)
+        body_hash = hashlib.sha256(body_markdown.encode("utf-8")).hexdigest()
         fingerprint = cached_version or (metadata.version if metadata else None)
         if fingerprint is None:
             fingerprint = compute_semantic_fingerprint(extract_canonical_text(tabs_doc))
@@ -120,10 +122,19 @@ class GoogleDocsAdapter:
             token = await auth.get_token()  # pyright: ignore[reportAttributeAccessIssue]
             download_headers = {"Authorization": f"Bearer {token}"}
 
+        remote_last_changed_utc: str | None = None
+        can_compare_body_hash = not (source_state.sync_attachments and images_by_cid)
+        if metadata is not None and metadata.modified_time:
+            if source_state.content_hash is None:
+                remote_last_changed_utc = metadata.modified_time
+            elif can_compare_body_hash and body_hash != source_state.content_hash:
+                remote_last_changed_utc = metadata.modified_time
+
         return SourceFetchResult(
             body_markdown=body_markdown,
             comments=[],
             remote_fingerprint=fingerprint,
+            remote_last_changed_utc=remote_last_changed_utc,
             title=title,
             inline_images=list(images_by_cid.values()),
             download_headers=download_headers,

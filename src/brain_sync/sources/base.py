@@ -24,6 +24,7 @@ class SourceStateLike(Protocol):
     content_hash: str | None
     remote_fingerprint: str | None
     materialized_utc: str | None
+    remote_last_changed_utc: str | None
 
     @property
     def target_path(self) -> str: ...
@@ -58,6 +59,7 @@ class UpdateCheckResult:
     status: UpdateStatus
     fingerprint: str | None = None
     title: str | None = None
+    remote_last_changed_utc: str | None = None
     adapter_state: dict[str, Any] | None = None
 
 
@@ -94,6 +96,7 @@ class SourceFetchResult:
     body_markdown: str
     comments: list[Comment] = field(default_factory=list)
     remote_fingerprint: str | None = None
+    remote_last_changed_utc: str | None = None
     title: str | None = None
     source_html: str | None = None
     inline_images: list[DiscoveredImage] = field(default_factory=list)

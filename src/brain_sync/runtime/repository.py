@@ -152,6 +152,7 @@ _SYNC_POLLING_DDL = """
 CREATE TABLE IF NOT EXISTS sync_polling (
     canonical_id TEXT PRIMARY KEY,
     last_checked_utc TEXT,
+    remote_last_changed_utc TEXT,
     current_interval_secs INTEGER NOT NULL DEFAULT 1800,
     next_check_utc TEXT,
     interval_seconds INTEGER
@@ -245,6 +246,7 @@ class _PathNormalized:
 class SyncProgress:
     canonical_id: str
     last_checked_utc: str | None = None
+    remote_last_changed_utc: str | None = None
     current_interval_secs: int = 1800
     next_check_utc: str | None = None
     interval_seconds: int | None = None
@@ -436,6 +438,7 @@ class DaemonStartGuard:
 class _SyncProgressLike(Protocol):
     canonical_id: str
     last_checked_utc: str | None
+    remote_last_changed_utc: str | None
     current_interval_secs: int
     next_check_utc: str | None
     interval_seconds: int | None
@@ -607,20 +610,33 @@ def _migrate_runtime_db(conn: sqlite3.Connection, from_version: int) -> int:
         _migrate_source_lifecycle_runtime_to_v29(conn)
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
+            ("29",),
         )
         conn.commit()
-        log.info("Migrated runtime DB schema from v27 to v%d", SCHEMA_VERSION)
-        version = SCHEMA_VERSION
+        log.info("Migrated runtime DB schema from v27 to v29")
+        version = 29
 
     if version == 28:
         _migrate_source_lifecycle_runtime_to_v29(conn)
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            ("29",),
+        )
+        conn.commit()
+        log.info("Migrated runtime DB schema from v28 to v29")
+        version = 29
+
+    if version == 29:
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sync_polling)").fetchall()}
+        if "remote_last_changed_utc" not in existing_cols:
+            conn.execute("ALTER TABLE sync_polling ADD COLUMN remote_last_changed_utc TEXT")
+        conn.execute("DELETE FROM sync_polling")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
-        log.info("Migrated runtime DB schema from v28 to v%d", SCHEMA_VERSION)
+        log.info("Migrated runtime DB schema from v29 to v%d", SCHEMA_VERSION)
         version = SCHEMA_VERSION
 
     return version
@@ -1435,7 +1451,7 @@ def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
     result: dict[str, SyncProgress] = {}
     try:
         rows = conn.execute(
-            "SELECT canonical_id, last_checked_utc, "
+            "SELECT canonical_id, last_checked_utc, remote_last_changed_utc, "
             "current_interval_secs, "
             "next_check_utc, interval_seconds "
             "FROM sync_polling"
@@ -1444,9 +1460,10 @@ def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
             result[row[0]] = SyncProgress(
                 canonical_id=row[0],
                 last_checked_utc=row[1],
-                current_interval_secs=row[2],
-                next_check_utc=row[3],
-                interval_seconds=row[4],
+                remote_last_changed_utc=row[2],
+                current_interval_secs=row[3],
+                next_check_utc=row[4],
+                interval_seconds=row[5],
             )
     except Exception as e:
         log.warning("Error reading sync state: %s", e)
@@ -1458,7 +1475,12 @@ def load_sync_progress(root: Path) -> dict[str, SyncProgress]:
 
 def _has_sync_progress(ss: _SyncProgressLike) -> bool:
     """Check if a source-like object has any persistable polling state."""
-    return ss.last_checked_utc is not None or ss.next_check_utc is not None or ss.interval_seconds is not None
+    return (
+        ss.last_checked_utc is not None
+        or ss.remote_last_changed_utc is not None
+        or ss.next_check_utc is not None
+        or ss.interval_seconds is not None
+    )
 
 
 def _iter_sync_progress_items(state: object) -> list[tuple[str, _SyncProgressLike]]:
@@ -1471,18 +1493,20 @@ def _iter_sync_progress_items(state: object) -> list[tuple[str, _SyncProgressLik
 def _upsert_sync_progress_row(conn: sqlite3.Connection, canonical_id: str, ss: _SyncProgressLike) -> None:
     conn.execute(
         "INSERT INTO sync_polling "
-        "(canonical_id, last_checked_utc, "
+        "(canonical_id, last_checked_utc, remote_last_changed_utc, "
         "current_interval_secs, "
         "next_check_utc, interval_seconds) "
-        "VALUES (?, ?, ?, ?, ?) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(canonical_id) DO UPDATE SET "
         "last_checked_utc=excluded.last_checked_utc, "
+        "remote_last_changed_utc=excluded.remote_last_changed_utc, "
         "current_interval_secs=excluded.current_interval_secs, "
         "next_check_utc=excluded.next_check_utc, "
         "interval_seconds=excluded.interval_seconds",
         (
             canonical_id,
             ss.last_checked_utc,
+            ss.remote_last_changed_utc,
             ss.current_interval_secs,
             ss.next_check_utc,
             ss.interval_seconds,

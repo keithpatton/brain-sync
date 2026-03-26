@@ -139,6 +139,7 @@ class MaterializationResult:
     target_path: str
     materialized_path: str
     changed: bool
+    materialized_utc_updated: bool
     duplicate_files_removed: tuple[str, ...] = ()
 
 
@@ -451,14 +452,20 @@ class BrainRepository:
                     raise
                 duplicate_rollbacks.append(candidate_rollback)
                 duplicate_files_removed.append(candidate.name)
-            if read_source_manifest(self.root, canonical_id) is not None:
+            manifest = read_source_manifest(self.root, canonical_id)
+            materialized_path = normalize_path(target.relative_to(self._knowledge_root))
+            materialized_utc_updated = changed
+            if manifest is not None:
+                materialized_utc_updated = (
+                    changed or manifest.knowledge_path != materialized_path or manifest.materialized_utc is None
+                )
                 update_manifest_materialization(
                     self.root,
                     canonical_id,
-                    knowledge_path=normalize_path(target.relative_to(self._knowledge_root)),
+                    knowledge_path=materialized_path,
                     content_hash=content_hash,
                     remote_fingerprint=remote_fingerprint,
-                    materialized_utc=materialized_utc,
+                    materialized_utc=materialized_utc if materialized_utc_updated else None,
                 )
         except PermissionError as exc:
             _raise_if_lock_contention("materialize_markdown", target, exc)
@@ -479,6 +486,7 @@ class BrainRepository:
             target_path=target_path,
             materialized_path=materialized_path,
             changed=changed,
+            materialized_utc_updated=materialized_utc_updated,
             duplicate_files_removed=tuple(sorted(duplicate_files_removed)),
         )
 

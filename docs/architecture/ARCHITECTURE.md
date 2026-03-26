@@ -198,6 +198,15 @@ session that wrote the latest retained missing confirmation so explicit
 finalization can require a fresh confirmation from the current lifecycle
 session instead of trusting inherited runtime history alone.
 
+Active polling now also carries a deliberate portable/runtime freshness split:
+
+- portable manifests keep `materialized_utc` as local materialization truth
+- `sync_polling.remote_last_changed_utc` is the machine-local,
+  adapter-confirmed upstream freshness hint used for backoff
+
+That split lets scheduling react to old upstream content without redefining
+portable source truth or changing existing `last_changed_utc` read models.
+
 Same-source coordination now deliberately uses two different behaviors:
 
 - lease-taking lifecycle entrypoints such as remove, move, explicit
@@ -224,6 +233,13 @@ recoverable enough to keep the portable brain valid, but supported runtime
 schema upgrades are expected to migrate in place so local history and telemetry
 are preserved during normal app upgrades. Rebuild is the fallback for missing,
 corrupt, or unsupported runtime state.
+
+Not every runtime scheduling fact is expected to match across machines.
+`remote_last_changed_utc`, `next_check_utc`, and related polling cadence are
+machine-local hints. After the `v29 -> v30` migration clears `sync_polling`,
+each machine rebuilds those hints from its own post-upgrade checks, so
+temporary cross-device schedule divergence is expected even while portable
+manifest truth remains identical.
 
 That machine-local status has an operational consequence at every process
 boundary: when a daemon or tool process starts, it must assume the attached
@@ -457,7 +473,7 @@ Current runtime DB tables:
 | Table | Purpose | If deleted |
 |---|---|---|
 | `meta` | Runtime schema marker | Recreated |
-| `sync_polling` | Polling schedule and sync progress cache for active sources | Rebuilt from manifests |
+| `sync_polling` | Polling schedule, last-check cache, and adapter-confirmed upstream freshness hint for active sources | Rebuilt from manifests plus new local upstream checks |
 | `source_lifecycle_runtime` | Machine-local missing/finalization coordination, lifecycle-session freshness, and source-level lifecycle leases | Rebuilt from current portable truth plus new local observations |
 | `child_discovery_requests` | One-shot child-discovery requests | Lost pending requests only |
 | `regen_locks` | Cross-process regen coordination | Reset to idle |
@@ -509,6 +525,10 @@ long-lived caches, but further performance tuning may still be worthwhile.
   `source_lifecycle_runtime`, reserving source lifecycle mutation to the
   sync-owned lifecycle/finalization seams, and reducing destructive
   finalization to current revalidation plus source-level lease ownership.
+- runtime schema `v30` separates machine-local upstream freshness from portable
+  local materialization truth by adding `sync_polling.remote_last_changed_utc`
+  and clearing `sync_polling` during `v29 -> v30` migration so each runtime
+  intentionally rebuilds its own polling hints.
 - Atomic file writes use fsync-based crash-safe behavior.
 - MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
   root entrypoint module.

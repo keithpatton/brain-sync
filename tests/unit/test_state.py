@@ -79,6 +79,7 @@ class TestRuntimeState:
             source_url="https://example.com",
             source_type="confluence",
             last_checked_utc="2026-01-01T00:00:00Z",
+            remote_last_changed_utc="2025-12-01T00:00:00Z",
             knowledge_path="area/c123-page.md",
             knowledge_state="materialized",
             current_interval_secs=3600,
@@ -91,6 +92,7 @@ class TestRuntimeState:
         assert loaded.sources["confluence:123"].content_hash == "portable-hash"
         assert loaded.sources["confluence:123"].remote_fingerprint == "portable-fp"
         assert loaded.sources["confluence:123"].last_checked_utc == "2026-01-01T00:00:00Z"
+        assert loaded.sources["confluence:123"].remote_last_changed_utc == "2025-12-01T00:00:00Z"
         assert runtime_config.runtime_db_file_path().exists()
         assert not (tmp_path / ".sync-state.sqlite").exists()
         assert not runtime_config.runtime_db_file_path().is_relative_to(tmp_path)
@@ -414,6 +416,77 @@ class TestRuntimeState:
             "daemon-owner",
             "2099-01-01T00:00:00+00:00",
         )
+
+    def test_v29_runtime_db_migration_adds_remote_last_changed_and_clears_sync_polling(self, tmp_path: Path) -> None:
+        db_path = runtime_config.runtime_db_file_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '29')")
+            conn.execute(
+                "CREATE TABLE sync_polling ("
+                "canonical_id TEXT PRIMARY KEY, "
+                "last_checked_utc TEXT, "
+                "current_interval_secs INTEGER NOT NULL DEFAULT 1800, "
+                "next_check_utc TEXT, "
+                "interval_seconds INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO sync_polling "
+                "(canonical_id, last_checked_utc, current_interval_secs, next_check_utc, interval_seconds) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "confluence:123",
+                    "2026-03-20T00:00:00+00:00",
+                    3600,
+                    "2026-03-20T01:00:00+00:00",
+                    3600,
+                ),
+            )
+            conn.execute(
+                "CREATE TABLE source_lifecycle_runtime ("
+                "canonical_id TEXT PRIMARY KEY, "
+                "local_missing_first_observed_utc TEXT, "
+                "local_missing_last_confirmed_utc TEXT, "
+                "lease_owner TEXT, "
+                "lease_expires_utc TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO source_lifecycle_runtime "
+                "(canonical_id, local_missing_first_observed_utc, local_missing_last_confirmed_utc, lease_owner) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    "confluence:missing",
+                    "2026-03-19T00:00:00+00:00",
+                    "2026-03-20T00:00:00+00:00",
+                    "daemon-owner",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        migrated = state_module._connect(tmp_path)
+        try:
+            schema_version = migrated.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            sync_columns = [row[1] for row in migrated.execute("PRAGMA table_info(sync_polling)").fetchall()]
+            sync_rows = migrated.execute("SELECT COUNT(*) FROM sync_polling").fetchone()
+            lifecycle_rows = migrated.execute("SELECT COUNT(*) FROM source_lifecycle_runtime").fetchone()
+        finally:
+            migrated.close()
+
+        assert schema_version == (str(RUNTIME_DB_SCHEMA_VERSION),)
+        assert sync_columns == [
+            "canonical_id",
+            "last_checked_utc",
+            "current_interval_secs",
+            "next_check_utc",
+            "interval_seconds",
+            "remote_last_changed_utc",
+        ]
+        assert sync_rows == (0,)
+        assert lifecycle_rows == (1,)
 
     def test_provisional_pre_narrowing_v25_runtime_db_is_rebuilt(self, tmp_path: Path) -> None:
         db_path = runtime_config.runtime_db_file_path()

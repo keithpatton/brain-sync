@@ -341,7 +341,7 @@ def update_manifest_materialization(
     knowledge_path: str,
     content_hash: str,
     remote_fingerprint: str,
-    materialized_utc: str,
+    materialized_utc: str | None,
 ) -> None:
     """Persist the settled last-successful source state after materialization."""
     manifest = read_source_manifest(root, canonical_id)
@@ -351,5 +351,6 @@ def update_manifest_materialization(
     manifest.knowledge_state = "materialized"
     manifest.content_hash = content_hash
     manifest.remote_fingerprint = remote_fingerprint
-    manifest.materialized_utc = materialized_utc
+    if materialized_utc is not None:
+        manifest.materialized_utc = materialized_utc
     write_source_manifest(root, manifest)

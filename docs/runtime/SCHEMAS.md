@@ -1,7 +1,7 @@
 # Runtime Schemas
 
 This document defines machine-local runtime artifacts for the supported
-Brain Format `1.2` / runtime schema `v29` release.
+Brain Format `1.2` / runtime schema `v30` release.
 
 Runtime artifacts live outside the portable brain. They support execution,
 coordination, and observability; they do not define portable brain meaning.
@@ -103,12 +103,22 @@ Runtime DB path:
 ~/.brain-sync/db/brain-sync.sqlite
 ```
 
-The current schema version is `29`, stored in `meta.schema_version`.
+The current schema version is `30`, stored in `meta.schema_version`.
 
-Supported earlier runtime schemas `v23`, `v24`, `v25`, `v26`, and `v27`
-migrate in place to `v29`. The unreleased interim `v28` developer schema also
-migrates in place to `v29` when encountered. Unsupported or provisional DB
-shapes are rebuilt.
+Supported earlier runtime schemas `v23`, `v24`, `v25`, `v26`, `v27`, and
+`v29` migrate in place to `v30`. The unreleased interim `v28` developer
+schema also migrates in place to `v30` when encountered. Unsupported or
+provisional DB shapes are rebuilt.
+
+The `v29 -> v30` migration is intentionally machine-local:
+
+- add `remote_last_changed_utc` to `sync_polling`
+- delete all rows from `sync_polling`
+- preserve other runtime tables such as `source_lifecycle_runtime`,
+  `regen_locks`, `operational_events`, and `token_events`
+
+That reset prevents pre-`v30` poll timings derived from portable
+`materialized_utc` from surviving into the new runtime-freshness model.
 
 SQLite conventions used here:
 
@@ -160,6 +170,7 @@ machine-local polling, scheduling, and related runtime tracking facts.
 |---|---|---|
 | `canonical_id` | text | Source canonical ID; primary key. |
 | `last_checked_utc` | text or null | UTC time of the last poll. |
+| `remote_last_changed_utc` | text or null | Adapter-confirmed upstream freshness timestamp for the most recent synchronized-content change known to this machine. |
 | `current_interval_secs` | integer | Active backoff/poll interval. |
 | `next_check_utc` | text or null | Next scheduled poll time. |
 | `interval_seconds` | integer or null | Persisted scheduler interval. |
@@ -168,10 +179,29 @@ Portable source truth does not live here. Durable source lifecycle, path,
 freshness, and last-successful materialization facts live in the portable
 source manifest.
 
+`remote_last_changed_utc` is not a generic provider last-modified field. It is
+the adapter's best timestamp for a change that affects synchronized content
+semantics for that source on this machine. Providers may reuse raw upstream
+timestamps only when the adapter treats them as trustworthy synchronized-
+content freshness. Portable `materialized_utc` remains the authoritative local
+materialization timestamp, and existing `last_changed_utc` read models remain
+tied to that portable field rather than to `remote_last_changed_utc`.
+
 Persisted `sync_polling` rows are reusable only as machine-local polling
 history. After process start or brain re-attachment, they must not be treated
 as proof that the currently attached brain still has the same active-source
 set or schedule assumptions as when the prior process exited.
+
+Backoff computation prefers `remote_last_changed_utc` when present and falls
+back to portable `materialized_utc` only until the current machine has
+re-established runtime upstream freshness. That means different machines may
+temporarily schedule the same portable brain differently until each runtime has
+rebuilt its own `sync_polling` freshness hints.
+
+After the `v29 -> v30` reset, active non-missing sources start with no
+`sync_polling` row and are therefore scheduled immediately by the existing
+no-row path. Missing registered sources remain excluded because active-source
+projection still filters them out before polling.
 
 Missing registered sources leave `sync_polling`. They remain represented only
 by portable manifests plus `source_lifecycle_runtime` until rediscovery,
@@ -195,7 +225,7 @@ Rows are cached local history, not portable truth. After process start or
 brain re-attachment, an existing row may inform revalidation, but it must not
 by itself assert current source state or authorize destructive mutation.
 
-In `v29`, the retained missing-observation timestamps are diagnostic and
+In `v30`, the retained missing-observation timestamps are diagnostic and
 re-attachment aids only. They describe the first and latest local missing
 observations seen on this machine, but they do not preserve cross-process
 finalization eligibility. Explicit finalization is authorized only by current

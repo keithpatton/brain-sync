@@ -61,6 +61,34 @@ it resumes scheduler and watcher behavior, but those prune steps remain
 observability-only. Failure to prune `token_events` or `operational_events`
 logs a warning and does not stop the daemon from loading active sync state.
 
+## Poll Freshness And Backoff
+
+Polling uses two different freshness concepts on purpose:
+
+- portable `materialized_utc` remains local brain truth about when this brain
+  last successfully materialized the source
+- runtime `remote_last_changed_utc` is a machine-local scheduling hint for
+  when the adapter last confirmed an upstream change that affects synchronized
+  content
+
+Backoff now prefers runtime `remote_last_changed_utc` when it is available and
+falls back to portable `materialized_utc` only until the current machine has
+re-established runtime freshness. That means newly materialized old content can
+back off based on old upstream age instead of polling as if it changed today.
+
+The unchanged fast path may update runtime freshness without rewriting
+portable content. Confluence can do that from trustworthy page-version
+metadata. Google Docs keeps false-positive suppression in the adapter seam:
+cheap Drive version change can trigger a fetch, but runtime freshness advances
+only when the Google adapter confirms that synchronized markdown semantics
+actually changed.
+
+The `v29 -> v30` runtime migration clears all `sync_polling` rows. On the
+first post-upgrade daemon cycle, active non-missing sources therefore become
+immediately due and rebuild machine-local runtime freshness from current
+upstream checks. Different machines may temporarily schedule the same portable
+brain differently until each runtime has done that work.
+
 For synced sources, the main entry paths are:
 
 - `Command`: explicit CLI or MCP source-management operations.
