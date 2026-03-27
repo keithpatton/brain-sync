@@ -164,6 +164,8 @@ Not sure how to structure your brain? See the
 a shareable, generic example of top-level buckets, knowledge-area sizing, and
 practical placement rules.
 
+Want a quick visual walkthrough? See [Demo Videos](./docs/user/DEMOS.md).
+
 ### Ownership Rules
 
 - `knowledge/` is where your documents live.
