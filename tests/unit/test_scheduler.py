@@ -74,6 +74,17 @@ class TestScheduler:
         due = s.pop_due()
         assert "a" not in due
 
+    def test_removed_due_entry_does_not_fire_after_reschedule(self):
+        s = Scheduler()
+        s.schedule("a", delay_secs=0)
+        s.remove("a")
+        s.schedule("a", delay_secs=9999)
+        due = s.pop_due()
+        assert due == []
+        ndi = s.next_due_in()
+        assert ndi is not None
+        assert 9998 < ndi <= 10000
+
     def test_next_due_in(self):
         s = Scheduler()
         s.schedule("a", delay_secs=100)

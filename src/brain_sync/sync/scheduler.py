@@ -56,19 +56,22 @@ class Scheduler:
     def __init__(self) -> None:
         self._heap: list[ScheduledCheck] = []
         self._scheduled_keys: set[str] = set()
+        self._scheduled_deadlines: dict[str, float] = {}
 
     def schedule(self, source_key: str, delay_secs: float = 0) -> None:
         if source_key in self._scheduled_keys:
             return
+        next_check = time.monotonic() + delay_secs
         entry = ScheduledCheck(
-            next_check=time.monotonic() + delay_secs,
+            next_check=next_check,
             source_key=source_key,
         )
         heapq.heappush(self._heap, entry)
         self._scheduled_keys.add(source_key)
+        self._scheduled_deadlines[source_key] = next_check
 
     def schedule_immediate(self, source_key: str) -> None:
-        self._scheduled_keys.discard(source_key)
+        self.remove(source_key)
         self.schedule(source_key, delay_secs=0)
 
     def schedule_from_persisted(
@@ -105,21 +108,30 @@ class Scheduler:
         due: list[str] = []
         while self._heap and self._heap[0].next_check <= now:
             entry = heapq.heappop(self._heap)
-            if entry.source_key in self._scheduled_keys:
+            if (
+                entry.source_key in self._scheduled_keys
+                and self._scheduled_deadlines.get(entry.source_key) == entry.next_check
+            ):
                 self._scheduled_keys.discard(entry.source_key)
+                self._scheduled_deadlines.pop(entry.source_key, None)
                 due.append(entry.source_key)
         return due
 
     def reschedule(self, source_key: str, interval_secs: int) -> None:
-        self._scheduled_keys.discard(source_key)
+        self.remove(source_key)
         self.schedule(source_key, delay_secs=_jittered(interval_secs))
 
     def remove(self, source_key: str) -> None:
         self._scheduled_keys.discard(source_key)
+        self._scheduled_deadlines.pop(source_key, None)
 
     def next_due_in(self) -> float | None:
         while self._heap:
-            if self._heap[0].source_key in self._scheduled_keys:
-                return max(0, self._heap[0].next_check - time.monotonic())
+            head = self._heap[0]
+            if (
+                head.source_key in self._scheduled_keys
+                and self._scheduled_deadlines.get(head.source_key) == head.next_check
+            ):
+                return max(0, head.next_check - time.monotonic())
             heapq.heappop(self._heap)
         return None
