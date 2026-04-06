@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v7
       - run: uv pip install --system -e ".[dev,google]"
       - run: ruff check
       - run: pyright
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v7
       - run: uv pip install --system -e ".[dev]"
       - name: Fast tests (unit/integration/external/mcp)
         run: python -m pytest -n auto -m "unit or integration or external or mcp" --timeout=30 -v
