@@ -61,7 +61,7 @@ Current top-level keys:
 | `brains` | array[string] | Registered brain roots. Only the first entry is treated as active in the current single-brain runtime model. |
 | `regen` | object | Optional defaults for regeneration behavior. |
 | `confluence` | object | Optional Confluence credentials. |
-| `google` | object | Optional Google OAuth token cache. |
+| `google` | object | Optional Google OAuth client config and token cache. |
 | `operational_events` | object | Optional local operational-event retention settings. |
 | `token_events` | object | Optional local token-telemetry retention settings. |
 | `log_level` | string | Optional default CLI/MCP log level. |
@@ -71,7 +71,7 @@ Current nested shapes used by brain-sync:
 - `regen`: `model` (string), `effort` (string), `timeout` (integer seconds),
   `max_turns` (integer), `similarity_threshold` (number)
 - `confluence`: `domain` (string), `email` (string), `token` (string)
-- `google`: `token` (object; Google authorized-user credentials payload)
+- `google`: `oauth_client.installed.client_id` (string), `oauth_client.installed.client_secret` (string), `oauth_client.installed.project_id` (string, optional), `token` (object; Google authorized-user credentials payload)
 - `operational_events`: `retention_days` (integer)
 - `token_events`: `retention_days` (integer)
 

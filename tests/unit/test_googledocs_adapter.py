@@ -18,7 +18,9 @@ from brain_sync.sources.googledocs.auth import (
     GoogleOAuthCredentials,
     _load_cached_token,
     _save_token,
+    has_google_oauth_client,
     run_oauth_flow,
+    save_google_oauth_client,
 )
 from brain_sync.sources.googledocs.rest import (
     DriveDocMetadata,
@@ -1207,7 +1209,20 @@ class TestGoogleOAuthCredentials:
 class TestRunOAuthFlow:
     def test_runs_flow_and_saves_token(self, monkeypatch):
         saved_configs: list[dict] = []
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {
+                "google": {
+                    "oauth_client": {
+                        "installed": {
+                            "client_id": "client-id",
+                            "client_secret": "client-secret",
+                            "project_id": "brain-sync-local",
+                        }
+                    }
+                }
+            },
+        )
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth.save_config",
             lambda c: saved_configs.append(c),
@@ -1233,12 +1248,56 @@ class TestRunOAuthFlow:
         assert len(saved_configs) == 1
         assert saved_configs[0]["google"]["token"] == {"token": "new"}
 
+    def test_missing_oauth_client_raises(self, monkeypatch):
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+
+        with pytest.raises(ValueError, match="Google OAuth client credentials are not configured"):
+            run_oauth_flow()
+
+
+class TestGoogleOAuthClientConfig:
+    def test_save_google_oauth_client_persists_machine_local_config(self, monkeypatch):
+        saved_configs: list[dict] = []
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr("brain_sync.sources.googledocs.auth.save_config", lambda c: saved_configs.append(c))
+
+        save_google_oauth_client(client_id="cid", client_secret="csec", project_id="proj")
+
+        assert saved_configs == [
+            {
+                "google": {
+                    "oauth_client": {
+                        "installed": {
+                            "client_id": "cid",
+                            "client_secret": "csec",
+                            "project_id": "proj",
+                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                            "redirect_uris": ["http://localhost"],
+                        }
+                    }
+                }
+            }
+        ]
+
+    def test_has_google_oauth_client_detects_stored_client(self, monkeypatch):
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"oauth_client": {"installed": {"client_id": "cid", "client_secret": "csec"}}}},
+        )
+
+        assert has_google_oauth_client() is True
+
 
 class TestConfigureGoogle:
     def test_runs_oauth_when_not_authenticated(self, monkeypatch):
         from brain_sync.application.config import configure_google
 
-        monkeypatch.setattr("brain_sync.sources.googledocs.auth.load_config", lambda: {})
+        monkeypatch.setattr(
+            "brain_sync.sources.googledocs.auth.load_config",
+            lambda: {"google": {"oauth_client": {"installed": {"client_id": "cid", "client_secret": "csec"}}}},
+        )
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
             MagicMock(exists=lambda: False),
@@ -1256,7 +1315,12 @@ class TestConfigureGoogle:
         token_data = {"token": "tok", "refresh_token": "ref", "client_id": "cid", "client_secret": "csec"}
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth.load_config",
-            lambda: {"google": {"token": token_data}},
+            lambda: {
+                "google": {
+                    "oauth_client": {"installed": {"client_id": "cid", "client_secret": "csec"}},
+                    "token": token_data,
+                }
+            },
         )
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
@@ -1275,7 +1339,12 @@ class TestConfigureGoogle:
         token_data = {"token": "tok", "refresh_token": "ref", "client_id": "cid", "client_secret": "csec"}
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth.load_config",
-            lambda: {"google": {"token": token_data}},
+            lambda: {
+                "google": {
+                    "oauth_client": {"installed": {"client_id": "cid", "client_secret": "csec"}},
+                    "token": token_data,
+                }
+            },
         )
         monkeypatch.setattr(
             "brain_sync.sources.googledocs.auth._LEGACY_TOKEN_FILE",
@@ -1287,6 +1356,35 @@ class TestConfigureGoogle:
 
         assert result is True
         mock_flow.assert_called_once()
+
+    def test_saves_client_config_before_oauth(self):
+        from brain_sync.application.config import configure_google
+
+        with (
+            patch("brain_sync.sources.googledocs.auth.save_google_oauth_client") as mock_save,
+            patch("brain_sync.sources.googledocs.auth.has_google_oauth_client", return_value=True),
+            patch("brain_sync.sources.googledocs.auth.run_oauth_flow") as mock_flow,
+        ):
+            result = configure_google(client_id="cid", client_secret="csec", project_id="proj")
+
+        assert result is True
+        mock_save.assert_called_once_with(client_id="cid", client_secret="csec", project_id="proj")
+        mock_flow.assert_called_once()
+
+    def test_requires_client_pair(self):
+        from brain_sync.application.config import configure_google
+
+        with pytest.raises(ValueError, match="Pass both --client-id and --client-secret together"):
+            configure_google(client_id="cid")
+
+    def test_requires_stored_oauth_client_before_auth(self):
+        from brain_sync.application.config import configure_google
+
+        with (
+            patch("brain_sync.sources.googledocs.auth.has_google_oauth_client", return_value=False),
+            pytest.raises(ValueError, match="Google OAuth client is not configured"),
+        ):
+            configure_google()
 
     def test_configure_raises(self):
         provider = GoogleDocsAuthProvider()

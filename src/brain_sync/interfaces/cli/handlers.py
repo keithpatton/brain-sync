@@ -743,10 +743,13 @@ def handle_config(args) -> None:
 
         try:
             if not configure_google(
+                client_id=getattr(args, "client_id", None),
+                client_secret=getattr(args, "client_secret", None),
+                project_id=getattr(args, "project_id", None),
                 reauth=getattr(args, "reauth", False),
             ):
                 sys.exit(1)
-        except ImportError as exc:
+        except (ImportError, ValueError) as exc:
             log.debug("Google import failed", exc_info=True)
             log.error("%s", exc)
             sys.exit(1)
