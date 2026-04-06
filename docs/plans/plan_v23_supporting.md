@@ -228,7 +228,7 @@ prefix prevents collision with user-authored frontmatter.
 ---
 brain_sync_source: confluence
 brain_sync_canonical_id: confluence:987654
-brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/PT/pages/987654
+brain_sync_source_url: https://acme.atlassian.net/wiki/spaces/ACME/pages/987654
 ---
 ```
 

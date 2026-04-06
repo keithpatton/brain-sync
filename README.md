@@ -1,7 +1,9 @@
 # brain-sync
 
-brain-sync syncs external knowledge sources into a filesystem-based brain and
-maintains AI-generated summaries for each knowledge area.
+brain-sync is a local-first tool for building markdown-native knowledge bases.
+It syncs external documents into a portable filesystem-based brain, maintains
+AI-generated summaries for each knowledge area, and exposes the result to MCP
+clients and agent workflows.
 
 It gives you:
 

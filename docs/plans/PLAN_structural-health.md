@@ -207,7 +207,7 @@ matches `^[a-f0-9]{8,}` or `^c\d{10,}`).
 
 When taxonomy.md is available: for each direct child of `initiatives/`, check
 whether the folder name matches one of the taxonomy naming patterns
-(`Platform - X`, `B4B - X`, `P&T - X`, or the shorthand prefix-less form
+(`Platform - X`, `ACME - X`, `Product - X`, or the shorthand prefix-less form
 used when initiatives are nested under a domain subfolder). Flag
 inconsistencies.
 
@@ -222,7 +222,7 @@ conceptual boundaries (pattern: folder name matches `^\d{4}-\d{2}$`).
 ##### 3. `check_cross_domain_overlap`
 
 Find area names (leaf folder names) that appear under multiple top-level
-domains. For example, `customers/B4B` and `initiatives/B4B`.
+domains. For example, `customers/ACME` and `initiatives/ACME`.
 
 - Severity: `SUGGESTION`
 - Details: `{"name": str, "locations": [str, str, ...]}`
