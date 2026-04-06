@@ -74,11 +74,14 @@ Credentials are stored in `~/.brain-sync/config.json`. You can also use
 #### Google Docs
 
 ```bash
-brain-sync config google
+brain-sync config google \
+  --client-id your-google-client-id \
+  --client-secret your-google-client-secret
 ```
 
-This opens a browser for OAuth consent and stores the token in
-`~/.brain-sync/config.json`.
+This opens a browser for OAuth consent and stores both the OAuth client and the
+token in `~/.brain-sync/config.json`. Use `--reauth` to force a new consent
+flow later.
 
 ### Start the Daemon
 

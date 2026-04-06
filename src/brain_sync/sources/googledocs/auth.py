@@ -23,17 +23,63 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents.readonly",
 ]
 
-_GOOGLE_CLIENT_CONFIG = {
-    "installed": {
-        "client_id": "959083310575-0765qfu9j0r64sn8ree3s857sd0pvrsu.apps.googleusercontent.com",
-        "project_id": "brain-sync",
+
+def _build_google_client_config(*, client_id: str, client_secret: str, project_id: str | None = None) -> dict:
+    """Build InstalledAppFlow client config from local runtime values."""
+    installed = {
+        "client_id": client_id,
+        "project_id": project_id or "brain-sync-local",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_secret": "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",
+        "client_secret": client_secret,
         "redirect_uris": ["http://localhost"],
     }
-}
+    return {"installed": installed}
+
+
+def _load_google_client_config() -> dict:
+    """Load Google OAuth client config from machine-local config."""
+    config = load_config()
+    google_cfg = config.get("google", {})
+    oauth_client = google_cfg.get("oauth_client") if isinstance(google_cfg, dict) else None
+    if isinstance(oauth_client, dict):
+        installed = oauth_client.get("installed")
+        if isinstance(installed, dict):
+            client_id = installed.get("client_id")
+            client_secret = installed.get("client_secret")
+            project_id = installed.get("project_id")
+            if isinstance(client_id, str) and client_id and isinstance(client_secret, str) and client_secret:
+                return _build_google_client_config(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    project_id=project_id if isinstance(project_id, str) and project_id else None,
+                )
+
+    raise ValueError(
+        "Google OAuth client credentials are not configured. "
+        "Run `brain-sync config google --client-id <id> --client-secret <secret>` first."
+    )
+
+
+def save_google_oauth_client(*, client_id: str, client_secret: str, project_id: str | None = None) -> None:
+    """Persist Google OAuth client config into machine-local runtime config."""
+    config = load_config()
+    config.setdefault("google", {})["oauth_client"] = _build_google_client_config(
+        client_id=client_id,
+        client_secret=client_secret,
+        project_id=project_id,
+    )
+    save_config(config)
+
+
+def has_google_oauth_client() -> bool:
+    """Return whether machine-local config contains Google OAuth client credentials."""
+    try:
+        _load_google_client_config()
+    except ValueError:
+        return False
+    return True
 
 
 class _LegacyTokenFileAlias(PathLike[str]):
@@ -126,7 +172,7 @@ def run_oauth_flow() -> Credentials:
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     log.info("Opening browser for Google OAuth consent...")
-    flow = InstalledAppFlow.from_client_config(_GOOGLE_CLIENT_CONFIG, scopes=SCOPES)
+    flow = InstalledAppFlow.from_client_config(_load_google_client_config(), scopes=SCOPES)
     creds = flow.run_local_server(port=0)
     if not isinstance(creds, Credentials):
         msg = f"Unexpected credential type from OAuth flow: {type(creds).__name__}"

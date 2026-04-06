@@ -231,6 +231,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_config_confluence.add_argument("--token", required=True, help="Confluence API token")
 
     p_config_google = config_sub.add_parser("google", help="Authenticate with Google for Google Docs syncing")
+    p_config_google.add_argument("--client-id", help="Google OAuth client ID to store in machine-local config")
+    p_config_google.add_argument("--client-secret", help="Google OAuth client secret to store in machine-local config")
+    p_config_google.add_argument("--project-id", help="Optional Google OAuth project ID")
     p_config_google.add_argument("--reauth", action="store_true", help="Force re-authentication")
 
     # --- migrate ---
