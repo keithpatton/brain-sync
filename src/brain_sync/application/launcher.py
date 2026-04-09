@@ -235,21 +235,21 @@ def _brain_sync_background_command() -> list[str]:
     """
 
     scripts_dir = sysconfig.get_path("scripts")
-    candidate_dirs: list[Path] = []
+    candidate_dirs: list[str] = []
     if scripts_dir:
-        candidate_dirs.append(Path(scripts_dir))
-    candidate_dirs.append(Path(sys.executable).resolve().parent)
+        candidate_dirs.append(os.path.abspath(scripts_dir))
+    candidate_dirs.append(os.path.dirname(os.path.realpath(sys.executable)))
 
     candidate_names = ["brain-sync.exe", "brain-sync"] if os.name == "nt" else ["brain-sync"]
-    seen: set[Path] = set()
+    seen: set[str] = set()
     for directory in candidate_dirs:
         for name in candidate_names:
-            candidate = (directory / name).resolve(strict=False)
+            candidate = os.path.realpath(os.path.join(directory, name))
             if candidate in seen:
                 continue
             seen.add(candidate)
-            if candidate.is_file():
-                return [str(candidate)]
+            if os.path.isfile(candidate):
+                return [candidate]
 
     return [sys.executable, "-m", "brain_sync"]
 
