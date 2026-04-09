@@ -109,6 +109,21 @@ the same config dir must be refused at startup rather than allowed to coexist
 opportunistically. `daemon.json` is runtime status only; durable startup
 exclusion must come from the config-dir daemon guard itself.
 
+### Daemon Control Contract
+
+Healthy daemon adoption for launcher/admin purposes requires all of the
+following to agree for the current runtime config directory:
+
+- `daemon.json` is readable
+- `daemon.json.status` is `starting` or `ready`
+- the recorded PID is still live
+- the recorded `brain_root` matches the active runtime root
+- the config-dir daemon guard still refuses a competing start
+
+Remote stop/restart is supported only for healthy `launcher-background`
+daemons. Healthy `terminal-foreground` daemons may be adopted for status and
+normal use, but remote stop/restart must remain unsupported in v1.
+
 ### REGEN Observability Contract
 
 REGEN diagnostics must stay within the approved runtime surfaces:
@@ -218,6 +233,7 @@ The following files are the only named orchestration / entrypoint surfaces:
 
 - `src/brain_sync/__main__.py`
 - `src/brain_sync/interfaces/cli/handlers.py`
+- `src/brain_sync/interfaces/mcp/launcher.py`
 - `src/brain_sync/interfaces/mcp/server.py`
 - `src/brain_sync/sync/daemon.py`
 

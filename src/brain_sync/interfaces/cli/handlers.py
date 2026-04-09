@@ -114,6 +114,48 @@ def handle_run(args) -> None:
         loop.close()
 
 
+def handle_attach_root(args) -> None:
+    from brain_sync.application.roots import attach_root
+
+    try:
+        result = attach_root(args.root)
+    except InvalidBrainRootError as exc:
+        log.error("%s", exc)
+        sys.exit(1)
+
+    log.info("Attached brain root: %s", result.root)
+    if result.previous_active_root and result.previous_active_root != result.root:
+        log.info("  Previous active root: %s", result.previous_active_root)
+    log.info("  Active runtime root updated")
+
+
+def handle_start(_args) -> None:
+    from brain_sync.application.launcher import start_daemon
+
+    result = start_daemon()
+    _log_daemon_admin_result(result)
+    if result.result not in {"started", "already_running"}:
+        sys.exit(1)
+
+
+def handle_stop(_args) -> None:
+    from brain_sync.application.launcher import stop_daemon
+
+    result = stop_daemon()
+    _log_daemon_admin_result(result)
+    if result.result not in {"stopped", "not_running"}:
+        sys.exit(1)
+
+
+def handle_restart(_args) -> None:
+    from brain_sync.application.launcher import restart_daemon
+
+    result = restart_daemon()
+    _log_daemon_admin_result(result)
+    if result.result not in {"restarted", "started"}:
+        sys.exit(1)
+
+
 def _resolve_root_or_exit(args) -> Path:
     """Resolve brain root from args or config, exiting on failure."""
     root = _get_root(args)
@@ -124,6 +166,27 @@ def _resolve_root_or_exit(args) -> Path:
             log.error("Cannot resolve brain root: %s. %s", e, _root_resolution_hint())
             sys.exit(1)
     return root
+
+
+def _log_daemon_admin_result(result) -> None:
+    log.info("Result: %s", result.result)
+    if result.message:
+        log.info("  %s", result.message)
+    daemon = result.daemon
+    if daemon.state == "running":
+        log.info("  Daemon: running")
+    else:
+        log.info("  Daemon: %s", daemon.state)
+    if daemon.snapshot_status:
+        log.info("  Snapshot status: %s", daemon.snapshot_status)
+    if daemon.controller_kind:
+        log.info("  Controller kind: %s", daemon.controller_kind)
+    if daemon.pid is not None:
+        log.info("  PID: %s", daemon.pid)
+    if daemon.active_root is not None:
+        log.info("  Active root: %s", daemon.active_root)
+    if daemon.reason:
+        log.info("  Reason: %s", daemon.reason)
 
 
 def _looks_like_source_canonical_id(value: str) -> bool:
@@ -604,14 +667,46 @@ def handle_finalize_missing(args) -> None:
 
 
 def handle_status(args) -> None:
-    from brain_sync.application.status import build_status_summary
-
-    root = _resolve_root_or_exit(args)
+    from brain_sync.application.launcher import get_runtime_status
 
     try:
-        summary = build_status_summary(root, usage_days=7)
+        runtime_status = get_runtime_status()
+        setup = runtime_status.setup
+        daemon = runtime_status.daemon
+
+        log.info("Setup: %s", "ready" if setup.ready else "required")
+        if setup.configured_active_root is not None:
+            log.info("Active root: %s", setup.configured_active_root)
+        else:
+            log.info("Active root: none")
+        if not setup.ready and setup.message:
+            log.info("  %s", setup.message)
+        if setup.registered_roots:
+            log.info("Registered roots: %d", len(setup.registered_roots))
+
+        log.info("Daemon: %s", daemon.state)
+        if daemon.snapshot_status:
+            log.info("  Snapshot status: %s", daemon.snapshot_status)
+        if daemon.controller_kind:
+            log.info("  Controller kind: %s", daemon.controller_kind)
+        if daemon.pid is not None:
+            log.info("  PID: %s", daemon.pid)
+        if daemon.started_at:
+            log.info("  Started at: %s", daemon.started_at)
+        if daemon.updated_at:
+            log.info("  Updated at: %s", daemon.updated_at)
+        if daemon.stopped_at:
+            log.info("  Stopped at: %s", daemon.stopped_at)
+        if daemon.reason and daemon.state != "running":
+            log.info("  Reason: %s", daemon.reason)
+
+        summary = runtime_status.content
+        if summary is None:
+            log.info("Sources: unavailable until a usable active root is attached")
+            return
+
         log.info("Sources: %d registered", summary.source_count)
-        parts = [f"{status}={count}" for status, count in sorted(summary.insight_states_by_status.items())]
+        parts = [f"{state}={count}" for state, count in sorted(summary.insight_states_by_status.items())]
         log.info("Insight states: %s", ", ".join(parts) if parts else "none")
         usage = summary.usage
         if summary.usage_available:
@@ -626,6 +721,7 @@ def handle_status(args) -> None:
             log.info("Token usage (7d): unavailable for a non-active brain root")
     except Exception:
         log.exception("Failed to load status")
+        sys.exit(1)
 
 
 def handle_tree(args) -> None:

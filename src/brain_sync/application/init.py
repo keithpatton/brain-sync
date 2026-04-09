@@ -11,6 +11,7 @@ from importlib import resources
 from pathlib import Path
 
 import brain_sync.runtime.config as runtime_config
+from brain_sync.application.roots import attach_root
 from brain_sync.brain.fileops import atomic_write_bytes, path_exists
 from brain_sync.brain.layout import BRAIN_MANIFEST_VERSION, brain_manifest_path, source_manifests_dir
 from brain_sync.runtime.paths import ensure_safe_temp_root_runtime
@@ -70,20 +71,13 @@ def _register_brain_root(
     model: str | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Register this brain root and optional settings in ~/.brain-sync/config.json."""
+    """Register this brain root as active and persist optional runtime settings."""
     if dry_run:
         log.info("[dry-run] Would register brain root in %s", runtime_config.config_file_path())
         return
 
     config = runtime_config.load_config()
     changed = False
-
-    brains = config.get("brains", [])
-    root_str = str(root)
-    if root_str not in brains:
-        brains.append(root_str)
-        config["brains"] = brains
-        changed = True
 
     if model:
         regen = config.get("regen", {})
@@ -94,6 +88,10 @@ def _register_brain_root(
     if changed:
         runtime_config.save_config(config)
         log.info("Updated config in %s", runtime_config.config_file_path())
+
+    attach_result = attach_root(root)
+    if attach_result.previous_active_root != attach_result.root:
+        log.info("Active brain root: %s", attach_result.root)
 
 
 @dataclass

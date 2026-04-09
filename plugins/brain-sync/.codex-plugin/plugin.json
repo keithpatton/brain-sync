@@ -1,0 +1,38 @@
+{
+  "name": "brain-sync",
+  "version": "0.7.4",
+  "description": "Bootstrap, query, and administer one attached local brain through the shared brain-sync MCP launcher.",
+  "author": {
+    "name": "brain-sync contributors"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "brain-sync",
+    "mcp",
+    "knowledge-base",
+    "local-first",
+    "sync",
+    "llm wiki"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "brain-sync",
+    "shortDescription": "Use one local brain through the shared launcher",
+    "longDescription": "Bootstrap, attach, query, and administer one local brain through the shared brain-sync launcher and daemon-control seam.",
+    "developerName": "brain-sync contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Attach my local brain and show its current runtime status.",
+      "Search my brain and open the best matching area.",
+      "Start the shared daemon for the attached brain if needed."
+    ],
+    "brandColor": "#2A6F97",
+    "composerIcon": "./assets/brain-sync.svg",
+    "logo": "./assets/brain-sync.svg",
+    "screenshots": []
+  }
+}

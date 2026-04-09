@@ -142,9 +142,16 @@ async def run(root: Path) -> None:
     ensure_safe_temp_root_runtime(root, operation="run daemon")
     log.info("brain-sync starting, root: %s", root)
     pid = os.getpid()
+    controller_kind = os.environ.get("BRAIN_SYNC_DAEMON_CONTROLLER_KIND", "terminal-foreground")
     guard = acquire_daemon_start_guard(root)
     try:
-        write_daemon_status(root=root, pid=pid, status="starting", daemon_id=guard.daemon_id)
+        write_daemon_status(
+            root=root,
+            pid=pid,
+            status="starting",
+            daemon_id=guard.daemon_id,
+            controller_kind=controller_kind,
+        )
         lifecycle_session_id = ensure_lifecycle_session(root, owner_kind="daemon")
 
         # Reconcile target_paths with filesystem before loading state for sync.
@@ -190,7 +197,13 @@ async def run(root: Path) -> None:
 
             # Start watcher after reconcile + enqueue to avoid spurious events
             watcher.start()
-            write_daemon_status(root=root, pid=pid, status="ready", daemon_id=guard.daemon_id)
+            write_daemon_status(
+                root=root,
+                pid=pid,
+                status="ready",
+                daemon_id=guard.daemon_id,
+                controller_kind=controller_kind,
+            )
 
             async with httpx.AsyncClient() as http_client:
                 try:
@@ -343,7 +356,13 @@ async def run(root: Path) -> None:
                     except Exception:
                         log.warning("Failed shutdown reconcile", exc_info=True)
                     try:
-                        write_daemon_status(root=root, pid=pid, status="stopped", daemon_id=guard.daemon_id)
+                        write_daemon_status(
+                            root=root,
+                            pid=pid,
+                            status="stopped",
+                            daemon_id=guard.daemon_id,
+                            controller_kind=controller_kind,
+                        )
                     except Exception:
                         log.warning("Failed to write daemon stopped status", exc_info=True)
                     log.info("brain-sync stopped")

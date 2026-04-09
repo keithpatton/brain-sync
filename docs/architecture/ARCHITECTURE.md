@@ -19,7 +19,7 @@ All source lives under `src/brain_sync/`.
 
 | Group | Modules | Purpose |
 |---|---|---|
-| Entry points | `__main__`, `interfaces/mcp/server.py` | CLI/bootstrap entrypoint and MCP server entrypoint |
+| Entry points | `__main__`, `interfaces/mcp/launcher.py`, `interfaces/mcp/server.py` | CLI entrypoint, bootstrap-capable MCP launcher, and full MCP tool-registration surface |
 | Application / interfaces | `application/`, `interfaces/` | Interface-neutral operations plus CLI and MCP transport adapters |
 | Portable brain plane | `brain/` | Portable brain persistence, managed layout, manifests, sidecars, and tree semantics |
 | Runtime plane | `runtime/` | Machine-local config, DB, daemon status, and telemetry |
@@ -121,7 +121,8 @@ an immediate parallelism switch.
 
 **Interfaces** expose the system to users and tools. `application/` owns the
 interface-neutral operations consumed by the CLI and MCP layers. `interfaces/`
-owns the CLI parser/handlers and the MCP transport surface. The
+owns the CLI parser/handlers, the bootstrap-capable MCP launcher surface, and
+the full MCP transport/tool surface. The
 watcher provides online change detection as an edge observer with direct
 filesystem contact; reconciliation provides the equivalent correction path for
 offline changes. Interface-owned packaged resources such as the installed
@@ -132,9 +133,13 @@ read-optimized area index used by placement and MCP search, and
 `query/placement.py` owns placement suggestions and related read-only
 classification helpers.
 
-**Entry points** wire everything together. `__main__.py` is now the CLI and
-bootstrap surface while `sync/daemon.py` owns the long-running daemon loop.
-`interfaces/mcp/server.py` exposes repository-safe tool access over stdio.
+**Entry points** wire everything together. `__main__.py` is the CLI entrypoint
+and terminal foreground launcher, while `sync/daemon.py` owns the long-running
+daemon loop itself. `interfaces/mcp/launcher.py` is the bootstrap-capable MCP
+entrypoint used by thin host wrappers; it can start without an attached root,
+expose setup/admin tools, and then activate full mode. `interfaces/mcp/server.py`
+owns the full tool-registration surface reused by that launcher once a usable
+active root exists.
 
 ### Package Identity Docstrings
 
@@ -256,6 +261,12 @@ config-dir runtime guard, while `daemon.json` remains an observational status
 snapshot. That keeps lifecycle authority and recovery logic centered on
 portable truth plus fresh local observation rather than cross-daemon
 coordination.
+
+Launcher/admin behavior is intentionally bounded around that model. The shared
+launcher seam may adopt a healthy existing daemon for status and normal use,
+but remote stop/restart is limited to `launcher-background` daemons. A healthy
+terminal foreground `brain-sync run` remains the same daemon engine and may be
+adopted, but not remotely stopped or restarted in v1.
 
 `brain/manifest.py`, `brain/sidecar.py`, and `brain/fileops.py` remain
 primitive storage / filesystem helpers beneath those seams. They are
@@ -530,8 +541,8 @@ long-lived caches, but further performance tuning may still be worthwhile.
   and clearing `sync_polling` during `v29 -> v30` migration so each runtime
   intentionally rebuilds its own polling hints.
 - Atomic file writes use fsync-based crash-safe behavior.
-- MCP runtime state now lives in `interfaces/mcp/server.py` rather than a
-  root entrypoint module.
+- MCP runtime state and bootstrap entrypoints now live under
+  `interfaces/mcp/` rather than root entrypoint modules.
 - `AreaIndex` and placement logic now live under the `query/` subsystem.
 - Confluence REST, conversion, docx conversion, and MCP skill resources now
   live under their owning `sources/` and `interfaces/` packages rather than

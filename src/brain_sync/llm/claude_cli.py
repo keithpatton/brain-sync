@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sync.llm.base import BackendCapabilities, LlmResult, capabilities_for_model, with_backend_traits
+from brain_sync.util.processes import windows_hidden_process_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -239,6 +240,7 @@ class ClaudeCliBackend:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            **windows_hidden_process_kwargs(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(

@@ -202,9 +202,37 @@ class TestRuntimeState:
         with (
             patch.object(state_module.os, "name", "posix"),
             patch.object(state_module.os, "kill") as kill_probe,
+            patch.object(
+                state_module.subprocess,
+                "run",
+                return_value=state_module.subprocess.CompletedProcess(
+                    args=["ps"],
+                    returncode=0,
+                    stdout="S+\n",
+                    stderr="",
+                ),
+            ) as ps_probe,
         ):
             assert state_module._pid_is_running(1234) is True
             kill_probe.assert_called_once_with(1234, 0)
+            ps_probe.assert_called_once()
+
+    def test_pid_is_running_non_windows_treats_zombie_as_not_running(self) -> None:
+        with (
+            patch.object(state_module.os, "name", "posix"),
+            patch.object(state_module.os, "kill"),
+            patch.object(
+                state_module.subprocess,
+                "run",
+                return_value=state_module.subprocess.CompletedProcess(
+                    args=["ps"],
+                    returncode=0,
+                    stdout="Z+\n",
+                    stderr="",
+                ),
+            ),
+        ):
+            assert state_module._pid_is_running(1234) is False
 
     def test_supported_runtime_db_is_migrated_in_place(self, tmp_path: Path) -> None:
         db_path = runtime_config.runtime_db_file_path()

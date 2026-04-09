@@ -30,12 +30,26 @@ sync.
 There is not always a single `brain-sync` process.
 
 - CLI commands are short-lived processes.
-- MCP tool calls run inside the MCP server process.
+- plugin-facing MCP tool calls run inside the shared launcher process.
 - `brain-sync run` starts the long-running daemon process.
 
 Those processes coordinate through the portable brain and machine-local runtime
-state. Normal CLI and MCP source-management commands do not RPC into a running
-daemon, and they do not start one implicitly.
+state. `brain-sync run` remains the real daemon engine; the launcher/control
+layer supervises it rather than duplicating watcher, polling, reconcile, or
+regen behavior inside each wrapper host.
+
+The shared MCP launcher now has two runtime-facing modes:
+
+- bootstrap mode when no usable active root is attached; setup/admin tools are
+  usable immediately, while the normal MCP tool surface stays advertised but
+  fails closed until a usable root is attached or initialized
+- full mode once a usable active root exists, where that same normal MCP tool
+  surface becomes usable alongside the admin calls
+
+Normal CLI source-management commands still do not RPC into a running daemon,
+and they do not start one implicitly. Full MCP tool use may now best-effort
+ensure a shared background daemon is running once setup is complete and a
+normal non-bootstrap tool call arrives.
 
 A portable brain may be attached by different processes over time, but the
 current runtime model allows only one active daemon per runtime config
@@ -44,6 +58,17 @@ refused before it begins reconcile or polling work. Runtime startup enforces
 that with a durable config-dir guard; `daemon.json` remains the current
 lifecycle snapshot rather than the exclusion mechanism itself. The normative rule lives in
 [../RULES.md](../RULES.md).
+
+For daemon adoption and admin control, the current v1 process model is:
+
+- a healthy existing daemon may be adopted for status and normal use when the
+  snapshot is readable, reports `starting` or `ready`, the PID is still live,
+  the recorded root matches the active root for this runtime, and the config-dir
+  guard still refuses a competing start
+- a healthy `launcher-background` daemon is remotely stoppable/restartable via
+  the launcher admin flow
+- a healthy `terminal-foreground` daemon is adoptable for status/use but is
+  not remotely stoppable or restartable in v1
 
 Daemon startup also prunes machine-local telemetry before it rebuilds active
 sync projections:

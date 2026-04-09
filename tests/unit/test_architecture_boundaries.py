@@ -117,6 +117,13 @@ _ORCHESTRATION_SURFACE_IMPORTS = {
             "brain_sync.util.logging",
         }
     ),
+    "src/brain_sync/interfaces/mcp/launcher.py": frozenset(
+        {
+            "brain_sync.runtime.config",
+            "brain_sync.runtime.repository",
+            "brain_sync.util.logging",
+        }
+    ),
 }
 
 _RULE_EXCEPTION_IMPORTS = {
