@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import sysconfig
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,6 +226,34 @@ def _background_creation_kwargs() -> dict:
     return kwargs
 
 
+def _brain_sync_background_command() -> list[str]:
+    """Return the preferred daemon launch command for this Python environment.
+
+    Prefer the installed `brain-sync` console-script wrapper so process lists
+    show a more useful executable name. Fall back to the module invocation to
+    preserve compatibility if the wrapper is unavailable.
+    """
+
+    scripts_dir = sysconfig.get_path("scripts")
+    candidate_dirs: list[Path] = []
+    if scripts_dir:
+        candidate_dirs.append(Path(scripts_dir))
+    candidate_dirs.append(Path(sys.executable).resolve().parent)
+
+    candidate_names = ["brain-sync.exe", "brain-sync"] if os.name == "nt" else ["brain-sync"]
+    seen: set[Path] = set()
+    for directory in candidate_dirs:
+        for name in candidate_names:
+            candidate = (directory / name).resolve(strict=False)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.is_file():
+                return [str(candidate)]
+
+    return [sys.executable, "-m", "brain_sync"]
+
+
 def _wait_for_pid_exit(pid: int, *, timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -234,16 +263,11 @@ def _wait_for_pid_exit(pid: int, *, timeout: float = 10.0) -> bool:
     return not is_pid_running(pid)
 
 
-def _wait_for_background_start(pid: int, *, timeout: float = 10.0) -> bool:
+def _wait_for_background_start(*, timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        snapshot = read_daemon_status()
-        if (
-            isinstance(snapshot, dict)
-            and snapshot.get("pid") == pid
-            and snapshot.get("status") in _RUNNING_SNAPSHOT_STATUSES
-            and is_pid_running(pid)
-        ):
+        current = _classify_daemon_status(get_setup_status())
+        if current.healthy and current.controller_kind == LAUNCHER_BACKGROUND_CONTROLLER:
             return True
         time.sleep(0.1)
     return False
@@ -340,16 +364,16 @@ def _stale_control_blocked_result(action: str) -> DaemonAdminResult:
 
 
 def _start_new_background(root: Path) -> DaemonAdminResult:
-    cmd = [sys.executable, "-m", "brain_sync", "run", "--root", str(root)]
+    cmd = [*_brain_sync_background_command(), "run", "--root", str(root)]
     proc = subprocess.Popen(
         cmd,
         cwd=str(root),
         env=_background_env(),
         **_background_creation_kwargs(),
     )
-    started = _wait_for_background_start(proc.pid)
+    started = _wait_for_background_start()
     current = _classify_daemon_status(get_setup_status())
-    if started and current.healthy and current.pid == proc.pid:
+    if started and current.healthy and current.controller_kind == LAUNCHER_BACKGROUND_CONTROLLER:
         return DaemonAdminResult(
             result="started",
             daemon=current,

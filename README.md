@@ -385,6 +385,37 @@ Claude, Claude Desktop, Codex, and other compatible hosts call under the hood.
 brain-sync exposes a bootstrap-capable MCP launcher for querying, reading, and
 managing the brain.
 
+### MCP Daemon Lifecycle
+
+This section applies when a host starts `brain-sync-mcp` as an MCP stdio
+server.
+
+You do not normally need to keep a separate `brain-sync-mcp` terminal open for
+host-driven use. The host starts the MCP server process when needed.
+
+Bootstrap and admin tools can run without a daemon. When a full brain tool is
+used, the MCP surface first requires a usable attached root and then ensures a
+healthy shared daemon exists for the active runtime root, reusing one if it is
+already running or starting one if it is not.
+
+If MCP starts the daemon, it starts a detached `launcher-background` daemon for
+the current runtime config directory. That daemon is shared across later host
+sessions for the same runtime and is not tied to the lifetime of one Claude or
+Codex terminal session. If the host kills the MCP server process, the detached
+daemon can continue running and be adopted later. When the installed CLI
+wrapper is available, the launcher starts the daemon via `brain-sync`, which
+makes it easier to identify in process lists on platforms such as Windows.
+
+You can still use the CLI directly. Normal CLI commands can coexist with
+host-driven MCP use, but `brain-sync run` is still a daemon start. brain-sync
+allows only one daemon per runtime config directory, so starting a second
+daemon for the same runtime is refused.
+
+If you choose to run `brain-sync run` yourself in a terminal, MCP clients can
+adopt that healthy daemon for status and normal use. In v1, remote
+`brain_sync_stop` and `brain_sync_restart` support applies only to
+`launcher-background` daemons, not terminal-owned foreground daemons.
+
 When no usable active root is attached, the launcher starts in bootstrap mode.
 Setup/admin tools work immediately, and full brain tools remain visible for MCP
 clients that cache the initial tool list, but those full tools fail closed

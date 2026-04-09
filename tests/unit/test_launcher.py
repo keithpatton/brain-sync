@@ -14,6 +14,7 @@ from brain_sync.application.launcher import (
     DaemonStatus,
     RuntimeStatus,
     _background_creation_kwargs,
+    _brain_sync_background_command,
     _stop_launcher_background,
     get_runtime_status,
     restart_daemon,
@@ -212,6 +213,35 @@ def test_background_creation_kwargs_preserve_posix_session_behavior() -> None:
     assert "creationflags" not in kwargs
 
 
+def test_background_command_prefers_installed_wrapper_on_windows(tmp_path: Path) -> None:
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    wrapper = scripts_dir / "brain-sync.exe"
+    wrapper.write_text("", encoding="utf-8")
+
+    with (
+        patch("brain_sync.application.launcher.os.name", "nt"),
+        patch("brain_sync.application.launcher.sysconfig.get_path", return_value=str(scripts_dir)),
+        patch("brain_sync.application.launcher.sys.executable", str(tmp_path / "python.exe")),
+    ):
+        cmd = _brain_sync_background_command()
+
+    assert cmd == [str(wrapper.resolve())]
+
+
+def test_background_command_falls_back_to_module_invocation_when_wrapper_missing(tmp_path: Path) -> None:
+    python_exe = tmp_path / "python.exe"
+
+    with (
+        patch("brain_sync.application.launcher.os.name", "nt"),
+        patch("brain_sync.application.launcher.sysconfig.get_path", return_value=str(tmp_path / "missing-scripts")),
+        patch("brain_sync.application.launcher.sys.executable", str(python_exe)),
+    ):
+        cmd = _brain_sync_background_command()
+
+    assert cmd == [str(python_exe), "-m", "brain_sync"]
+
+
 def test_runtime_status_does_not_promote_snapshot_missing_pid(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     init_brain(root)
@@ -336,6 +366,42 @@ def test_start_daemon_fails_closed_when_post_start_daemon_is_stale(tmp_path: Pat
     )
     terminate_process.assert_called_once_with(4321)
     wait_for_pid_exit.assert_called_once_with(4321)
+
+
+def test_start_new_background_uses_wrapper_command_when_available(tmp_path: Path) -> None:
+    from brain_sync.application.launcher import _start_new_background
+
+    root = tmp_path / "brain"
+    init_brain(root)
+    setup = _ready_setup(root)
+    running_status = _daemon_status(
+        root=root,
+        state="running",
+        snapshot_status="ready",
+        controller_kind=LAUNCHER_BACKGROUND_CONTROLLER,
+        pid=4321,
+        daemon_root=daemon_root_id(root.resolve()),
+        healthy=True,
+        competing_start_refused=True,
+    )
+    wrapper = tmp_path / "Scripts" / "brain-sync.exe"
+    wrapper.parent.mkdir()
+    wrapper.write_text("", encoding="utf-8")
+
+    with (
+        patch("brain_sync.application.launcher.os.name", "nt"),
+        patch("brain_sync.application.launcher.sysconfig.get_path", return_value=str(wrapper.parent)),
+        patch("brain_sync.application.launcher.sys.executable", str(tmp_path / "python.exe")),
+        patch("brain_sync.application.launcher.subprocess.Popen", return_value=SimpleNamespace(pid=1111)) as popen,
+        patch("brain_sync.application.launcher._wait_for_background_start", return_value=True),
+        patch("brain_sync.application.launcher.get_setup_status", return_value=setup),
+        patch("brain_sync.application.launcher._classify_daemon_status", return_value=running_status),
+    ):
+        result = _start_new_background(root)
+
+    assert result.result == "started"
+    popen.assert_called_once()
+    assert popen.call_args.args[0] == [str(wrapper.resolve()), "run", "--root", str(root)]
 
 
 def test_stop_launcher_background_waits_for_not_running_settle(tmp_path: Path) -> None:
