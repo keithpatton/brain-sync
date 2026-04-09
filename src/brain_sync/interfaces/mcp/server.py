@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -148,22 +149,33 @@ class RuntimeDaemonUnavailableError(RuntimeError):
     """Raised when full MCP use cannot establish a healthy daemon for the active root."""
 
 
-def _sync_runtime_root(rt: BrainRuntime) -> None:
-    """Keep long-lived MCP sessions bound to the current active runtime root."""
+def _sync_runtime_root(rt: object) -> None:
+    """Keep launcher-managed sessions aligned with the active runtime root.
+
+    Direct handler/unit tests and the standalone full MCP server already carry
+    an explicit bound root in their lifespan runtime. Those explicit runtimes
+    should stay usable even when no global active root is configured.
+    """
+    current_root = getattr(rt, "root", None)
+    if current_root is not None and not getattr(rt, "auto_start_daemon", False):
+        return
+
     setup = get_setup_status()
     if not setup.ready or setup.usable_active_root is None:
         raise RuntimeError(
-            "The active brain root is no longer ready for full MCP use. Reconnect after attaching a usable root."
+            "Attach a usable brain root with brain_sync_attach_root or create one with "
+            "brain_sync_init before using full brain tools."
         )
 
     active_root = setup.usable_active_root
-    if rt.root == active_root:
+    if current_root == active_root:
         return
 
-    log.info("brain-sync MCP runtime root changed, rebinding from %s to %s", rt.root, active_root)
-    rt.root = active_root
-    rt.area_index = load_area_index(active_root)
-    rt.lifecycle_session_id = ensure_lifecycle_session(active_root, owner_kind="mcp")
+    runtime = cast(Any, rt)
+    log.info("brain-sync MCP runtime root changed, rebinding from %s to %s", current_root, active_root)
+    runtime.root = active_root
+    runtime.area_index = load_area_index(active_root)
+    runtime.lifecycle_session_id = ensure_lifecycle_session(active_root, owner_kind="mcp")
 
 
 def _runtime(ctx: Context) -> BrainRuntime:
