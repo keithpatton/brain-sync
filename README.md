@@ -41,35 +41,119 @@ Google OAuth support is bundled in the packaged runtime. No separate
 The install provides two user-facing commands:
 
 - `brain-sync` for CLI operations and terminal foreground daemon runs
-- `brain-sync-mcp` for the shared bootstrap-capable MCP launcher used by thin wrappers
+- `brain-sync-mcp` for the shared bootstrap-capable MCP launcher used by all host integrations
 
-### Initialize a Brain
+### Choose a Host
 
-```bash
-brain-sync init ~/my-brain
-```
+brain-sync supports three host integration styles, all pointing at the same
+shared `brain-sync-mcp` launcher seam:
 
-This creates the baseline brain structure:
+| Host | Integration model | Repo artifact |
+|---|---|---|
+| Claude Code | Direct MCP registration | `.mcp.json` |
+| Claude Desktop | Manual MCP registration plus skill | `docs/examples/claude-desktop.mcp.json`, `src/brain_sync/interfaces/mcp/resources/brain_sync/SKILL.md` |
+| Codex | Repo-local plugin | `plugins/brain-sync/`, `.agents/plugins/marketplace.json` |
 
-- `.brain-sync/brain.json`
-- `.brain-sync/sources/`
-- `knowledge/`
-- `knowledge/_core/`
-
-It also installs the Claude skill to `~/.claude/skills/brain-sync/` and
-registers the brain in `~/.brain-sync/config.json`.
-
-### Attach an Existing Brain
+These host integrations are intentionally thin and share the same installed
+`brain-sync-mcp` launcher command. Before using any host integration, install the
+package into the Python environment you want the host to use:
 
 ```bash
-brain-sync attach-root ~/my-existing-brain
+python -m pip install -e .
+brain-sync-mcp
 ```
 
-`attach-root` requires an already initialized brain. It makes that root active
-by writing it to `config.json["brains"][0]` and preserves any other registered
-roots after it in deduplicated order for compatibility only.
+If the second command starts the MCP launcher successfully, the launcher command
+surface is installed correctly. Stop it with `Ctrl+C` after the check.
 
-### Configure Sources
+#### Claude Code
+
+Claude Code uses direct MCP registration. Register the MCP server once:
+
+```bash
+claude mcp add --transport stdio --scope user brain-sync -- brain-sync-mcp
+```
+
+Then restart Claude Code and mention your brain in the conversation.
+
+#### Claude Desktop
+
+Claude Desktop currently uses manual MCP registration plus the brain-sync
+skill.
+
+1. Install the skill from `src/brain_sync/interfaces/mcp/resources/brain_sync/SKILL.md`
+2. Register the MCP server manually:
+
+```json
+{
+  "mcpServers": {
+    "brain-sync": {
+      "command": "brain-sync-mcp"
+    }
+  }
+}
+```
+
+You can also copy the checked-in example from
+`docs/examples/claude-desktop.mcp.json`.
+
+3. Restart Claude Desktop
+
+#### Codex
+
+Codex uses a repo-local plugin. This repository ships a marketplace manifest at
+`.agents/plugins/marketplace.json`, and it points at the checked-in plugin
+bundle in `plugins/brain-sync/`.
+
+To use it:
+
+1. Install `brain-sync` so `brain-sync-mcp` is available on `PATH`.
+2. Restart Codex with this repository open as the active workspace.
+3. Codex should surface `brain-sync` from `brain-sync Repo Plugins`
+   automatically because the repo marketplace marks it `INSTALLED_BY_DEFAULT`.
+4. If it still is not enabled, open the plugin directory, choose
+   `brain-sync Repo Plugins`, and enable `brain-sync` manually.
+
+If you do not see the marketplace after the repo adds
+`.agents/plugins/marketplace.json`, fully quit and reopen Codex.
+
+### First Use
+
+The primary interface is your host integration, not the raw tool names. If you
+are starting from scratch, ask Claude Code, Claude Desktop, or Codex to create
+a brain and show status:
+
+- "Create a new brain at `C:\\Users\\you\\my-brain` and show runtime status."
+
+If you already have an initialized brain, ask the host to attach it:
+
+- "Attach `C:\\Users\\you\\my-brain` and show runtime status."
+
+brain-sync can remember multiple registered brains on the same machine, but the
+runtime uses one active attached root at a time for shared daemon control and
+host sessions.
+
+## Talk To Your Brain
+
+Once a brain is attached, you usually interact with brain-sync by asking your
+host to do work in plain language rather than naming MCP tools directly.
+
+### What You Can Ask
+
+- "Show runtime status for the attached brain."
+- "Search my brain for AAA and open the best match."
+- "Summarize what my brain knows about Project X."
+- "Open the platform area and show me the current summary."
+- "Start the shared daemon if needed."
+- "Add this Confluence page to initiatives/platform and sync attachments."
+- "Suggest where this document should live, then add it."
+- "Reconcile filesystem moves and regenerate changed areas."
+- "Compare the docs in my brain with this code change."
+
+### Configure Your Brain
+
+Source authentication is still CLI-first in this slice. Configure credentials
+once, then use your host integration for the day-to-day work.
 
 #### Confluence
 
@@ -82,6 +166,10 @@ brain-sync config confluence \
 
 Credentials are stored in `~/.brain-sync/config.json`. You can also use
 `CONFLUENCE_DOMAIN`, `CONFLUENCE_EMAIL`, and `CONFLUENCE_TOKEN`.
+
+After that, you can ask your host:
+
+- "Add this Confluence page to initiatives/platform."
 
 #### Google Docs
 
@@ -100,77 +188,9 @@ This opens a browser for OAuth consent and stores both the OAuth client and the
 token in `~/.brain-sync/config.json`. Use `--reauth` to force a new consent
 flow later.
 
-### Start the Daemon
+After that, you can ask your host:
 
-```bash
-brain-sync run --root ~/my-brain
-```
-
-The daemon reconciles offline changes, syncs sources, watches `knowledge/`,
-and regenerates summaries as needed. The current runtime model allows only one
-active daemon per runtime config directory, so if another live brain-sync
-daemon is already using the same config dir, the new start is refused
-immediately by the runtime startup guard. Startup also prunes old local
-`token_events` and `operational_events` history before it reloads active sync
-state.
-
-For background launcher control against the active attached root:
-
-```bash
-brain-sync start
-brain-sync status
-brain-sync stop
-brain-sync restart
-```
-
-`brain-sync start` is idempotent when a healthy daemon is already running for
-the same runtime config dir. `brain-sync stop` and `brain-sync restart`
-remotely control only `launcher-background` daemons in v1. A healthy
-terminal-started `brain-sync run` daemon is still adoptable for status and
-normal use, but remote stop/restart remains intentionally unsupported.
-
-### Add a Source
-
-```bash
-brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
-  --path initiatives/my-project \
-  --fetch-children \
-  --sync-attachments
-
-brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area
-```
-
-`--path` is optional. If omitted, brain-sync can suggest placement based on
-your existing tree.
-
-`--fetch-children` and `--sync-attachments` are execution-time sync options.
-
-### Sync a Source Now
-
-```bash
-brain-sync sync [<canonical-id-or-url> ...]
-```
-
-This requests immediate polling for active sources by setting their persisted
-next-check time to now.
-
-- with no selectors, all active sources are marked due immediately
-- with one or more selectors, only those active sources are marked due
-  immediately
-
-The command does not fetch remote content itself. It only updates
-`sync_polling` so the targeted sources are due on the next daemon refresh or
-the next `brain-sync run`.
-
-### Add a Local File
-
-```bash
-brain-sync add-file ./notes.md --path area
-```
-
-Supported direct file imports: `.md`, `.txt`
-
-For `.docx`, use `brain-sync convert` first.
+- "Add this Google Doc to initiatives/platform."
 
 ## Folder Structure
 
@@ -210,55 +230,7 @@ practical placement rules.
 - Co-located summaries and attachments move with their area automatically.
 - `_core/` is the optional core-knowledge area that feeds global context.
 
-## Talk To Your Brain
-
-brain-sync ships thin wrapper artifacts that all point at the same shared
-launcher seam:
-
-- repo-local MCP config at `.mcp.json`
-- Claude Desktop example config at `docs/examples/claude-desktop.mcp.json`
-- Codex local plugin at `plugins/brain-sync/`
-
-### Claude Code
-
-Register the MCP server once:
-
-```bash
-claude mcp add --transport stdio --scope user brain-sync -- brain-sync-mcp
-```
-
-Then restart Claude Code and invoke `/brain-sync` or mention your brain in the
-conversation.
-
-### Claude Desktop
-
-1. Install the skill from `src/brain_sync/interfaces/mcp/resources/brain_sync/SKILL.md`
-2. Register the MCP server:
-
-```json
-{
-  "mcpServers": {
-    "brain-sync": {
-      "command": "brain-sync-mcp"
-    }
-  }
-}
-```
-
-You can also copy the checked-in example from
-`docs/examples/claude-desktop.mcp.json`.
-
-3. Restart Claude Desktop
-
-### Codex
-
-Install the checked-in local plugin from `plugins/brain-sync/`. The plugin is
-intentionally thin: it contributes only a local MCP wrapper that points at the
-installed `brain-sync-mcp` command, so Claude Code, Claude
-Desktop, and Codex all share the same runtime config directory and daemon
-control seam.
-
-### Backing Up Your Brain
+## Backing Up Your Brain
 
 Initialize a private Git repository at the brain root and push it to a private
 remote. Commit the brain:
@@ -295,60 +267,11 @@ working tree bytes stable across supported platforms, which is especially
 important because brain-sync hashes the files it sees on disk when deciding
 whether a knowledge area changed.
 
-### Example Requests
-
-- "Add this Confluence page to initiatives/platform and sync attachments"
-- "Summarize what my brain knows about Project X"
-- "Open the platform area and show me the current summary"
-- "Compare the docs in my brain with this code change"
-
-## MCP Server
-
-brain-sync exposes a bootstrap-capable MCP launcher for querying, reading, and
-managing the brain.
-
-When no usable active root is attached, the launcher starts in bootstrap mode
-and exposes only setup/admin tools:
-
-| Tool | Description |
-|---|---|
-| `brain_sync_setup_status` | Report whether an active usable root is attached |
-| `brain_sync_init` | Initialize and attach a new brain root |
-| `brain_sync_attach_root` | Attach an existing initialized brain root |
-| `brain_sync_status` | Show runtime bootstrap, daemon, and content status |
-| `brain_sync_start` | Start or adopt the shared background daemon |
-| `brain_sync_stop` | Stop a `launcher-background` daemon when supported |
-| `brain_sync_restart` | Restart a `launcher-background` daemon when supported |
-
-After `brain_sync_init` or `brain_sync_attach_root`, the launcher unlocks the
-full tool surface.
-
-Primary tools:
-
-| Tool | Description |
-|---|---|
-| `brain_sync_query` | Search areas by query |
-| `brain_sync_tree` | Return the full semantic knowledge-area tree as a sparse read-only JSON structure |
-| `brain_sync_get_context` | Load global context from the `_core` summary at `knowledge/_core/.brain-sync/insights/summary.md` |
-| `brain_sync_open_area` | Load an area's summary, artifacts, and children |
-| `brain_sync_open_file` | Read a text file from the brain |
-| `brain_sync_list` | List registered sources, including `knowledge_state` for missing registered sources |
-| `brain_sync_add` | Register a sync source |
-| `brain_sync_add_file` | Add a local markdown or text file |
-| `brain_sync_update` | Update source settings |
-| `brain_sync_remove` | Remove a sync source; may return handled `not_found` or `lease_conflict` |
-| `brain_sync_move` | Move one registered source by exact canonical ID to a new path; may return handled `not_found` or `lease_conflict` |
-| `brain_sync_finalize_missing` | Explicitly finalize one missing registered source by exact canonical ID |
-| `brain_sync_reconcile` | Reconcile filesystem moves |
-| `brain_sync_regen` | Regenerate summaries |
-
-Run manually:
-
-```bash
-brain-sync-mcp
-```
-
 ## CLI Reference
+
+Most users can stay in Claude, Claude Desktop, or Codex once their host
+integration is set up. The CLI still matters for terminal-first workflows,
+automation, and source configuration.
 
 | Command | Description |
 |---|---|
@@ -376,23 +299,153 @@ brain-sync-mcp
 | `brain-sync config google [--reauth]` | Authenticate Google Docs access |
 | `brain-sync convert <file> [--comments-from <docx>]` | Convert `.docx` to markdown |
 | `brain-sync migrate [--root <path>]` | Legacy attachment-layout migration helper |
-| `brain-sync update-skill` | Re-install the Claude skill |
+| `brain-sync update-skill` | Re-install the Claude Desktop skill |
 
 All commands accept `--log-level`. Commands that operate on a brain root accept
 `--root`.
+
+### Common CLI Tasks
+
+Initialize a new brain:
+
+```bash
+brain-sync init ~/my-brain
+```
+
+Attach an existing initialized brain and make it active:
+
+```bash
+brain-sync attach-root ~/my-existing-brain
+```
+
+Start the real foreground daemon engine:
+
+```bash
+brain-sync run --root ~/my-brain
+```
+
+Use the launcher-managed background daemon for the active attached root:
+
+```bash
+brain-sync start
+brain-sync status
+brain-sync stop
+brain-sync restart
+```
+
+`brain-sync start` is idempotent when a healthy daemon is already running for
+the same runtime config dir. `brain-sync stop` and `brain-sync restart`
+remotely control only `launcher-background` daemons in v1. A healthy
+terminal-started `brain-sync run` daemon is still adoptable for status and
+normal use, but remote stop/restart remains intentionally unsupported.
+
+Register a source:
+
+```bash
+brain-sync add https://yourcompany.atlassian.net/wiki/spaces/SPACE/pages/123456/Page+Title \
+  --path initiatives/my-project \
+  --fetch-children \
+  --sync-attachments
+
+brain-sync add "https://docs.google.com/document/d/1A2B3C/edit" --path area
+```
+
+`--path` is optional. If omitted, brain-sync can suggest placement based on
+your existing tree.
+
+`--fetch-children` and `--sync-attachments` are execution-time sync options.
+
+Request immediate polling for active sources:
+
+```bash
+brain-sync sync [<canonical-id-or-url> ...]
+```
+
+With no selectors, all active sources are marked due immediately. With one or
+more selectors, only those active sources are marked due immediately. The
+command does not fetch remote content itself; it only updates `sync_polling`
+so the targeted sources are due on the next daemon refresh or the next
+`brain-sync run`.
+
+Add a local markdown or text file:
+
+```bash
+brain-sync add-file ./notes.md --path area
+```
+
+Supported direct file imports: `.md`, `.txt`
+
+For `.docx`, use `brain-sync convert` first.
+
+## MCP Tool Reference
+
+Most users will not invoke these tools directly. They are the MCP surface that
+Claude, Claude Desktop, Codex, and other compatible hosts call under the hood.
+
+brain-sync exposes a bootstrap-capable MCP launcher for querying, reading, and
+managing the brain.
+
+When no usable active root is attached, the launcher starts in bootstrap mode.
+Setup/admin tools work immediately, and full brain tools remain visible for MCP
+clients that cache the initial tool list, but those full tools fail closed
+until `brain_sync_init` or `brain_sync_attach_root` completes:
+
+| Tool | Description |
+|---|---|
+| `brain_sync_setup_status` | Report whether an active usable root is attached |
+| `brain_sync_init` | Initialize and attach a new brain root |
+| `brain_sync_attach_root` | Attach an existing initialized brain root |
+| `brain_sync_status` | Show runtime bootstrap, daemon, and content status |
+| `brain_sync_start` | Start or adopt the shared background daemon |
+| `brain_sync_stop` | Stop a `launcher-background` daemon when supported |
+| `brain_sync_restart` | Restart a `launcher-background` daemon when supported |
+
+After `brain_sync_init` or `brain_sync_attach_root`, those same full tools
+become usable in the current session.
+
+Primary tools:
+
+| Tool | Description |
+|---|---|
+| `brain_sync_query` | Search areas by query |
+| `brain_sync_tree` | Return the full semantic knowledge-area tree as a sparse read-only JSON structure |
+| `brain_sync_get_context` | Load global context from the `_core` summary at `knowledge/_core/.brain-sync/insights/summary.md` |
+| `brain_sync_open_area` | Load an area's summary, artifacts, and children |
+| `brain_sync_open_file` | Read a text file from the brain |
+| `brain_sync_list` | List registered sources, including `knowledge_state` for missing registered sources |
+| `brain_sync_add` | Register a sync source |
+| `brain_sync_add_file` | Add a local markdown or text file |
+| `brain_sync_update` | Update source settings |
+| `brain_sync_remove` | Remove a sync source; may return handled `not_found` or `lease_conflict` |
+| `brain_sync_move` | Move one registered source by exact canonical ID to a new path; may return handled `not_found` or `lease_conflict` |
+| `brain_sync_finalize_missing` | Explicitly finalize one missing registered source by exact canonical ID |
+| `brain_sync_reconcile` | Reconcile filesystem moves |
+| `brain_sync_regen` | Regenerate summaries |
+
+Run manually:
+
+```bash
+brain-sync-mcp
+```
 
 ## Updating brain-sync
 
 1. Stop the daemon
 2. Pull the latest code
-3. Update the skill:
+3. Reinstall the package:
+
+```bash
+python -m pip install -e .
+```
+
+4. If you use Claude Desktop with the manual skill, update the skill:
 
 ```bash
 brain-sync update-skill
 ```
 
-4. Restart your MCP client
-5. Start `brain-sync run` again
+5. Restart your host
+6. Start `brain-sync run` again
 
 ## Configuration
 

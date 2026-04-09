@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from brain_sync.application.launcher import (
     TERMINAL_FOREGROUND_CONTROLLER,
     DaemonStatus,
     RuntimeStatus,
+    _background_creation_kwargs,
     get_runtime_status,
     restart_daemon,
     start_daemon,
@@ -176,6 +178,37 @@ def test_terminal_foreground_daemon_is_adoptable_but_not_remotely_controllable(t
     assert daemon.stop_supported is False
     assert stop_result.result == "unsupported_for_controller_kind"
     assert restart_result.result == "unsupported_for_controller_kind"
+
+
+def test_background_creation_kwargs_hide_windows_console() -> None:
+    with (
+        patch("brain_sync.application.launcher.os.name", "nt"),
+        patch(
+            "brain_sync.application.launcher.windows_hidden_process_kwargs",
+            return_value={"creationflags": 123, "startupinfo": "hidden"},
+        ) as hidden_kwargs,
+    ):
+        kwargs = _background_creation_kwargs()
+
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["close_fds"] is True
+    assert kwargs["creationflags"] == 123
+    assert kwargs["startupinfo"] == "hidden"
+    hidden_kwargs.assert_called_once()
+
+
+def test_background_creation_kwargs_preserve_posix_session_behavior() -> None:
+    with patch("brain_sync.application.launcher.os.name", "posix"):
+        kwargs = _background_creation_kwargs()
+
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["close_fds"] is True
+    assert kwargs["start_new_session"] is True
+    assert "creationflags" not in kwargs
 
 
 def test_runtime_status_does_not_promote_snapshot_missing_pid(tmp_path: Path) -> None:

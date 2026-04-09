@@ -20,6 +20,7 @@ from brain_sync.runtime.repository import (
     read_daemon_status,
     write_daemon_status,
 )
+from brain_sync.util.processes import windows_hidden_process_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -218,7 +219,7 @@ def _background_creation_kwargs() -> dict:
         creationflags = 0
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        kwargs["creationflags"] = creationflags
+        kwargs.update(windows_hidden_process_kwargs(creationflags=creationflags))
     else:
         kwargs["start_new_session"] = True
     return kwargs
