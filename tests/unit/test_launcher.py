@@ -14,6 +14,7 @@ from brain_sync.application.launcher import (
     DaemonStatus,
     RuntimeStatus,
     _background_creation_kwargs,
+    _stop_launcher_background,
     get_runtime_status,
     restart_daemon,
     start_daemon,
@@ -335,3 +336,63 @@ def test_start_daemon_fails_closed_when_post_start_daemon_is_stale(tmp_path: Pat
     )
     terminate_process.assert_called_once_with(4321)
     wait_for_pid_exit.assert_called_once_with(4321)
+
+
+def test_stop_launcher_background_waits_for_not_running_settle(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    init_brain(root)
+    root_id = daemon_root_id(root.resolve())
+    running = _daemon_status(
+        root=root,
+        state="running",
+        snapshot_status="ready",
+        controller_kind=LAUNCHER_BACKGROUND_CONTROLLER,
+        pid=4321,
+        daemon_root=root_id,
+        healthy=True,
+        competing_start_refused=True,
+    )
+    transitional = _daemon_status(
+        root=root,
+        state="stale",
+        snapshot_status="stopped",
+        controller_kind=LAUNCHER_BACKGROUND_CONTROLLER,
+        pid=4321,
+        daemon_root=root_id,
+        healthy=False,
+        competing_start_refused=True,
+        reason="snapshot_not_running",
+    )
+    settled = _daemon_status(
+        root=root,
+        state="not_running",
+        snapshot_status="stopped",
+        controller_kind=LAUNCHER_BACKGROUND_CONTROLLER,
+        pid=4321,
+        daemon_root=root_id,
+        healthy=False,
+        competing_start_refused=False,
+        reason="stopped",
+    )
+
+    with (
+        patch("brain_sync.application.launcher._terminate_process") as terminate_process,
+        patch("brain_sync.application.launcher._wait_for_pid_exit", return_value=True) as wait_for_pid_exit,
+        patch("brain_sync.application.launcher._record_stopped_snapshot") as record_snapshot,
+        patch("brain_sync.application.launcher.get_setup_status", return_value=_ready_setup(root)),
+        patch(
+            "brain_sync.application.launcher._classify_daemon_status",
+            side_effect=[transitional, settled],
+        ) as classify_status,
+        patch("brain_sync.application.launcher.time.sleep") as sleep_mock,
+    ):
+        result = _stop_launcher_background(running)
+
+    assert result.result == "stopped"
+    assert result.daemon.state == "not_running"
+    assert result.daemon.reason == "stopped"
+    terminate_process.assert_called_once_with(4321)
+    wait_for_pid_exit.assert_called_once_with(4321)
+    record_snapshot.assert_called_once_with(running)
+    assert classify_status.call_count == 2
+    sleep_mock.assert_called_once_with(0.1)

@@ -249,6 +249,17 @@ def _wait_for_background_start(pid: int, *, timeout: float = 10.0) -> bool:
     return False
 
 
+def _wait_for_not_running_state(*, timeout: float = 2.0) -> DaemonStatus:
+    deadline = time.monotonic() + timeout
+    current = _classify_daemon_status(get_setup_status())
+    while time.monotonic() < deadline:
+        if current.state == "not_running":
+            return current
+        time.sleep(0.1)
+        current = _classify_daemon_status(get_setup_status())
+    return current
+
+
 def _terminate_process(pid: int) -> None:
     if os.name == "nt":
         import ctypes
@@ -299,9 +310,16 @@ def _stop_launcher_background(daemon: DaemonStatus) -> DaemonAdminResult:
         )
 
     _terminate_process(daemon.pid)
-    _wait_for_pid_exit(daemon.pid)
+    exited = _wait_for_pid_exit(daemon.pid)
     _record_stopped_snapshot(daemon)
-    current = _classify_daemon_status(get_setup_status())
+    current = _wait_for_not_running_state()
+    if current.state != "not_running":
+        log.info(
+            "Launcher-background daemon stop did not fully settle: state=%s reason=%s exited=%s",
+            current.state,
+            current.reason,
+            exited,
+        )
     return DaemonAdminResult(
         result="stopped",
         daemon=current,
