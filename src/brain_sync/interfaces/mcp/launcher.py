@@ -237,6 +237,13 @@ def brain_sync_restart() -> dict:
     return _daemon_admin_payload(restart_daemon())
 
 
+# Advertise the full tool surface from process start so MCP clients that cache
+# the initial tool list can still use full tools after init/attach in the same
+# long-lived launcher session. The tools themselves remain fail-closed until a
+# usable active root exists.
+_ensure_full_tools_registered()
+
+
 def main() -> None:
     from brain_sync.runtime.config import load_config
     from brain_sync.util.logging import setup_logging

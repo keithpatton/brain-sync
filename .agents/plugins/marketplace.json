@@ -1,0 +1,20 @@
+{
+  "name": "brain-sync-repo",
+  "interface": {
+    "displayName": "brain-sync Repo Plugins"
+  },
+  "plugins": [
+    {
+      "name": "brain-sync",
+      "source": {
+        "source": "local",
+        "path": "./plugins/brain-sync"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

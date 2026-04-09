@@ -110,14 +110,14 @@ async def test_stdio_launcher_bootstrap_mode_transitions_to_full_after_attach(tm
             assert "brain_sync_setup_status" in tool_names
             assert "brain_sync_attach_root" in tool_names
             assert "brain_sync_start" in tool_names
-            assert "brain_sync_query" not in tool_names
-            assert "brain_sync_open_area" not in tool_names
+            assert "brain_sync_query" in tool_names
+            assert "brain_sync_open_area" in tool_names
 
             status_result = await session.call_tool("brain_sync_setup_status", {})
             start_result = await session.call_tool("brain_sync_start", {})
+            query_before_attach = await session.call_tool("brain_sync_query", {"query": "AAA"})
 
             attach_result = await session.call_tool("brain_sync_attach_root", {"root": str(root)})
-            tools_after_attach = await session.list_tools()
             query_result = await session.call_tool("brain_sync_query", {"query": "AAA"})
 
     status_payload = json.loads(status_result.content[0].text)
@@ -128,15 +128,13 @@ async def test_stdio_launcher_bootstrap_mode_transitions_to_full_after_attach(tm
     assert start_payload["status"] == "ok"
     assert start_payload["result"] == "setup_required"
 
+    assert query_before_attach.isError is True
+    assert any("brain_sync_attach_root" in item.text for item in query_before_attach.content if hasattr(item, "text"))
+
     attach_payload = json.loads(attach_result.content[0].text)
     assert attach_payload["status"] == "ok"
     assert attach_payload["root"] == str(root.resolve())
     assert attach_payload["setup"]["ready"] is True
-
-    tool_names_after_attach = {tool.name for tool in tools_after_attach.tools}
-    assert "brain_sync_query" in tool_names_after_attach
-    assert "brain_sync_open_area" in tool_names_after_attach
-    assert "brain_sync_tree" in tool_names_after_attach
 
     query_payload = json.loads(query_result.content[0].text)
     assert query_payload["status"] == "ok"
@@ -160,10 +158,10 @@ async def test_stdio_launcher_bootstrap_mode_transitions_to_full_after_init(tmp_
             tools = await session.list_tools()
             tool_names = {tool.name for tool in tools.tools}
             assert "brain_sync_init" in tool_names
-            assert "brain_sync_query" not in tool_names
+            assert "brain_sync_query" in tool_names
 
+            query_before_init = await session.call_tool("brain_sync_query", {"query": "AAA"})
             init_tool_result = await session.call_tool("brain_sync_init", {"root": str(root)})
-            tools_after_init = await session.list_tools()
             tree_result = await session.call_tool("brain_sync_tree", {})
 
     init_payload = json.loads(init_tool_result.content[0].text)
@@ -173,10 +171,8 @@ async def test_stdio_launcher_bootstrap_mode_transitions_to_full_after_init(tmp_
     assert init_payload["setup"]["ready"] is True
     assert init_payload["setup"]["usable_active_root"] == str(root.resolve())
 
-    tool_names_after_init = {tool.name for tool in tools_after_init.tools}
-    assert "brain_sync_query" in tool_names_after_init
-    assert "brain_sync_open_area" in tool_names_after_init
-    assert "brain_sync_tree" in tool_names_after_init
+    assert query_before_init.isError is True
+    assert any("brain_sync_init" in item.text for item in query_before_init.content if hasattr(item, "text"))
 
     tree_payload = json.loads(tree_result.content[0].text)
     assert tree_payload["status"] == "ok"

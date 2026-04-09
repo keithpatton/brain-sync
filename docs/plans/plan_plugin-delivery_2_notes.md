@@ -1,5 +1,10 @@
 # Plan plugin-delivery 2 Implementation Notes
 
+2026-04-10T10:35:00+12:00
+Change: Codex plugin follow-up completed by advertising the full MCP tool surface from launcher startup while keeping full-tool calls fail-closed until `brain_sync_init` or `brain_sync_attach_root` succeeds.
+Reason: Real Codex plugin sessions cache the initial MCP tool list, so a launcher that started in bootstrap mode could attach a root successfully but still leave `brain_sync_query` and related tools unavailable for the rest of that session.
+Status: Completed.
+
 2026-04-09T18:05:00+12:00
 Change: Third adversarial-review follow-up completed by failing full MCP tool requests closed whenever a root rebind cannot establish a healthy daemon for the newly active root, while leaving `brain_sync_status` available to report the stale daemon state.
 Reason: The third adversarial review found a plausible split-root path where a long-lived launcher session could rebind content tools to root B while the shared launcher-background daemon remained live on root A.

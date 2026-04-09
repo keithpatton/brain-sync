@@ -40,11 +40,11 @@ regen behavior inside each wrapper host.
 
 The shared MCP launcher now has two runtime-facing modes:
 
-- bootstrap mode when no usable active root is attached, exposing only
-  setup/admin tools such as `brain_sync_setup_status`, `brain_sync_init`,
-  `brain_sync_attach_root`, and daemon admin/status calls
-- full mode once a usable active root exists, exposing the normal MCP tool
-  surface plus those same admin calls
+- bootstrap mode when no usable active root is attached; setup/admin tools are
+  usable immediately, while the normal MCP tool surface stays advertised but
+  fails closed until a usable root is attached or initialized
+- full mode once a usable active root exists, where that same normal MCP tool
+  surface becomes usable alongside the admin calls
 
 Normal CLI source-management commands still do not RPC into a running daemon,
 and they do not start one implicitly. Full MCP tool use may now best-effort
