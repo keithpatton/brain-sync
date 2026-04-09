@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -2770,6 +2771,23 @@ def _pid_is_running(pid: int) -> bool:
     except PermissionError:
         return True
     except OSError:
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if result.returncode != 0:
+        return False
+    first_line = next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
+    if not first_line:
+        return False
+    if first_line.startswith("Z"):
         return False
     return True
 
