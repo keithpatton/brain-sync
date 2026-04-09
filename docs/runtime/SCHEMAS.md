@@ -58,7 +58,7 @@ Current top-level keys:
 
 | Key | Type | Meaning |
 |---|---|---|
-| `brains` | array[string] | Registered brain roots. Only the first entry is treated as active in the current single-brain runtime model. |
+| `brains` | array[string] | Registered brain roots. Only the first entry is treated as active in the current single-brain runtime model. `attach-root` rewrites the selected root to index `0` and preserves any other registered roots after it in deduplicated order for compatibility only. |
 | `regen` | object | Optional defaults for regeneration behavior. |
 | `confluence` | object | Optional Confluence credentials. |
 | `google` | object | Optional Google OAuth client config and token cache. |
@@ -91,9 +91,16 @@ runtime model enforces daemon exclusivity per config directory via
 |---|---|---|
 | `pid` | integer | Process ID of the daemon instance that wrote the file. |
 | `started_at` | string or null | UTC time when the current daemon session started. |
+| `updated_at` | string | UTC time when this snapshot was last rewritten. |
+| `stopped_at` | string or null | UTC time when the current daemon session last wrote a stopped snapshot. |
 | `daemon_id` | string | Runtime-unique daemon session identifier for this process start. |
 | `brain_root` | string | Normalized attached brain-root path for the daemon that wrote the snapshot. |
 | `status` | string | Current daemon status. Typical values: `starting`, `ready`, `stopped`. |
+| `controller_kind` | string | Current daemon controller kind. Supported v1 values are `terminal-foreground`, `launcher-background`, and `unknown`. |
+
+`daemon.json` is the fast runtime snapshot used by setup/admin status and
+daemon-adoption checks. It does not replace `daemon.lock`, which remains the
+durable startup-exclusion mechanism for the runtime config directory.
 
 ## Runtime DB Schema
 

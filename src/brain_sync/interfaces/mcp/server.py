@@ -1,7 +1,8 @@
-"""brain-sync MCP server — complete brain interface via MCP tools.
+"""brain-sync full MCP tool surface.
 
-Exposes brain-sync functionality as MCP tools so Claude Code and Claude
-Desktop can interact with the brain without filesystem access.
+Exposes the full brain-sync MCP tool set once a usable active root already
+exists. Thin host wrappers should use `brain_sync.interfaces.mcp.launcher`,
+which handles no-root bootstrap and then activates this tool surface.
 
 Architecture: SKILL.md (WHAT/WHEN) → MCP tools (HOW) → brain_sync library
 
@@ -10,7 +11,7 @@ concurrency locks) lives in BrainRuntime, initialised via the server lifespan.
 Module-level definitions must remain pure (constants, helpers, tool registrations).
 
 Usage:
-    python -m brain_sync.interfaces.mcp.server
+    brain-sync-mcp
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from brain_sync.application.browse import (
     open_file,
     query_brain,
 )
+from brain_sync.application.launcher import ensure_daemon_running_for_mcp
 from brain_sync.application.local_files import (
     InvalidKnowledgePathError,
     KnowledgeFileNotFoundError,
@@ -68,7 +70,7 @@ from brain_sync.application.placement import (
 from brain_sync.application.query_index import AreaIndex, load_area_index
 from brain_sync.application.reconcile import reconcile_brain
 from brain_sync.application.regen import RegenFailed, run_regen
-from brain_sync.application.roots import resolve_active_root
+from brain_sync.application.roots import get_setup_status, resolve_active_root
 from brain_sync.application.sources import (
     FinalizationResult,
     InvalidCanonicalIdError,
@@ -121,6 +123,7 @@ class BrainRuntime:
     area_index: AreaIndex
     regen_lock: asyncio.Lock
     lifecycle_session_id: str
+    auto_start_daemon: bool = False
 
 
 @asynccontextmanager
@@ -141,9 +144,41 @@ async def _brain_lifespan(_app: FastMCP) -> AsyncIterator[BrainRuntime]:
 server = FastMCP("brain-sync", lifespan=_brain_lifespan)
 
 
+class RuntimeDaemonUnavailableError(RuntimeError):
+    """Raised when full MCP use cannot establish a healthy daemon for the active root."""
+
+
+def _sync_runtime_root(rt: BrainRuntime) -> None:
+    """Keep long-lived MCP sessions bound to the current active runtime root."""
+    setup = get_setup_status()
+    if not setup.ready or setup.usable_active_root is None:
+        raise RuntimeError(
+            "The active brain root is no longer ready for full MCP use. Reconnect after attaching a usable root."
+        )
+
+    active_root = setup.usable_active_root
+    if rt.root == active_root:
+        return
+
+    log.info("brain-sync MCP runtime root changed, rebinding from %s to %s", rt.root, active_root)
+    rt.root = active_root
+    rt.area_index = load_area_index(active_root)
+    rt.lifecycle_session_id = ensure_lifecycle_session(active_root, owner_kind="mcp")
+
+
 def _runtime(ctx: Context) -> BrainRuntime:
     """Extract BrainRuntime from the MCP request context."""
-    return ctx.request_context.lifespan_context  # type: ignore[return-value]
+    rt = ctx.request_context.lifespan_context  # type: ignore[assignment]
+    _sync_runtime_root(rt)
+    if getattr(rt, "auto_start_daemon", False) and getattr(rt, "root", None) is not None:
+        result = ensure_daemon_running_for_mcp()
+        if result is not None and result.result not in {"started", "already_running"}:
+            reason = result.daemon.reason or result.result
+            raise RuntimeDaemonUnavailableError(
+                "The active brain root does not currently have a healthy daemon for full MCP use. "
+                f"Current daemon state: {result.daemon.state} ({reason})."
+            )
+    return rt  # type: ignore[return-value]
 
 
 def _get_index(rt: BrainRuntime) -> AreaIndex:
@@ -773,6 +808,202 @@ def brain_sync_usage(ctx: Context, days: int = 7) -> dict:
         return {"status": "ok", **asdict(summary)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+FULL_TOOL_SPECS = (
+    {
+        "fn": brain_sync_list,
+        "name": "brain_sync_list",
+        "description": "List registered brain-sync sources. Optionally filter by path prefix.",
+    },
+    {
+        "fn": brain_sync_add,
+        "name": "brain_sync_add",
+        "description": (
+            "Register a URL for syncing. Supports Confluence pages and Google Docs. "
+            "target_path is required — call suggest_placement first to determine it, "
+            "present the candidates to the user, and use their chosen path."
+        ),
+    },
+    {
+        "fn": brain_sync_add_file,
+        "name": "brain_sync_add_file",
+        "description": (
+            "Add a local file to the brain. Supports .md and .txt files. "
+            "Save attachments to a temp file first, then call this tool. "
+            "target_path is required — call suggest_placement first to determine it. "
+            "copy defaults to true (safe for temp files). If false, the source file is moved instead of copied."
+        ),
+    },
+    {
+        "fn": brain_sync_remove_file,
+        "name": "brain_sync_remove_file",
+        "description": (
+            "Remove a local (non-synced) file from knowledge/. "
+            "path is relative to knowledge/ (e.g. 'area/notes.md'). "
+            "Does not affect synced sources — use brain_sync_remove for those. "
+            "Insights will be updated on next regen cycle."
+        ),
+    },
+    {
+        "fn": brain_sync_remove,
+        "name": "brain_sync_remove",
+        "description": (
+            "Unregister a sync source by canonical ID or URL. "
+            "This removes the source registration and synced files; "
+            "delete_files is accepted for compatibility."
+        ),
+    },
+    {
+        "fn": brain_sync_update,
+        "name": "brain_sync_update",
+        "description": (
+            "Update settings for a registered source. "
+            "Pass only the flags you want to change — omitted flags are left unchanged. "
+            "Use fetch_children (one-shot) and sync_attachments / no sync_attachments toggles. "
+            "child_path controls where discovered children are placed for the active pending request."
+        ),
+    },
+    {
+        "fn": brain_sync_move,
+        "name": "brain_sync_move",
+        "description": "Move a sync source to a new knowledge path.",
+    },
+    {
+        "fn": brain_sync_sync,
+        "name": "brain_sync_sync",
+        "description": (
+            "Request immediate polling for registered active sources. "
+            "Pass canonical IDs or source URLs to target specific sources, "
+            "or omit sources to request all active sources."
+        ),
+    },
+    {
+        "fn": brain_sync_finalize_missing,
+        "name": "brain_sync_finalize_missing",
+        "description": "Explicitly finalize one missing registered source by canonical_id.",
+    },
+    {
+        "fn": brain_sync_reconcile,
+        "name": "brain_sync_reconcile",
+        "description": (
+            "Reconcile DB target paths with the filesystem. "
+            "If files were moved manually in knowledge/, this updates the DB to match. "
+            "Also runs automatically on brain-sync run startup."
+        ),
+    },
+    {
+        "fn": brain_sync_regen,
+        "name": "brain_sync_regen",
+        "description": (
+            "Regenerate insight summaries. "
+            "Pass a knowledge path to regenerate a specific area, "
+            "or omit path to regenerate all areas."
+        ),
+    },
+    {
+        "fn": brain_sync_suggest_placement,
+        "name": "brain_sync_suggest_placement",
+        "description": (
+            "Suggest brain areas for placing a new document. "
+            "Pass the document title (or filename) and optionally an excerpt. "
+            "Alternatively pass source_url to auto-resolve the title (works for Google Docs). "
+            "Use subtree to restrict suggestions to a specific area. "
+            "Always present the returned candidates to the user as a numbered list "
+            "and let them choose before calling brain_sync_add."
+        ),
+    },
+    {
+        "fn": brain_sync_query,
+        "name": "brain_sync_query",
+        "description": (
+            "Primary brain entrypoint. Search for areas matching a query. "
+            "Set include_global=True to also load global context from "
+            "knowledge/_core/.brain-sync/insights/summary.md. "
+            "Use brain_sync_open_area to drill into a match."
+        ),
+    },
+    {
+        "fn": brain_sync_get_context,
+        "name": "brain_sync_get_context",
+        "description": (
+            "Load global brain context from knowledge/_core/.brain-sync/insights/summary.md. "
+            "Use when you need broad brain orientation. Raw knowledge/_core files remain available "
+            "through brain_sync_open_file(path='knowledge/_core/...') when needed. "
+            "For area-specific queries, use brain_sync_query instead."
+        ),
+    },
+    {
+        "fn": brain_sync_open_area,
+        "name": "brain_sync_open_area",
+        "description": (
+            "Load full insight context for a brain area. Returns summary, insight artifacts, "
+            "and child area listing. Use after brain_sync_query to drill into a specific area."
+        ),
+    },
+    {
+        "fn": brain_sync_tree,
+        "name": "brain_sync_tree",
+        "description": (
+            "Return the full semantic knowledge-area tree under knowledge/ as a sparse, read-only JSON structure. "
+            "Each node represents one current knowledge area and may include direct "
+            "child-area count, direct manual-file count, direct synced-source counts "
+            "by lifecycle state (`awaiting`, `materialized`, `stale`, `missing`), "
+            "insight coverage, and journal coverage. Omitted fields mean default "
+            "values: missing counts are zero, missing `insights` means no summary "
+            "or insight artifacts, and missing `journals` means no journal entries. "
+            "Journal coverage indicates user activity over time within an area. "
+            "Use this tool to understand the brain's current semantic structure, "
+            "spot areas with missing or stale synced sources, inspect summary "
+            "coverage, and identify branches worth deeper inspection. For area-level "
+            "details, use `brain_sync_open_area`; for file content, use "
+            "`brain_sync_open_file`; for source management and corrections use "
+            "`brain_sync_move`, `brain_sync_reconcile`, `brain_sync_remove`, "
+            "`brain_sync_finalize_missing`, or `brain_sync_regen` after user "
+            "confirmation. This tool provides structural facts, not recommended "
+            "actions."
+        ),
+    },
+    {
+        "fn": brain_sync_open_file,
+        "name": "brain_sync_open_file",
+        "description": (
+            "Read a specific text file from the brain by relative path "
+            "(e.g. 'knowledge/_core/.brain-sync/insights/summary.md', 'knowledge/initiatives/AAA/doc.md'). "
+            "Returns file content. Supports .md, .txt, .json, .yaml, .yml files only. "
+            "For large files, use offset (0-based char position) to paginate. "
+            "Default limit is 200000 chars per call."
+        ),
+    },
+    {
+        "fn": brain_sync_doctor,
+        "name": "brain_sync_doctor",
+        "description": (
+            "Check brain consistency and optionally repair. "
+            "mode: 'check' (default), 'fix' (auto-repair drift), "
+            "'rebuild_db' (rebuild source sync progress from manifests, preserves regen state)."
+        ),
+    },
+    {
+        "fn": brain_sync_usage,
+        "name": "brain_sync_usage",
+        "description": (
+            "Show token usage summary for LLM invocations. "
+            "Returns totals, per-operation breakdown, and per-day breakdown. "
+            "Defaults to the last 7 days."
+        ),
+    },
+)
+
+
+def register_full_tools(target: FastMCP) -> None:
+    """Register the full brain-sync tool surface on another FastMCP server."""
+    for spec in FULL_TOOL_SPECS:
+        target.add_tool(
+            spec["fn"],
+            name=spec["name"],
+            description=spec["description"],
+        )
 
 
 if __name__ == "__main__":

@@ -435,6 +435,18 @@ class DaemonStartGuard:
     handle: IO[str]
 
 
+@dataclass(frozen=True)
+class DaemonGuardStatus:
+    """Observed config-dir daemon startup-guard state."""
+
+    lock_path: Path
+    lock_present: bool
+    competing_start_refused: bool
+    pid: int | None
+    daemon_id: str | None
+    brain_root: str | None
+
+
 class _SyncProgressLike(Protocol):
     canonical_id: str
     last_checked_utc: str | None
@@ -2670,18 +2682,29 @@ def update_insight_path(root: Path, old_path: str, new_path: str) -> None:
 # --- daemon_status helpers ---
 
 
-def write_daemon_status(*, root: Path, pid: int, status: str, daemon_id: str) -> None:
+def write_daemon_status(
+    *,
+    root: Path,
+    pid: int,
+    status: str,
+    daemon_id: str,
+    controller_kind: str | None = None,
+) -> None:
     """Write the latest daemon lifecycle snapshot to config-dir-scoped daemon.json."""
     from datetime import UTC, datetime
 
     daemon_status_file = _daemon_status_file()
     daemon_status_file.parent.mkdir(parents=True, exist_ok=True)
+    updated_at = datetime.now(UTC).isoformat()
     payload = {
         "pid": pid,
-        "started_at": datetime.now(UTC).isoformat() if status == "starting" else None,
+        "started_at": updated_at if status == "starting" else None,
+        "updated_at": updated_at,
+        "stopped_at": updated_at if status == "stopped" else None,
         "daemon_id": daemon_id,
         "brain_root": _daemon_root_id(root),
         "status": status,
+        "controller_kind": controller_kind or "unknown",
     }
     if daemon_status_file.exists() and status != "starting":
         try:
@@ -2689,6 +2712,9 @@ def write_daemon_status(*, root: Path, pid: int, status: str, daemon_id: str) ->
             payload["started_at"] = current.get("started_at")
             payload["daemon_id"] = current.get("daemon_id", daemon_id)
             payload["brain_root"] = current.get("brain_root", _daemon_root_id(root))
+            payload["controller_kind"] = current.get("controller_kind", controller_kind or "unknown")
+            if status != "stopped":
+                payload["stopped_at"] = current.get("stopped_at")
         except (json.JSONDecodeError, OSError):
             pass
     daemon_status_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -2748,12 +2774,22 @@ def _pid_is_running(pid: int) -> bool:
     return True
 
 
+def is_pid_running(pid: int) -> bool:
+    """Return whether the given PID appears to belong to a live process."""
+    return _pid_is_running(pid)
+
+
 def _daemon_root_id(root: Path) -> str:
     resolved = root.resolve(strict=False)
     value = str(resolved).replace("\\", "/")
     if os.name == "nt":
         value = value.lower()
     return value
+
+
+def daemon_root_id(root: Path) -> str:
+    """Return the normalized daemon root identifier used in runtime state."""
+    return _daemon_root_id(root)
 
 
 def _daemon_guard_path() -> Path:
@@ -2802,6 +2838,55 @@ def _read_daemon_guard_payload(lock_path: Path) -> dict | None:
         return json.loads(lock_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _guard_payload_int(payload: dict | None, key: str) -> int | None:
+    value = payload.get(key) if isinstance(payload, dict) else None
+    return value if isinstance(value, int) else None
+
+
+def _guard_payload_str(payload: dict | None, key: str) -> str | None:
+    value = payload.get(key) if isinstance(payload, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def inspect_daemon_start_guard() -> DaemonGuardStatus:
+    """Inspect whether the config-dir daemon guard currently blocks a new start."""
+    lock_path = _daemon_guard_path()
+    if not lock_path.exists():
+        return DaemonGuardStatus(
+            lock_path=lock_path,
+            lock_present=False,
+            competing_start_refused=False,
+            pid=None,
+            daemon_id=None,
+            brain_root=None,
+        )
+
+    payload = _read_daemon_guard_payload(lock_path)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        if _lock_daemon_handle(handle):
+            _unlock_daemon_handle(handle)
+            return DaemonGuardStatus(
+                lock_path=lock_path,
+                lock_present=True,
+                competing_start_refused=False,
+                pid=_guard_payload_int(payload, "pid"),
+                daemon_id=_guard_payload_str(payload, "daemon_id"),
+                brain_root=_guard_payload_str(payload, "brain_root"),
+            )
+    finally:
+        handle.close()
+
+    return DaemonGuardStatus(
+        lock_path=lock_path,
+        lock_present=True,
+        competing_start_refused=True,
+        pid=_guard_payload_int(payload, "pid"),
+        daemon_id=_guard_payload_str(payload, "daemon_id"),
+        brain_root=_guard_payload_str(payload, "brain_root"),
+    )
 
 
 def acquire_daemon_start_guard(root: Path) -> DaemonStartGuard:

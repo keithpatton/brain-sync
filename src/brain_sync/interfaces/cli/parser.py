@@ -34,6 +34,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Brain root directory (auto-detected from config if omitted)",
     )
 
+    # --- attach-root ---
+    p_attach_root = sub.add_parser(
+        "attach-root",
+        help="Attach an existing initialized brain and make it the active runtime root",
+    )
+    p_attach_root.add_argument("root", type=Path, help="Existing initialized brain root to attach")
+
+    # --- start ---
+    sub.add_parser("start", help="Start or adopt the shared background daemon for the active runtime root")
+
+    # --- stop ---
+    sub.add_parser("stop", help="Stop the shared launcher-background daemon when remote control is supported")
+
+    # --- restart ---
+    sub.add_parser("restart", help="Restart the shared launcher-background daemon when remote control is supported")
+
     # --- add (sync sources only) ---
     p_add = sub.add_parser("add", help="Register a URL for ongoing sync")
     p_add.add_argument(
@@ -180,12 +196,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_finalize.add_argument("canonical_id", help="Canonical ID of the missing source to finalize")
 
     # --- status ---
-    p_status = sub.add_parser("status", help="Show daemon and sync status")
+    p_status = sub.add_parser("status", help="Show setup, daemon, and sync status for the active runtime")
     p_status.add_argument(
         "--root",
         type=Path,
         default=None,
-        help="Brain root directory (auto-detected from config if omitted)",
+        help="Compatibility option; status is runtime-scoped and uses the active attached root",
     )
 
     # --- tree ---

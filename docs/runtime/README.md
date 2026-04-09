@@ -14,10 +14,19 @@ For the current architecture stage, one runtime config directory owns one
 active brain. If `config.json` still contains multiple registered roots, only
 the first entry is treated as active runtime state.
 
+`attach-root` makes that single-brain model explicit by rewriting
+`config.json["brains"]` so the chosen root becomes index `0`; any other
+registered roots are preserved after it in deduplicated order for compatibility
+only.
+
 That current single-brain runtime model coexists with a config-dir daemon
 startup guard: `daemon.json` is the latest daemon status snapshot for the
 config directory, and durable startup exclusion for that runtime lives in
 `daemon.lock`.
+
+The current launcher/admin flow also uses `daemon.json` to describe controller
+kind and current timestamps for the shared daemon process. `daemon.lock`
+remains the exclusivity mechanism; `daemon.json` is descriptive runtime status.
 
 Runtime schema `v30` splits active polling from source lifecycle coordination:
 
