@@ -2882,7 +2882,19 @@ def inspect_daemon_start_guard() -> DaemonGuardStatus:
         )
 
     payload = _read_daemon_guard_payload(lock_path)
-    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        handle = lock_path.open("a+", encoding="utf-8")
+    except PermissionError:
+        # Windows: msvcrt.locking() is mandatory — another process holding the
+        # lock prevents even opening the file.  Treat as "lock is held".
+        return DaemonGuardStatus(
+            lock_path=lock_path,
+            lock_present=True,
+            competing_start_refused=True,
+            pid=_guard_payload_int(payload, "pid"),
+            daemon_id=_guard_payload_str(payload, "daemon_id"),
+            brain_root=_guard_payload_str(payload, "brain_root"),
+        )
     try:
         if _lock_daemon_handle(handle):
             _unlock_daemon_handle(handle)
