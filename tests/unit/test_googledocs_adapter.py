@@ -608,7 +608,10 @@ class TestFetchAllTabs:
 
         await fetch_all_tabs("abc123", auth, client)
         params = client.get.call_args.kwargs.get("params", {})
-        assert "tabs" in params.get("fields", "")
+        assert params.get("fields", "").startswith("title,tabs(")
+        assert "childTabs(" in params.get("fields", "")
+        assert "body(content)" in params.get("fields", "")
+        assert "inlineObjects" in params.get("fields", "")
         assert params.get("includeTabsContent") == "true"
 
     async def test_404_returns_none(self):

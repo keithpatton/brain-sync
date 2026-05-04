@@ -19,6 +19,9 @@ HTTP_TIMEOUT = 30.0
 
 SEMANTIC_FINGERPRINT_PREFIX = "gdocs:v3:"
 
+_TAB_CONTENT_FIELD_DEPTH = 8
+_DOCUMENT_TAB_FIELDS = "tabProperties(tabId,title),documentTab(body(content),inlineObjects)"
+
 
 class FetchError(Exception):
     pass
@@ -178,6 +181,13 @@ def _extract_inline_objects(raw_inline_objects: dict) -> dict[str, InlineImageIn
     return result
 
 
+def _tab_content_fields(depth: int = _TAB_CONTENT_FIELD_DEPTH) -> str:
+    """Return a recursive tab field mask without comment-specific fields."""
+    if depth <= 1:
+        return _DOCUMENT_TAB_FIELDS
+    return f"{_DOCUMENT_TAB_FIELDS},childTabs({_tab_content_fields(depth - 1)})"
+
+
 async def fetch_all_tabs(doc_id: str, auth: GoogleOAuthCredentials, client: httpx.AsyncClient) -> TabsDocument | None:
     """Fetch all tab content from a Google Doc via the Docs API tabs endpoint.
 
@@ -190,7 +200,7 @@ async def fetch_all_tabs(doc_id: str, auth: GoogleOAuthCredentials, client: http
     url = f"https://docs.googleapis.com/v1/documents/{doc_id}"
     headers = {"Authorization": f"Bearer {token}"}
     params = {
-        "fields": "title,tabs",
+        "fields": f"title,tabs({_tab_content_fields()})",
         "includeTabsContent": "true",
     }
     try:
