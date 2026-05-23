@@ -245,13 +245,12 @@ async def fetch_attachments(page_id: str, auth: ConfluenceAuth, client: httpx.As
         )
         data = resp.json()
         for item in data.get("results", []):
-            download = item.get("downloadLink") or item.get("_links", {}).get("download", "")
             results.append(
                 {
                     "id": item["id"],
                     "title": item.get("title"),
                     "version": item.get("version", {}).get("number"),
-                    "download_url": _absolute_wiki_url(auth.domain, download),
+                    "download_url": _attachment_download_url(auth.domain, page_id, item["id"]),
                     "media_type": item.get("mediaType", ""),
                 }
             )
@@ -331,6 +330,10 @@ def _absolute_wiki_url(domain: str, url_or_path: str) -> str:
     if url_or_path.startswith("/"):
         return f"https://{domain}/wiki{url_or_path}"
     return f"https://{domain}/wiki/{url_or_path.lstrip('/')}"
+
+
+def _attachment_download_url(domain: str, page_id: str, attachment_id: str) -> str:
+    return f"https://{domain}/wiki/rest/api/content/{page_id}/child/attachment/{attachment_id}/download"
 
 
 __all__ = [

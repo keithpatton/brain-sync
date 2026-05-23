@@ -158,8 +158,31 @@ class TestFetchAttachments:
         atts = await fetch_attachments("123", AUTH, client)
         assert len(atts) == 1
         assert atts[0]["id"] == "att1"
-        assert "diagram.png" in atts[0]["download_url"]
+        assert atts[0]["download_url"] == (
+            "https://test.atlassian.net/wiki/rest/api/content/123/child/attachment/att1/download"
+        )
         assert atts[0]["media_type"] == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_uses_rest_download_url_instead_of_raw_download_link(self):
+        resp = _mock_response(
+            {
+                "results": [
+                    {
+                        "id": "att5190549767",
+                        "title": "image.png",
+                        "version": {"number": 1},
+                        "downloadLink": "/download/attachments/123/image.png",
+                        "mediaType": "image/png",
+                    }
+                ]
+            }
+        )
+        client = _mock_client(resp)
+        atts = await fetch_attachments("123", AUTH, client)
+        assert atts[0]["download_url"] == (
+            "https://test.atlassian.net/wiki/rest/api/content/123/child/attachment/att5190549767/download"
+        )
 
 
 class TestFetchUsers:
