@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from mcp import ClientSession
@@ -66,6 +67,7 @@ async def test_stdio_server_lists_tools_and_answers_query(tmp_path: Path) -> Non
             tools = await session.list_tools()
             tool_names = {tool.name for tool in tools.tools}
             assert "brain_sync_query" in tool_names
+            assert "brain_sync_list_areas" in tool_names
             assert "brain_sync_open_area" in tool_names
             assert "brain_sync_tree" in tool_names
             assert "brain_sync_sync" in tool_names
@@ -73,6 +75,7 @@ async def test_stdio_server_lists_tools_and_answers_query(tmp_path: Path) -> Non
             assert "brain_sync_start" in tool_names
 
             result = await session.call_tool("brain_sync_query", {"query": "AAA"})
+            list_result = await session.call_tool("brain_sync_list_areas", {"filter": "AAA"})
             tree_result = await session.call_tool("brain_sync_tree", {})
 
     assert result.isError is False
@@ -81,6 +84,11 @@ async def test_stdio_server_lists_tools_and_answers_query(tmp_path: Path) -> Non
     assert response["status"] == "ok"
     assert response["matches"][0]["path"] == "initiatives/AAA"
     assert response["total_areas"] >= 1
+
+    assert list_result.isError is False
+    list_payload = json.loads(cast(Any, list_result.content[0]).text)
+    assert list_payload["status"] == "ok"
+    assert any(area["path"] == "initiatives/AAA" for area in list_payload["areas"])
 
     assert tree_result.isError is False
     assert len(tree_result.content) == 1

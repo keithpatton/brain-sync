@@ -1031,6 +1031,99 @@ class TestBrainSyncQuery:
         assert result["total_areas"] == 60
 
 
+class TestBrainSyncListAreas:
+    def test_list_areas_pages_beyond_query_cap(self, tmp_path):
+        from brain_sync.interfaces.mcp.server import MAX_AREAS_LISTED, brain_sync_list_areas, brain_sync_query
+
+        root = tmp_path / "big-brain"
+        init_brain(root)
+        for i in range(MAX_AREAS_LISTED + 15):
+            path = root / "knowledge" / f"area-{i:03d}"
+            path.mkdir(parents=True)
+            insights = _managed_insights(root, f"area-{i:03d}")
+            insights.mkdir(parents=True)
+            (insights / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
+
+        ctx = _make_ctx(root)
+        query_result = brain_sync_query(ctx, query="area")
+        page = brain_sync_list_areas(ctx, offset=50, limit=20)
+
+        assert query_result["areas_truncated"] is True
+        assert len(query_result["areas"]) == MAX_AREAS_LISTED
+        assert page["status"] == "ok"
+        assert page["offset"] == 50
+        assert page["limit"] == 20
+        assert len(page["areas"]) == 15
+        assert page["areas_truncated"] is False
+        assert page["total_areas"] == MAX_AREAS_LISTED + 15
+        assert page["filtered_areas"] == MAX_AREAS_LISTED + 15
+        assert page["areas"][0]["path"] == "area-050"
+
+    def test_list_areas_filters_by_path_and_returns_continuation_hint(self, tmp_path):
+        from brain_sync.interfaces.mcp.server import brain_sync_list_areas
+
+        root = tmp_path / "big-brain"
+        init_brain(root)
+        for name in ["architecture/api", "architecture/search", "people/alice", "people/bob"]:
+            path = root / "knowledge" / name
+            path.mkdir(parents=True)
+            insights = _managed_insights(root, name)
+            insights.mkdir(parents=True)
+            (insights / "summary.md").write_text(f"# {name}", encoding="utf-8")
+
+        result = brain_sync_list_areas(_make_ctx(root), filter="people", limit=2)
+
+        assert result["status"] == "ok"
+        assert result["filter"] == "people"
+        assert result["total_areas"] == 6
+        assert result["filtered_areas"] == 3
+        assert [area["path"] for area in result["areas"]] == ["people", "people/alice"]
+        assert result["areas_truncated"] is True
+        assert result["next_offset"] == 2
+        assert "brain_sync_list_areas" in result["hint"]
+
+    def test_list_areas_clamps_pagination_inputs(self, tmp_path):
+        from brain_sync.interfaces.mcp.server import MAX_AREA_LIST_LIMIT, brain_sync_list_areas
+
+        root = tmp_path / "big-brain"
+        init_brain(root)
+        for i in range(MAX_AREA_LIST_LIMIT + 5):
+            path = root / "knowledge" / f"area-{i:03d}"
+            path.mkdir(parents=True)
+            insights = _managed_insights(root, f"area-{i:03d}")
+            insights.mkdir(parents=True)
+            (insights / "summary.md").write_text(f"# Area {i}", encoding="utf-8")
+
+        result = brain_sync_list_areas(_make_ctx(root), offset=-10, limit=MAX_AREA_LIST_LIMIT + 100)
+        tiny_page = brain_sync_list_areas(_make_ctx(root), limit=0)
+
+        assert result["offset"] == 0
+        assert result["limit"] == MAX_AREA_LIST_LIMIT
+        assert len(result["areas"]) == MAX_AREA_LIST_LIMIT
+        assert result["areas_truncated"] is True
+        assert result["next_offset"] == MAX_AREA_LIST_LIMIT
+        assert tiny_page["limit"] == 1
+        assert len(tiny_page["areas"]) == 1
+
+    def test_list_areas_hint_escapes_unusual_filter_text(self, tmp_path):
+        from brain_sync.interfaces.mcp.server import brain_sync_list_areas
+
+        root = tmp_path / "big-brain"
+        init_brain(root)
+        for name in ["quote'area/a", "quote'area/b", "other"]:
+            path = root / "knowledge" / name
+            path.mkdir(parents=True)
+            insights = _managed_insights(root, name)
+            insights.mkdir(parents=True)
+            (insights / "summary.md").write_text(f"# {name}", encoding="utf-8")
+
+        result = brain_sync_list_areas(_make_ctx(root), filter="quote'area", limit=1)
+
+        assert result["filter"] == "quote'area"
+        assert result["areas_truncated"] is True
+        assert 'filter="quote\'area"' in result["hint"]
+
+
 class TestBrainSyncGetContext:
     def test_get_context(self, brain_root):
         from brain_sync.interfaces.mcp.server import brain_sync_get_context

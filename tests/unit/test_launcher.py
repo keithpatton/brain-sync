@@ -242,6 +242,22 @@ def test_background_command_falls_back_to_module_invocation_when_wrapper_missing
     assert cmd == [str(python_exe), "-m", "brain_sync"]
 
 
+def test_background_command_ignores_extensionless_windows_script(tmp_path: Path) -> None:
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "brain-sync").write_text("# script shim", encoding="utf-8")
+    python_exe = tmp_path / "python.exe"
+
+    with (
+        patch("brain_sync.application.launcher.os.name", "nt"),
+        patch("brain_sync.application.launcher.sysconfig.get_path", return_value=str(scripts_dir)),
+        patch("brain_sync.application.launcher.sys.executable", str(python_exe)),
+    ):
+        cmd = _brain_sync_background_command()
+
+    assert cmd == [str(python_exe), "-m", "brain_sync"]
+
+
 def test_runtime_status_does_not_promote_snapshot_missing_pid(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     init_brain(root)
