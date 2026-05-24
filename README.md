@@ -439,6 +439,7 @@ Primary tools:
 | Tool | Description |
 |---|---|
 | `brain_sync_query` | Search areas by query |
+| `brain_sync_list_areas` | List area paths with optional filtering and pagination |
 | `brain_sync_tree` | Return the full semantic knowledge-area tree as a sparse read-only JSON structure |
 | `brain_sync_get_context` | Load global context from the `_core` summary at `knowledge/_core/.brain-sync/insights/summary.md` |
 | `brain_sync_open_area` | Load an area's summary, artifacts, and children |

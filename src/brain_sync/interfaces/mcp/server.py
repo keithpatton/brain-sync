@@ -27,7 +27,13 @@ from typing import Any, cast
 from mcp.server.fastmcp import Context, FastMCP
 
 from brain_sync.application.browse import (
+    DEFAULT_AREA_LIST_LIMIT as DEFAULT_AREA_LIST_LIMIT,
+)
+from brain_sync.application.browse import (
     DEFAULT_FILE_CHARS as DEFAULT_FILE_CHARS,
+)
+from brain_sync.application.browse import (
+    MAX_AREA_LIST_LIMIT as MAX_AREA_LIST_LIMIT,
 )
 from brain_sync.application.browse import (
     MAX_AREAS_LISTED as MAX_AREAS_LISTED,
@@ -49,6 +55,7 @@ from brain_sync.application.browse import (
     BrainFileNotFoundError,
     UnsupportedBrainFileTypeError,
     get_brain_context,
+    list_areas,
     open_area,
     open_file,
     query_brain,
@@ -632,6 +639,35 @@ def brain_sync_query(
 
 
 @server.tool(
+    name="brain_sync_list_areas",
+    description=(
+        "List knowledge area paths with optional path filtering and pagination. "
+        "Use this when brain_sync_query or brain_sync_get_context reports areas_truncated=True, "
+        "or when you need to find an exact area path by name. "
+        f"Default limit is {DEFAULT_AREA_LIST_LIMIT}; maximum limit is {MAX_AREA_LIST_LIMIT}."
+    ),
+)
+def brain_sync_list_areas(
+    ctx: Context,
+    filter: str = "",
+    offset: int = 0,
+    limit: int = DEFAULT_AREA_LIST_LIMIT,
+) -> dict:
+    """List knowledge area paths with optional filtering and pagination."""
+    rt = _runtime(ctx)
+    result = list_areas(rt.root, filter=filter, offset=offset, limit=limit)
+    log.debug(
+        "brain_sync_list_areas(filter=%r, offset=%d, limit=%d) → %d/%d areas",
+        result.filter,
+        result.offset,
+        result.limit,
+        len(result.areas),
+        result.filtered_areas,
+    )
+    return _drop_none_values({"status": "ok", **asdict(result)})
+
+
+@server.tool(
     name="brain_sync_get_context",
     description=(
         "Load global brain context from knowledge/_core/.brain-sync/insights/summary.md. "
@@ -933,6 +969,15 @@ FULL_TOOL_SPECS = (
             "Set include_global=True to also load global context from "
             "knowledge/_core/.brain-sync/insights/summary.md. "
             "Use brain_sync_open_area to drill into a match."
+        ),
+    },
+    {
+        "fn": brain_sync_list_areas,
+        "name": "brain_sync_list_areas",
+        "description": (
+            "List knowledge area paths with optional path filtering and pagination. "
+            "Use this when brain_sync_query or brain_sync_get_context reports areas_truncated=True, "
+            "or when you need to find an exact area path by name."
         ),
     },
     {

@@ -17,6 +17,8 @@ MAX_CHILDREN = 5
 MAX_INSIGHT_FILE_CHARS = 8000
 MAX_AREA_PAYLOAD = 40000
 MAX_AREAS_LISTED = 50
+DEFAULT_AREA_LIST_LIMIT = 100
+MAX_AREA_LIST_LIMIT = 500
 MAX_GLOBAL_CONTEXT_FILE_CHARS = 4000
 MAX_FILE_CHARS = 1_000_000
 DEFAULT_FILE_CHARS = 200_000
@@ -57,6 +59,19 @@ class BrainContextResult:
     areas: list[AreaListing]
     areas_truncated: bool
     total_areas: int
+
+
+@dataclass(frozen=True)
+class AreaListResult:
+    areas: list[AreaListing]
+    total_areas: int
+    filtered_areas: int
+    filter: str
+    offset: int
+    limit: int
+    areas_truncated: bool
+    next_offset: int | None = None
+    hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +211,48 @@ def get_brain_context(root: Path) -> BrainContextResult:
         areas=all_areas[:MAX_AREAS_LISTED],
         areas_truncated=total > MAX_AREAS_LISTED,
         total_areas=total,
+    )
+
+
+def list_areas(
+    root: Path,
+    *,
+    filter: str = "",
+    offset: int = 0,
+    limit: int = DEFAULT_AREA_LIST_LIMIT,
+) -> AreaListResult:
+    """List knowledge areas with optional path filtering and pagination."""
+    all_areas = _collect_areas(root)
+    total = len(all_areas)
+    normalized_filter = filter.strip()
+    if normalized_filter:
+        needle = normalized_filter.casefold()
+        filtered = [area for area in all_areas if needle in area.path.casefold()]
+    else:
+        filtered = all_areas
+
+    normalized_offset = max(0, offset)
+    clamped_limit = min(max(1, limit), MAX_AREA_LIST_LIMIT)
+    page = filtered[normalized_offset : normalized_offset + clamped_limit]
+    next_offset = normalized_offset + len(page)
+    has_more = next_offset < len(filtered)
+    hint = None
+    if has_more:
+        hint = (
+            "Call brain_sync_list_areas("
+            f"filter={normalized_filter!r}, offset={next_offset}, limit={clamped_limit}) to continue."
+        )
+
+    return AreaListResult(
+        areas=page,
+        total_areas=total,
+        filtered_areas=len(filtered),
+        filter=normalized_filter,
+        offset=normalized_offset,
+        limit=clamped_limit,
+        areas_truncated=has_more,
+        next_offset=next_offset if has_more else None,
+        hint=hint,
     )
 
 

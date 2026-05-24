@@ -240,7 +240,10 @@ def _brain_sync_background_command() -> list[str]:
         candidate_dirs.append(os.path.abspath(scripts_dir))
     candidate_dirs.append(os.path.dirname(os.path.realpath(sys.executable)))
 
-    candidate_names = ["brain-sync.exe", "brain-sync"] if os.name == "nt" else ["brain-sync"]
+    # Windows cannot reliably execute the extensionless script that some
+    # installers place beside console-script .exe shims. If the .exe shim is
+    # absent, fall back to ``python -m brain_sync`` instead.
+    candidate_names = ["brain-sync.exe"] if os.name == "nt" else ["brain-sync"]
     seen: set[str] = set()
     for directory in candidate_dirs:
         for name in candidate_names:

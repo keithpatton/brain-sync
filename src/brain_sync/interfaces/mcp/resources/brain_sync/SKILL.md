@@ -21,6 +21,8 @@ landing page.
 
 1. `brain_sync_get_context()` or `brain_sync_tree()` — load broad orientation.
 2. `brain_sync_query("search terms")` — find matching areas.
+   If the response says `areas_truncated=true`, call `brain_sync_list_areas(filter=...)`
+   to find exact paths beyond the query sidebar.
 3. `brain_sync_open_area("path")` — read the summary and insight artifacts.
 4. `brain_sync_open_file("path")` — only if insights don't answer the question.
 
@@ -36,6 +38,7 @@ artifacts do not answer the question. Stop once the question can be answered.
 |------|---------|
 | `brain_sync_tree` | Return the full semantic knowledge-area tree with sparse structural metadata. Use for whole-brain structure, file mix, insight coverage, and synced-source state overview. |
 | `brain_sync_query` | **Start here.** Search for areas matching a query. If additional context is needed, call `brain_sync_get_context()`. |
+| `brain_sync_list_areas` | List area paths with optional path filtering and pagination. Use when query/context area lists are truncated or when you need an exact path. |
 | `brain_sync_get_context` | Load global context from `knowledge/_core/.brain-sync/insights/summary.md` for broad orientation. |
 | `brain_sync_open_area` | Drill into a specific area — full summary, insight artifacts, children. |
 | `brain_sync_open_file` | Read a specific file when insights aren't enough. Supports `offset` for pagination (default 16k chars/call). |
@@ -65,6 +68,9 @@ All tools return `{"status": "ok", ...}` on success or
 - **Need a whole-brain structural snapshot:** call `brain_sync_tree()` before drilling in.
 - **Know what you're looking for:** `brain_sync_query("search terms")` → review
   matches → `brain_sync_open_area("path")`.
+- **Need an exact area path in a large brain:** call
+  `brain_sync_list_areas(filter="name fragment")`; use `offset` when the
+  response includes `next_offset`.
 - **Need background understanding:** `brain_sync_get_context()` for broad
   orientation without a specific search.
 - **Need to inspect area shape or stale/missing synced sources:** `brain_sync_tree()`
